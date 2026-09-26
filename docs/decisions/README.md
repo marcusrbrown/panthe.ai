@@ -1,0 +1,15 @@
+# Architecture decision records
+
+Status values: **proposed** (candidate, not yet probe-confirmed), **accepted** (probe evidence or owner decision confirms it), **superseded** (replaced by a later ADR, kept for history). Each ADR uses Status, Context, Decision, Consequences, Evidence/links, and Requirement IDs sections. Owner decisions (explicit choices in [decisions.md](../product/decisions.md)) and delegated decisions (tunable under D23) are both recorded here; the ADR's Context section says which kind it is.
+
+Update this index and [traceability.md](../product/traceability.md) whenever an ADR changes status.
+
+| ADR | Title | Status | Requirement IDs |
+| --- | --- | --- | --- |
+| [0001](0001-workspace-and-tooling.md) | Workspace and tooling | Accepted | P03, P08 |
+| [0002](0002-renderer-backend.md) | Renderer backend | Accepted | P02, P05 |
+| [0003](0003-simulation-service.md) | Simulation service | Proposed | P01, P03, W03, O03 |
+| [0004](0004-generated-behavior-runtime.md) | Generated behavior runtime | Proposed | U04, U05, D12, D13 |
+| [0005](0005-model-providers.md) | Model providers | Proposed | P06, P07, D22 |
+| [0006](0006-telemetry-export.md) | Telemetry export | Proposed | O04, O05, O06, D16 |
+| [0007](0007-local-image-generation.md) | Local image generation | Proposed | U06, U07, D15 |

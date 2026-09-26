@@ -17,11 +17,12 @@ branches:
           - rust
           - Fro Bot
       enforce_admins: true
-      # Require a pull request for every change to main; no approval count so a
-      # solo maintainer is not blocked on self-approval.
+      # Require a pull request and one approval. Fro Bot reviews every
+      # non-bot PR and its APPROVED/CHANGES_REQUESTED verdict is the gate;
+      # PRs it skips (bot authors, forks) need an owner approval.
       required_pull_request_reviews:
-        required_approving_review_count: 0
-        dismiss_stale_reviews: false
+        required_approving_review_count: 1
+        dismiss_stale_reviews: true
         require_code_owner_reviews: false
       restrictions: null
       required_linear_history: true

@@ -367,12 +367,15 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-          # Always check out the default/workflow ref — never PR-head code.
-          # On issue_comment the fork guard cannot see PR fork status (the
-          # event has no github.event.pull_request), so checking out
-          # refs/pull/<n>/head would run fork-controlled code with
-          # FRO_BOT_PAT present. Default checkout closes that
-          # secret-exfiltration vector.
+          # Trust boundary: on pull_request this resolves to the PR merge ref
+          # (refs/pull/<n>/merge), so `bun install` below runs PR-controlled
+          # code before the agent receives FRO_BOT_PAT. That is accepted only
+          # because the job `if:` admits same-repository, non-bot authors,
+          # who already hold write access. On issue_comment the event has no
+          # github.event.pull_request, so the fork guard cannot see PR fork
+          # status; the default checkout there is the workflow ref, never
+          # refs/pull/<n>/head, which keeps fork-controlled code away from
+          # the token.
           token: ${{ secrets.FRO_BOT_PAT }}
           persist-credentials: false
 

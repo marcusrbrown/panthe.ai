@@ -68,3 +68,7 @@ Mocks, successful dependency installs, and browser-only renderer demos are not p
 ## Owner interaction
 
 Use the question tool for decisions that need owner input. Finish commentary and document updates first, ask through the tool, then wait for all answers before continuing.
+
+## Fro Bot
+
+Automation lives in [.github/workflows/fro-bot.yaml](.github/workflows/fro-bot.yaml). It reviews PRs on open/sync/reopen and runs a daily report at 03:30 UTC; it also responds to `@fro-bot` mentions from owner/members/collaborators. The label `skip-agent-review` suppresses automatic PR review. Fro Bot never merges, approves, or pushes to `main`; its hard boundaries live in the workflow's prompts and mirror the invariants above.

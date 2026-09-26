@@ -8,7 +8,7 @@ No dependencies or application scaffolding were installed during discovery.
 
 Use a Bun-managed workspace for tools, backend, and frontend.
 Use Tauri v2 or a newer suitable stable version for desktop delivery.
-Render the world on a WebGPU canvas through Three.js and Three Flatland.
+Render the world through Three.js and Three Flatland, using WebGPU where the webview supports it and WebGL2 otherwise (D25).
 
 The backend runtime, UI framework, database, and optional Lua interpreter remain research choices.
 The first backend candidate is described in [architecture-options.md](architecture-options.md).

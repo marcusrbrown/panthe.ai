@@ -1,0 +1,20 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['github>marcusrbrown/renovate-config#5.2.4'],
+  packageRules: [
+    {
+      // bfra-me/renovate-action runs with RENOVATE_BINARY_SOURCE=install, so
+      // Renovate's built-in artifact path calls `install-tool bun <ver>`
+      // before regenerating bun.lock, which fails in this environment (the
+      // "Failed to update lock file" dashboard warning). Skip the built-in
+      // bun.lock update and regenerate it via postUpgradeTasks instead —
+      // the same pattern used in marcusrbrown/mothership.
+      matchManagers: ['bun', 'npm'],
+      skipArtifactsUpdate: true,
+    },
+  ],
+  postUpgradeTasks: {
+    commands: ['bun install'],
+    executionMode: 'branch',
+  },
+}

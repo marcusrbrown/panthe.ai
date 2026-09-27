@@ -392,38 +392,77 @@ Exercised on the packaged `.app` via the new `l` key
 }
 ```
 
-A post-restore click against a freshly rebuilt sprite (new object IDs,
-confirming `populateActors()` actually ran again) also resolved correctly
-— `{ "spriteId": 249, "latencyMs": 21 }`, `clickMissCount` unchanged —
-so hit-testing (pure CPU-side raycasting against the rebuilt `Sprite2D`
-transforms) is fully recovered.
+A post-restore click against a freshly rebuilt sprite (new object ID,
+confirming `populateActors()` actually ran again) still registers as a
+raycast hit — `clickHitCount` goes from `1` to `2` — but does **not**
+resolve a new `clickToVisibleLatencyMs`/`lastClickResolution`: both stay
+frozen at whatever they were the moment before the loss (`{ "spriteId":
+37, "latencyMs": 17 }` in this run), because `Scene.tsx` now sets a
+`deviceLost` flag in the `onLost` callback (never cleared back to
+`false`) that gates every call to `ClickLatencyTracker.noteRenderSubmitted`
+— there is no real "device restored"
+signal to clear it to, so reporting a resolved latency for a click after
+the loss would be timing a frame that (per the finding below) was never
+actually presented. Hit-testing (pure CPU-side raycasting against the
+rebuilt `Sprite2D` transforms) recovers; the *latency measurement*
+correctly reports itself as unavailable rather than fabricating a number
+against a black box.
 
-**What did not recover: the actual pixels.** The canvas goes solid white
-after the restore and stays that way — confirmed on two separate restore
-cycles, screenshot: `shots/06-context-loss-no-visual-recovery.png`. This
-is not a bug in this probe's code; it's traced to `three@0.185.1`'s
-`WebGPURenderer` (`three/build/three.webgpu.js`, the exact installed
-build): its default `_onDeviceLost` handler sets a private
-`this._isDeviceLost = true` latch on `webglcontextlost`, and both
-`_renderScene()` (the guts of `render()`) and `compute()` early-return
-whenever that latch is set — but **the module has zero references to
-`webglcontextrestored`** anywhere, so nothing ever clears the latch. Its
-public `init()` is also memoized (`if (this._initPromise !== null) return
-this._initPromise;`), so calling it again after a restore is a no-op, not
-a re-initialization. In this three.js version, once a
-`WebGPURenderer`/WebGL2-backend device is lost, `render()` is a *permanent*
-silent no-op for that renderer instance's remaining lifetime — there is no
-supported recovery path short of disposing the renderer and constructing
-an entirely new one (which would mean re-running most of this file's
-`boot()`, not just `populateActors()`). That's a real product risk to
-flag, not just a probe footnote: a driver reset, a GPU switch on
-display-sleep/wake, or any other real-world context loss would strand a
-shipped app on a permanently blank canvas until the user force-quits and
-relaunches it. `pmset displaysleepnow` sleep/wake itself was **not**
-exercised this session (the `l`-key/`WEBGL_lose_context` path already
-reproduced the failure mode `pmset` was meant to probe for); it remains a
-manual owner step if a real sleep/wake-triggered loss is ever suspected of
-behaving differently from the synthetic one exercised here.
+With three@0.185.1's `WebGPURenderer`/WebGL2 backend, synthetic context
+loss and restoration both occurred (`WebGLBackend` registers
+`webglcontextlost` with `event.preventDefault()` at
+`WebGLBackend.js:230–247`), but the existing renderer instance stays
+latched: `_isDeviceLost` is set at `Renderer.js:1225–1237` and never
+cleared anywhere in the module (confirmed: zero references to
+`webglcontextrestored` in the installed build); `dispose()` at
+`Renderer.js:2533–2567` doesn't reset it either; and `init()` at
+`Renderer.js:767–773` returns the already-cached `_initPromise` rather
+than re-initializing. **Rebuilding sprites did not restore pixels** — the
+canvas goes solid white after the restore and stays that way, confirmed
+on two separate restore cycles, screenshot:
+`shots/06-context-loss-no-visual-recovery.png`. **Automatic
+same-instance recovery is unavailable in this build.**
+Application-managed renderer/canvas reconstruction — disposing the whole
+`WebGPURenderer` and building a replacement — has **not been tested**
+in this session; see the recovery-pattern note below for why it isn't a
+drop-in fix either. Sleep/wake (`pmset displaysleepnow`) also remains
+**untested**.
+
+**The same-canvas trap**: a naive recovery attempt (dispose the lost
+renderer, construct a new `WebGPURenderer` on the *same* `<canvas>`
+element) would very likely fail immediately, because
+`WebGLBackend.dispose()` (`WebGLBackend.js:2829–2836`) itself calls
+`this.extensions.get('WEBGL_lose_context').loseContext()` on that canvas
+as part of tearing down the old backend — forcing a *second* context loss
+on the exact canvas a replacement renderer would be trying to attach to.
+Any real recovery path needs a **fresh canvas element**, not the original
+one, for the new renderer.
+
+**Recovery pattern worth designing against, for ADR-0002** (untested here
+— recorded as the shape a fix should take, not a verified one): treat
+`onDeviceLost` as the entry to a single-flight recovery state machine, not
+a terminal error — (1) detach all handlers/listeners bound to the lost
+renderer and canvas; (2) `dispose()` the old renderer (accepting that this
+itself forces `WEBGL_lose_context` per the trap above); (3) create a
+*fresh* `<canvas>` element, construct a new `WebGPURenderer` against it,
+and `await init()`; (4) rebuild the presentation layer (scene graph,
+materials, sprites) from state the app already retains outside the
+renderer — not from anything the old renderer instance held; (5) resume
+normal operation only after a render call is independently verified to
+have produced a frame (e.g. a readback or a frame-presented callback, not
+just "render() didn't throw" — that's exactly the signal that misled this
+probe's first pass); (6) bound the retry count for the whole cycle and
+fall through to an explicit failure UI (not a silently blank window) if
+recovery doesn't converge. three.js itself added a public `onDeviceLost`
+hook in [PR #29767](https://github.com/mrdoob/three.js/pull/29767)
+(October 2024) and its guidance suggests calling `init()` again to
+recover — confirmed here, from the source at `Renderer.js:767–773`, that
+this does *not* work on `three@0.185.1`: `init()`'s promise memoization
+means a second call just returns the original (already-resolved) promise
+without re-running backend initialization. Whether a newer three.js
+release changed that memoization behavior wasn't checked in this session
+— worth a version-bump experiment before assuming the recovery pattern
+above is required at the pinned version forever.
 
 ## Findings
 
@@ -517,20 +556,31 @@ behaving differently from the synthetic one exercised here.
   timing model it was measured with had since been found to double-count
   misses and under-count real latency; both are fixed and re-measured
   directly against the packaged binary now).
-- **`WebGPURenderer` (`three@0.185.1`) does not recover from
-  `webglcontextlost`/`webglcontextrestored` — confirmed from its own
-  source, not just observed behavior.** `_onDeviceLost` sets a
-  private `_isDeviceLost` latch that `_renderScene()`/`compute()` check
-  and early-return on, and the shipped `three.webgpu.js` build has no
-  `webglcontextrestored` handling anywhere to clear it; `init()` is
-  memoized so calling it again isn't a re-initialization either. CPU-side
+- **With `three@0.185.1`'s `WebGPURenderer`/WebGL2 backend, synthetic
+  context loss and restoration both occurred, but the existing renderer
+  instance stays latched** — confirmed from its own source, line-cited,
+  not just observed behavior. `WebGLBackend` registers `webglcontextlost`
+  with `event.preventDefault()` at `WebGLBackend.js:230–247`;
+  `_isDeviceLost` is set at `Renderer.js:1225–1237` and never cleared
+  anywhere in the module (zero references to `webglcontextrestored`);
+  `dispose()` at `Renderer.js:2533–2567` doesn't reset it; `init()` at
+  `Renderer.js:767–773` returns the cached `_initPromise` rather than
+  re-initializing. Rebuilding sprites did not restore pixels. CPU-side
   state (the ECS/sprite objects this probe's app code owns, and raycasting
-  against them) recovers correctly after `populateActors()` rebuilds; GPU
-  output does not — `render()` becomes a permanent silent no-op for that
-  renderer instance. See Results §3's context-loss subsection for the
-  full trace and the product-risk framing (real hardware context loss —
-  driver reset, GPU switch on sleep/wake — would strand a shipped app on
-  a blank canvas with this exact renderer/version combination).
+  against them) recovers correctly after `populateActors()` rebuilds;
+  **automatic same-instance recovery is unavailable in this build** —
+  there's no `webglcontextrestored` path that clears the latch, so
+  `render()` keeps being called without throwing but never produces a
+  frame again for that instance. **Application-managed renderer/canvas
+  reconstruction has not been tested**; there's a real trap in a naive
+  version of it (`WebGLBackend.dispose()` at `WebGLBackend.js:2829–2836`
+  itself calls `WEBGL_lose_context.loseContext()` on the *same* canvas,
+  so a replacement renderer needs a fresh one). Sleep/wake remains
+  untested too. See Results §3's context-loss subsection for the full
+  trace, the frozen-latency evidence, the recovery-pattern sketch for
+  ADR-0002, and the three.js [PR #29767](https://github.com/mrdoob/three.js/pull/29767)
+  citation (its "call `init()` again" guidance doesn't hold at this pinned
+  version).
 - The production build emits one 1.2MB (342KB gzip) JS chunk with a Vite
   size warning; not investigated further here (out of scope for a D25
   feasibility probe) but worth a manual-chunking pass before this pattern
@@ -566,32 +616,43 @@ packaging or rendering defect — fixed in `src-tauri/tauri.conf.json` and
 window returns with the identical `EvalError`; restore it → renders every
 time).
 
-**One real limit found, not fixed (upstream)**: `webglcontextlost` /
-`webglcontextrestored` recovery is *partial*, not complete. This probe's
-app-level state (stale-selection clearing, sprite/ECS rebuild, disposing
-old geometry/material, raycast hit-testing) all correctly recovers —
-verified on the packaged `.app` via the new `l` key (`lostCount: 1`,
-`restoredCount: 1`, `spriteCount: 230` rebuilt, a post-restore click
-resolving correctly). But `three@0.185.1`'s `WebGPURenderer` itself never
-resumes rendering after a device-lost event in this version (traced to its
-own source — see Findings) — the canvas stays permanently blank after any
-context loss, packaged or not. This is out of this probe's fix scope (it
-would require disposing and reconstructing the entire renderer, not just
-the sprite scene graph) and is recorded here as a real product risk: a
-driver reset or a GPU switch on display-sleep/wake would strand a shipped
-app exactly this way until relaunched.
+**One real limit found, partially confirmed**: with `three@0.185.1`'s
+`WebGPURenderer`/WebGL2 backend, synthetic context loss and restoration
+both occurred (`WebGLBackend` registers `webglcontextlost` with
+`event.preventDefault()` at `WebGLBackend.js:230–247`), but the existing
+renderer instance stays latched (`_isDeviceLost` set at
+`Renderer.js:1225–1237`, never cleared; `dispose()` at
+`Renderer.js:2533–2567` doesn't reset it; `init()` at `Renderer.js:767–773`
+returns the cached promise). This probe's app-level state (stale-selection
+clearing, sprite/ECS rebuild, disposing old geometry/material, raycast
+hit-testing) all correctly recovers — verified on the packaged `.app` via
+the new `l` key (`lostCount: 1`, `restoredCount: 1`, `spriteCount: 230`
+rebuilt, a post-restore click still registering as a raycast hit).
+Rebuilding sprites did not restore pixels, though — the canvas stays
+permanently blank after any context loss on this renderer instance.
+Automatic same-instance recovery is unavailable in this build;
+application-managed renderer/canvas reconstruction has **not** been
+tested (there's a same-canvas trap in the naive version of it —
+`WebGLBackend.dispose()` at `WebGLBackend.js:2829–2836` forces a *second*
+context loss on whatever canvas it's given, so a replacement renderer
+needs a fresh one). Sleep/wake also remains untested. See Results §3 for
+the full trace, the frozen-latency evidence, and a recovery-pattern
+sketch worth designing against for ADR-0002 (single-flight recovery
+state, fresh canvas, verified-frame-before-resume, bounded retries,
+explicit failure UI) — none of it exercised here.
 
 P02/P05's packaged-bundle criterion is satisfied for this machine's
 WebGL2-fallback path **for the steady-state and click-input cases**; the
-context-loss-recovery case is only partially satisfied (app state: yes;
-rendering: no, upstream). Two carry-forward items: (1) the CSP constraint
+context-loss-recovery case is confirmed only partially (app state: yes;
+rendering: no on the same instance; alternative recovery strategies:
+untested, not ruled out). Two carry-forward items: (1) the CSP constraint
 itself — **any Panthea surface that imports `three-flatland` must include
 `'unsafe-eval'` in `script-src`** until `koota` (or `three-flatland`) ships
 a non-`eval` accessor path, conditional on U05 holding (see Findings) —
 track this against `apps/client`/`apps/desktop` when they adopt
 `three-flatland`; (2) the `WebGPURenderer` context-loss limitation — if a
 real (not synthetic) context loss is a plausible scenario for the shipped
-product on target hardware, that needs either an upstream three.js fix/PR,
-a pinned-version workaround, or an explicit "relaunch on GPU loss"
-recovery strategy at the app-shell level before this can be called fully
+product on target hardware, the recovery pattern above needs to actually
+be built and tested (or a newer three.js release checked for different
+`init()`/memoization behavior) before this can be called fully
 resolved.

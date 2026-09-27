@@ -46,15 +46,30 @@ export interface ClickLatencyResolution {
  *
  * Timing model: `markHit` records the click timestamp when a hit is
  * detected and its highlight tint is applied synchronously in the same
- * event handler. The tint mutation is picked up by whichever `render()`
- * call happens next (guaranteed, since JS is single-threaded and the
- * mutation completes before that call) — the caller reports that with
+ * event handler, and always increments `hitCount` — a CPU-side signal
+ * (pure raycast-against-transform hit-testing) that's independent of
+ * whether the GPU is actually able to render anything, see below. The
+ * tint mutation is picked up by whichever `render()` call happens next
+ * (guaranteed, since JS is single-threaded and the mutation completes
+ * before that call) — the caller reports that with
  * `noteRenderSubmitted(frameIndex)` immediately after `render()` returns.
  * That marks "the frame in which the highlight rendered", but a submitted
  * frame is not the same as a *visible* one (the browser still has to
  * composite/present it), so the latency only resolves on `resolveIfPending`
  * for the *next* frame index after that — i.e. one full frame after
  * submission, not on the submission frame itself.
+ *
+ * Caller contract for `noteRenderSubmitted`: only call it when the caller
+ * has independent evidence that `render()` actually produced a frame —
+ * e.g. gate it on a `deviceLost`-style flag the caller owns. This
+ * matters because `three@0.185.1`'s `WebGPURenderer` has no automatic
+ * recovery from a WebGL2 device-lost event (see
+ * `tools/probes/renderer-webgl2/README.md`): `render()` keeps being
+ * *called* without throwing, but silently produces nothing. Without the
+ * caller's gate, a post-loss hit would still "resolve" a latency number
+ * for a frame that was never actually presented — this tracker has no
+ * way to detect that on its own, since it only ever sees frame indices
+ * the caller reports, not GPU output.
  */
 export class ClickLatencyTracker {
   private pendingSince: number | null = null;
@@ -62,10 +77,16 @@ export class ClickLatencyTracker {
   private appliedFrameIndex: number | null = null;
   private awaitingRender = false;
   private lastResolution: ClickLatencyResolution | null = null;
+  /** Every raycast hit, whether or not it went on to resolve a latency —
+   * proof the CPU-side hit-test keeps working even when the caller's
+   * `deviceLost` gate is preventing `noteRenderSubmitted` from ever
+   * resolving a new latency (see class doc comment). */
+  hitCount = 0;
   missCount = 0;
 
   /** Call from the raycast-hit branch, after synchronously applying the highlight. */
   markHit(timestampMs: number, spriteId: number): void {
+    this.hitCount += 1;
     this.pendingSince = timestampMs;
     this.pendingSpriteId = spriteId;
     this.appliedFrameIndex = null;
@@ -77,7 +98,9 @@ export class ClickLatencyTracker {
     this.missCount += 1;
   }
 
-  /** Call immediately after `renderer.render()` returns, once per rAF tick. */
+  /** Call immediately after `renderer.render()` returns, once per rAF tick
+   * — but only when the caller can vouch that call actually rendered a
+   * frame (see class doc comment's caller contract). */
   noteRenderSubmitted(frameIndex: number): void {
     if (this.awaitingRender) {
       this.appliedFrameIndex = frameIndex;
@@ -182,11 +205,22 @@ export interface MetricsSnapshot {
   frameTime: { p50: number; p95: number; sampleCount: number };
   /** Click-to-visible latency for the most recently *resolved* hit (see
    * `ClickLatencyTracker`'s doc comment for what "resolved" means). `null`
-   * until at least one hit has resolved. */
+   * until at least one hit has resolved, and — by design — stays frozen
+   * at its last value across a device-lost event: `three@0.185.1`'s
+   * `WebGPURenderer` never resumes rendering after a WebGL2 context loss
+   * in this build, so there is no post-loss frame to time a *visible*
+   * change against (see `tools/probes/renderer-webgl2/README.md`).
+   * `clickHitCount` below is the metric that keeps moving after a loss. */
   clickToVisibleLatencyMs: number | null;
   /** Detail behind `clickToVisibleLatencyMs` — which sprite, and which
-   * frame indices the apply/resolve happened on. */
+   * frame indices the apply/resolve happened on. Also frozen across a
+   * device-lost event, for the same reason. */
   lastClickResolution: ClickLatencyResolution | null;
+  /** Every raycast hit (CPU-side hit-testing against sprite transforms) —
+   * keeps incrementing after a device-lost event even though
+   * `clickToVisibleLatencyMs` freezes, proving hit-testing itself
+   * recovers independent of whether the GPU is rendering anything. */
+  clickHitCount: number;
   /** Raycast misses (clicks that hit no sprite) — these can't produce a
    * click-to-visible latency, so they're counted here instead. */
   clickMissCount: number;

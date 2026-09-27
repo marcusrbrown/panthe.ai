@@ -383,6 +383,17 @@ export function Scene() {
     // `WEBGL_lose_context` for the context-recovery exercise; unused (stays
     // null) when the backend isn't WebGL2.
     let webglContext: WebGL2RenderingContext | null = null;
+    // Set on `webglcontextlost` and never cleared: `three@0.185.1`'s
+    // `WebGPURenderer` has no automatic recovery from a device-lost event
+    // in this build (its `_isDeviceLost` latch is never reset by anything
+    // on `webglcontextrestored`, and `init()` is memoized — see
+    // tools/probes/renderer-webgl2/README.md for the full trace). There is
+    // no real "device restored" state to clear this back to `false` on,
+    // so once true it gates `clickLatency.noteRenderSubmitted` for the
+    // rest of this renderer instance's life — correctly reporting
+    // click-to-visible latency as unavailable rather than timing a frame
+    // that was never actually presented.
+    let deviceLost = false;
 
     const group = new SpriteGroup();
     scene.add(group);
@@ -464,7 +475,7 @@ export function Scene() {
         `backend: ${backendName} (${backendDetectionProperty})`,
         `forceWebGL: ${forceWebGL}`,
         `frame p50/p95: ${stats.p50.toFixed(2)}ms / ${stats.p95.toFixed(2)}ms (n=${stats.sampleCount})`,
-        `click->visible latency: ${clickLatency.latestMs !== null ? `${clickLatency.latestMs.toFixed(1)}ms` : "—"} (misses: ${clickLatency.missCount})`,
+        `click->visible latency: ${clickLatency.latestMs !== null ? `${clickLatency.latestMs.toFixed(1)}ms` : "—"} (hits: ${clickLatency.hitCount}, misses: ${clickLatency.missCount})`,
         `context lost/restored: ${contextLoss.lostCount}/${contextLoss.restoredCount}`,
         `sprites: ${selectableSprites.length}`,
         `burst: ${burstActive ? "ON" : "off"} (press b to toggle)`,
@@ -513,6 +524,7 @@ export function Scene() {
         frameTime: stats,
         clickToVisibleLatencyMs: clickLatency.latestMs,
         lastClickResolution: clickLatency.lastResolutionSnapshot,
+        clickHitCount: clickLatency.hitCount,
         clickMissCount: clickLatency.missCount,
         contextLoss: {
           lostCount: contextLoss.lostCount,
@@ -650,6 +662,7 @@ export function Scene() {
           selectedSprite = null;
           selectedOriginalTint = null;
           clickLatency.reset();
+          deviceLost = true;
         },
         () => {
           for (const child of [...group.children]) {
@@ -694,8 +707,18 @@ export function Scene() {
         // Marks `frameIndex` as the frame a pending highlight was committed
         // in (no-op if no click is pending). Resolving only fires on a
         // *later* frameIndex — one full frame after commit, once the
-        // browser has had a chance to actually present it.
-        clickLatency.noteRenderSubmitted(frameIndex);
+        // browser has had a chance to actually present it. Gated on
+        // `!deviceLost`: once a WebGL2 device-lost event has occurred, this
+        // `render()` call keeps being invoked without throwing but
+        // (verified against the packaged app) never produces a visible
+        // frame again in this three.js version, so reporting a
+        // "submitted" frame past that point would time something that was
+        // never actually presented. `clickLatency.hitCount` still
+        // increments regardless — that's the CPU-side hit-test proof this
+        // gate deliberately doesn't suppress.
+        if (!deviceLost) {
+          clickLatency.noteRenderSubmitted(frameIndex);
+        }
         clickLatency.resolveIfPending(performance.now(), frameIndex);
       });
 

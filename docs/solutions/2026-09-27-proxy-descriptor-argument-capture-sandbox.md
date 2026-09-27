@@ -3,61 +3,99 @@ title: Reading validated arguments out of a sandboxed guest needs a captured acc
 date: 2026-09-27
 category: sandbox
 requirement_ids: [U04, U05]
-tags: [quickjs, proxy, property-descriptor, sandbox, generated-code]
+module: sandbox
+problem_type: security_issue
+severity: high
+symptoms:
+  - "a Proxy argument with a parity-flipping `get` trap committed `{x: 999999, y: 1}` through validation instead of `{x: 1, y: 1}`"
+  - guest code that reassigns `Object.getOwnPropertyDescriptor` before calling the API poisons a host lookup made by identifier
+root_cause: wrong_api
+resolution_type: code_fix
+tags: [quickjs, proxy, property-descriptor, sandbox, generated-code, security, intrinsics]
 ---
 
 ## Problem
 
-A world API bridge (`move(x, y)`) exposed to a QuickJS guest needs to read plain data out of
-guest-supplied object arguments without letting the guest control what value is actually read. The
-obvious approach — read each field with the context's ordinary `[[Get]]`-based traversal — turned
-out to be bypassable, and the first two fixes were each found bypassable in turn.
+The world API bridge exposed to a QuickJS guest (`move(x, y)` and friends) must read plain data
+out of guest-supplied objects without letting the guest decide what value the host reads.
+Reading fields through the context's ordinary `[[Get]]` traversal was bypassable, and the first
+two fixes were each bypassed in turn across three review rounds on
+[PR #14](https://github.com/marcusrbrown/panthe.ai/pull/14).
 
-## Method
+## Symptoms
 
-Adversarial fixtures, each designed to defeat the previous round's fix, run against the real
-`quickjs-emscripten` context (not a simulated one):
+- The `proxy-parity-flip` fixture (`tools/probes/sandbox/src/fixtures/manifest.ts`) got a
+  poisoned `{x: 999999, y: 1}` past validation: the validator and the committer each performed a
+  separate `[[Get]]`, and the Proxy's `get` trap returned a benign value on one read and the
+  poison on the next.
+- The `guest-reassigns-descriptor` fixture poisoned the second fix by overwriting the global
+  `Object.getOwnPropertyDescriptor` before calling `api.move()`.
 
-- **Round 1**: a `Proxy` `get` trap that alternates its answer by call-count parity got
-  `{x: 999999, y: 1}` committed as `move()`'s target, because the host read each field via
-  `context.dump()`'s ordinary `[[Get]]` traversal. A candidate fix — dump the same handle twice,
-  reject on disagreement — was tried and measured to **not work**: with exactly two fields and one
-  `get` call per field per dump, every dump starts on the same parity phase as the last, so two
-  independent dumps always agree with each other while both are equally wrong.
-- **Round 2**: reading fields via `Object.getOwnPropertyDescriptor` (`[[GetOwnProperty]]`) instead
-  of `[[Get]]` closed the parity-flip Proxy. A stronger bypass was then found: the
-  descriptor-reading helper was a small function evaluated *inside the guest context*, and its body
-  still referenced the identifier `Object.getOwnPropertyDescriptor` — a dynamic lookup resolved at
-  *call* time, not definition time. A fixture reassigned that global to a function returning a
-  fabricated descriptor before ever calling the API, and the helper faithfully read the fabricated
-  value back.
-- **Round 3 (the fix)**: capture the *function value* of `Object.getOwnPropertyDescriptor` as a
-  `QuickJSHandle` immediately after `newContext()`, before a single byte of guest source has
-  evaluated. Every later field read calls that captured handle directly via
-  `context.callFunction` — never by looking up an identifier again — so there is no global binding
-  left for a guest to poison.
+## What didn't work
 
-## Result
+1. **Separate `[[Get]]` per field** — the guest controls every read.
+2. **"Dump twice and compare"** — measured to fail: both dumps land on the same parity phase of
+   the trap, so they agree and are both wrong.
+3. **`Object.getOwnPropertyDescriptor` resolved by identifier at call time** — reproduced: a
+   guest that reassigns that global first makes the host read fabricated descriptors.
 
-Zero escapes across every integrity fixture (`malformed-proxy-args`,
-`malformed-getter-side-effect`, `malformed-nested-getter-parity`,
-`malformed-overwrite-descriptor-fn`, `malformed-proxy-descriptor-trap`) after Round 3's fix. Any
-descriptor carrying a `get`/`set` function, or that isn't writable/enumerable/configurable, is
-rejected outright.
+## Solution
 
-## Decision
+`tools/probes/sandbox/src/quickjs.ts`: capture the intrinsic immediately after `newContext()`,
+before any guest source evaluates, and call the captured handle — never an identifier lookup —
+for every host read of guest object data.
 
-For any sandboxed-guest-to-host bridge that reads structured arguments: capture the accessor
-function(s) you need (`Object.getOwnPropertyDescriptor`, or equivalent) as a handle at context
-creation, before any guest code runs, and call that captured handle directly — never re-resolve an
-identifier from inside the guest realm after guest code may have run. A "read it twice and compare"
-defense is not sufficient against a state machine timed to the read pattern. See
-[ADR-0004](../decisions/0004-generated-behavior-runtime.md).
+```ts
+const context = runtime.newContext();
+const intrinsics = captureIntrinsics(context); // getOwnPropertyDescriptor handle, pre-guest
+
+const desc = context.unwrapResult(
+  context.callFunction(intrinsics.getOwnPropertyDescriptor, context.undefined, objectHandle, keyHandle),
+);
+const get = context.getProp(desc, "get");
+const set = context.getProp(desc, "set");
+if (context.typeof(get) === "function" || context.typeof(set) === "function") {
+  throw new ValidationError(path, `accessor property not allowed: ${key}`);
+}
+// only a plain data descriptor with standard attributes reaches the validator
+```
+
+Evidence integrity around it (`src/host.ts`, `applyExpectationOverride`): malicious fixtures
+declare `expect.committed` / `expect.status`; any mismatch between the manifest expectation and
+the actual committed value or status is forced to `escaped`, so a "fixed" fixture cannot pass by
+accident. An async-job pump (`runtime.executePendingJobs` under the same deadline with a bounded
+job budget) makes self-requeuing microtask chains measurable as `terminated` instead of silently
+`completed`.
+
+Result: zero escapes across the re-verified matrix; the only residual is a Proxy's own
+`getOwnPropertyDescriptor` trap, which can lie about a value but cannot escape the host, and
+schema validation bounds the damage.
+
+## Why this works
+
+`[[GetOwnProperty]]` never invokes the Proxy `get` trap, so the parity flip has nothing to hook.
+A function value captured before guest evaluation is immune to later global reassignment.
+Rejecting accessor descriptors up front removes getters/setters as a smuggling channel.
+
+## Prevention
+
+- Every host read of guest data goes through the captured extractor; no new host→guest read path
+  ships without it.
+- Malicious fixtures carry expected committed values and status; mismatches report `escaped`.
+- Real-runtime regression tests (`src/quickjs.test.ts`) cover the parity flip, the global
+  reassignment, and the residual Proxy descriptor trap.
 
 ## Re-check
 
-Apply this same three-round adversarial process (naive read → descriptor read → captured-handle
-read) to any new API surface exposed to the sandbox, and to a Lua/`wasmoon` bridge if that runtime
-becomes primary — its `enableProxy: false` configuration removes the Proxy-specific attack surface
-but was not itself adversarially tested against a metatable-based equivalent to this exact bypass
-chain.
+- Any `quickjs-emscripten` upgrade, any new guest-visible API surface, any new host→guest read
+  path, or any change that reintroduces identifier lookup from inside the guest realm.
+- If Lua/wasmoon ever becomes primary: ADR-0004 records that its metatable-equivalent bypass was
+  not adversarially tested.
+
+## Related
+
+- [ADR-0004 Generated behavior runtime](../decisions/0004-generated-behavior-runtime.md)
+- [U04, U05](../product/requirements.md)
+- [tools/probes/sandbox/README.md](../../tools/probes/sandbox/README.md),
+  [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md) (sandbox section),
+  [PR #14](https://github.com/marcusrbrown/panthe.ai/pull/14)

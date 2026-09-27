@@ -4,7 +4,7 @@ Reusable engineering lessons captured through the Systematic compound workflow (
 
 ## Frontmatter convention
 
-Each entry is `docs/solutions/YYYY-MM-DD-slug.md` with YAML frontmatter:
+Each entry is `docs/solutions/YYYY-MM-DD-slug.md` with YAML frontmatter following the `ce:compound` schema, plus this project's `category` and `requirement_ids`:
 
 ```yaml
 ---
@@ -12,11 +12,17 @@ title: Short problem statement
 date: YYYY-MM-DD
 category: renderer | backend | sandbox | providers | telemetry | content | tooling
 requirement_ids: [P02]
+module: probe-renderer
+problem_type: integration_issue   # ce:compound enum; bug track (defects) or knowledge track (guidance)
+severity: high
+symptoms: […]                     # bug track: 1–5; knowledge track: use applies_when instead
+root_cause: config_error          # bug track
+resolution_type: config_change    # bug track
 tags: [webgpu, wkwebview, macos]
 ---
 ```
 
-Body sections: Problem, Method, Result, Decision (link the ADR or decision row if one exists), Re-check (how and when to redo the investigation, e.g., on a new OS version).
+Body sections (bug track): Problem, Symptoms, What didn't work, Solution, Why this works, Prevention, Re-check, Related. Knowledge track: Problem/Context, Method, Result, Why this works, Prevention, Decision, Re-check, Related. Always link the ADR or decision row and the probe README that carries the evidence; Re-check says how and when to redo the investigation.
 
 ## Entries
 

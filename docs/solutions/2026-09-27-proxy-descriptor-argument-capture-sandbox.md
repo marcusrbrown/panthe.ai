@@ -57,7 +57,8 @@ const set = context.getProp(desc, "set");
 if (context.typeof(get) === "function" || context.typeof(set) === "function") {
   throw new ValidationError(path, `accessor property not allowed: ${key}`);
 }
-// only a plain data descriptor with standard attributes reaches the validator
+// a descriptor whose writable, enumerable, or configurable is false is rejected too;
+// only a plain data descriptor reaches assertPlainData and the schema validator
 ```
 
 Evidence integrity around it (`src/host.ts`, `applyExpectationOverride`): malicious fixtures
@@ -67,9 +68,13 @@ accident. An async-job pump (`runtime.executePendingJobs` under the same deadlin
 job budget) makes self-requeuing microtask chains measurable as `terminated` instead of silently
 `completed`.
 
-Result: zero escapes across the re-verified matrix; the only residual is a Proxy's own
-`getOwnPropertyDescriptor` trap, which can lie about a value but cannot escape the host, and
-schema validation bounds the damage.
+Result: zero escapes across the re-verified matrix. Residual: a Proxy's own
+`getOwnPropertyDescriptor` trap can still lie about the returned field values
+(`malformed-proxy-descriptor-trap` fixture), but only through the ordinary host-side snapshot
+path — it cannot rebind the intrinsic or escape the host boundary. The damage is bounded by
+`assertPlainData` and `WorldApi.parseMoveTarget`'s finite-number checks, not by any separate
+range check; a finite poisoned coordinate is still possible and is the world rules' job to
+reject.
 
 ## Why this works
 
@@ -79,8 +84,9 @@ Rejecting accessor descriptors up front removes getters/setters as a smuggling c
 
 ## Prevention
 
-- Every host read of guest data goes through the captured extractor; no new host→guest read path
-  ships without it.
+- Every guest-argument property read goes through the captured extractor; no new host→guest
+  argument-read path ships without it. (Reads of the descriptor object the captured intrinsic
+  returns, and of eval results, are host-owned and deliberate.)
 - Malicious fixtures carry expected committed values and status; mismatches report `escaped`.
 - Real-runtime regression tests (`src/quickjs.test.ts`) cover the parity flip, the global
   reassignment, and the residual Proxy descriptor trap.

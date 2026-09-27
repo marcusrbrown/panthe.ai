@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-27T06:36:42.022Z",
+  "generatedAt": "2026-09-27T06:50:55.409Z",
   "suites": [
     {
       "model": "llama3.2-3b.gguf",
@@ -17,7 +17,8 @@
       "totalP95": 1362.6040409999987,
       "tokPerSecP50": 46.61582218812953,
       "rssPeakBytes": 2968993792,
-      "rssBug": false
+      "rssBug": false,
+      "rendererFrameP95": 17
     },
     {
       "model": "phi4-mini:3.8b",
@@ -36,7 +37,8 @@
       "tokPerSecP50": 39.26726957013037,
       "rssPeakBytes": 29523968,
       "rssBug": true,
-      "diskSizeBytes": 2500000000
+      "diskSizeBytes": 2500000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "llama3.2:3b",
@@ -55,7 +57,8 @@
       "tokPerSecP50": 46.18340216095227,
       "rssPeakBytes": 32194560,
       "rssBug": true,
-      "diskSizeBytes": 2000000000
+      "diskSizeBytes": 2000000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "ministral-3:8b-instruct-2512-q4_K_M",
@@ -74,7 +77,8 @@
       "tokPerSecP50": 17.352273572662572,
       "rssPeakBytes": 27377664,
       "rssBug": true,
-      "diskSizeBytes": 6000000000
+      "diskSizeBytes": 6000000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "ministral-3:8b-instruct-2512-q4_K_M",
@@ -93,7 +97,8 @@
       "tokPerSecP50": 21.520098390759713,
       "rssPeakBytes": 31293440,
       "rssBug": true,
-      "diskSizeBytes": 6000000000
+      "diskSizeBytes": 6000000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "phi4-mini:3.8b",
@@ -112,7 +117,8 @@
       "tokPerSecP50": 36.9299000505033,
       "rssPeakBytes": 33832960,
       "rssBug": true,
-      "diskSizeBytes": 2500000000
+      "diskSizeBytes": 2500000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "llama3.2:3b",
@@ -149,7 +155,8 @@
       "tokPerSecP50": 23.09613552263902,
       "rssPeakBytes": 27082752,
       "rssBug": true,
-      "diskSizeBytes": 7500000000
+      "diskSizeBytes": 7500000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "qwen3.5:2b-q4_K_M",
@@ -168,7 +175,8 @@
       "tokPerSecP50": 58.857396242685056,
       "rssPeakBytes": 28082176,
       "rssBug": true,
-      "diskSizeBytes": 1900000000
+      "diskSizeBytes": 1900000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "gemma3n:e4b-it-q4_K_M",
@@ -187,7 +195,8 @@
       "tokPerSecP50": 25.629529510869524,
       "rssPeakBytes": 32014336,
       "rssBug": true,
-      "diskSizeBytes": 7500000000
+      "diskSizeBytes": 7500000000,
+      "rendererFrameP95": 17
     },
     {
       "model": "qwen3.5:2b-q4_K_M",
@@ -206,7 +215,8 @@
       "tokPerSecP50": 57.60024886993918,
       "rssPeakBytes": 31703040,
       "rssBug": true,
-      "diskSizeBytes": 1900000000
+      "diskSizeBytes": 1900000000,
+      "rendererFrameP95": 17
     }
   ],
   "parallel": [
@@ -241,5 +251,29 @@
         "error"
       ]
     }
-  ]
+  ],
+  "environment": {
+    "hardware": {
+      "brand": "Apple M1 Pro",
+      "memoryBytes": "17179869184"
+    },
+    "os": {
+      "productName": "macOS",
+      "productVersion": "15.7.9",
+      "buildVersion": "24G830"
+    },
+    "bun": {
+      "version": "1.4.2"
+    },
+    "pinned": {
+      "tauri": "2.12.0",
+      "three": "0.185.1",
+      "threeFlatland": "0.1.0-alpha.10"
+    },
+    "extra": {
+      "ollama": "0.34.4",
+      "llama-server release": "b11205 (ggml-org/llama.cpp, macos-arm64)",
+      "llama-server sha256": "97b06f59ad15e2b4b6044ba7338c4e3f40354c6dc2b9c5cda234e2bd6b9fd65e"
+    }
+  }
 }

@@ -4,8 +4,11 @@
 bin/
 
 # Raw per-run measurement dumps (README is the durable record). The one
-# exception is results/summary.json: a compact, sanitized aggregate (no
-# per-prompt content) committed so published README numbers stay
-# recomputable without every raw per-request record.
+# exception is results/summary.json: a published aggregate of already-
+# computed rates, percentiles, and counts (no per-prompt content) — it is
+# NOT independently recomputable raw samples, only a durable record of
+# numbers this probe already computed, so `bun run src/run.ts report` can
+# still render the README on a fresh checkout that has none of the raw
+# per-request records below.
 results/*
 !results/summary.json

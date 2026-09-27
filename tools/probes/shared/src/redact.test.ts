@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { redactSecrets } from "./redact";
+import {
+  clearRegisteredSecrets,
+  redactSecrets,
+  registerSecret,
+} from "./redact";
 
 const ENV_KEY = "OPENCODE_TEST_TOKEN";
 
 describe("redactSecrets", () => {
   afterEach(() => {
     delete process.env[ENV_KEY];
+    clearRegisteredSecrets();
   });
 
   test("redacts an exact-match live env secret value", () => {
@@ -46,5 +51,28 @@ describe("redactSecrets", () => {
     const result = redactSecrets(text);
     expect(result).not.toContain("abcdefgh12345678");
     expect(result).toContain("[redacted]");
+  });
+
+  test("redacts a registered (non-env) credential embedded in an unprefixed string", () => {
+    registerSecret("9f8e7d6c5b4a3210");
+    const result = redactSecrets(
+      "provider error: invalid credential: 9f8e7d6c5b4a3210",
+    );
+    expect(result).not.toContain("9f8e7d6c5b4a3210");
+    expect(result).toContain("[redacted]");
+  });
+
+  test("ignores a registered value shorter than the trivial-value floor", () => {
+    registerSecret("short"); // below the 8-char floor
+    expect(redactSecrets("value: short")).toBe("value: short");
+  });
+
+  test("clearRegisteredSecrets restores prior (non-redacting) behavior", () => {
+    registerSecret("9f8e7d6c5b4a3210");
+    clearRegisteredSecrets();
+    const result = redactSecrets(
+      "provider error: invalid credential: 9f8e7d6c5b4a3210",
+    );
+    expect(result).toBe("provider error: invalid credential: 9f8e7d6c5b4a3210");
   });
 });

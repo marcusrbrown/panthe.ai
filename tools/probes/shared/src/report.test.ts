@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { homedir, userInfo } from "node:os";
 import type { EnvironmentInfo } from "./env";
+import { clearRegisteredSecrets, registerSecret } from "./redact";
 import { renderReport } from "./report";
 
 function fixtureEnvironment(): EnvironmentInfo {
@@ -115,5 +116,28 @@ test("redacts a provider-error-shaped secret (Authorization header) forwarded th
     bottomLine: "n/a",
   });
   expect(markdown).not.toContain(SEEDED_VALUE);
+  expect(markdown).toContain("[redacted]");
+});
+
+afterEach(() => {
+  clearRegisteredSecrets();
+});
+
+test("redacts a registered (non-env) credential embedded in an unprefixed provider-error string", () => {
+  const credential = "9f8e7d6c5b4a3210";
+  registerSecret(credential);
+  const environment: EnvironmentInfo = {
+    ...fixtureEnvironment(),
+    extra: { providerError: `invalid credential: ${credential}` },
+  };
+  const markdown = renderReport({
+    question: "q",
+    howToRun: "run",
+    environment,
+    metrics: [],
+    findings: [],
+    bottomLine: "n/a",
+  });
+  expect(markdown).not.toContain(credential);
   expect(markdown).toContain("[redacted]");
 });

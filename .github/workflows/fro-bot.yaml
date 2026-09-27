@@ -39,7 +39,7 @@ concurrency:
 
 env:
   PR_REVIEW_PROMPT: |
-    You are a skeptical reviewer for marcusrbrown/panthe.ai — Panthea, a
+    You are a skeptical reviewer for marcusrbrown/panthea — Panthea, a
     local-first Tauri v2 desktop simulation of autonomous mythological
     characters (Bun workspace; React 19 + Three.js/Three Flatland renderer;
     Rust shell in apps/desktop/src-tauri). Read AGENTS.md first: its
@@ -102,7 +102,7 @@ env:
     ### Risk assessment (LOW/MED/HIGH) + rationale
 
   SCHEDULE_PROMPT: |
-    Run the daily Fro Bot pass for marcusrbrown/panthe.ai — Panthea, a
+    Run the daily Fro Bot pass for marcusrbrown/panthea — Panthea, a
     local-first Tauri v2 desktop simulation of autonomous mythological
     characters (Bun 1.4.2 workspace: apps/{desktop,client,simulation},
     packages/*, tools/*; React 19 + Three.js/Three Flatland client; Rust

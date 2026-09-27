@@ -20,7 +20,7 @@ the base checkpoint's quantization. On Q4_0 SD 1.5 the PixelArtRedmond LoRA had 
 effect while the server logged `(576/576) LoRA tensors have been applied` — and because the
 prompt text alone ("pixel art, 32x32 game asset…") produces pixel-art-ish output, nothing in the
 response, logs, timings, or memory numbers distinguished a working arm from a broken one. The
-owner caught it from the contact sheet on [PR #21](https://github.com/marcusrbrown/panthe.ai/pull/21).
+owner caught it from the contact sheet on [PR #21](https://github.com/marcusrbrown/panthea/pull/21).
 
 ## Method
 
@@ -89,4 +89,4 @@ lands, retry f16 + LoRA to get the precision-matched Draw Things comparison.
 - [stable-diffusion.cpp needs --diffusion-fa and has no real job cancellation](2026-09-27-sdcpp-cancel-sigint-diffusion-fa.md)
   — same arm, different failure mode
 - [tools/probes/art-local/README.md](../../tools/probes/art-local/README.md),
-  [PR #21](https://github.com/marcusrbrown/panthe.ai/pull/21)
+  [PR #21](https://github.com/marcusrbrown/panthea/pull/21)

@@ -75,7 +75,7 @@ is implemented.
 - Keep CPU-side hit counting separate from visible-latency reporting; never record a render as
   submitted unless the caller can vouch a frame was presented.
 - Label the last pre-loss latency stale in the overlay (open nit from
-  [PR #12](https://github.com/marcusrbrown/panthe.ai/pull/12)).
+  [PR #12](https://github.com/marcusrbrown/panthea/pull/12)).
 - No same-canvas dispose/re-init recovery gets approved without a packaged-app proof on the
   exact three build shipped.
 
@@ -95,4 +95,4 @@ is implemented.
 - [three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP](2026-09-27-koota-new-function-tauri-csp.md)
   — same probe app
 - [tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md),
-  [PR #12](https://github.com/marcusrbrown/panthe.ai/pull/12)
+  [PR #12](https://github.com/marcusrbrown/panthea/pull/12)

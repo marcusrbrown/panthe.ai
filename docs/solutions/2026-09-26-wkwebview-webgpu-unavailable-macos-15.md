@@ -54,7 +54,7 @@ P02's acceptance evidence amended to match.
 
 The packaged WebGL2 path was then measured rather than assumed: 17 ms frame p50/p95 (~59 fps),
 230 sprites, click-to-visible p50 28 ms / p95 31 ms over 14 real clicks, zero effect failures
-([PR #12](https://github.com/marcusrbrown/panthe.ai/pull/12)).
+([PR #12](https://github.com/marcusrbrown/panthea/pull/12)).
 
 ## Why this works
 

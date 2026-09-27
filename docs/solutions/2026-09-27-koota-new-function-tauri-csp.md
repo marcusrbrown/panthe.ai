@@ -57,7 +57,7 @@ temporary `window.open_devtools()` in `.setup()` exposed the Web Inspector Conso
 `EvalError` was visible there and nowhere else. Verified by A/B: reverting to `'self'` alone
 reproduces the blank window and the identical error on demand; restoring `'unsafe-eval'` renders
 every time. Measured afterwards on the packaged binary: 17 ms frame p50/p95, 59 fps, 230 sprites,
-zero effect failures ([PR #12](https://github.com/marcusrbrown/panthe.ai/pull/12)).
+zero effect failures ([PR #12](https://github.com/marcusrbrown/panthea/pull/12)).
 
 ## Why this works
 
@@ -106,4 +106,4 @@ nothing about `apps/client`/`apps/desktop` until they are packaged with it.
   — same probe app, different failure
 - [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md),
   [tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md),
-  [PR #12](https://github.com/marcusrbrown/panthe.ai/pull/12)
+  [PR #12](https://github.com/marcusrbrown/panthea/pull/12)

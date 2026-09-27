@@ -1,4 +1,4 @@
-# Panthea · panthe.ai
+# Panthea
 
 Panthea is a local-first simulation of autonomous mythological characters and their worlds.
 Observe a living world, enter as a mortal, or intervene through the Universe operator console.

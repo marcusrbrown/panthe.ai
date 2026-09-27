@@ -53,7 +53,7 @@ before the proof held. Each round removed one way the capture could lie.
 5. **Treating any non-loopback packet as a leak.** With `-i any` the owner's background traffic
    (96–382 packets per window) would have false-positived a working capture.
 6. **Short-circuiting `0 packets captured` to `silent`.** Fro Bot's review on
-   [PR #18](https://github.com/marcusrbrown/panthe.ai/pull/18) rejected this: 5,156 packets
+   [PR #18](https://github.com/marcusrbrown/panthea/pull/18) rejected this: 5,156 packets
    "received by filter" with an empty pcap is not evidence the capture saw the offline window.
 
 ## Solution
@@ -152,5 +152,5 @@ needs its own capture plus control, not a reused result.
   requirement
 - [Sampling Ollama's real memory usage needs the runner child pid](2026-09-27-ollama-runner-pid-rss-sampling.md)
   — same "resolve the real child process, not the wrapper" pattern
-- [PR #13](https://github.com/marcusrbrown/panthe.ai/pull/13) (capture pending),
-  [PR #18](https://github.com/marcusrbrown/panthe.ai/pull/18) (falsifiable proof)
+- [PR #13](https://github.com/marcusrbrown/panthea/pull/13) (capture pending),
+  [PR #18](https://github.com/marcusrbrown/panthea/pull/18) (falsifiable proof)

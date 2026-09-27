@@ -2,7 +2,7 @@
 _extends: .github:common-settings.yaml
 
 repository:
-  name: panthe.ai
+  name: panthea
   description: Local-first simulation of autonomous mythological characters and their worlds
   homepage: https://panthe.ai
   topics: simulation, ai-agents, local-first, tauri, threejs, webgpu, bun, mythology

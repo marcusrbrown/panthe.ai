@@ -176,6 +176,86 @@ describe("buildFindings / buildBottomLine (README union rendering, no disk I/O)"
     expect(() => buildBottomLine(undefined, undefined)).not.toThrow();
     expect(buildBottomLine(undefined, undefined)).toBe("");
   });
+
+  test("Go configured with zero successful actions renders no reachability/suitability claim", () => {
+    const live: LiveResult = {
+      ...SAMPLE_LIVE,
+      goSkippedReason: undefined,
+      goFreeModels: [
+        {
+          modelId: "space-bunny-free",
+          family: "chat-completions",
+          requestCount: 2,
+          structuredModes: { native: 0, repaired: 0, failed: 2 },
+          toolCallSupported: 0,
+          toolCallUnsupported: 2,
+          latenciesMs: [500, 520],
+          rateLimitCount: 0,
+          errorClasses: { unknown: 2 },
+          abortedEarly: false,
+          freeTierErrorCount: 0,
+        },
+        {
+          modelId: "longcat-2.5-preview-free",
+          family: "chat-completions",
+          requestCount: 2,
+          structuredModes: { native: 0, repaired: 0, failed: 2 },
+          toolCallSupported: 0,
+          toolCallUnsupported: 2,
+          latenciesMs: [400, 410],
+          rateLimitCount: 0,
+          errorClasses: { unknown: 2 },
+          abortedEarly: false,
+          freeTierErrorCount: 0,
+        },
+      ],
+    };
+    const bottomLine = buildBottomLine(live, undefined);
+    expect(bottomLine).toContain("FAILED this run");
+    expect(bottomLine).toContain("0/2");
+    expect(bottomLine).not.toContain("the OpenCode arm is **Go**");
+    expect(bottomLine).not.toContain("are reachable over");
+  });
+
+  test("Go configured with partial success states the counts rather than a blanket reachability claim", () => {
+    const live: LiveResult = {
+      ...SAMPLE_LIVE,
+      goSkippedReason: undefined,
+      goFreeModels: [
+        {
+          modelId: "space-bunny-free",
+          family: "chat-completions",
+          requestCount: 2,
+          structuredModes: { native: 0, repaired: 2, failed: 0 },
+          toolCallSupported: 1,
+          toolCallUnsupported: 0,
+          latenciesMs: [500, 520],
+          rateLimitCount: 0,
+          errorClasses: {},
+          abortedEarly: false,
+          freeTierErrorCount: 0,
+        },
+        {
+          modelId: "longcat-2.5-preview-free",
+          family: "chat-completions",
+          requestCount: 2,
+          structuredModes: { native: 0, repaired: 0, failed: 2 },
+          toolCallSupported: 0,
+          toolCallUnsupported: 2,
+          latenciesMs: [400, 410],
+          rateLimitCount: 0,
+          errorClasses: { unknown: 2 },
+          abortedEarly: false,
+          freeTierErrorCount: 0,
+        },
+      ],
+    };
+    const bottomLine = buildBottomLine(live, undefined);
+    expect(bottomLine).toContain("1/2");
+    expect(bottomLine).toContain("space-bunny-free");
+    expect(bottomLine).toContain("longcat-2.5-preview-free");
+    expect(bottomLine).not.toContain("the OpenCode arm is **Go**");
+  });
 });
 
 describe("resolveOfflineCaptureVerdict (the inconclusive → silent upgrade, pure function)", () => {

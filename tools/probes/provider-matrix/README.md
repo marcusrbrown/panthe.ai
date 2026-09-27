@@ -16,9 +16,15 @@ bun run src/run.ts --live      # live Zen/Go matrix (requires ~/.local/share/ope
 sudo -v
 bun run src/run.ts --offline --capture   # 20 offline-mode requests + capture summary
 
+# --control adds a positive control: a SECOND, identically-filtered capture
+# around exactly one real (non-offline) request to Go free space-bunny-free,
+# which must show up as not-silent — otherwise a `silent` offline result isn't
+# trustworthy (the capture path itself may just be blind to provider traffic):
+bun run src/run.ts --offline --capture --control
+
 # If sudo timestamp caching isn't available/persistent on this machine, run the
 # whole command under sudo instead — -E preserves $HOME so auth.json still resolves:
-# sudo -E bun run src/run.ts --offline --capture
+# sudo -E bun run src/run.ts --offline --capture --control
 
 # Optional advisory companion (not sudo-gated, run separately if wanted):
 # log stream --predicate 'process == "mDNSResponder"' > results/offline-dns.log
@@ -47,11 +53,11 @@ Zen `zen/v1` free models are a scope note, not a tested arm — one request per 
 
 | Metric | Unit | Samples | p50 | p95 |
 | --- | --- | --- | --- | --- |
-| zen-scope-note/nemotron-3.5-lightning-free latency | ms | 1 | 1365.9452500000002 | 1365.9452500000002 |
-| zen-scope-note/muse-spark-1.3-contributor-free latency | ms | 1 | 689.2679589999998 | 689.2679589999998 |
-| go-free/space-bunny-free latency | ms | 2 | 6104.263292000001 | 6907.303291 |
-| go-free/longcat-2.5-preview-free latency | ms | 2 | 23476.880958 | 27967.098292 |
-| go-paid/mimo-v2.5 latency | ms | 1 | 27082.882583 | 27082.882583 |
+| zen-scope-note/nemotron-3.5-lightning-free latency | ms | 1 | 1234.977333 | 1234.977333 |
+| zen-scope-note/muse-spark-1.3-contributor-free latency | ms | 1 | 754.7065000000002 | 754.7065000000002 |
+| go-free/space-bunny-free latency | ms | 2 | 5004.595499999999 | 6917.876625 |
+| go-free/longcat-2.5-preview-free latency | ms | 2 | 20581.072665999996 | 34979.261916999996 |
+| go-paid/mimo-v2.5 latency | ms | 1 | 49484.26037499998 | 49484.26037499998 |
 
 ## Findings
 
@@ -65,9 +71,17 @@ Zen `zen/v1` free models are a scope note, not a tested arm — one request per 
 - Go paid `mimo-v2.5`: 1 request (capped given per-request Go billing), structured native=0 repaired=1 failed=0, tool call supported.
 - Fallback trace (Go free → Go paid → local → routine-only; see fallback.ts's `DEFAULT_STEP_ORDER`): go-free:space-bunny-free(success, 1 attempt).
 - Offline router guarantee: 0 hosted-client construction(s) across 20 offline-mode requests (must be 0).
-- Packet capture: pending owner run — non-interactive sudo is unavailable on this machine; run `sudo -v` first to prime the sudo timestamp cache and re-run with --capture (or run the whole command under `sudo -E` — the -E preserves $HOME so auth.json still resolves — if timestamp caching isn't available/persistent here). Manual fallback: `sudo tcpdump -i any -w results/offline.pcap` (optionally alongside `log stream --predicate 'process == "mDNSResponder"'`), then re-run `bun run src/run.ts --offline --capture`.
+- Packet capture: 0 packets observed, 0 non-loopback — silent.
+- Capture stop diagnostics: resolved tcpdump pid(s) [27845], stop path `sigint-child`, grace 2000ms, tcpdump exit code 0, stderr tail: "tcpdump: data link type PKTAP
+dropped privs to <USER>
+tcpdump: listening on any, link-type PKTAP (Apple DLT_PKTAP), snapshot length 524288 bytes
+0 packets captured
+5156 packets received by filter
+0 packets dropped by kernel".
+- Capture filter: `(host 172.65.90.21 or host 172.65.90.20 or host 172.65.90.22 or host 172.65.90.23 or host 162.159.140.245 or host 172.66.0.243 or host 160.79.104.10) or port 53` (resolved provider IPs: 172.65.90.21, 172.65.90.20, 172.65.90.22, 172.65.90.23, 162.159.140.245, 172.66.0.243, 160.79.104.10).
+- Positive control: not-silent — 34 provider packet(s) (e.g. `1790483558.571012 IP <local-ip>.59066 > 172.65.90.21.443: Flags [S], seq 1746516550, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 1206096714 ecr 0,sackOK,eol], length 0`), so the filter and capture path observe provider traffic.
 - Contract repair parity across OpenAI/Anthropic fixture shapes: identical parsed action; no-valid-action fixtures fail identically: true.
 
 ## Bottom line
 
-OpenCode Zen and OpenCode Go share one credential (the `opencode` and `opencode-go` auth.json entries hold the same key) — a key/subscription difference does not explain any gap between them. Zen's `zen/v1` free tier returned the typed 403 `FreeTierError` on 2/2 requests this run, consistent with the prior dedicated investigation (23/23 403s across headers/endpoint/key-source, plus a #50627 tool-shape check that also didn't reproduce it) — a scope note for ADR-0005, not a blocker. Go's base (`zen/go/v1`) applies no such gate: its own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the same credential over `/chat/completions`, both repairing to valid structured actions and supporting tool calls this run. For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go. Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet-capture proof has not completed yet — do not treat offline mode as proven silent until --offline --capture reports a captured result.
+OpenCode Zen and OpenCode Go share one credential (the `opencode` and `opencode-go` auth.json entries hold the same key) — a key/subscription difference does not explain any gap between them. Zen's `zen/v1` free tier returned the typed 403 `FreeTierError` on 2/2 requests this run, consistent with the prior dedicated investigation (23/23 403s across headers/endpoint/key-source, plus a #50627 tool-shape check that also didn't reproduce it) — a scope note for ADR-0005, not a blocker. Go's base (`zen/go/v1`) applies no such gate: its own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the same credential over `/chat/completions`, both repairing to valid structured actions and supporting tool calls this run. For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go. Offline mode was silent on the wire: zero packets matched a provider IP or DNS lookup during the capture window, and the positive control confirmed the capture path can see provider traffic.

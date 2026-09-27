@@ -42,6 +42,15 @@ export interface Location {
   readonly realm: Realm;
   readonly name: string;
   readonly edges: readonly LocationEdge[];
+  /**
+   * Capability an actor must hold to enter this location (Unit 3 addition,
+   * additive/optional): gates both `move` and `realm-transition` proposals
+   * whose destination names this location, so a restricted destination
+   * (e.g. a divine-only sanctum) rejects entry with reason
+   * `restricted-realm` distinctly from a plain adjacency failure. Absent
+   * means unrestricted.
+   */
+  readonly requiredCapability?: string;
 }
 
 export interface Building {
@@ -124,11 +133,19 @@ function parseLocation(value: unknown, path: string): ParseResult<Location> {
   if (!name.ok) return name;
   const edges = parseArray(value.edges, `${path}.edges`, parseLocationEdge);
   if (!edges.ok) return edges;
+  const requiredCapability = parseOptionalString(
+    value.requiredCapability,
+    `${path}.requiredCapability`,
+  );
+  if (!requiredCapability.ok) return requiredCapability;
   return ok({
     id: id.value,
     realm: realm.value,
     name: name.value,
     edges: edges.value,
+    ...(requiredCapability.value === undefined
+      ? {}
+      : { requiredCapability: requiredCapability.value }),
   });
 }
 

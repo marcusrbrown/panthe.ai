@@ -65,6 +65,34 @@ test("a location referencing an unknown realm fails to load", () => {
   }
 });
 
+test("a location may declare a required capability to enter it", () => {
+  const pack = validPack();
+  (pack.locations as Record<string, unknown>[])[0].requiredCapability =
+    "divine";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.locations[0]).toMatchObject({
+      requiredCapability: "divine",
+    });
+  }
+});
+
+test("a location without a required capability parses with it absent", () => {
+  const result = parseContentPack(validPack());
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.locations[0].requiredCapability).toBeUndefined();
+  }
+});
+
+test("a location with a non-string required capability is rejected", () => {
+  const pack = validPack();
+  (pack.locations as Record<string, unknown>[])[0].requiredCapability = 42;
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+});
+
 test("a building with a negative inventory amount is rejected", () => {
   const pack = validPack();
   (pack.buildings as Record<string, unknown>[])[0].inventory = [

@@ -1,0 +1,24 @@
+{
+  "resources": [
+    { "resource": "currency", "amount": 0 },
+    { "resource": "food", "amount": 0 },
+    { "resource": "wood", "amount": 0 },
+    { "resource": "wine", "amount": 0 }
+  ],
+  "rules": {
+    "catchUpCapMs": 3600000,
+    "catchUpChunkMs": 60000,
+    "checkpointIntervalMs": 60000,
+    "importMaxBytes": 50000000,
+    "importMaxRows": 1000000,
+    "importMaxDurationMs": 30000,
+    "fireBalance": {
+      "spreadChancePerTick": 0.1,
+      "maxSpreadPerTick": 2
+    },
+    "economyBalance": {
+      "priceFloor": 1,
+      "priceCeiling": 100
+    }
+  }
+}

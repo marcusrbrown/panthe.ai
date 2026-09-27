@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-27T06:50:55.409Z",
+  "generatedAt": "2026-09-27T12:51:18.266Z",
   "suites": [
     {
       "model": "llama3.2-3b.gguf",
@@ -217,6 +217,44 @@
       "rssBug": true,
       "diskSizeBytes": 1900000000,
       "rendererFrameP95": 17
+    },
+    {
+      "model": "gemma4:e4b",
+      "server": "ollama",
+      "tier": "1k",
+      "sampleCount": 40,
+      "nativeValidRate": 0.975,
+      "kindAcceptableRate": 0.925,
+      "repairedValidRate": 0.125,
+      "timeoutCount": 1,
+      "errorCount": 0,
+      "ttftP50": 472.50679200000013,
+      "ttftP95": 742.12679200001,
+      "totalP50": 2268.1638340000063,
+      "totalP95": 3599.6357500000013,
+      "tokPerSecP50": 24.630225905353225,
+      "rssPeakBytes": 4352983040,
+      "rssBug": false,
+      "rendererFrameP95": 18
+    },
+    {
+      "model": "gemma4:e4b",
+      "server": "ollama",
+      "tier": "4k",
+      "sampleCount": 40,
+      "nativeValidRate": 1,
+      "kindAcceptableRate": 0.925,
+      "repairedValidRate": 0.125,
+      "timeoutCount": 0,
+      "errorCount": 0,
+      "ttftP50": 602.963499999998,
+      "ttftP95": 809.2967500000013,
+      "totalP50": 3202.350084000005,
+      "totalP95": 4760.457875,
+      "tokPerSecP50": 15.715266980046001,
+      "rssPeakBytes": 4394876928,
+      "rssBug": false,
+      "rendererFrameP95": 18
     }
   ],
   "parallel": [

@@ -11,6 +11,7 @@ import {
   classifyCaptureLines,
   type DnsResolver,
   type OfflineRunSummary,
+  type PcapReader,
   type ProcessProbe,
   resolveTcpdumpPid,
   routeAction,
@@ -254,12 +255,16 @@ describe("runOfflineWithCapture (CLI-level, injectable fake capture — no sudo)
     }
   });
 
-  test("tcpdump reporting '0 packets captured' on a clean exit is reported as silent without ever reading the pcap back", async () => {
+  test("tcpdump reporting '0 packets captured' on a clean exit is reported as inconclusive (never silent) without ever reading the pcap back", async () => {
     // Reproduces the owner's Run 4 result: stopPath sigint-child (the pid
     // fix worked), tcpdump exit 0, but "0 packets captured / 96 packets
     // received by filter" — BPF received traffic but tcpdump's userspace
-    // loop never processed any of it before SIGINT. A 0-byte pcap in this
-    // exact shape is expected, not suspicious.
+    // loop never processed any of it before SIGINT. Per libpcap's
+    // pcap_stats(3PCAP) ps_recv semantics, that's most likely the filter
+    // correctly rejecting unrelated traffic — but it's an inference, not a
+    // measurement, so this alone is `inconclusive`, never `silent`; only a
+    // same-invocation passing positive control (checked by the caller, not
+    // this function) can upgrade it.
     let summarizeCalled = false;
 
     const result = await runOfflineWithCapture({
@@ -284,9 +289,11 @@ describe("runOfflineWithCapture (CLI-level, injectable fake capture — no sudo)
     });
 
     expect(summarizeCalled).toBe(false);
-    expect(result.capture.status).toBe("silent");
-    if (result.capture.status === "silent") {
-      expect(result.capture.totalPackets).toBe(0);
+    expect(result.capture.status).toBe("inconclusive");
+    if (result.capture.status === "inconclusive") {
+      expect(result.capture.reason).toContain(
+        "no matching packets; positive control not run",
+      );
     }
   });
 
@@ -399,6 +406,88 @@ describe("runControlCapture (positive control — fake capture/request deps, no 
 
     expect(order).toEqual(["request-failed-internally", "stop"]);
     expect(result.capture.status).toBe("silent");
+  });
+});
+
+describe("summarizeCapture (-A payload-decode exit status — injectable pcap reader, no real tcpdump)", () => {
+  test("a non-zero exit from the -A payload pass is reported as capture-failed, never silently ignored", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "provider-matrix-offline-"));
+    const pcapPath = join(dir, "valid-header.pcap");
+    // Only needs to pass the header-size check; the actual bytes are
+    // never parsed since both tcpdump reads below are faked.
+    writeFileSync(pcapPath, "x".repeat(64));
+    try {
+      const reader: PcapReader = {
+        readLines: async (_path, extraArgs) => {
+          if (extraArgs.length === 0) {
+            return {
+              lines: [
+                "1758901234.000000 IP 10.0.0.5.51234 > 8.8.8.8.53: 12345+ A? api.openai.com.",
+              ],
+              exitCode: 0,
+              stderrText: "",
+            };
+          }
+          // The -A pass fails even though the plain pass above succeeded.
+          return {
+            lines: [],
+            exitCode: 1,
+            stderrText: "tcpdump: -A: unrecognized option (simulated)",
+          };
+        },
+      };
+
+      const result = await summarizeCapture(pcapPath, {
+        providerHosts: ["api.openai.com"],
+        pcapReader: reader,
+      });
+
+      expect(result.status).toBe("capture-failed");
+      if (result.status === "capture-failed") {
+        expect(result.reason).toContain("tcpdump -r -A exited 1");
+        expect(result.reason).toContain("simulated");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a successful -A pass is used for DNS classification as before (no regression)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "provider-matrix-offline-"));
+    const pcapPath = join(dir, "valid-header.pcap");
+    writeFileSync(pcapPath, "x".repeat(64));
+    try {
+      const reader: PcapReader = {
+        readLines: async (_path, extraArgs) => {
+          if (extraArgs.length === 0) {
+            return {
+              lines: [
+                "1758901234.000000 IP 10.0.0.5.51234 > 8.8.8.8.53: 12345+ A? api.openai.com.",
+              ],
+              exitCode: 0,
+              stderrText: "",
+            };
+          }
+          return {
+            lines: ["...12345+ A? api.openai.com. ..."],
+            exitCode: 0,
+            stderrText: "",
+          };
+        },
+      };
+
+      const result = await summarizeCapture(pcapPath, {
+        providerHosts: ["api.openai.com"],
+        pcapReader: reader,
+      });
+
+      expect(result.status).toBe("not-silent");
+      if (result.status === "not-silent") {
+        expect(result.providerDnsLookups).toBe(1);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -551,18 +640,33 @@ describe("resolveTcpdumpPid (pid resolution — fake pgrep/ps, no real sudo)", (
     expect(await resolveTcpdumpPid(pcapPath, probe)).toEqual([222]);
   });
 
-  test("a single pgrep match short-circuits without ever consulting ps", async () => {
+  test("a single pgrep match is still validated against ps before being trusted", async () => {
     let commandLineCalled = false;
+    const pcapPath = "/tmp/offline.pcap";
     const probe: ProcessProbe = {
       pgrepExact: async () => [999],
       commandLineForPid: async () => {
         commandLineCalled = true;
-        return undefined;
+        return `tcpdump -i any -w ${pcapPath}`;
       },
     };
 
-    expect(await resolveTcpdumpPid("/tmp/offline.pcap", probe)).toEqual([999]);
-    expect(commandLineCalled).toBe(false);
+    expect(await resolveTcpdumpPid(pcapPath, probe)).toEqual([999]);
+    expect(commandLineCalled).toBe(true);
+  });
+
+  test("a single pgrep match whose command line doesn't match our exact -w path is rejected, not trusted", async () => {
+    // A stale/unrelated tcpdump left running (e.g. from a previous capture
+    // or something else entirely) could still be the only exact-name
+    // match `pgrep -x` finds — signaling it would silently do nothing
+    // useful while looking like a resolved pid, so it must be rejected.
+    const probe: ProcessProbe = {
+      pgrepExact: async () => [777],
+      commandLineForPid: async () =>
+        "tcpdump -i any -w /tmp/some-other-capture.pcap",
+    };
+
+    expect(await resolveTcpdumpPid("/tmp/offline.pcap", probe)).toEqual([]);
   });
 
   test("returns every genuine tcpdump pid that matches the exact -w path when several are running concurrently", async () => {

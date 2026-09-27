@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CaptureSummary } from "./offline";
 import {
   buildBottomLine,
   buildFindings,
@@ -11,6 +12,7 @@ import {
   loadLatestModeResult,
   type OfflineResult,
   renderControlFinding,
+  resolveOfflineCaptureVerdict,
   selectLiveRunPlan,
   writeLatestModeResult,
 } from "./run";
@@ -56,6 +58,14 @@ const CONTROL_SILENT: ControlResult = {
 const CONTROL_REQUEST_FAILED: ControlResult = {
   capture: { status: "silent", totalPackets: 0 },
   requestError: "Go is not configured in auth.json",
+};
+
+const NOT_SILENT_SAMPLE: CaptureSummary = {
+  status: "not-silent",
+  totalPackets: 3,
+  providerPackets: 2,
+  providerDnsLookups: 0,
+  sampleLines: ["1758901234.000000 IP 10.0.0.5.51234 > 5.6.7.8.443: Flags [S]"],
 };
 
 describe("selectLiveRunPlan (live-run arm selection, no network)", () => {
@@ -165,6 +175,62 @@ describe("buildFindings / buildBottomLine (README union rendering, no disk I/O)"
   test("buildBottomLine tolerates missing live/offline without throwing", () => {
     expect(() => buildBottomLine(undefined, undefined)).not.toThrow();
     expect(buildBottomLine(undefined, undefined)).toBe("");
+  });
+});
+
+describe("resolveOfflineCaptureVerdict (the inconclusive → silent upgrade, pure function)", () => {
+  const INCONCLUSIVE: CaptureSummary = {
+    status: "inconclusive",
+    reason: "no matching packets; positive control not run",
+  };
+
+  test("inconclusive + a passing control upgrades to silent", () => {
+    const result = resolveOfflineCaptureVerdict(
+      INCONCLUSIVE,
+      CONTROL_NOT_SILENT,
+    );
+    expect(result).toEqual({ status: "silent", totalPackets: 0 });
+  });
+
+  test("inconclusive + no control stays inconclusive", () => {
+    const result = resolveOfflineCaptureVerdict(INCONCLUSIVE, undefined);
+    expect(result).toEqual(INCONCLUSIVE);
+  });
+
+  test("inconclusive + a silent (failing) control stays inconclusive", () => {
+    const result = resolveOfflineCaptureVerdict(INCONCLUSIVE, CONTROL_SILENT);
+    expect(result).toEqual(INCONCLUSIVE);
+  });
+
+  test("inconclusive + a control whose request itself failed to send stays inconclusive", () => {
+    const result = resolveOfflineCaptureVerdict(
+      INCONCLUSIVE,
+      CONTROL_REQUEST_FAILED,
+    );
+    expect(result).toEqual(INCONCLUSIVE);
+  });
+
+  test("a non-inconclusive status (e.g. a real pcap-read silent) passes through unchanged regardless of control", () => {
+    const realSilent: CaptureSummary = { status: "silent", totalPackets: 12 };
+    expect(resolveOfflineCaptureVerdict(realSilent, undefined)).toEqual(
+      realSilent,
+    );
+    expect(resolveOfflineCaptureVerdict(realSilent, CONTROL_SILENT)).toEqual(
+      realSilent,
+    );
+  });
+
+  test("not-silent and capture-failed pass through unchanged", () => {
+    expect(
+      resolveOfflineCaptureVerdict(NOT_SILENT_SAMPLE, CONTROL_NOT_SILENT),
+    ).toEqual(NOT_SILENT_SAMPLE);
+    const failed: CaptureSummary = {
+      status: "capture-failed",
+      reason: "pcap file not found",
+    };
+    expect(resolveOfflineCaptureVerdict(failed, CONTROL_NOT_SILENT)).toEqual(
+      failed,
+    );
   });
 });
 

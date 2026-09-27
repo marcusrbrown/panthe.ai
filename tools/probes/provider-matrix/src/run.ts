@@ -18,6 +18,7 @@ import { loadOpenCodeAuth } from "./auth";
 import {
   DEFAULT_STEP_ORDER,
   type DegradedEvent,
+  type FallbackStep,
   type FallbackTraceEntry,
   ROUTINE_ONLY_ACTION,
   runFallback,
@@ -334,6 +335,78 @@ export interface LiveResult {
   readonly fallbackDegraded: boolean;
 }
 
+/**
+ * Builds the real fallback chain (fallback.ts's `DEFAULT_STEP_ORDER`: Go
+ * free models, Go paid, local Ollama) against whichever providers are
+ * actually configured — the exact same steps `--live` runs for real.
+ * Shared with the offline capture window, which wires this in as the
+ * chain that WOULD construct hosted clients (real `createProviderModel`
+ * calls, not a synthetic stand-in) if the offline guard were ever broken,
+ * but never actually invokes it — see `runOffline`'s doc comment.
+ */
+function buildFallbackSteps(
+  auth: ReturnType<typeof loadOpenCodeAuth>,
+  ollamaReachable: boolean,
+): FallbackStep[] {
+  return [
+    ...(auth.go.configured
+      ? GO_FREE_MODELS.map((entry) => ({
+          name: `go-free:${entry.modelId}`,
+          attempt: async () => {
+            const model = createProviderModel({
+              family: entry.family,
+              baseURL: entry.baseURL,
+              apiKey: auth.go.configured ? auth.go.credential : "",
+              modelId: entry.modelId,
+              providerName: entry.providerName,
+            });
+            const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+            if (!attempt.action) {
+              throw new Error(
+                attempt.error ?? `${entry.modelId} produced no action`,
+              );
+            }
+            return attempt.action;
+          },
+        }))
+      : []),
+    {
+      name: `go-paid:${GO_PAID_MODEL.modelId}`,
+      attempt: async () => {
+        if (!auth.go.configured) {
+          throw new Error("go not configured");
+        }
+        const model = createProviderModel({
+          family: GO_PAID_MODEL.family,
+          baseURL: GO_PAID_MODEL.baseURL,
+          apiKey: auth.go.credential,
+          modelId: GO_PAID_MODEL.modelId,
+          providerName: GO_PAID_MODEL.providerName,
+        });
+        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+        if (!attempt.action) {
+          throw new Error(attempt.error ?? "go-paid produced no action");
+        }
+        return attempt.action;
+      },
+    },
+    {
+      name: "ollama",
+      attempt: async () => {
+        if (!ollamaReachable) {
+          throw new Error("ollama not reachable");
+        }
+        const model = createOllamaModel("llama3.2:3b");
+        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+        if (!attempt.action) {
+          throw new Error(attempt.error ?? "ollama produced no action");
+        }
+        return attempt.action;
+      },
+    },
+  ];
+}
+
 async function runLive(): Promise<LiveResult> {
   const auth = loadOpenCodeAuth();
   if (auth.modeWarning) {
@@ -399,63 +472,7 @@ async function runLive(): Promise<LiveResult> {
   const ollamaReachable = await isOllamaReachable();
   let fallbackDegradedEvent: DegradedEvent | undefined;
 
-  const fallbackSteps = [
-    ...(auth.go.configured
-      ? GO_FREE_MODELS.map((entry) => ({
-          name: `go-free:${entry.modelId}`,
-          attempt: async () => {
-            const model = createProviderModel({
-              family: entry.family,
-              baseURL: entry.baseURL,
-              apiKey: auth.go.configured ? auth.go.credential : "",
-              modelId: entry.modelId,
-              providerName: entry.providerName,
-            });
-            const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
-            if (!attempt.action) {
-              throw new Error(
-                attempt.error ?? `${entry.modelId} produced no action`,
-              );
-            }
-            return attempt.action;
-          },
-        }))
-      : []),
-    {
-      name: `go-paid:${GO_PAID_MODEL.modelId}`,
-      attempt: async () => {
-        if (!auth.go.configured) {
-          throw new Error("go not configured");
-        }
-        const model = createProviderModel({
-          family: GO_PAID_MODEL.family,
-          baseURL: GO_PAID_MODEL.baseURL,
-          apiKey: auth.go.credential,
-          modelId: GO_PAID_MODEL.modelId,
-          providerName: GO_PAID_MODEL.providerName,
-        });
-        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
-        if (!attempt.action) {
-          throw new Error(attempt.error ?? "go-paid produced no action");
-        }
-        return attempt.action;
-      },
-    },
-    {
-      name: "ollama",
-      attempt: async () => {
-        if (!ollamaReachable) {
-          throw new Error("ollama not reachable");
-        }
-        const model = createOllamaModel("llama3.2:3b");
-        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
-        if (!attempt.action) {
-          throw new Error(attempt.error ?? "ollama produced no action");
-        }
-        return attempt.action;
-      },
-    },
-  ];
+  const fallbackSteps = buildFallbackSteps(auth, ollamaReachable);
 
   // Consistency check, not just a comment: when Go is configured, the
   // constructed step names must exactly match fallback.ts's documented
@@ -534,14 +551,25 @@ export interface OfflineModeReport {
   readonly control?: ControlResult;
 }
 
-function buildOfflineRouterFactory(): () => unknown {
-  return () =>
-    createProviderModel({
-      family: "chat-completions",
-      baseURL: GO_BASE_URL,
-      apiKey: "unused-because-offline-must-never-construct-this",
-      modelId: GO_FREE_MODELS[0].modelId,
-    });
+/**
+ * Builds the `createHostedClient` the offline window's `routeAction` uses
+ * for its "never call this in offline mode" guarantee — wired to the REAL
+ * fallback chain ({@link buildFallbackSteps}: Go free/paid via
+ * `createProviderModel`, local Ollama) instead of a synthetic stand-in.
+ * If the offline guard were ever broken, this would drive genuine
+ * hosted-client construction and real network requests — making
+ * `hostedClientConstructions === 0` a meaningful proof about THIS probe's
+ * own fallback router, not a tautology against an inert stub. (The
+ * product service's own offline guard is separate M1 work.)
+ */
+function buildOfflineRouterFactory(
+  auth: ReturnType<typeof loadOpenCodeAuth>,
+  ollamaReachable: boolean,
+): () => unknown {
+  return () => {
+    void runFallback(buildFallbackSteps(auth, ollamaReachable));
+    return undefined;
+  };
 }
 
 /**
@@ -613,13 +641,20 @@ async function runPositiveControl(
 
 /**
  * `--offline` alone only proves the router-level guarantee (no hosted
- * client is ever constructed). `--offline --capture` additionally has the
- * probe own the whole `sudo tcpdump` window itself: start capture, run
- * every request while it's running, stop in a `finally`, then read the
- * pcap back (see {@link runOfflineWithCapture} for the ordering guarantee).
- * `--offline --capture --control` additionally runs a positive control
- * (see {@link runPositiveControl}) after the offline capture completes, so
- * a `silent` verdict is falsifiable rather than merely asserted.
+ * client is ever constructed) — for THIS probe's own fallback router; see
+ * {@link buildOfflineRouterFactory}'s doc comment on scope (the product
+ * service's own offline guard is separate M1 work). `--offline --capture`
+ * additionally has the probe own the whole `sudo tcpdump` window itself:
+ * start capture, run every request while it's running, stop in a
+ * `finally`, then read the pcap back (see {@link runOfflineWithCapture}
+ * for the ordering guarantee). `--offline --capture --control`
+ * additionally runs a positive control (see {@link runPositiveControl})
+ * after the offline capture completes, so a `silent` verdict is
+ * falsifiable rather than merely asserted — and a capture that only
+ * reports "zero packets captured" at the process level (see
+ * {@link runCaptureWindow}'s doc comment on why that alone is
+ * `inconclusive`, not `silent`) gets upgraded to `silent` here, but ONLY
+ * when this same invocation's control actually passed.
  */
 async function runOffline(
   captureRequested: boolean,
@@ -627,10 +662,16 @@ async function runOffline(
 ): Promise<OfflineModeReport> {
   mkdirSync(RESULTS_DIR, { recursive: true });
 
+  const auth = loadOpenCodeAuth();
+  if (auth.modeWarning) {
+    console.warn(redactSecrets(auth.modeWarning));
+  }
+  const ollamaReachable = await isOllamaReachable();
+
   if (!captureRequested) {
     const routerRun = await runOfflineRequests(
       MAX_REQUESTS_PER_MODEL,
-      buildOfflineRouterFactory(),
+      buildOfflineRouterFactory(auth, ollamaReachable),
       async () => ROUTINE_ONLY_ACTION,
     );
     return {
@@ -654,7 +695,7 @@ async function runOffline(
   if (availability.status === "pending-owner-run") {
     const routerRun = await runOfflineRequests(
       MAX_REQUESTS_PER_MODEL,
-      buildOfflineRouterFactory(),
+      buildOfflineRouterFactory(auth, ollamaReachable),
       async () => ROUTINE_ONLY_ACTION,
     );
     return {
@@ -687,7 +728,7 @@ async function runOffline(
     runRequests: () =>
       runOfflineRequests(
         MAX_REQUESTS_PER_MODEL,
-        buildOfflineRouterFactory(),
+        buildOfflineRouterFactory(auth, ollamaReachable),
         async () => ROUTINE_ONLY_ACTION,
       ),
     summarizeCapture: (pcapPath) =>
@@ -697,19 +738,19 @@ async function runOffline(
       }),
   });
 
-  const offline: OfflineResult = {
-    routerGuarantee: {
-      requestCount: routerGuarantee.requestCount,
-      hostedClientConstructions: routerGuarantee.hostedClientConstructions,
-    },
-    capture,
-  };
-
   // Reuses the SAME filterPlan (not a fresh resolution) — the control must
   // be scoped identically to the capture it's validating.
   const control = controlRequested
     ? await runPositiveControl(filterPlan)
     : undefined;
+
+  const offline: OfflineResult = {
+    routerGuarantee: {
+      requestCount: routerGuarantee.requestCount,
+      hostedClientConstructions: routerGuarantee.hostedClientConstructions,
+    },
+    capture: resolveOfflineCaptureVerdict(capture, control),
+  };
 
   return { offline, control };
 }
@@ -866,6 +907,31 @@ function controlPassed(control: ControlResult): boolean {
 }
 
 /**
+ * Applies the positive-control upgrade: a bare `inconclusive` capture
+ * (zero packets captured at the process level — see `runCaptureWindow`'s
+ * doc comment on why that alone can't claim silence) only becomes
+ * `silent` once THIS SAME invocation's positive control has actually
+ * proven the capture path can see provider traffic. Every other status
+ * passes through unchanged: a real pcap-read `silent` doesn't need
+ * external validation, and `not-silent`/`capture-failed` are already
+ * conclusive on their own. Exported for direct testing — `runOffline`
+ * itself does real DNS/sudo/network I/O and isn't unit-testable.
+ */
+export function resolveOfflineCaptureVerdict(
+  capture: CaptureSummary,
+  control: ControlResult | undefined,
+): CaptureSummary {
+  if (capture.status === "inconclusive" && control && controlPassed(control)) {
+    return {
+      status: "silent",
+      totalPackets: 0,
+      diagnostics: capture.diagnostics,
+    };
+  }
+  return capture;
+}
+
+/**
  * Renders the positive control's finding line. A `not-silent` capture
  * from a request that's known to have actually sent is the only thing
  * that makes the offline capture's `silent` verdict trustworthy —
@@ -898,6 +964,9 @@ export function renderControlFinding(control: ControlResult): string {
     }
     case "capture-failed": {
       return `Positive control: the control capture itself FAILED (${capture.reason}) — cannot verify the capture path; treat the offline proof as INCONCLUSIVE.`;
+    }
+    case "inconclusive": {
+      return `Positive control: INCONCLUSIVE (${capture.reason}) — could not confirm the capture path observes provider traffic; treat the offline proof as INCONCLUSIVE too.`;
     }
     default: {
       const neverStatus: never = capture;
@@ -994,13 +1063,13 @@ export function buildFindings(
 
   if (offline) {
     findings.push(
-      `Offline router guarantee: ${offline.routerGuarantee.hostedClientConstructions} hosted-client construction(s) across ${offline.routerGuarantee.requestCount} offline-mode requests (must be 0).`,
+      `Offline router guarantee: ${offline.routerGuarantee.hostedClientConstructions} hosted-client construction(s) across ${offline.routerGuarantee.requestCount} offline-mode requests (must be 0) — for this probe's own fallback router; the product service's offline guard is M1 work.`,
     );
     const capture = offline.capture;
     switch (capture.status) {
       case "silent": {
         findings.push(
-          `Packet capture: ${capture.totalPackets} packets observed, 0 non-loopback — silent.`,
+          `Packet capture: ${capture.totalPackets} packet(s) observed, 0 matching a provider IP or DNS lookup — silent.`,
         );
         break;
       }
@@ -1013,6 +1082,12 @@ export function buildFindings(
       case "capture-failed": {
         findings.push(
           `Packet capture: FAILED to read back a valid capture (${capture.reason}) — this is reported as a failure, never as silence. Re-run \`bun run src/run.ts --offline --capture\`.`,
+        );
+        break;
+      }
+      case "inconclusive": {
+        findings.push(
+          `Packet capture: INCONCLUSIVE (${capture.reason}) — zero matching packets alone doesn't prove silence (see libpcap's ps_recv semantics); re-run with \`--control\` for a falsifiable positive control before trusting this as silent.`,
         );
         break;
       }
@@ -1145,6 +1220,12 @@ export function buildBottomLine(
       case "capture-failed": {
         parts.push(
           "Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet capture itself FAILED to produce a readable result — do not treat this as silence; re-run --offline --capture.",
+        );
+        break;
+      }
+      case "inconclusive": {
+        parts.push(
+          "Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet capture saw zero matching packets at the process level with no accompanying positive control to confirm the capture path can see provider traffic at all — that's INCONCLUSIVE, not silent; re-run with `--control`.",
         );
         break;
       }

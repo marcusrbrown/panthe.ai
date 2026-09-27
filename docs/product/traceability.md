@@ -10,7 +10,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | P04 | M0 | planned | — | tools/probes/inference-baseline/README.md |
 | P05 | M0 | planned (Linux gated on a packaged either-backend probe, ADR-0002) | — | docs/decisions/0002-renderer-backend.md, tools/probes/renderer-webgl2/README.md |
 | P06 | M0 | planned | — | tools/probes/inference-baseline/README.md |
-| P07 | M0 | planned | — | tools/probes/provider-matrix/README.md |
+| P07 | M0 | planned (offline wire proof: silent + positive control, probe router only) | — | tools/probes/provider-matrix/README.md |
 | P08 | M7 | planned | — | — |
 | W01 | M2 | planned | — | — |
 | W02 | M1 | planned | — | — |

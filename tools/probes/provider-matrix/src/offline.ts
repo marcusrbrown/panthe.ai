@@ -403,21 +403,23 @@ const defaultProcessProbe: ProcessProbe = {
  * reliably produces a valid, multi-MB pcap; the parent- and
  * command-line-based lookups do not reliably resolve to the same PID.
  *
- * If more than one process is named exactly `tcpdump` (e.g. an unrelated
- * concurrent capture), disambiguates by each candidate's own command
- * line (`ps -o args=`): the match must actually be invoked as `tcpdump`
- * (its argv[0], not `sudo` — a defensive second check in case a `pgrep
- * -x` implementation ever behaves more loosely than expected) AND have
- * been started with *this* capture's exact `-w <pcapPath>`.
+ * Every candidate — even a single `pgrep -x` match — is validated against
+ * its own command line (`ps -o args=`) before being trusted: the match
+ * must actually be invoked as `tcpdump` (its argv[0], not `sudo` — a
+ * defensive second check in case a `pgrep -x` implementation ever
+ * behaves more loosely than expected) AND have been started with *this*
+ * capture's exact `-w <pcapPath>`. A single exact-name match is the
+ * overwhelmingly common case, but it is not automatically the RIGHT
+ * process — a stale/unrelated `tcpdump` left running from a previous
+ * capture (or something else entirely) could still be the only exact
+ * match `pgrep -x` finds, and signaling it would silently do nothing
+ * useful while looking like a resolved pid.
  */
 export async function resolveTcpdumpPid(
   pcapPath: string,
   probe: ProcessProbe = defaultProcessProbe,
 ): Promise<readonly number[]> {
   const candidates = await probe.pgrepExact("tcpdump");
-  if (candidates.length <= 1) {
-    return candidates;
-  }
   const matches: number[] = [];
   for (const pid of candidates) {
     const commandLine = await probe.commandLineForPid(pid);
@@ -635,6 +637,18 @@ export type CaptureSummary =
       readonly status: "capture-failed";
       readonly reason: string;
       readonly diagnostics?: CaptureDiagnostics;
+    }
+  | {
+      /**
+       * Zero matching packets were reported at the tcpdump-process level
+       * (`0 packets captured`), but that alone can't be trusted as
+       * `silent` — see {@link runCaptureWindow}'s doc comment on why. Only
+       * an accompanying passing positive control (checked by the caller,
+       * not this module) can upgrade this to a real `silent` verdict.
+       */
+      readonly status: "inconclusive";
+      readonly reason: string;
+      readonly diagnostics?: CaptureDiagnostics;
     };
 
 /** Size in bytes of a valid pcap global header — anything smaller can't be a real capture. */
@@ -668,10 +682,18 @@ function redactLocalAddresses(line: string): string {
     .replace(LOCAL_IPV6_PATTERN, "<local-ip>");
 }
 
-interface PcapReadResult {
+export interface PcapReadResult {
   readonly lines: readonly string[];
   readonly exitCode: number | null;
   readonly stderrText: string;
+}
+
+export interface PcapReader {
+  /** Reads `pcapPath` with `tcpdump -r ... -n -tt <extraArgs>` (e.g. `["-A"]` for the ASCII payload dump). */
+  readonly readLines: (
+    pcapPath: string,
+    extraArgs: readonly string[],
+  ) => Promise<PcapReadResult>;
 }
 
 async function readPcapLines(
@@ -719,6 +741,8 @@ async function readPcapLines(
  * clean exit — is short-circuited earlier, in {@link runOfflineWithCapture},
  * and never reaches this poll at all.)
  */
+const defaultPcapReader: PcapReader = { readLines: readPcapLines };
+
 export async function summarizeCapture(
   pcapPath: string,
   options: {
@@ -728,6 +752,8 @@ export async function summarizeCapture(
     readonly providerIps?: readonly string[];
     /** Provider hostnames to look for in DNS payloads (see {@link OFFLINE_PROVIDER_HOSTS}). */
     readonly providerHosts?: readonly string[];
+    /** Injectable for testing the `-A` exit-status propagation without a real pcap/tcpdump. */
+    readonly pcapReader?: PcapReader;
   } = {},
 ): Promise<CaptureSummary> {
   const flushPollTimeoutMs =
@@ -736,6 +762,7 @@ export async function summarizeCapture(
     options.flushPollIntervalMs ?? DEFAULT_FLUSH_POLL_INTERVAL_MS;
   const providerIps = options.providerIps ?? [];
   const providerHosts = options.providerHosts ?? [];
+  const pcapReader = options.pcapReader ?? defaultPcapReader;
 
   let size = await statSizeOrUndefined(pcapPath);
   const deadline = performance.now() + flushPollTimeoutMs;
@@ -760,7 +787,10 @@ export async function summarizeCapture(
     };
   }
 
-  const { lines, exitCode, stderrText } = await readPcapLines(pcapPath);
+  const { lines, exitCode, stderrText } = await pcapReader.readLines(
+    pcapPath,
+    [],
+  );
   if (exitCode !== 0) {
     return {
       status: "capture-failed",
@@ -774,15 +804,21 @@ export async function summarizeCapture(
   }
 
   const hasDnsLine = lines.some((line) => DNS_LINE_PATTERN.test(line));
-  const dnsPayloadText =
-    providerHosts.length > 0 && hasDnsLine
-      ? // Query/response names only show up in the ASCII payload dump, not
-        // the default one-line summary — this is how a provider-hostname
-        // lookup is told apart from the operator's own unrelated DNS
-        // traffic that the capture filter's `or port 53` clause also let
-        // through.
-        (await readPcapLines(pcapPath, ["-A"])).lines.join("\n")
-      : "";
+  let dnsPayloadText = "";
+  if (providerHosts.length > 0 && hasDnsLine) {
+    // Query/response names only show up in the ASCII payload dump, not
+    // the default one-line summary — this is how a provider-hostname
+    // lookup is told apart from the operator's own unrelated DNS traffic
+    // that the capture filter's `or port 53` clause also let through.
+    const verboseRead = await pcapReader.readLines(pcapPath, ["-A"]);
+    if (verboseRead.exitCode !== 0) {
+      return {
+        status: "capture-failed",
+        reason: `tcpdump -r -A exited ${verboseRead.exitCode}${verboseRead.stderrText.trim() ? `: ${verboseRead.stderrText.trim()}` : ""}`,
+      };
+    }
+    dnsPayloadText = verboseRead.lines.join("\n");
+  }
 
   const { providerPackets, providerDnsLookups } = classifyCaptureLines(
     lines,
@@ -840,9 +876,11 @@ function describeError(error: unknown): string {
 
 /** tcpdump's shutdown summary includes a `N packets captured` line — this is the userspace count (what tcpdump actually processed and could have written), as opposed to `N packets received by filter` (the kernel/BPF count, which can be nonzero even when tcpdump processed nothing before being signaled). */
 const PACKETS_CAPTURED_PATTERN = /(\d+)\s+packets captured/;
+/** The BPF/kernel-level receive count — see {@link parseCapturedCount}'s doc comment and libpcap's `pcap_stats(3PCAP)` note on `ps_recv`. */
+const PACKETS_RECEIVED_PATTERN = /(\d+)\s+packets received by filter/;
 
-function parseCapturedCount(stderr: string): number | undefined {
-  const match = PACKETS_CAPTURED_PATTERN.exec(stderr);
+function parseStatLine(stderr: string, pattern: RegExp): number | undefined {
+  const match = pattern.exec(stderr);
   if (!match) {
     return undefined;
   }
@@ -852,6 +890,14 @@ function parseCapturedCount(stderr: string): number | undefined {
   }
   const parsed = Number.parseInt(raw, 10);
   return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function parseCapturedCount(stderr: string): number | undefined {
+  return parseStatLine(stderr, PACKETS_CAPTURED_PATTERN);
+}
+
+function parseReceivedByFilterCount(stderr: string): number | undefined {
+  return parseStatLine(stderr, PACKETS_RECEIVED_PATTERN);
 }
 
 interface CaptureWindowDeps<T> {
@@ -903,12 +949,21 @@ function buildCaptureDiagnostics<T>(
  * case).
  *
  * A clean exit that itself reports zero packets captured (tcpdump's own
- * `0 packets captured` shutdown line) is short-circuited straight to
- * `silent` without ever touching the pcap on disk: with `--immediate-mode`
- * and a BPF filter already scoping the capture to providers/DNS, a
- * genuinely empty pcap is the expected shape of a silent result, not a
- * suspicious one — see {@link summarizeCapture}'s doc comment for the
- * *other* 0-byte case, which still fails.
+ * `0 packets captured` shutdown line) is short-circuited to `inconclusive`
+ * — NOT `silent` — without ever touching the pcap on disk. This is
+ * deliberately weaker than a claim of silence: per libpcap's
+ * `pcap_stats(3PCAP)`, "`ps_recv` ... on some platforms include[s]
+ * packets that didn't pass the filter" (BSD/macOS's BPF device delivers
+ * packets to the kernel side before the filter is applied), so a nonzero
+ * "packets received by filter" alongside `0 packets captured` most
+ * likely means the filter correctly rejected them — not that the capture
+ * missed real provider traffic. That's plausible, even likely, but it's
+ * an inference, not a measurement: only a same-invocation *passing*
+ * positive control (the same filter plan, an actual not-silent result
+ * from a real request) earns the stronger `silent` claim — the caller
+ * (not this function, which has no visibility into whether a control
+ * ran) is responsible for that upgrade. See {@link summarizeCapture}'s
+ * doc comment for the *other* 0-byte case, which still fails outright.
  */
 async function runCaptureWindow<T>(
   deps: CaptureWindowDeps<T>,
@@ -963,11 +1018,16 @@ async function runCaptureWindow<T>(
 
   const capturedCount = parseCapturedCount(stopResult.stderr);
   if (capturedCount === 0) {
+    const receivedCount = parseReceivedByFilterCount(stopResult.stderr);
     return {
       windowResult,
       capture: {
-        status: "silent",
-        totalPackets: 0,
+        status: "inconclusive",
+        reason:
+          "no matching packets; positive control not run" +
+          (receivedCount !== undefined && receivedCount > 0
+            ? ` (BPF received ${receivedCount} packet(s) before the filter ran — expected per libpcap's ps_recv semantics, not evidence of a missed capture)`
+            : ""),
         diagnostics: buildCaptureDiagnostics(
           stopResult.diagnostics,
           deps,

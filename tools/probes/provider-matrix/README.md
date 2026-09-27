@@ -70,16 +70,16 @@ Zen `zen/v1` free models are a scope note, not a tested arm — one request per 
 - Go free `longcat-2.5-preview-free` (`/chat/completions` only — `/responses` returns `ModelProtocolUnsupported`): 2 requests, structured native=0 repaired=2 failed=0, tool call supported.
 - Go paid `mimo-v2.5`: 1 request (capped given per-request Go billing), structured native=0 repaired=1 failed=0, tool call supported.
 - Fallback trace (Go free → Go paid → local → routine-only; see fallback.ts's `DEFAULT_STEP_ORDER`): go-free:space-bunny-free(success, 1 attempt).
-- Offline router guarantee: 0 hosted-client construction(s) across 20 offline-mode requests (must be 0).
-- Packet capture: 0 packets observed, 0 non-loopback — silent.
-- Capture stop diagnostics: resolved tcpdump pid(s) [27845], stop path `sigint-child`, grace 2000ms, tcpdump exit code 0, stderr tail: "tcpdump: data link type PKTAP
+- Offline router guarantee: 0 hosted-client construction(s) across 20 offline-mode requests (must be 0) — for this probe's own fallback router; the product service's offline guard is M1 work.
+- Packet capture: 0 packet(s) observed, 0 matching a provider IP or DNS lookup — silent.
+- Capture stop diagnostics: resolved tcpdump pid(s) [40677], stop path `sigint-child`, grace 2000ms, tcpdump exit code 0, stderr tail: "tcpdump: data link type PKTAP
 dropped privs to <USER>
 tcpdump: listening on any, link-type PKTAP (Apple DLT_PKTAP), snapshot length 524288 bytes
 0 packets captured
-5156 packets received by filter
+18 packets received by filter
 0 packets dropped by kernel".
-- Capture filter: `(host 172.65.90.21 or host 172.65.90.20 or host 172.65.90.22 or host 172.65.90.23 or host 162.159.140.245 or host 172.66.0.243 or host 160.79.104.10) or port 53` (resolved provider IPs: 172.65.90.21, 172.65.90.20, 172.65.90.22, 172.65.90.23, 162.159.140.245, 172.66.0.243, 160.79.104.10).
-- Positive control: not-silent — 34 provider packet(s) (e.g. `1790483558.571012 IP <local-ip>.59066 > 172.65.90.21.443: Flags [S], seq 1746516550, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 1206096714 ecr 0,sackOK,eol], length 0`), so the filter and capture path observe provider traffic.
+- Capture filter: `(host 172.65.90.21 or host 172.65.90.20 or host 172.65.90.23 or host 172.65.90.22 or host 162.159.140.245 or host 172.66.0.243 or host 160.79.104.10) or port 53` (resolved provider IPs: 172.65.90.21, 172.65.90.20, 172.65.90.23, 172.65.90.22, 162.159.140.245, 172.66.0.243, 160.79.104.10).
+- Positive control: not-silent — 39 provider packet(s) (e.g. `1790506438.165005 IP <local-ip>.62891 > 172.65.90.21.443: Flags [S], seq 1657040332, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 53088307 ecr 0,sackOK,eol], length 0`), so the filter and capture path observe provider traffic.
 - Contract repair parity across OpenAI/Anthropic fixture shapes: identical parsed action; no-valid-action fixtures fail identically: true.
 
 ## Bottom line

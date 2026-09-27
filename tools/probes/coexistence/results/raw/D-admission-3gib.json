@@ -4287,5 +4287,41 @@
       }
     }
   ],
+  "imageSamples": [
+    {
+      "t": 0,
+      "seconds": 31.1
+    },
+    {
+      "t": 31143,
+      "seconds": 27.1
+    },
+    {
+      "t": 58202,
+      "seconds": 26.1
+    },
+    {
+      "t": 86255,
+      "seconds": 27.1
+    },
+    {
+      "t": 113305,
+      "seconds": 26.1
+    },
+    {
+      "t": 141364,
+      "seconds": 27.1
+    }
+  ],
+  "frameSamples": [
+    {
+      "t": 0,
+      "frameP95Ms": 18
+    },
+    {
+      "t": 180000,
+      "frameP95Ms": 18
+    }
+  ],
   "downsampled": false
 }

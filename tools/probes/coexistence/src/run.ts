@@ -36,10 +36,11 @@
 //   publish-raw
 //     Redacts results/A-baseline.json and results/D-admission-3gib.json
 //     (the two scenarios re-measured with the fixed instrumentation) down
-//     to per-request {t, ok, latencyMs} and per-tick {t, freeMiB,
-//     inactiveMiB, swapUsedMiB, rss} arrays — no prompts, no completions,
-//     no environment strings — and writes them under results/raw/, which
-//     is un-ignored so they can be committed. Downsamples memory ticks to
+//     to per-request {t, ok, latencyMs}, per-tick {t, freeMiB, inactiveMiB,
+//     swapUsedMiB, rss}, per-image {t, seconds}, and the two renderer
+//     frame-p95 snapshots {t, frameP95Ms} — no prompts, no completions, no
+//     environment strings — and writes them under results/raw/, which is
+//     un-ignored so they can be committed. Downsamples memory ticks to
 //     1-second buckets if the combined payload would exceed 300 KB.
 
 import {
@@ -71,12 +72,14 @@ import {
 import {
   type CandidateResult,
   choosePolicy,
-  computePenalty,
+  describeCandidate,
   evaluateCandidate,
+  formatPenaltyDisplay,
   isLlmEvaluable,
   llmEvaluabilityReason,
   type PolicyDecision,
   type PolicyName,
+  RENDERER_FRAME_P95_TARGET_MS,
   type ScenarioMetrics,
 } from "./policies";
 import {
@@ -506,7 +509,9 @@ function computeMedianSampleIntervalMs(
   return percentile50(deltas);
 }
 
-function buildScenarioMetrics(record: ScenarioRecord): ScenarioMetrics {
+function buildScenarioMetrics(
+  record: ScenarioRecord,
+): Omit<ScenarioMetrics, "historical"> {
   // Only successful requests feed the latency percentiles — a timed-out or
   // errored request measured near `timeoutMs` would otherwise pollute p95
   // with a number that isn't "how fast a real response came back", and an
@@ -544,16 +549,6 @@ interface ScenarioReportExtras {
   readonly label: string;
   /** Median gap (ms) between consecutive memory samples — verifies the sampler kept up; published so the report is checkable. */
   readonly medianSampleIntervalMs: number | undefined;
-  /**
-   * `false` when this entry's raw record was measured in the run that
-   * produced the current report (a "fresh" entry); `true` when it was
-   * carried over from a previously committed summary with no raw record
-   * in this run to re-derive it from (see {@link mergeSummaries}). A
-   * percentage penalty between a fresh baseline and a historical
-   * candidate compares two different measurement sessions and is not
-   * trustworthy — see `formatPenaltyForReport`.
-   */
-  readonly historical: boolean;
 }
 
 interface Summary {
@@ -674,42 +669,6 @@ function scenarioStatusLabel(
     : `${status.kind}: ${status.reason}`;
 }
 
-/**
- * A percentage penalty only means something when both sides were measured
- * in the same run. A historical candidate (carried over with no raw record
- * this run — see {@link mergeSummaries}) compared against a freshly
- * re-measured baseline (or vice versa) is a cross-session comparison: the
- * two numbers were never observed under the same concurrent conditions, so
- * the delta between them conflates "policy effect" with "which day this was
- * measured on" (see the corrected D-admission-3072MiB result, which swung
- * from -10.6% to +148.4% between two same-code, different-session runs).
- * Rendering a percentage here would misrepresent it as directly comparable.
- */
-function formatPenaltyForReport(
-  candidate: {
-    readonly llmP95Ms: number | undefined;
-    readonly historical: boolean;
-  },
-  baseline:
-    | { readonly llmP95Ms: number | undefined; readonly historical: boolean }
-    | undefined,
-): string {
-  if (!baseline) {
-    return "n/a";
-  }
-  if (candidate.historical !== baseline.historical) {
-    return "n/a (different session)";
-  }
-  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
-  if (penalty === undefined) {
-    return "n/a";
-  }
-  if (!Number.isFinite(penalty)) {
-    return "n/a (baseline p95 was 0ms)";
-  }
-  return `${penalty >= 0 ? "+" : ""}${(penalty * 100).toFixed(1)}%`;
-}
-
 function buildScenarioTable(summary: Summary): string {
   const rows: string[] = [];
   const header =
@@ -725,7 +684,9 @@ function buildScenarioTable(summary: Summary): string {
     );
   }
   for (const c of summary.candidates) {
-    const penaltyStr = formatPenaltyForReport(c, summary.baseline);
+    const penaltyStr = summary.baseline
+      ? formatPenaltyDisplay(c, summary.baseline)
+      : "n/a";
     const name =
       c.policy === "admission-queue"
         ? `D: admission-queue @ ${c.thresholdMiB}MiB`
@@ -788,22 +749,10 @@ function buildFindings(summary: Summary): readonly string[] {
   if (summary.baseline) {
     const baselineRef = summary.baseline;
     for (const c of summary.candidates) {
-      const label =
-        c.policy === "admission-queue"
-          ? `admission-queue@${c.thresholdMiB}MiB`
-          : c.policy;
-      const penaltyDesc = formatPenaltyForReport(c, baselineRef);
-      const status = evaluateCandidate(c, baselineRef);
-      const statusDesc =
-        status.kind === "viable"
-          ? "viable"
-          : `${status.kind}: ${status.reason}`;
       const sessionNote = c.historical
         ? " [historical: carried over, not independently re-verified this session]"
         : "";
-      findings.push(
-        `${label}: LLM p95 ${formatMs(c.llmP95Ms)}ms (${penaltyDesc} vs baseline), ${formatCounts(c)} successful/attempted LLM requests, ${c.imagesCompleted} image(s) completed, frame p95 ${formatFrame(c.frameEvaluable, c.rendererFrameP95Ms)} \u2014 ${statusDesc}${sessionNote}`,
-      );
+      findings.push(`${describeCandidate(c, baselineRef)}${sessionNote}`);
     }
   }
   for (const t of summary.transitions) {
@@ -824,25 +773,18 @@ function buildBottomLine(summary: Summary): string {
     return "Not enough scenarios recorded yet to make a policy recommendation — need the baseline plus at least one candidate.";
   }
   const d = summary.decision;
-  // The rationale text below is built inside policies.ts's pure choosePolicy
-  // and states each candidate's raw LLM p95 percentage as computed directly
-  // from the numbers — it has no concept of "session". A historical
-  // candidate's percentage there is not comparable to a freshly re-measured
-  // baseline (see formatPenaltyForReport); this note keeps the bottom line
-  // from silently contradicting the Findings/table above, which render
-  // those same comparisons as "n/a (different session)".
-  const hasHistorical = summary.candidates.some((c) => c.historical);
-  const historicalNote = hasHistorical
-    ? ' The percentages quoted above for historical candidates (carried over with no raw record re-measured this session) are cross-session comparisons against the current baseline and are not directly comparable — see the Findings/table above, which render those as "n/a (different session)".'
-    : "";
+  // `d.rationale` is built inside policies.ts's pure `choosePolicy`, which
+  // renders cross-session comparisons as "n/a (different session)" itself
+  // (see `formatPenaltyDisplay`/`describeCandidate`) — no disclaimer needed
+  // here, it's already correct at the source.
   if (d.policy === "inconclusive") {
-    return `**No heavy-work serialization policy is recommended yet — inconclusive.** ${d.rationale}${historicalNote}`;
+    return `**No heavy-work serialization policy is recommended yet — inconclusive.** ${d.rationale}`;
   }
   const label =
     d.policy === "admission-queue"
       ? `admission-queue @ ${d.thresholdMiB}MiB`
       : d.policy;
-  return `**Recommended heavy-work serialization policy: ${label}.** ${d.rationale}${historicalNote}`;
+  return `**Recommended heavy-work serialization policy: ${label}.** ${d.rationale}`;
 }
 
 const QUESTION =
@@ -903,8 +845,9 @@ function buildCaveat(): string {
     "No co-resident qemu-system-aarch64 VM was running during this probe's scenarios (checked via `pgrep -fl qemu` immediately before and after) — unlike the background load noted in tools/probes/inference-baseline/README.md's own caveat, this run's contention is attributable to the three tracked services alone plus the pre-existing swap floor above.",
     "Fro Bot review on PR #22 found three measurement bugs in the original run: LLM p50/p95 included failed/timed-out requests (inflating or, for an all-failed scenario, silently reading p95=0), a missing post-window frame dump fell back to the pre-window value instead of reading n/a, and 'no viable candidate' silently defaulted to recommending the mutex hypothesis instead of reporting inconclusive. All three are fixed in this run's code (success-only percentiles with a >=20-success/<=5%-error-rate evaluability floor, frame p95 only ever from a verified post-window sample, and an explicit 'inconclusive' outcome that never silently picks a fallback). The A (baseline) and D-admission-3072MiB scenarios were re-measured end to end with the fixed sampler; B (unconstrained), C (mutex), and D-admission-5120MiB were not re-run because their raw per-request records were gitignored and did not survive the worktree that produced them being retired — their rows below carry over the original run's LLM p50/p95/images/peak-swap numbers for context but are marked not-evaluable (their success/error counts and post-window frame samples cannot be recomputed without the lost raw records).",
     "The re-measured D-admission-queue@3072MiB result changed materially between runs: the original run (same code, same machine, several hours earlier in a long multi-scenario session) measured a -10.6% LLM p95 penalty; this fresh, independently-started re-run measured +148.4%, with LLM latency climbing roughly monotonically across the 3-minute window (352ms first request → 3329ms last) while sd.cpp generated images almost back-to-back (6 images in 180s — the 3072MiB gate was cleared almost continuously and rarely actually throttled image start). Both runs used the same (correct, success-only) percentile logic for this scenario — the difference is real machine-to-machine-session variance, not a measurement artifact, and it means a single 3-minute window's number for this threshold should not be treated as stable without a repeat measurement.",
+    `Viability criteria, stated explicitly: a candidate (or the baseline) must clear all of — \u226520 successful LLM requests with \u22645% error rate (MIN_SUCCESSFUL_LLM_REQUESTS/MAX_LLM_ERROR_RATE), a verified post-window renderer frame p95 sample, that frame p95 at or under ${RENDERER_FRAME_P95_TARGET_MS.toFixed(1)}ms — the RENDERER_FRAME_P95_TARGET_MS constant, the 30 FPS acceptance target from docs/product/acceptance.md's Rendering row — an LLM p95 penalty over the baseline of \u226425% (MAX_LLM_P95_PENALTY), at least one completed image, and no tracked process death. Any candidate or baseline failing the frame target is rejected on that basis alone, independent of how well it does on latency or throughput — the renderer regressing below the product's own acceptance bar isn't a heavy-work-policy tradeoff to accept.`,
     "Fro Bot's round-2 review on PR #22 found three more issues: a candidate could be recommended even when its (or the baseline's) renderer frame p95 had no verified post-window sample; the global mutex was structurally excluded from ever winning instead of being judged by the same criteria as every other candidate; and a historical candidate's LLM p95 percentage was compared directly against a freshly re-measured baseline as if both came from the same run. All three are fixed: evaluateCandidate/choosePolicy now treat a missing post-window frame sample (baseline or candidate) as not-evaluable — nothing can be recommended without one; the mutex is evaluated under the identical healthy/completes-images/<=25%-penalty/frame-evaluable bar as unconstrained and admission-queue, and can win on its own merits (it does not, here — see the table); and any comparison between a historical candidate and the current (fresh) baseline now renders as 'n/a (different session)' rather than a number, in both the results table and the findings list.",
-    "Redacted raw sample records for the two re-measured scenarios (A-baseline, D-admission-3gib) are published under results/raw/ (bun run src/run.ts publish-raw): per-request {t, ok, latencyMs} and per-tick {t, freeMiB, inactiveMiB, swapUsedMiB, rss} — no prompts, no completions, no environment strings — so the table above is independently checkable, not just an assertion. Combined payload here is well under the 300 KB budget (no downsampling needed); if a future re-run's combined payload exceeds it, memory ticks are downsampled to 1-second buckets and the published record says so via its own downsampled field.",
+    "Redacted raw sample records for the two re-measured scenarios (A-baseline, D-admission-3gib) are published under results/raw/ (bun run src/run.ts publish-raw): per-request {t, ok, latencyMs}, per-tick {t, freeMiB, inactiveMiB, swapUsedMiB, rss}, per-image {t, seconds}, and the renderer's before/after frame-p95 snapshots {t, frameP95Ms} — no prompts, no completions, no environment strings. The LLM latency series and the memory series are continuous per-tick data, so those two are independently checkable against the table above as full trends, not just an assertion. The renderer frame reading is not: it is a single before-window and single after-window keystroke-triggered dump (see the frame-p95 caveat above), not a continuously sampled series, so the published snapshots let you confirm the table's two numbers against the raw dump but not reconstruct a frame-time trend across the window. Combined payload here is well under the 300 KB budget (no downsampling needed); if a future re-run's combined payload exceeds it, memory ticks are downsampled to 1-second buckets and the published record says so via its own downsampled field.",
   ];
   const qemu = process.env.COEXISTENCE_QEMU_NOTE;
   if (qemu) {
@@ -1029,11 +972,32 @@ interface RedactedMemoryTick {
   readonly rss: Readonly<Record<string, number>>;
 }
 
+interface RedactedImageSample {
+  readonly t: number;
+  readonly seconds: number;
+}
+
+/**
+ * The renderer's `d`-keystroke frame-time dump is a single before-window
+ * and single after-window snapshot, not a continuously sampled series (see
+ * `sampleRendererFrameStats`) — so this is what exists to publish, not a
+ * per-tick time series like `memoryTicks`. `t` is relative ms since the
+ * scenario started: `0` for the pre-window sample, `durationMs` for the
+ * post-window one. Either side is `undefined` if that dump could not be
+ * captured (see `frameEvaluable` in summary.json).
+ */
+interface RedactedFrameSample {
+  readonly t: number;
+  readonly frameP95Ms: number | undefined;
+}
+
 interface RedactedScenario {
   readonly label: string;
   readonly durationMs: number;
   readonly llmSamples: readonly RedactedLlmSample[];
   readonly memoryTicks: readonly RedactedMemoryTick[];
+  readonly imageSamples: readonly RedactedImageSample[];
+  readonly frameSamples: readonly RedactedFrameSample[];
   /** `true` if `memoryTicks` was downsampled to keep the published total under {@link MAX_PUBLISHED_RAW_BYTES}. */
   readonly downsampled: boolean;
 }
@@ -1044,10 +1008,12 @@ function round1(value: number): number {
 
 /**
  * Strips a raw {@link ScenarioRecord} down to exactly the fields this
- * probe's decision depends on — per-request `{t, ok, latencyMs}` and
- * per-tick `{t, freeMiB, inactiveMiB, swapUsedMiB, rss}` — and nothing
- * else: no prompts, no completions, no environment strings, no derived
- * fields already published in `summary.json`. Never throws; `t` values are
+ * probe's decision depends on — per-request `{t, ok, latencyMs}`,
+ * per-tick `{t, freeMiB, inactiveMiB, swapUsedMiB, rss}`, per-image
+ * `{t, seconds}`, and the two renderer frame-p95 snapshots (`{t,
+ * frameP95Ms}` at the window's start and end) — and nothing else: no
+ * prompts, no completions, no environment strings, no derived fields
+ * already published in `summary.json`. Never throws; `t` values are
  * relative milliseconds since the scenario started, never wall-clock
  * timestamps.
  */
@@ -1067,11 +1033,21 @@ function redactScenarioRecord(record: ScenarioRecord): RedactedScenario {
       Object.entries(s.processRssMiB).map(([name, mib]) => [name, round1(mib)]),
     ),
   }));
+  const imageSamples: RedactedImageSample[] = record.imageSamples.map((s) => ({
+    t: Math.round(s.atMs),
+    seconds: round1(s.seconds),
+  }));
+  const frameSamples: RedactedFrameSample[] = [
+    { t: 0, frameP95Ms: record.rendererFrameP95Before },
+    { t: record.durationMs, frameP95Ms: record.rendererFrameP95After },
+  ];
   return {
     label: record.label,
     durationMs: record.durationMs,
     llmSamples,
     memoryTicks,
+    imageSamples,
+    frameSamples,
     downsampled: false,
   };
 }

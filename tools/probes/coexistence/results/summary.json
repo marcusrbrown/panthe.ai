@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-27T19:33:18.227Z",
+  "generatedAt": "2026-09-27T19:43:14.832Z",
   "environment": {
     "hardware": {
       "brand": "Apple M1 Pro",
@@ -119,6 +119,6 @@
   ],
   "decision": {
     "policy": "inconclusive",
-    "rationale": "No candidate cleared the +25.0% LLM p95 penalty bar while completing images, and none was silently defaulted to: admission-queue@3072MiB: LLM p95 3086ms (+148.4% vs baseline), 60/60 successful LLM requests, 6 image(s) completed, frame p95 18ms — failed: LLM p95 penalty +148.4% exceeds the +25.0% bar; unconstrained: LLM p95 2216ms (+78.4% vs baseline), LLM success/attempt counts unavailable, 7 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)); admission-queue@5120MiB: LLM p95 960ms (-22.7% vs baseline), LLM success/attempt counts unavailable, 0 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)); mutex: LLM p95 23094ms (+1759.3% vs baseline), LLM success/attempt counts unavailable, 8 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)). Further measurement is needed before recommending a heavy-work policy."
+    "rationale": "No candidate cleared the +25.0% LLM p95 penalty bar while completing images, and none was silently defaulted to: admission-queue@3072MiB: LLM p95 3086ms (+148.4% vs baseline), 60/60 successful LLM requests, 6 image(s) completed, frame p95 18ms — failed: LLM p95 penalty +148.4% exceeds the +25.0% bar; unconstrained: LLM p95 2216ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 7 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with; admission-queue@5120MiB: LLM p95 960ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 0 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with; mutex: LLM p95 23094ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 8 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with. Further measurement is needed before recommending a heavy-work policy."
   }
 }

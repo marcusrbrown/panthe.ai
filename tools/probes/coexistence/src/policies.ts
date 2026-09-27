@@ -38,6 +38,16 @@ const MIN_SUCCESSFUL_LLM_REQUESTS = 20;
 /** A scenario whose LLM error rate (of all attempted requests) exceeds this is not evaluable. */
 const MAX_LLM_ERROR_RATE = 0.05;
 const MAX_LLM_P95_PENALTY = 0.25;
+/**
+ * The renderer acceptance target from docs/product/acceptance.md's
+ * Rendering row ("30 FPS or better during ordinary play"), expressed as a
+ * frame-time p95 budget in ms. A candidate (or the baseline) whose
+ * renderer frame p95 exceeds this is not viable, regardless of how well it
+ * does on LLM latency or image throughput — the renderer regressing below
+ * the product's own acceptance bar isn't a heavy-work-policy tradeoff to
+ * accept, it's a failed measurement. Cited in this README's criteria.
+ */
+export const RENDERER_FRAME_P95_TARGET_MS = 1000 / 30;
 
 /** Measurements common to the baseline scenario and every candidate policy scenario. */
 export interface ScenarioMetrics {
@@ -59,6 +69,17 @@ export interface ScenarioMetrics {
   readonly minFreeMiB: number;
   /** Any OOM/jetsam kill or unexpected process exit during the scenario. */
   readonly processDied: boolean;
+  /**
+   * `false` when this entry's raw record was measured in the same run as
+   * the summary it's being compared against (a "fresh" entry); `true` when
+   * it was carried over from a previously committed summary with no raw
+   * record in this run to re-derive it from. A percentage penalty between
+   * a fresh baseline and a historical candidate (or vice versa) compares
+   * two different measurement sessions and is never rendered as a number
+   * (see `formatPenaltyDisplay`) — nor trusted for viability (see
+   * `evaluateCandidate`).
+   */
+  readonly historical: boolean;
 }
 
 export interface CandidateResult extends ScenarioMetrics {
@@ -163,6 +184,22 @@ export function evaluateCandidate(
         "baseline frame p95 not evaluable (no post-window sample) — nothing can be recommended without a verified renderer reading for the baseline",
     };
   }
+  if (
+    baseline.rendererFrameP95Ms !== undefined &&
+    baseline.rendererFrameP95Ms > RENDERER_FRAME_P95_TARGET_MS
+  ) {
+    return {
+      kind: "not-evaluable",
+      reason: `baseline frame p95 ${formatMs(baseline.rendererFrameP95Ms)} exceeds the ${RENDERER_FRAME_P95_TARGET_MS.toFixed(1)}ms (30 FPS) target — the baseline itself isn't a healthy renderer reading to compare candidates against`,
+    };
+  }
+  if (candidate.historical !== baseline.historical) {
+    return {
+      kind: "not-evaluable",
+      reason:
+        "measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with",
+    };
+  }
   if (!isLlmEvaluable(candidate)) {
     return {
       kind: "not-evaluable",
@@ -173,6 +210,15 @@ export function evaluateCandidate(
     return {
       kind: "not-evaluable",
       reason: "frame p95 not evaluable (no post-window sample)",
+    };
+  }
+  if (
+    candidate.rendererFrameP95Ms !== undefined &&
+    candidate.rendererFrameP95Ms > RENDERER_FRAME_P95_TARGET_MS
+  ) {
+    return {
+      kind: "failed",
+      reason: `frame p95 ${formatMs(candidate.rendererFrameP95Ms)} exceeds the ${RENDERER_FRAME_P95_TARGET_MS.toFixed(1)}ms (30 FPS) target`,
     };
   }
   if (candidate.processDied) {
@@ -211,6 +257,26 @@ function formatMs(value: number | undefined): string {
   return value === undefined ? "n/a" : `${value.toFixed(0)}ms`;
 }
 
+/**
+ * The only place a penalty percentage is rendered as text: `n/a (different
+ * session)` when `candidate.historical !== baseline.historical` (the two
+ * were never measured concurrently, so a delta between them conflates
+ * "policy effect" with "which day this was measured on" — see the
+ * corrected D-admission-3072MiB result, which swung from -10.6% to
+ * +148.4% between two same-code, different-session runs), otherwise the
+ * usual percentage (or `n/a` if either p95 is unavailable).
+ */
+export function formatPenaltyDisplay(
+  candidate: CandidateResult,
+  baseline: ScenarioMetrics,
+): string {
+  if (candidate.historical !== baseline.historical) {
+    return "n/a (different session)";
+  }
+  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
+  return penalty === undefined ? "n/a" : formatPct(penalty);
+}
+
 /** One-line, fully self-contained description of a candidate: LLM p95 + penalty, success/error counts, images, frame evaluability, and its evaluation status — never silently omits why a candidate wasn't picked. */
 export function describeCandidate(
   candidate: CandidateResult,
@@ -220,9 +286,8 @@ export function describeCandidate(
     candidate.policy === "admission-queue"
       ? `admission-queue@${candidate.thresholdMiB}MiB`
       : candidate.policy;
-  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
-  const penaltyDesc =
-    penalty !== undefined ? ` (${formatPct(penalty)} vs baseline)` : "";
+  const penaltyDisplay = formatPenaltyDisplay(candidate, baseline);
+  const penaltyDesc = ` (${penaltyDisplay} vs baseline)`;
   const frameDesc = candidate.frameEvaluable
     ? `frame p95 ${formatMs(candidate.rendererFrameP95Ms)}`
     : "frame p95 not evaluable (no post-window sample)";
@@ -263,6 +328,15 @@ export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
       policy: "inconclusive",
       rationale:
         "Baseline frame p95 is not evaluable (no post-window sample) \u2014 no candidate can be recommended without a verified renderer frame reading for the baseline. Further measurement needed.",
+    };
+  }
+  if (
+    baseline.rendererFrameP95Ms !== undefined &&
+    baseline.rendererFrameP95Ms > RENDERER_FRAME_P95_TARGET_MS
+  ) {
+    return {
+      policy: "inconclusive",
+      rationale: `Baseline frame p95 ${formatMs(baseline.rendererFrameP95Ms)} exceeds the ${RENDERER_FRAME_P95_TARGET_MS.toFixed(1)}ms (30 FPS) target \u2014 the baseline itself isn't a healthy renderer reading to compare candidates against. Further measurement needed.`,
     };
   }
 

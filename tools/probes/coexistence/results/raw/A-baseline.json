@@ -3905,5 +3905,16 @@
       }
     }
   ],
+  "imageSamples": [],
+  "frameSamples": [
+    {
+      "t": 0,
+      "frameP95Ms": 17
+    },
+    {
+      "t": 180000,
+      "frameP95Ms": 18
+    }
+  ],
   "downsampled": false
 }

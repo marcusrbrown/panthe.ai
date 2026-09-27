@@ -6,6 +6,7 @@ import {
   describeCandidate,
   isLlmEvaluable,
   llmEvaluabilityReason,
+  RENDERER_FRAME_P95_TARGET_MS,
 } from "./policies";
 
 const baseline: ScenarioMetrics = {
@@ -20,6 +21,7 @@ const baseline: ScenarioMetrics = {
   peakSwapUsedMiB: 7000,
   minFreeMiB: 900,
   processDied: false,
+  historical: false,
 };
 
 function candidate(
@@ -37,6 +39,7 @@ function candidate(
     peakSwapUsedMiB: 7200,
     minFreeMiB: 850,
     processDied: false,
+    historical: false,
     ...overrides,
   };
 }
@@ -412,6 +415,69 @@ test("a candidate with a verified frame sample is still selected when it clears 
     ],
   });
   expect(decision.policy).toBe("unconstrained");
+});
+
+test("RENDERER_FRAME_P95_TARGET_MS is the 30 FPS acceptance target (docs/product/acceptance.md)", () => {
+  expect(RENDERER_FRAME_P95_TARGET_MS).toBeCloseTo(33.33, 1);
+});
+
+test("a candidate whose renderer frame p95 exceeds the 30 FPS target is not viable, even with a perfect LLM penalty and full image throughput", () => {
+  const slowFrameCandidate = candidate({
+    policy: "unconstrained",
+    llmP95Ms: 1510, // +0.7%, would otherwise clearly win
+    imagesCompleted: 5,
+    rendererFrameP95Ms: 40, // well above the ~33.3ms target
+    frameEvaluable: true,
+  });
+  const decision = choosePolicy({
+    baseline,
+    candidates: [slowFrameCandidate],
+  });
+  expect(decision.policy).toBe("inconclusive");
+  expect(decision.rationale).toContain("exceeds the");
+  expect(decision.rationale).toContain("30 FPS");
+});
+
+test("a candidate right at the frame target boundary is viable; just over it is not", () => {
+  const atTarget = candidate({
+    policy: "unconstrained",
+    llmP95Ms: 1510,
+    imagesCompleted: 5,
+    rendererFrameP95Ms: RENDERER_FRAME_P95_TARGET_MS,
+  });
+  expect(choosePolicy({ baseline, candidates: [atTarget] }).policy).toBe(
+    "unconstrained",
+  );
+
+  const justOver = candidate({
+    policy: "unconstrained",
+    llmP95Ms: 1510,
+    imagesCompleted: 5,
+    rendererFrameP95Ms: RENDERER_FRAME_P95_TARGET_MS + 0.1,
+  });
+  expect(choosePolicy({ baseline, candidates: [justOver] }).policy).toBe(
+    "inconclusive",
+  );
+});
+
+test("a baseline whose own renderer frame p95 exceeds the 30 FPS target makes the whole decision inconclusive — it isn't a healthy comparison basis", () => {
+  const slowBaseline: ScenarioMetrics = {
+    ...baseline,
+    rendererFrameP95Ms: 45,
+  };
+  const decision = choosePolicy({
+    baseline: slowBaseline,
+    candidates: [
+      candidate({
+        policy: "unconstrained",
+        llmP95Ms: 1510,
+        imagesCompleted: 5,
+      }),
+    ],
+  });
+  expect(decision.policy).toBe("inconclusive");
+  expect(decision.rationale).toContain("Baseline frame p95");
+  expect(decision.rationale).toContain("exceeds the");
 });
 
 test("a missing baseline frame dump makes the whole decision inconclusive, regardless of how healthy every candidate looks", () => {

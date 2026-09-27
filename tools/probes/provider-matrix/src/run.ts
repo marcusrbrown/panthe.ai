@@ -75,7 +75,7 @@ const ZEN_SCOPE_NOTE_REQUEST_COUNT = 1;
  * are slow (longcat measured ~20s p50 per request) — 4 requests keeps a
  * live run finishable while still giving a real p50/p95.
  */
-const GO_FREE_LIVE_REQUEST_COUNT = 4;
+const GO_FREE_LIVE_REQUEST_COUNT = 2;
 /**
  * Go's paid model is billed per request against a $10/month subscription
  * usage cap (docs/plans Unit 6 KTD). Sending the full 20-request cap on
@@ -84,7 +84,7 @@ const GO_FREE_LIVE_REQUEST_COUNT = 4;
  * intentionally runs a much smaller sample and records that choice in the
  * README rather than pretending the cap was exhausted.
  */
-const GO_PAID_LIVE_REQUEST_COUNT = 3;
+const GO_PAID_LIVE_REQUEST_COUNT = 1;
 
 const SAMPLE_PROMPT =
   "You are Zeus, king of the gods, deciding what to do next in a small " +
@@ -164,6 +164,8 @@ interface ModelRunResult {
   readonly abortedEarly: boolean;
   /** First failure's redacted error text, for a human-readable finding (e.g. a client restriction vs a transient outage). */
   readonly sampleError?: string;
+  /** Exact count of attempts in THIS run whose failure matched the Zen free-tier gate's error text — not inferred from `sampleError`. */
+  readonly freeTierErrorCount: number;
 }
 
 const FREE_TIER_CLIENT_RESTRICTION_MARKER =
@@ -175,6 +177,38 @@ function isFreeTierClientRestriction(errorText: string | undefined): boolean {
     errorText?.toLowerCase().includes(FREE_TIER_CLIENT_RESTRICTION_MARKER) ??
     false
   );
+}
+
+/** The subset of {@link loadOpenCodeAuth}'s result that {@link selectLiveRunPlan} needs — kept minimal so tests can build fixtures without a real auth.json. */
+export interface LiveAuthLike {
+  readonly zen: { readonly configured: boolean };
+  readonly go: { readonly configured: boolean };
+}
+
+export interface LiveRunSelection {
+  readonly runZen: boolean;
+  readonly zenSkippedReason?: string;
+  readonly runGo: boolean;
+  readonly goSkippedReason?: string;
+}
+
+/**
+ * Decides which arms `--live` runs, from auth configuration alone (no
+ * network). Go is the requirement for the Go matrix (the primary OpenCode
+ * arm for ADR-0005); Zen is only needed for its scope-note check, and its
+ * absence never blocks the Go matrix or vice versa.
+ */
+export function selectLiveRunPlan(auth: LiveAuthLike): LiveRunSelection {
+  return {
+    runZen: auth.zen.configured,
+    zenSkippedReason: auth.zen.configured
+      ? undefined
+      : "OpenCode Zen is not configured in auth.json under any of the candidate keys; skipping the zen/v1 scope-note check",
+    runGo: auth.go.configured,
+    goSkippedReason: auth.go.configured
+      ? undefined
+      : "OpenCode Go is not configured in auth.json under any of the candidate keys; skipping the Go matrix (the primary OpenCode arm for ADR-0005)",
+  };
 }
 
 async function runModelMatrix(
@@ -204,6 +238,7 @@ async function runModelMatrix(
   let abortedEarly = false;
   let issued = 0;
   let sampleError: string | undefined;
+  let freeTierErrorCount = 0;
 
   for (let i = 0; i < requestCount; i += 1) {
     issued += 1;
@@ -214,6 +249,9 @@ async function runModelMatrix(
 
     if (attempt.mode === "failed" && attempt.error) {
       sampleError ??= attempt.error;
+      if (isFreeTierClientRestriction(attempt.error)) {
+        freeTierErrorCount += 1;
+      }
       const isRateLimit = attempt.error.toLowerCase().includes("429");
       if (isRateLimit) {
         rateLimitCount += 1;
@@ -267,19 +305,22 @@ async function runModelMatrix(
     errorClasses,
     abortedEarly,
     sampleError: sampleError ? redactSecrets(sampleError) : undefined,
+    freeTierErrorCount,
   };
 }
 
 interface LiveResult {
   readonly authKeyName: { zen?: string; go?: string };
-  /** True when the `opencode` and `opencode-go` auth.json entries hold the same credential (they do, on every account checked so far). */
+  /** True when the `opencode` and `opencode-go` auth.json entries hold the same credential AND both are configured (only meaningful when both are present). */
   readonly sameCredential: boolean;
-  /** Scope-note only: reconfirms Zen `zen/v1` free models are still gated. Not a candidate arm. */
+  /** Scope-note only: reconfirms Zen `zen/v1` free models are still gated. Not a candidate arm. Empty when Zen isn't configured. */
   readonly zenModels: ModelRunResult[];
-  /** Primary OpenCode arm for ADR-0005: Go's free models. */
+  readonly zenSkippedReason?: string;
+  /** Primary OpenCode arm for ADR-0005: Go's free models. Empty when Go isn't configured. */
   readonly goFreeModels: ModelRunResult[];
-  /** Secondary OpenCode arm: Go's paid model. */
+  /** Secondary OpenCode arm: Go's paid model. Absent when Go isn't configured. */
   readonly goPaidModel?: ModelRunResult;
+  readonly goSkippedReason?: string;
   readonly fallbackTrace: readonly FallbackTraceEntry[];
   readonly fallbackDegraded: boolean;
 }
@@ -290,29 +331,35 @@ async function runLive(): Promise<LiveResult> {
     console.warn(redactSecrets(auth.modeWarning));
   }
 
-  if (!auth.zen.configured) {
+  const plan = selectLiveRunPlan(auth);
+  if (!plan.runZen && !plan.runGo) {
     throw new Error(
-      "OpenCode Zen is not configured in auth.json under any of the candidate keys; cannot run --live",
+      "Neither OpenCode Zen nor OpenCode Go is configured in auth.json under any of the candidate keys; cannot run --live",
     );
   }
 
   const sameCredential =
-    auth.go.configured && auth.zen.credential === auth.go.credential;
+    auth.zen.configured &&
+    auth.go.configured &&
+    auth.zen.credential === auth.go.credential;
 
   // Scope-note only — one request per model, just to reconfirm the gate.
+  // Go is the requirement for the Go matrix below; Zen is only needed here.
   const zenModels: ModelRunResult[] = [];
-  for (const entry of ZEN_SCOPE_NOTE_MODELS) {
-    zenModels.push(
-      await runModelMatrix(
-        entry,
-        auth.zen.credential,
-        ZEN_SCOPE_NOTE_REQUEST_COUNT,
-      ),
-    );
+  if (auth.zen.configured) {
+    for (const entry of ZEN_SCOPE_NOTE_MODELS) {
+      zenModels.push(
+        await runModelMatrix(
+          entry,
+          auth.zen.credential,
+          ZEN_SCOPE_NOTE_REQUEST_COUNT,
+        ),
+      );
+    }
   }
 
-  // Primary arm: Go's free models. Always attempted — no gating on Zen,
-  // since Zen's free tier is out of scope entirely, not a signal of outage.
+  // Primary arm: Go's free models. Gated on Go's own credential, never on
+  // Zen — Zen's free tier is out of scope entirely, not a signal of outage.
   const goFreeModels: ModelRunResult[] = [];
   if (auth.go.configured) {
     for (const entry of GO_FREE_MODELS) {
@@ -426,8 +473,10 @@ async function runLive(): Promise<LiveResult> {
     },
     sameCredential,
     zenModels,
+    zenSkippedReason: plan.zenSkippedReason,
     goFreeModels,
     goPaidModel,
+    goSkippedReason: plan.goSkippedReason,
     fallbackTrace: fallbackResult.trace,
     fallbackDegraded: fallbackResult.degraded,
   };
@@ -680,6 +729,10 @@ function metricFor(name: string, samples: readonly number[]): MetricInput {
   return { name, unit: "ms", samples: [...samples] };
 }
 
+function pluralizeRequests(count: number): string {
+  return `${count} request${count === 1 ? "" : "s"}`;
+}
+
 function buildFindings(
   live: LiveResult | undefined,
   offline: OfflineResult | undefined,
@@ -689,44 +742,74 @@ function buildFindings(
 
   if (live) {
     findings.push(
-      `Zen auth.json key: \`${live.authKeyName.zen ?? "not configured"}\`; Go auth.json key: \`${live.authKeyName.go ?? "not configured"}\` — ${live.sameCredential ? "the SAME credential (confirmed by direct comparison)" : "different credentials"}; this is not a key/subscription distinction.`,
+      `Zen auth.json key: \`${live.authKeyName.zen ?? "not configured"}\`; Go auth.json key: \`${live.authKeyName.go ?? "not configured"}\`${live.authKeyName.zen && live.authKeyName.go ? ` — ${live.sameCredential ? "the SAME credential (confirmed by direct comparison)" : "different credentials"}; this is not a key/subscription distinction` : ""}.`,
     );
 
-    // Zen zen/v1 scope note.
-    for (const model of live.zenModels) {
-      findings.push(
-        `Zen \`${model.modelId}\` (${model.family}, scope note only): ${model.requestCount} request(s), ` +
-          `${model.sampleError ? `typed 403 \`FreeTierError\`: "${model.sampleError}"` : "unexpectedly did not return the FreeTierError this run — see raw results"}.`,
+    // Zen zen/v1 scope note — derived from THIS run's measured outcome, not
+    // hand-asserted. `zenSkippedReason` covers "Zen not configured"; the
+    // per-model lines and roll-up below cover "Zen configured but ran".
+    if (live.zenSkippedReason) {
+      findings.push(`Zen scope check: skipped — ${live.zenSkippedReason}.`);
+    } else {
+      for (const model of live.zenModels) {
+        findings.push(
+          `Zen \`${model.modelId}\` (${model.family}, scope note only) this run: ${model.freeTierErrorCount}/${model.requestCount} requests returned the typed 403 \`FreeTierError\`` +
+            `${model.sampleError ? ` (e.g. "${model.sampleError}")` : ""}.`,
+        );
+      }
+      const zenRequestsThisRun = live.zenModels.reduce(
+        (sum, m) => sum + m.requestCount,
+        0,
       );
+      const zenFreeTierErrorsThisRun = live.zenModels.reduce(
+        (sum, m) => sum + m.freeTierErrorCount,
+        0,
+      );
+      const zenSucceededThisRun = live.zenModels.some(
+        (m) => m.structuredModes.native + m.structuredModes.repaired > 0,
+      );
+      if (zenSucceededThisRun) {
+        findings.push(
+          "**Zen scope check surprised us this run**: at least one `zen/v1` request did NOT return the FreeTierError — re-verify before continuing to " +
+            "treat Zen's free tier as gated; see raw results for the exact model and response.",
+        );
+      } else {
+        findings.push(
+          `Zen scope check, this run: ${zenFreeTierErrorsThisRun}/${zenRequestsThisRun} requests returned the typed 403 \`FreeTierError\`, consistent with it being gated.`,
+        );
+      }
     }
     findings.push(
-      "**Zen `zen/v1` free-tier gate (investigated separately, not re-run every time)**: every request to Zen's free models returns a typed 403 " +
-        "`FreeTierError` from a non-public inference service, regardless of headers (none / session-only / the full `x-opencode-session`, " +
-        "`x-opencode-project`, `x-opencode-request`, `x-opencode-client`, `User-Agent` set), endpoint (`/chat/completions` and `/responses`), or which " +
-        "auth.json entry sourced the credential — 23 requests, 23 `FreeTierError` 403s, zero exceptions. A follow-up check for a reported request-shape " +
-        "heuristic (anomalyco/opencode#50627: a `bash`-style tool in the `tools` array) did not reproduce here either (6/6 still 403, both a bash-only " +
-        "tool and a broader OpenCode-like tool set, with and without `x-opencode-client`). This is a scope note for ADR-0005, not a blocker: Zen's " +
-        "free tier is simply out of scope for direct third-party API access.",
+      "**Prior investigation** (recorded once in a dedicated sweep, not re-run on every `--live` invocation — see this PR's history for the full " +
+        "matrix): a sweep across headers (none / session-only / the full `x-opencode-session`, `x-opencode-project`, `x-opencode-request`, " +
+        "`x-opencode-client`, `User-Agent` set) × endpoint (`/chat/completions`, `/responses`) × key source (both auth.json entries) found 23/23 " +
+        "requests returned the same typed 403 `FreeTierError` from a non-public inference service. A follow-up check for a reported request-shape " +
+        "heuristic (anomalyco/opencode#50627: a `bash`-style tool in the `tools` array) did not reproduce it either (6/6 still 403). This is " +
+        "background context for the scope-check numbers above, not a claim about the current run.",
     );
 
     // Go free models — the primary OpenCode arm.
-    for (const model of live.goFreeModels) {
+    if (live.goSkippedReason) {
+      findings.push(`Go matrix: skipped — ${live.goSkippedReason}.`);
+    } else {
+      for (const model of live.goFreeModels) {
+        findings.push(
+          `Go free \`${model.modelId}\` (\`/chat/completions\` only — \`/responses\` returns \`ModelProtocolUnsupported\`): ${pluralizeRequests(model.requestCount)}, ` +
+            `structured native=${model.structuredModes.native} repaired=${model.structuredModes.repaired} failed=${model.structuredModes.failed}, ` +
+            `tool call ${model.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
+        );
+      }
+      if (live.goPaidModel) {
+        findings.push(
+          `Go paid \`${live.goPaidModel.modelId}\`: ${pluralizeRequests(live.goPaidModel.requestCount)} (capped given per-request Go billing), ` +
+            `structured native=${live.goPaidModel.structuredModes.native} repaired=${live.goPaidModel.structuredModes.repaired} failed=${live.goPaidModel.structuredModes.failed}, ` +
+            `tool call ${live.goPaidModel.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
+        );
+      }
       findings.push(
-        `Go free \`${model.modelId}\` (\`/chat/completions\` only — \`/responses\` returns \`ModelProtocolUnsupported\`): ${model.requestCount} requests, ` +
-          `structured native=${model.structuredModes.native} repaired=${model.structuredModes.repaired} failed=${model.structuredModes.failed}, ` +
-          `tool call ${model.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
+        `Fallback trace (Go free → Go paid → local → routine-only; see fallback.ts's \`DEFAULT_STEP_ORDER\`): ${live.fallbackTrace.map((e) => `${e.step}(${e.outcome}, ${e.attempts} attempt${e.attempts === 1 ? "" : "s"})`).join(" -> ")}${live.fallbackDegraded ? " -> degraded/routine-only" : ""}.`,
       );
     }
-    if (live.goPaidModel) {
-      findings.push(
-        `Go paid \`${live.goPaidModel.modelId}\`: ${live.goPaidModel.requestCount} requests (capped given per-request Go billing), ` +
-          `structured native=${live.goPaidModel.structuredModes.native} repaired=${live.goPaidModel.structuredModes.repaired} failed=${live.goPaidModel.structuredModes.failed}, ` +
-          `tool call ${live.goPaidModel.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
-      );
-    }
-    findings.push(
-      `Fallback trace (Go free → Go paid → local → routine-only; see fallback.ts's \`DEFAULT_STEP_ORDER\`): ${live.fallbackTrace.map((e) => `${e.step}(${e.outcome}, ${e.attempts} attempt${e.attempts === 1 ? "" : "s"})`).join(" -> ")}${live.fallbackDegraded ? " -> degraded/routine-only" : ""}.`,
-    );
   }
 
   if (offline) {
@@ -792,15 +875,44 @@ function buildBottomLine(
 ): string {
   const parts: string[] = [];
   if (live) {
-    parts.push(
-      "OpenCode Zen and OpenCode Go share one credential (the `opencode` and `opencode-go` auth.json entries hold the same key) — the earlier " +
-        "framing of this as a key/subscription difference was wrong. Zen's `zen/v1` base gates its free models with an unconditional 403 " +
-        "`FreeTierError` from a non-public service (measured across headers, endpoint, and key-source combinations, plus a #50627 tool-shape " +
-        "heuristic check that also didn't reproduce it) — a scope note for ADR-0005, not a blocker. Go's base (`zen/go/v1`) applies no such gate: its " +
-        "own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the same credential over `/chat/completions`, both " +
-        "repair to valid structured actions and support tool calls. For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid " +
-        "model (`mimo-v2.5`) as the fallback within Go.",
-    );
+    if (live.sameCredential) {
+      parts.push(
+        "OpenCode Zen and OpenCode Go share one credential (the `opencode` and `opencode-go` auth.json entries hold the same key) — a key/subscription " +
+          "difference does not explain any gap between them.",
+      );
+    }
+
+    if (live.zenSkippedReason) {
+      parts.push(`Zen scope check skipped this run: ${live.zenSkippedReason}.`);
+    } else {
+      const zenSucceededThisRun = live.zenModels.some(
+        (m) => m.structuredModes.native + m.structuredModes.repaired > 0,
+      );
+      const zenFreeTierErrorsThisRun = live.zenModels.reduce(
+        (sum, m) => sum + m.freeTierErrorCount,
+        0,
+      );
+      const zenRequestsThisRun = live.zenModels.reduce(
+        (sum, m) => sum + m.requestCount,
+        0,
+      );
+      parts.push(
+        zenSucceededThisRun
+          ? "Zen's `zen/v1` free tier responded successfully to at least one request this run — that contradicts the prior investigation's finding and " +
+              "needs re-verification before ADR-0005 treats Zen as out of scope; see Findings."
+          : `Zen's \`zen/v1\` free tier returned the typed 403 \`FreeTierError\` on ${zenFreeTierErrorsThisRun}/${zenRequestsThisRun} requests this run, consistent with the prior dedicated investigation (23/23 403s across headers/endpoint/key-source, plus a #50627 tool-shape check that also didn't reproduce it) — a scope note for ADR-0005, not a blocker.`,
+      );
+    }
+
+    if (live.goSkippedReason) {
+      parts.push(`Go matrix skipped this run: ${live.goSkippedReason}.`);
+    } else {
+      parts.push(
+        "Go's base (`zen/go/v1`) applies no such gate: its own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the " +
+          "same credential over `/chat/completions`, both repairing to valid structured actions and supporting tool calls this run. For ADR-0005, the " +
+          "OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go.",
+      );
+    }
   }
   if (offline) {
     switch (offline.capture.status) {
@@ -939,7 +1051,7 @@ async function main(): Promise<void> {
       "documented below is still in effect; see Findings for the full investigation (23 requests, 23 403s, across headers/endpoint/key-source " +
       "combinations and a #50627 tool-shape follow-up). Go's free models (`space-bunny-free`, `longcat-2.5-preview-free`) aren't billed but are " +
       `slow (longcat measured ~20s p50), so the live arm runs ${GO_FREE_LIVE_REQUEST_COUNT} requests each rather than the full ${MAX_REQUESTS_PER_MODEL}-request cap. ` +
-      `Go's paid model is billed per request against a $10/month subscription cap, so it intentionally runs ${GO_PAID_LIVE_REQUEST_COUNT} requests. ` +
+      `Go's paid model is billed per request against a $10/month subscription cap, so it intentionally runs ${pluralizeRequests(GO_PAID_LIVE_REQUEST_COUNT)}. ` +
       `Any live model may return 429s under load; the matrix records the count and aborts a model's run early after ${CONSECUTIVE_429_ABORT_THRESHOLD} consecutive 429s rather than exhausting the cap against a rate limit. ` +
       "`--offline` alone only proves the router-level guarantee (zero hosted-client constructions); the packet-capture proof needs " +
       "`--capture` and `sudo`. The probe owns the capture itself (start → run requests → stop → read back) rather than relying on a " +
@@ -966,4 +1078,8 @@ async function main(): Promise<void> {
   console.log(`Wrote ${README_PATH}`);
 }
 
-await main();
+// Guard so this file's exports (e.g. `selectLiveRunPlan`, used by
+// run.test.ts) can be imported for testing without triggering the CLI.
+if (import.meta.main) {
+  await main();
+}

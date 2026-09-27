@@ -1150,6 +1150,61 @@ export function buildFindings(
   return findings;
 }
 
+/** Discriminated verdict for Go's free-model matrix, derived from measured results — never a fixed "reachable"/"free models first" claim, since that framing is only true when every model actually produced a valid action. */
+type GoFreeModelsVerdict =
+  | { readonly kind: "empty" }
+  | { readonly kind: "all-failed"; readonly total: number }
+  | {
+      readonly kind: "partial";
+      readonly validCount: number;
+      readonly total: number;
+      readonly names: string;
+    }
+  | {
+      readonly kind: "all-succeeded";
+      readonly total: number;
+      readonly names: string;
+      readonly toolCallCount: number;
+    };
+
+/**
+ * Evaluates Go's free-model matrix from measured results rather than
+ * assuming success — a model that failed to produce a valid action must
+ * not be silently rolled into a "reachable, free models first" claim that
+ * was only ever true for the run that first wrote that sentence. Zero
+ * models exercised, zero valid actions, and a mix of valid/invalid all
+ * render distinctly in {@link buildBottomLine}.
+ */
+function evaluateGoFreeModels(
+  goFreeModels: readonly ModelRunResult[],
+): GoFreeModelsVerdict {
+  if (goFreeModels.length === 0) {
+    return { kind: "empty" };
+  }
+  const names = goFreeModels.map((m) => `\`${m.modelId}\``).join(", ");
+  const valid = goFreeModels.filter(
+    (m) => m.structuredModes.native + m.structuredModes.repaired > 0,
+  );
+  if (valid.length === 0) {
+    return { kind: "all-failed", total: goFreeModels.length };
+  }
+  if (valid.length < goFreeModels.length) {
+    return {
+      kind: "partial",
+      validCount: valid.length,
+      total: goFreeModels.length,
+      names,
+    };
+  }
+  const withToolCalls = goFreeModels.filter((m) => m.toolCallSupported > 0);
+  return {
+    kind: "all-succeeded",
+    total: goFreeModels.length,
+    names,
+    toolCallCount: withToolCalls.length,
+  };
+}
+
 export function buildBottomLine(
   live: LiveResult | undefined,
   offline: OfflineResult | undefined,
@@ -1189,11 +1244,42 @@ export function buildBottomLine(
     if (live.goSkippedReason) {
       parts.push(`Go matrix skipped this run: ${live.goSkippedReason}.`);
     } else {
-      parts.push(
-        "Go's base (`zen/go/v1`) applies no such gate: its own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the " +
-          "same credential over `/chat/completions`, both repairing to valid structured actions and supporting tool calls this run. For ADR-0005, the " +
-          "OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go.",
-      );
+      const verdict = evaluateGoFreeModels(live.goFreeModels);
+      switch (verdict.kind) {
+        case "empty": {
+          parts.push(
+            "Go's free-model matrix produced no data this run (no models exercised) — no reachability or suitability claim can be made for the Go arm.",
+          );
+          break;
+        }
+        case "all-failed": {
+          parts.push(
+            `Go's free-model matrix FAILED this run: 0/${verdict.total} models produced a valid structured action — the Go arm is failed/inconclusive this run; it cannot be treated as reachable or as the confirmed OpenCode arm without re-verification. See Findings.`,
+          );
+          break;
+        }
+        case "partial": {
+          parts.push(
+            `Go's free-model matrix produced mixed results this run: ${verdict.validCount}/${verdict.total} models (${verdict.names}) produced a valid structured action — see Findings for which model(s) failed before treating Go as the confirmed OpenCode arm.`,
+          );
+          break;
+        }
+        case "all-succeeded": {
+          const toolPart =
+            verdict.toolCallCount === verdict.total
+              ? "all supporting tool calls"
+              : `${verdict.toolCallCount}/${verdict.total} supporting tool calls`;
+          parts.push(
+            `Go's base (\`zen/go/v1\`) applies no such gate: its own free models (${verdict.names}) are reachable over \`/chat/completions\` and all produced a valid structured action this run, ${toolPart}. ` +
+              "For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go.",
+          );
+          break;
+        }
+        default: {
+          const never: never = verdict;
+          throw new Error(`unhandled Go free-model verdict: ${String(never)}`);
+        }
+      }
     }
   }
   if (offline) {

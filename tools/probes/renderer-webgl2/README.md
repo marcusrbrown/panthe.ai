@@ -581,11 +581,13 @@ above is required at the pinned version forever.
   **automatic same-instance recovery is unavailable in this build** —
   there's no `webglcontextrestored` path that clears the latch, so
   `render()` keeps being called without throwing but never produces a
-  frame again for that instance. **Application-managed renderer/canvas
-  reconstruction has not been tested**; there's a real trap in a naive
-  version of it (`WebGLBackend.dispose()` at `WebGLBackend.js:2829–2836`
-  itself calls `WEBGL_lose_context.loseContext()` on the *same* canvas,
-  so a replacement renderer needs a fresh one). Sleep/wake remains
+  frame again for that instance. **Application-managed reconstruction
+  was measured in a browser repro, not in the packaged app**: rebuilding
+  on the same canvas crashes (`WebGLBackend.dispose()` at
+  `WebGLBackend.js:2829–2836` calls `WEBGL_lose_context.loseContext()`
+  on that canvas, and the replacement's `init()` throws in
+  `WebGLState._init`); a new renderer on a fresh canvas resumes. The
+  packaged app has not run that path. Sleep/wake remains
   untested too. See Results §3's context-loss subsection for the full
   trace, the frozen-latency evidence, the recovery-pattern sketch for
   ADR-0002, and the three.js [PR #29767](https://github.com/mrdoob/three.js/pull/29767)
@@ -640,22 +642,23 @@ the new `l` key (`lostCount: 1`, `restoredCount: 1`, `spriteCount: 230`
 rebuilt, a post-restore click still registering as a raycast hit).
 Rebuilding sprites did not restore pixels, though — the canvas stays
 permanently blank after any context loss on this renderer instance.
-Automatic same-instance recovery is unavailable in this build;
-application-managed renderer/canvas reconstruction has **not** been
-tested (there's a same-canvas trap in the naive version of it —
-`WebGLBackend.dispose()` at `WebGLBackend.js:2829–2836` forces a *second*
-context loss on whatever canvas it's given, so a replacement renderer
-needs a fresh one). Sleep/wake also remains untested. See Results §3 for
-the full trace, the frozen-latency evidence, and a recovery-pattern
-sketch worth designing against for ADR-0002 (single-flight recovery
-state, fresh canvas, verified-frame-before-resume, bounded retries,
-explicit failure UI) — none of it exercised here.
+Automatic same-instance recovery is unavailable in this build. The
+browser repro (`repro/device-loss.html`, Chrome) shows the two
+reconstruction paths: rebuilding on the same canvas crashes
+(`WebGLBackend.dispose()` at `WebGLBackend.js:2829–2836` forces a *second*
+context loss and the replacement's `init()` throws in `WebGLState._init`),
+and a new renderer on a fresh canvas renders again. The packaged app has
+not exercised reconstruction, and sleep/wake remains untested. See Results
+§3 for the full trace, the frozen-latency evidence, and the recovery
+pattern for ADR-0002 (single-flight recovery state, fresh canvas,
+verified-frame-before-resume, bounded retries, explicit failure UI) — the
+fresh-canvas step is the one part of it now shown to work, in a browser.
 
 P02/P05's packaged-bundle criterion is satisfied for this machine's
 WebGL2-fallback path **for the steady-state and click-input cases**; the
 context-loss-recovery case is confirmed only partially (app state: yes;
-rendering: no on the same instance; alternative recovery strategies:
-untested, not ruled out). Two carry-forward items: (1) the CSP constraint
+rendering: no on the same instance; fresh-canvas reconstruction: works in
+a browser repro, not yet run in the packaged app; same-canvas: crashes). Two carry-forward items: (1) the CSP constraint
 itself — **any Panthea surface that imports `three-flatland` must include
 `'unsafe-eval'` in `script-src`** until `koota` (or `three-flatland`) ships
 a non-`eval` accessor path, conditional on U05 holding (see Findings) —

@@ -7,9 +7,11 @@ import {
   createCorrelationId,
   createEntityId,
   createEventId,
+  createWorldId,
   type EntityMovedEvent,
   type WorldEvent,
 } from "@panthea/contracts";
+import type { Migration } from "./migrations";
 import {
   checkpoint,
   closeStore,
@@ -102,6 +104,58 @@ describe("openStore", () => {
     expect(journalMode.journal_mode).toBe("wal");
     // NORMAL is 1 in SQLite's synchronous pragma encoding.
     expect(synchronous.synchronous).toBe(1);
+    closeStore(store);
+  });
+
+  test("reopening an existing store with a mismatched worldId throws and does not corrupt the slot", () => {
+    const store = openStore(dbPath);
+    const originalWorldId = store.worldId;
+    closeStore(store);
+
+    const mismatchedWorldId = createWorldId();
+    expect(() => openStore(dbPath, { worldId: mismatchedWorldId })).toThrow(
+      /already belongs to world/,
+    );
+
+    // The rejected open must not leave the db handle open or the slot in a
+    // half-opened state — a normal reopen still recovers the original world.
+    const reopened = openStore(dbPath);
+    expect(reopened.worldId).toBe(originalWorldId);
+    closeStore(reopened);
+  });
+
+  test("reopening an existing store with a matching worldId opens normally", () => {
+    const store = openStore(dbPath);
+    const worldId = store.worldId;
+    closeStore(store);
+
+    const reopened = openStore(dbPath, { worldId });
+    expect(reopened.worldId).toBe(worldId);
+    closeStore(reopened);
+  });
+
+  test("a bootstrap/migration failure closes the db handle so the file can be reopened cleanly", () => {
+    const faultyMigrations: readonly Migration[] = [
+      {
+        version: 1,
+        description: "simulated migration failure",
+        up() {
+          throw new Error("simulated migration failure");
+        },
+      },
+    ];
+
+    expect(() =>
+      openStore(dbPath, {
+        migrateOptions: { migrations: faultyMigrations },
+      }),
+    ).toThrow("simulated migration failure");
+
+    // The failed open must close its db handle rather than leak it — a
+    // fresh open on the same path, this time with the real migration
+    // ladder, must succeed and bootstrap normally.
+    const store = openStore(dbPath);
+    expect(store.worldId).toBeDefined();
     closeStore(store);
   });
 });

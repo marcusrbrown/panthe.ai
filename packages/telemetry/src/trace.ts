@@ -80,6 +80,10 @@ export function ensureTraceSchema(db: Database): void {
     ) STRICT
   `);
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_trace_proposal_outcomes_event_id
+    ON trace_proposal_outcomes(event_id)
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS trace_receipts (
       id TEXT PRIMARY KEY,
       event_id TEXT NOT NULL,
@@ -316,16 +320,18 @@ export function pruneRetention(
   now: number = Date.now(),
 ): void {
   const cutoff = now - olderThanMs;
-  db.run(
-    "UPDATE trace_observations SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-    [cutoff],
-  );
-  db.run(
-    "UPDATE trace_proposal_outcomes SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-    [cutoff],
-  );
-  db.run(
-    "UPDATE trace_receipts SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-    [cutoff],
-  );
+  db.transaction(() => {
+    db.run(
+      "UPDATE trace_observations SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
+      [cutoff],
+    );
+    db.run(
+      "UPDATE trace_proposal_outcomes SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
+      [cutoff],
+    );
+    db.run(
+      "UPDATE trace_receipts SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
+      [cutoff],
+    );
+  }).immediate();
 }

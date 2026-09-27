@@ -90,6 +90,22 @@ describe("ProposalId", () => {
   });
 });
 
+describe("ensureTraceSchema", () => {
+  test("the event_id lookup on trace_proposal_outcomes uses the event_id index, not a full table scan", () => {
+    const plan = db
+      .query(
+        "EXPLAIN QUERY PLAN SELECT * FROM trace_proposal_outcomes WHERE event_id = ?",
+      )
+      .all("some-event-id") as { detail: string }[];
+    const usesIndex = plan.some((row) =>
+      /USING (COVERING )?INDEX idx_trace_proposal_outcomes_event_id/.test(
+        row.detail,
+      ),
+    );
+    expect(usesIndex).toBe(true);
+  });
+});
+
 describe("recordObservation / getObservation", () => {
   test("happy path: round-trips through JSON", () => {
     const record = makeObservation();
@@ -250,5 +266,46 @@ describe("pruneRetention", () => {
     recordObservation(db, observation, now);
     pruneRetention(db, 500, now);
     expect(getObservation(db, observation.id)?.record).toEqual(observation);
+  });
+
+  test("integration: a failure in a later update rolls back the earlier updates in the same call", () => {
+    const observation = makeObservation();
+    const proposal = makeProposal(observation.id);
+    const proposalId = createProposalId();
+    const now = 1_000_000;
+
+    recordObservation(db, observation, now - 1000);
+    recordProposalOutcome(
+      db,
+      {
+        proposalId,
+        observationId: observation.id,
+        correlationId: createCorrelationId(),
+        causationId: createCausationId(),
+        proposal,
+        outcome: "committed",
+        eventId: createEventId(),
+      },
+      now - 1000,
+    );
+
+    // Force the third UPDATE (trace_receipts) to fail so the whole call
+    // rejects; the point of this test is that the first two UPDATEs, run
+    // earlier in the same call, must not have taken effect either.
+    db.exec("DROP TABLE trace_receipts");
+
+    expect(() => pruneRetention(db, 500, now)).toThrow();
+
+    const observationRow = db
+      .query("SELECT payload_expired FROM trace_observations WHERE id = ?")
+      .get(observation.id) as { payload_expired: number };
+    expect(observationRow.payload_expired).toBe(0);
+
+    const outcomeRow = db
+      .query(
+        "SELECT payload_expired FROM trace_proposal_outcomes WHERE proposal_id = ?",
+      )
+      .get(proposalId) as { payload_expired: number };
+    expect(outcomeRow.payload_expired).toBe(0);
   });
 });

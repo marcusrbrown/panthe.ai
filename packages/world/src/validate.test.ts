@@ -275,6 +275,52 @@ test("a realm-transition attempted from off the transport element is rejected as
   if (!outcome.ok) expect(outcome.reason).toBe("not-adjacent");
 });
 
+function crossRealmPathFixtureState(): WorldState {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal", "underworld"],
+    resources: [],
+    locations: [
+      {
+        id: "crossing",
+        realm: "mortal",
+        name: "Crossing",
+        edges: [{ to: "far-shore", transport: "path", bidirectional: true }],
+      },
+      { id: "far-shore", realm: "underworld", name: "Far Shore", edges: [] },
+    ],
+    buildings: [],
+    inhabitants: [],
+    rules: minimalRules(),
+  };
+  let state = createInitialWorldState(pack);
+  state = withActor(state, {
+    id: toEntityId("npc-6"),
+    locationId: toEntityId("crossing"),
+    alive: true,
+    capabilities: [],
+    revision: 0,
+  });
+  return state;
+}
+
+test("a realm-transition over a cross-realm path edge is rejected as restricted-realm", () => {
+  const state = crossRealmPathFixtureState();
+  const registry = createDefaultRuleRegistry();
+  const outcome = registry.validateProposal(
+    state,
+    proposal({
+      actor: "npc-6",
+      kind: "realm-transition",
+      to: "far-shore",
+      via: "crossing",
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("restricted-realm");
+  expect(state).toEqual(crossRealmPathFixtureState());
+});
+
 test("a claim never commits state, even a true-sounding one", () => {
   const state = fixtureState();
   const registry = createDefaultRuleRegistry();

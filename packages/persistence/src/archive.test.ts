@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -440,6 +441,66 @@ describe("importArchive", () => {
     let caught: unknown;
     try {
       importArchive(archivePath, slotsDir, expiredLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("over-limit-time");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a copy failure while staging the private archive copy leaves no temp file behind", () => {
+    // A directory in place of the archive file makes `copyFileSync` fail
+    // (EISDIR) after the earlier existsSync/statSync checks have already
+    // passed, exercising the copy-step failure path specifically.
+    const bogusArchivePath = join(dir, "archive-is-a-directory");
+    mkdirSync(bogusArchivePath);
+    const slotsDir = join(dir, "slots");
+
+    const tempFilesBefore = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("panthea-import-"),
+    );
+
+    let caught: unknown;
+    try {
+      importArchive(bogusArchivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+
+    const tempFilesAfter = readdirSync(tmpdir()).filter((name) =>
+      name.startsWith("panthea-import-"),
+    );
+    expect(tempFilesAfter).toEqual(tempFilesBefore);
+  });
+
+  test("error path: the time budget is enforced during staging, not only before it", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const slotsDir = join(dir, "slots");
+    const staleLimits: ImportLimits = {
+      maxBytes: 10 * 1024 * 1024,
+      maxRows: 10_000,
+      maxDurationMs: 30_000,
+    };
+    const realNow = Date.now();
+    let calls = 0;
+    // The first three checkDeadline calls happen during pre-staging
+    // validation (start, post-row-count, post-hash-check); returning the
+    // real clock for those lets validation succeed normally so staging is
+    // actually reached. From the fourth call onward -- staging's own
+    // checkDeadline calls, the first of which guards the copy transaction
+    // -- return a time past the deadline to force an over-limit-time abort
+    // mid-staging, after the staging directory already exists.
+    const now = () => {
+      calls += 1;
+      return calls <= 3 ? realNow : realNow + staleLimits.maxDurationMs + 1;
+    };
+
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, staleLimits, now);
     } catch (error) {
       caught = error;
     }

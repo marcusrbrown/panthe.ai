@@ -292,8 +292,8 @@ export interface ImportResult {
   readonly manifest: ArchiveManifest;
 }
 
-function checkDeadline(deadline: number): void {
-  if (Date.now() > deadline) {
+function checkDeadline(deadline: number, now: () => number = Date.now): void {
+  if (now() > deadline) {
     throw new ImportError(
       "over-limit-time",
       "archive validation exceeded the configured time budget",
@@ -310,9 +310,10 @@ export function importArchive(
   archivePath: string,
   slotsDir: string,
   limits: ImportLimits,
+  now: () => number = Date.now,
 ): ImportResult {
-  const deadline = Date.now() + limits.maxDurationMs;
-  checkDeadline(deadline);
+  const deadline = now() + limits.maxDurationMs;
+  checkDeadline(deadline, now);
 
   if (!existsSync(archivePath)) {
     throw new ImportError("corrupt", `archive not found: ${archivePath}`);
@@ -326,11 +327,12 @@ export function importArchive(
   }
 
   const tempPath = join(tmpdir(), `panthea-import-${randomUUID()}.sqlite`);
-  copyFileSync(archivePath, tempPath);
-  ensureFileMode(tempPath, 0o600);
 
   let archiveDb: Database | undefined;
   try {
+    copyFileSync(archivePath, tempPath);
+    ensureFileMode(tempPath, 0o600);
+
     try {
       archiveDb = new Database(tempPath, { readonly: true });
     } catch (error) {
@@ -404,7 +406,7 @@ export function importArchive(
       );
     }
 
-    checkDeadline(deadline);
+    checkDeadline(deadline, now);
 
     const manifestTableExists = schemaRows.some(
       (row) => row.type === "table" && row.name === "manifest",
@@ -458,7 +460,7 @@ export function importArchive(
       );
     }
 
-    checkDeadline(deadline);
+    checkDeadline(deadline, now);
 
     archiveDb.close();
     archiveDb = undefined;
@@ -476,18 +478,24 @@ export function importArchive(
         stagingDb.exec("PRAGMA journal_mode = WAL");
         migrate(stagingDb, stagingDbPath, { skipSnapshotForTests: true });
 
+        checkDeadline(deadline, now);
+
         stagingDb.run("ATTACH DATABASE ? AS src", [tempPath]);
         try {
           stagingDb
             .transaction(() => {
               stagingDb.run("INSERT INTO main.world SELECT * FROM src.world");
+              checkDeadline(deadline, now);
               stagingDb.run("INSERT INTO main.clock SELECT * FROM src.clock");
+              checkDeadline(deadline, now);
               stagingDb.run(
                 "INSERT INTO main.prng_state SELECT * FROM src.prng_state",
               );
+              checkDeadline(deadline, now);
               stagingDb.run(
                 "INSERT INTO main.projections SELECT * FROM src.projections",
               );
+              checkDeadline(deadline, now);
               stagingDb.run(
                 "INSERT INTO main.events SELECT * FROM src.events WHERE sequence <= ?",
                 [manifest.eventSequence],
@@ -508,6 +516,8 @@ export function importArchive(
           ensureFileMode(path, 0o600);
         }
       }
+
+      checkDeadline(deadline, now);
 
       const finalDir = join(slotsDir, slotId);
       if (existsSync(finalDir)) {

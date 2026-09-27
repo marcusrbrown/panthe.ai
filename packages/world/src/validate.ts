@@ -190,6 +190,12 @@ const handleRealmTransition: RuleHandler<RealmTransitionProposal> = (
       `no transport edge from ${proposal.via} to ${proposal.to}`,
     );
   }
+  if (edge.transport === "path") {
+    return reject(
+      "restricted-realm",
+      `${proposal.via} -> ${proposal.to} is a plain path, not an authored transport element; realm transitions require a non-path transport`,
+    );
+  }
   const actor = getActor(state, proposal.actor);
   if (
     !hasCapability(actor?.capabilities ?? [], destination.requiredCapability)

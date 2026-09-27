@@ -150,7 +150,7 @@ test("a location referencing an unknown realm fails to load with a clear message
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("the authored Greek world content loads", () => {
+test("the authored Greek world content loads with the expected geography and rule values", () => {
   const result = loadContentPack(GREEK_WORLD_DIR);
   expect(result.ok).toBe(true);
   if (!result.ok) {
@@ -158,8 +158,72 @@ test("the authored Greek world content loads", () => {
       `Greek world content failed to load: ${result.path}: ${result.message}`,
     );
   }
-  expect(result.value.locations.length).toBeGreaterThan(0);
-  expect(result.value.realms).toEqual(
+  const pack = result.value;
+
+  expect(pack.realms).toEqual(
     expect.arrayContaining(["mortal", "olympus", "underworld"]),
   );
+
+  const locationIds = pack.locations.map((location) => location.id).sort();
+  expect(locationIds).toEqual(
+    [
+      "altar",
+      "ancient-olive-tree",
+      "asphodel-meadow",
+      "ferry-dock",
+      "great-hall",
+      "inn",
+      "judgment-hall",
+      "mountain-path",
+      "olympus-gate",
+      "shop",
+      "tavern",
+      "town-square",
+      "underworld-shore",
+      "wilderness-grove",
+      "wilderness-path",
+    ].sort(),
+  );
+
+  // One authored transport edge into each divine realm, not just any edge.
+  const ferryDock = pack.locations.find(
+    (location) => location.id === "ferry-dock",
+  );
+  expect(ferryDock?.edges).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        to: "underworld-shore",
+        transport: "divine-transport",
+        bidirectional: true,
+      }),
+    ]),
+  );
+
+  const mountainPath = pack.locations.find(
+    (location) => location.id === "mountain-path",
+  );
+  expect(mountainPath?.edges).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        to: "olympus-gate",
+        transport: "divine-transport",
+        bidirectional: true,
+      }),
+    ]),
+  );
+
+  // Representative rule values from rules.json, not just "rules exist".
+  expect(pack.rules.catchUpCapMs).toBe(3_600_000);
+  expect(pack.rules.importMaxBytes).toBe(50_000_000);
+  expect(pack.rules.importMaxDurationMs).toBe(30_000);
+  expect(pack.rules.fireBalance).toMatchObject({ spreadChancePerTick: 0.1 });
+  expect(pack.rules.economyBalance).toMatchObject({
+    priceFloor: 1,
+    priceCeiling: 100,
+  });
+
+  // Unit 3 authors no buildings or inhabitants yet; the loader must still
+  // report them present-but-empty, not absent.
+  expect(pack.buildings).toEqual([]);
+  expect(pack.inhabitants).toEqual([]);
 });

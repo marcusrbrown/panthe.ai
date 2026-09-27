@@ -93,49 +93,64 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
 
   const db = new Database(path, { create: true });
 
-  // Order matters (bun:sqlite docs): disable persistent WAL *before*
-  // enabling WAL mode, since some macOS SQLite builds default to a
-  // persistent WAL and re-enabling journal_mode after the fact does not
-  // retroactively clear that setting.
   try {
-    db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
-  } catch {
-    // Non-macOS builds (or SQLite builds without this fcntl) may not
-    // support the call; WAL still functions correctly without it.
+    // Order matters (bun:sqlite docs): disable persistent WAL *before*
+    // enabling WAL mode, since some macOS SQLite builds default to a
+    // persistent WAL and re-enabling journal_mode after the fact does not
+    // retroactively clear that setting.
+    try {
+      db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
+    } catch {
+      // Non-macOS builds (or SQLite builds without this fcntl) may not
+      // support the call; WAL still functions correctly without it.
+    }
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA synchronous = NORMAL");
+
+    migrate(db, path, options.migrateOptions);
+
+    let worldId: WorldId;
+    const worldRow = db.query("SELECT world_id FROM world LIMIT 1").get() as {
+      world_id: string;
+    } | null;
+    if (worldRow) {
+      worldId = worldRow.world_id as WorldId;
+      if (options.worldId !== undefined && options.worldId !== worldId) {
+        throw new Error(
+          `store: cannot open ${path} with worldId ${options.worldId}; it already belongs to world ${worldId}`,
+        );
+      }
+    } else {
+      worldId = options.worldId ?? createWorldId();
+      const now = Date.now();
+      db.transaction(() => {
+        db.run("INSERT INTO world (id, world_id) VALUES (1, ?)", [worldId]);
+        db.run(
+          "INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, ?, 0)",
+          [now],
+        );
+        db.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [""]);
+        db.run(
+          "INSERT INTO projections (id, revision, data) VALUES (1, 0, ?)",
+          ["null"],
+        );
+      }).immediate();
+    }
+
+    enforceDatabaseFileModes(path);
+    if (!existedBefore) {
+      ensureFileMode(path, 0o600);
+    }
+
+    return { db, path, worldId };
+  } catch (error) {
+    try {
+      db.close();
+    } catch {
+      // Best-effort: the original error is what matters to the caller.
+    }
+    throw error;
   }
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA synchronous = NORMAL");
-
-  migrate(db, path, options.migrateOptions);
-
-  let worldId: WorldId;
-  const worldRow = db.query("SELECT world_id FROM world LIMIT 1").get() as {
-    world_id: string;
-  } | null;
-  if (worldRow) {
-    worldId = worldRow.world_id as WorldId;
-  } else {
-    worldId = options.worldId ?? createWorldId();
-    const now = Date.now();
-    db.transaction(() => {
-      db.run("INSERT INTO world (id, world_id) VALUES (1, ?)", [worldId]);
-      db.run(
-        "INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, ?, 0)",
-        [now],
-      );
-      db.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [""]);
-      db.run("INSERT INTO projections (id, revision, data) VALUES (1, 0, ?)", [
-        "null",
-      ]);
-    }).immediate();
-  }
-
-  enforceDatabaseFileModes(path);
-  if (!existedBefore) {
-    ensureFileMode(path, 0o600);
-  }
-
-  return { db, path, worldId };
 }
 
 /** Checkpoints the WAL into the main file (TRUNCATE mode) without closing the store. */

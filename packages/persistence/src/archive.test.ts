@@ -1,0 +1,502 @@
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createCausationId,
+  createCorrelationId,
+  createEntityId,
+  createEventId,
+  type EntityMovedEvent,
+} from "@panthea/contracts";
+import {
+  canonicalDump,
+  computeContentHash,
+  exportArchive,
+  ImportError,
+  type ImportLimits,
+  importArchive,
+} from "./archive";
+import { LATEST_SCHEMA_VERSION } from "./migrations";
+import {
+  closeStore,
+  commitTick,
+  getCurrentSequence,
+  openStore,
+  type ProjectionReducers,
+  readClock,
+  readLiveProjections,
+  type Store,
+} from "./store";
+
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "panthea-archive-"));
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+interface CountProjection {
+  readonly total: number;
+}
+
+const reducer: ProjectionReducers<CountProjection> = {
+  initial: { total: 0 },
+  applyEvent(projections) {
+    return { total: projections.total + 1 };
+  },
+};
+
+function makeMoveEvent(sequence: number): EntityMovedEvent {
+  return {
+    schemaVersion: 2,
+    id: createEventId(),
+    sequence,
+    simTime: sequence,
+    correlationId: createCorrelationId(),
+    causationId: createCausationId(),
+    approximate: false,
+    kind: "entity-moved",
+    entityId: createEntityId(),
+    to: createEntityId(),
+  };
+}
+
+function buildPopulatedStore(dbPath: string): Store {
+  const store = openStore(dbPath);
+  for (let i = 1; i <= 3; i++) {
+    commitTick(store, reducer, {
+      events: [makeMoveEvent(i)],
+      cursorWallMs: 1000 * i,
+      paused: false,
+      prngState: `seed-${i}`,
+    });
+  }
+  return store;
+}
+
+const generousLimits: ImportLimits = {
+  maxBytes: 10 * 1024 * 1024,
+  maxRows: 10_000,
+  maxDurationMs: 30_000,
+};
+
+describe("exportArchive", () => {
+  test("happy path: same world exported twice yields the same content hash", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+
+    const archivePath1 = join(dir, "archive1.sqlite");
+    const archivePath2 = join(dir, "archive2.sqlite");
+    const manifest1 = exportArchive(store, archivePath1);
+    const manifest2 = exportArchive(store, archivePath2);
+
+    expect(manifest1.contentHash).toBe(manifest2.contentHash);
+    expect(manifest1.eventSequence).toBe(manifest2.eventSequence);
+    closeStore(store);
+  });
+
+  test("happy path: export includes the event log and causal IDs but excludes observation/rejection/receipt records (persistence never stores them)", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    closeStore(store);
+
+    const archiveDb = new Database(archivePath, { readonly: true });
+    const tableNames = (
+      archiveDb
+        .query("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as { name: string }[]
+    ).map((row) => row.name);
+    expect(tableNames.sort()).toEqual(
+      [
+        "clock",
+        "events",
+        "manifest",
+        "prng_state",
+        "projections",
+        "world",
+      ].sort(),
+    );
+    const events = archiveDb.query("SELECT * FROM events").all() as {
+      correlation_id: string;
+      causation_id: string;
+    }[];
+    expect(events).toHaveLength(3);
+    for (const event of events) {
+      expect(event.correlation_id).toBeTruthy();
+      expect(event.causation_id).toBeTruthy();
+    }
+    archiveDb.close();
+  });
+
+  test("edge case: export while ticking always reflects one committed sequence; manifest sequence matches archive contents", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    const manifest = exportArchive(store, archivePath);
+    expect(manifest.eventSequence).toBe(getCurrentSequence(store.db));
+
+    const archiveDb = new Database(archivePath, { readonly: true });
+    const maxSeq = (
+      archiveDb.query("SELECT MAX(sequence) as m FROM events").get() as {
+        m: number;
+      }
+    ).m;
+    expect(maxSeq).toBe(manifest.eventSequence);
+    archiveDb.close();
+    closeStore(store);
+  });
+});
+
+describe("importArchive", () => {
+  function exportFreshArchive(): {
+    store: Store;
+    archivePath: string;
+    dbPath: string;
+  } {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    return { store, archivePath, dbPath };
+  }
+
+  test("happy path: export -> import creates a new slot with identical IDs, sequence, projections, and PRNG state; the source is untouched", () => {
+    const { store, archivePath, dbPath } = exportFreshArchive();
+    const beforeSourceHash = readFileSync(dbPath);
+
+    const slotsDir = join(dir, "slots");
+    const result = importArchive(archivePath, slotsDir, generousLimits);
+
+    expect(existsSync(result.slotPath)).toBe(true);
+    // Read-write, not readonly: the imported slot is a live WAL-mode store
+    // (like any other slot), and opening a WAL database read-only requires
+    // creating a -shm reader lock file, which a read-only handle cannot do.
+    const importedDb = new Database(join(result.slotPath, "world.sqlite"));
+    const worldRow = importedDb.query("SELECT world_id FROM world").get() as {
+      world_id: string;
+    };
+    expect(worldRow.world_id).toBe(store.worldId);
+
+    const importedSequence = (
+      importedDb.query("SELECT MAX(sequence) as m FROM events").get() as {
+        m: number;
+      }
+    ).m;
+    expect(importedSequence).toBe(getCurrentSequence(store.db));
+
+    const importedProjections = importedDb
+      .query("SELECT data FROM projections WHERE id = 1")
+      .get() as { data: string };
+    expect(JSON.parse(importedProjections.data)).toEqual(
+      readLiveProjections(store, reducer),
+    );
+
+    const importedPrng = importedDb
+      .query("SELECT state FROM prng_state WHERE id = 1")
+      .get() as { state: string };
+    expect(importedPrng.state).toBe("seed-3");
+
+    const importedClock = importedDb
+      .query("SELECT cursor_wall_ms, paused FROM clock WHERE id = 1")
+      .get() as { cursor_wall_ms: number; paused: number };
+    expect({
+      cursorWallMs: importedClock.cursor_wall_ms,
+      paused: importedClock.paused !== 0,
+    }).toEqual(readClock(store.db));
+
+    importedDb.close();
+
+    // Source untouched.
+    expect(readFileSync(dbPath)).toEqual(beforeSourceHash);
+    closeStore(store);
+  });
+
+  test("happy path: import never overwrites an existing slot (each import gets a fresh slot ID)", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const slotsDir = join(dir, "slots");
+    const first = importArchive(archivePath, slotsDir, generousLimits);
+    const second = importArchive(archivePath, slotsDir, generousLimits);
+    expect(first.slotId).not.toBe(second.slotId);
+    expect(first.slotPath).not.toBe(second.slotPath);
+    expect(existsSync(first.slotPath)).toBe(true);
+    expect(existsSync(second.slotPath)).toBe(true);
+    closeStore(store);
+  });
+
+  test("error path: a truncated archive file is rejected as corrupt; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const truncatedPath = join(dir, "truncated.sqlite");
+    const bytes = readFileSync(archivePath);
+    writeFileSync(
+      truncatedPath,
+      bytes.subarray(0, Math.floor(bytes.length / 4)),
+    );
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(truncatedPath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("corrupt");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a flipped byte in the payload is rejected (hash mismatch or corrupt), distinct from other failures; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const flippedPath = join(dir, "flipped.sqlite");
+    const bytes = readFileSync(archivePath);
+    const mutable = Buffer.from(bytes);
+    // Flip a byte roughly in the middle of the file, away from the header,
+    // likely landing inside a page's payload rather than corrupting the
+    // format entirely.
+    const offset = Math.floor(mutable.length / 2);
+    mutable[offset] = (mutable[offset] ?? 0) ^ 0xff;
+    writeFileSync(flippedPath, mutable);
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(flippedPath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect(["hash-mismatch", "corrupt"]).toContain(
+      (caught as ImportError).kind,
+    );
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a manifest reporting an unsupported (future) SQLite schema version is rejected distinctly; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.run("UPDATE manifest SET sqlite_schema_version = ?", [
+      LATEST_SCHEMA_VERSION + 100,
+    ]);
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("unsupported-version");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a missing manifest table is rejected distinctly; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.exec("DROP TABLE manifest");
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("missing-manifest");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive containing a view is rejected before any slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.exec("CREATE VIEW events_view AS SELECT * FROM events");
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("disallowed-schema");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive containing a trigger is rejected before any slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.exec(`
+      CREATE TABLE trigger_target (id INTEGER PRIMARY KEY) STRICT;
+      CREATE TRIGGER evil_trigger AFTER INSERT ON events
+      BEGIN
+        INSERT INTO trigger_target (id) VALUES (1);
+      END;
+    `);
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("disallowed-schema");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive containing an unexpected table is rejected before any slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.exec("CREATE TABLE sneaky (id INTEGER PRIMARY KEY) STRICT");
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("disallowed-schema");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive over the configured byte limit is rejected before staging", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const tinyLimits: ImportLimits = {
+      maxBytes: 10,
+      maxRows: 10_000,
+      maxDurationMs: 30_000,
+    };
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, tinyLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("over-limit-bytes");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive over the configured row limit is rejected before staging", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const tinyRowLimits: ImportLimits = {
+      maxBytes: 10 * 1024 * 1024,
+      maxRows: 1,
+      maxDurationMs: 30_000,
+    };
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, tinyRowLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("over-limit-rows");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: an archive validated past the configured time budget is rejected before staging", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const expiredLimits: ImportLimits = {
+      maxBytes: 10 * 1024 * 1024,
+      maxRows: 10_000,
+      maxDurationMs: -1,
+    };
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, expiredLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("over-limit-time");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+});
+
+describe("computeContentHash / canonicalDump", () => {
+  test("identical data yields an identical hash regardless of insertion order (fixed table order, rows ordered by primary key)", () => {
+    const dbPath1 = join(dir, "a.sqlite");
+    const dbPath2 = join(dir, "b.sqlite");
+    const db1 = new Database(dbPath1, { create: true });
+    const db2 = new Database(dbPath2, { create: true });
+    for (const db of [db1, db2]) {
+      db.exec(
+        "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
+      );
+      db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
+      db.run("INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, 0, 0)");
+      db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+      db.run(
+        "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
+      );
+    }
+    // Insert events in reverse order between the two DBs — the canonical
+    // dump orders by primary key, so insertion order must not matter.
+    db1.run(
+      "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (1, 'e1', 'c1', 'k1', 'kind', 0, '{}')",
+    );
+    db1.run(
+      "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (2, 'e2', 'c2', 'k2', 'kind', 0, '{}')",
+    );
+    db2.run(
+      "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (2, 'e2', 'c2', 'k2', 'kind', 0, '{}')",
+    );
+    db2.run(
+      "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (1, 'e1', 'c1', 'k1', 'kind', 0, '{}')",
+    );
+
+    expect(computeContentHash(db1)).toBe(computeContentHash(db2));
+    expect(canonicalDump(db1)).toBe(canonicalDump(db2));
+    db1.close();
+    db2.close();
+  });
+});

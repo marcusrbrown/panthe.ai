@@ -5,10 +5,10 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | ID | Milestone | Status | Implementation | Evidence |
 | --- | --- | --- | --- | --- |
 | P01 | M7 | planned | — | — |
-| P02 | M0 | planned (amended by D25 / ADR-0002) | — | tools/probes/webgpu-wkwebview/README.md, docs/decisions/0002-renderer-backend.md, docs/product/technical-constraints.md |
+| P02 | M0 | planned (amended by D25 / ADR-0002) | apps/probe-renderer/ | tools/probes/webgpu-wkwebview/README.md, tools/probes/renderer-webgl2/README.md, docs/decisions/0002-renderer-backend.md, docs/product/technical-constraints.md |
 | P03 | M0 | planned | package.json (workspaces), bun.lock, .github/workflows/ci.yaml, tools/probes/shared/ | docs/decisions/0001-workspace-and-tooling.md, tools/probes/README.md |
 | P04 | M0 | planned | — | — |
-| P05 | M0 | planned (Linux gated on a packaged either-backend probe, ADR-0002) | — | docs/decisions/0002-renderer-backend.md |
+| P05 | M0 | planned (Linux gated on a packaged either-backend probe, ADR-0002) | — | docs/decisions/0002-renderer-backend.md, tools/probes/renderer-webgl2/README.md |
 | P06 | M0 | planned | — | — |
 | P07 | M0 | planned | — | — |
 | P08 | M7 | planned | — | — |

@@ -47,6 +47,7 @@ import {
 } from "@panthea/tools-probes-shared";
 import {
   buildContactSheet,
+  type CancellationOutcome,
   type CancellationResult,
   drawThingsCancellationNotSupported,
   type PromptFixture,
@@ -66,6 +67,9 @@ const RESULTS_DIR = process.env.ART_LOCAL_RESULTS_DIR
 const README_PATH = process.env.ART_LOCAL_README_PATH
   ? resolve(process.env.ART_LOCAL_README_PATH)
   : join(PROBE_DIR, "README.md");
+const MODELS_DIR = process.env.ART_LOCAL_MODELS_DIR
+  ? resolve(process.env.ART_LOCAL_MODELS_DIR)
+  : join(PROBE_DIR, "models");
 const SUMMARY_FILENAME = "summary.json";
 const IMAGES_DIR = join(RESULTS_DIR, "images");
 
@@ -82,7 +86,7 @@ const SD_CPP_BINARY = {
   sha256: "2650e3bb9d11da7f933f1beeb7134ca6f05b023c83d6b7db4fd7c6024eddc938",
 } as const;
 
-const SD15_MODEL = {
+const SD15_MODEL_Q4_0 = {
   id: "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf)",
   source:
     "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf",
@@ -91,6 +95,28 @@ const SD15_MODEL = {
   quantization: "Q4_0",
   sizeBytes: 1_566_768_416,
   sha256: "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f",
+} as const;
+
+const SD15_MODEL_Q8_0 = {
+  id: "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf)",
+  source:
+    "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+  baseModel: "runwayml/stable-diffusion-v1-5",
+  license: "creativeml-openrail-m",
+  quantization: "Q8_0",
+  sizeBytes: 1_763_578_176,
+  sha256: "d0555243938c62faeefb4ac93f6c7a053ad373a4290c5256bce229aeb193bf94",
+} as const;
+
+const SD15_MODEL_F16 = {
+  id: "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-f16.gguf)",
+  source:
+    "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-f16.gguf",
+  baseModel: "runwayml/stable-diffusion-v1-5",
+  license: "creativeml-openrail-m",
+  quantization: "f16",
+  sizeBytes: 2_132_586_944,
+  sha256: "da017009aa86a3f46468857d95833435fe55e4a2856afab76ba7722ef8ee4d8b",
 } as const;
 
 const PIXEL_ART_LORA = {
@@ -164,6 +190,58 @@ function loraFromFlags(
   return [{ path, multiplier: numberFlag(flags, "lora-multiplier", 1) }];
 }
 
+/** Human-readable `<lora-stem>@<multiplier>` descriptor from `--lora-path`/`--lora-multiplier`, or `undefined` if none was given. */
+function loraDescriptorFromFlags(
+  flags: Record<string, string>,
+): string | undefined {
+  const path = flags["lora-path"];
+  if (!path) {
+    return undefined;
+  }
+  const stem = path.replace(/\.(safetensors|ckpt|gguf)$/, "");
+  return `${stem}@${numberFlag(flags, "lora-multiplier", 1)}`;
+}
+
+const CHECKPOINT_EXTENSIONS = [".gguf", ".safetensors", ".ckpt"];
+
+/**
+ * Resolves a default `--model` label for the sd.cpp arm by finding the
+ * single checkpoint file directly under `models/` (not `models/loras/`).
+ * sd-server already has a model loaded when it's launched (this CLI never
+ * loads or selects one) — this only derives a human-readable label so the
+ * documented invocation doesn't have to repeat the checkpoint filename by
+ * hand. Throws with the exact candidate list when zero or more than one
+ * checkpoint is found, so the caller can pass `--model` explicitly instead
+ * of silently mislabeling the results.
+ */
+function resolveDefaultSdCppModel(loraDescriptor: string | undefined): string {
+  let entries: readonly string[];
+  try {
+    entries = readdirSync(MODELS_DIR, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          CHECKPOINT_EXTENSIONS.some((ext) => entry.name.endsWith(ext)),
+      )
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    entries = [];
+  }
+  if (entries.length === 0) {
+    throw new Error(
+      `--model was not given and no checkpoint (${CHECKPOINT_EXTENSIONS.join("/")}) was found directly under ${MODELS_DIR} — download one (see README "How to run") or pass --model explicitly.`,
+    );
+  }
+  if (entries.length > 1) {
+    throw new Error(
+      `--model was not given and ${entries.length} checkpoints were found under ${MODELS_DIR}: ${entries.join(", ")} — pass --model explicitly to disambiguate.`,
+    );
+  }
+  const stem = entries[0]!.replace(/\.(gguf|safetensors|ckpt)$/, "");
+  return loraDescriptor ? `${stem} + ${loraDescriptor}` : stem;
+}
+
 // --- Stored record shapes ---
 
 interface ArmRecord {
@@ -218,16 +296,21 @@ async function cmdSuite(flags: Record<string, string>): Promise<void> {
   // Draw Things exposes no model/LoRA selection over HTTP — the active
   // model (and any active LoRA) is whatever the app has selected, so
   // record it out of band instead of requiring the caller to know it up
-  // front.
+  // front. sd.cpp similarly never receives --model over HTTP (sd-server
+  // already has a model loaded when it's launched) — when omitted, this
+  // resolves the single checkpoint under models/ instead of requiring the
+  // caller to repeat the filename by hand.
   const model =
     flags.model ??
     (armFlag === "draw-things"
       ? await drawthings.getSelectedModelDescriptor({
           baseUrl: requireFlag(flags, "base-url"),
         })
-      : requireFlag(flags, "model"));
+      : resolveDefaultSdCppModel(loraDescriptorFromFlags(flags)));
   if (armFlag === "draw-things") {
     console.error(`[art-local] Draw Things selected model: ${model}`);
+  } else if (!flags.model) {
+    console.error(`[art-local] resolved sd.cpp model: ${model}`);
   }
 
   const result =
@@ -366,6 +449,7 @@ interface ArmSummary {
 interface CancelSummary {
   readonly arm: string;
   readonly supported: boolean;
+  readonly outcome: CancellationOutcome;
   readonly cancelToIdleMs: number | undefined;
   readonly note: string;
 }
@@ -380,7 +464,9 @@ interface Summary {
     readonly port: number;
   };
   readonly binary: typeof SD_CPP_BINARY;
-  readonly model: typeof SD15_MODEL;
+  readonly model: typeof SD15_MODEL_Q4_0;
+  readonly modelQ8: typeof SD15_MODEL_Q8_0;
+  readonly modelF16: typeof SD15_MODEL_F16;
   readonly lora: typeof PIXEL_ART_LORA;
   readonly environment: EnvironmentInfo;
 }
@@ -445,6 +531,7 @@ function cancelRecordToSummary(record: CancelRecord): CancelSummary {
   return {
     arm: record.arm,
     supported: record.result.supported,
+    outcome: record.result.outcome,
     cancelToIdleMs: record.result.cancelToIdleMs,
     note: record.result.note,
   };
@@ -481,11 +568,11 @@ function buildCancelTableMarkdown(
     return "_No cancellation results recorded yet._";
   }
   const header =
-    "| Arm | Supported | Cancel-to-idle | Note |\n| --- | --- | --- | --- |";
+    "| Arm | Supported | Outcome | Cancel-to-idle | Note |\n| --- | --- | --- | --- | --- |";
   const body = cancellations
     .map(
       (c) =>
-        `| ${c.arm} | ${c.supported ? "yes" : "no"} | ${c.cancelToIdleMs !== undefined ? `${c.cancelToIdleMs}ms` : "n/a"} | ${c.note} |`,
+        `| ${c.arm} | ${c.supported ? "yes" : "no"} | ${c.outcome} | ${c.cancelToIdleMs !== undefined ? `${c.cancelToIdleMs}ms` : "n/a"} | ${c.note} |`,
     )
     .join("\n");
   return `${header}\n${body}`;
@@ -493,6 +580,18 @@ function buildCancelTableMarkdown(
 
 function drawThingsArmSummary(summary: Summary): ArmSummary | undefined {
   return summary.arms.find((arm) => arm.arm === "draw-things");
+}
+
+/** Finds an sd.cpp arm whose recorded model descriptor names a given precision/quantization marker (e.g. "q4_0", "f16") — both sd.cpp runs may coexist in the same summary. */
+function sdCppArmByPrecision(
+  summary: Summary,
+  marker: string,
+): ArmSummary | undefined {
+  return summary.arms.find(
+    (arm) =>
+      arm.arm === "sd.cpp" &&
+      arm.model.toLowerCase().includes(marker.toLowerCase()),
+  );
 }
 
 function buildDrawThingsReachabilityNote(summary: Summary): string {
@@ -512,14 +611,90 @@ function buildCaveat(summary: Summary): string {
     "Draw Things' HTTP surface (`/sdapi/v1/txt2img`, A1111-shaped) has no model/LoRA selection, no model list, and no cancellation — the active model is whatever the app has selected. This probe reads the selected model from `GET /sdapi/v1/options` (Draw Things' own settings dict, keyed `model`, not the vanilla A1111/stable-diffusion.cpp-compat `sd_model_checkpoint` key) and records it per run rather than assuming it.",
     QWEN_IMAGE_NOTE,
     "16GB three-way coexistence (renderer + inference + image generation together) is out of scope here — that is Unit 8's `tools/probes/coexistence` measurement, not this probe's.",
-    `Pixel-art styling on the sd.cpp arm comes from a LoRA (${PIXEL_ART_LORA.id}), not a pixel-art-tuned base checkpoint — no single-file pixel-art-tuned SD 1.5 checkpoint in a stable-diffusion.cpp-loadable format (safetensors/ckpt/GGUF) was found within this probe's time budget; the base checkpoint is plain SD 1.5 (${SD15_MODEL.id}).`,
+    `Pixel-art styling on the sd.cpp arm comes from a LoRA (${PIXEL_ART_LORA.id}), not a pixel-art-tuned base checkpoint — no single-file pixel-art-tuned SD 1.5 checkpoint in a stable-diffusion.cpp-loadable format (safetensors/ckpt/GGUF) was found within this probe's time budget; the base checkpoint is plain SD 1.5 (${SD15_MODEL_Q8_0.id}).`,
     `LoRA license: ${PIXEL_ART_LORA.license}.`,
     "LoRA trigger-word placement matters: the PixelArtRedmond LoRA only reliably triggers when `PixArFK` is the FIRST token of the prompt (e.g. `PixArFK, pixel art, ...`), not mid-string (e.g. `pixel art, PixArFK, ...`) — confirmed by the owner against the live Draw Things app and applied to every prompt in `prompts.json` for both arms.",
+    buildQuantizationLoraReliabilityCaveat(summary),
     "`--diffusion-fa` (flash attention) is not optional for usable sd-server performance on this Metal build: the same 512x512, 12-step, no-LoRA generation measured ~127s without it and ~24s with it — roughly a 5x difference — so every sd.cpp arm number in this README was measured with `--diffusion-fa` enabled; running without it is not a viable base-arm configuration.",
-    "This sd-server build's native `sdcpp` API reports `cancel_generating: false` in `GET /sdcpp/v1/capabilities` — `POST /sdcpp/v1/jobs/{id}/cancel` only works on a job still queued behind another, not one already generating, so it cannot interrupt the single in-flight job this probe's cancellation test submits. SIGINT to the `sd-server` process was tried first and measured to be silently ignored (the process kept running and started its next queued job); SIGTERM reliably terminates it. The recorded cancel-to-idle number is therefore a whole-process-kill proxy, not a graceful in-job cancel.",
+    buildSdCppCancelMechanismCaveat(summary),
+    buildF16LoraCrashCaveat(summary),
     buildDrawThingsRssCaveat(summary),
   ].filter((part) => part.length > 0);
   return parts.join(" ");
+}
+
+/**
+ * The owner reviewed the sd.cpp contact sheet and reported the LoRA did
+ * not appear to have triggered on Q4_0. Verified empirically (fixed seed
+ * 42/123, same prompt, with vs. without the LoRA, visually inspected):
+ * - Q4_0: with/without look similar — the LoRA's visible contribution is
+ *   weak/hard to distinguish from the base model's own "pixel art" prompt
+ *   response. One prompt (tavern-building) degenerated to a blank frame
+ *   with or without the LoRA — a base-model convergence failure at 12
+ *   steps for that prompt, unrelated to the LoRA.
+ * - Q8_0: with vs. without is dramatic — without the LoRA, the model drifts
+ *   off-prompt entirely (a generic cartoon child on a skateboard for a
+ *   "Zeus, lightning bolt" prompt); with the LoRA, the correct bearded
+ *   Zeus-with-fire subject renders in a clearly pixel-art style. The full
+ *   15-prompt Q8_0 suite reproduces this: every tile is a recognizable,
+ *   correctly-styled sprite (including a correctly-rendered tavern
+ *   building where Q4_0 went blank).
+ * This matches the docs' own warning (docs/lora.md, stable-diffusion.cpp):
+ * the "at_runtime" LoRA-application path used automatically for quantized
+ * weights "may have precision and compatibility issues" — confirmed here
+ * to be severe enough at Q4_0 that its LoRA rows are not a meaningful
+ * pixel-art measurement. Q8_0 is therefore the recommended sd.cpp base-arm
+ * quantization; Q4_0 remains recorded for its (real, measured) speed/RSS
+ * numbers but is flagged everywhere as LoRA-unreliable, effectively a
+ * no-LoRA run.
+ */
+function buildQuantizationLoraReliabilityCaveat(summary: Summary): string {
+  const q4Arm = sdCppArmByPrecision(summary, "q4_0");
+  if (!q4Arm) {
+    return "";
+  }
+  return `**LoRA reliability differs by sd.cpp quantization (owner-flagged, verified empirically):** at Q4_0, a fixed-seed with-vs-without-LoRA comparison showed only a weak, hard-to-distinguish difference — the sd.cpp Q4_0 row above should be read as **effectively no-LoRA**, not a validated pixel-art measurement. At Q8_0, the same comparison showed a dramatic, unambiguous difference (without the LoRA the model drifted off-prompt entirely; with it, the correct subject rendered in pixel-art style), matching stable-diffusion.cpp's own documented warning that its "apply at runtime" LoRA path (used automatically for quantized weights) can have precision/compatibility issues. Q8_0 (${SD15_MODEL_Q8_0.id}, sha256 ${SD15_MODEL_Q8_0.sha256.slice(0, 12)}...) is therefore the recommended sd.cpp base-arm quantization for this LoRA, superseding the earlier Q4_0-only measurement; Q4_0's numbers remain recorded (real, measured speed/RSS) but are not evidence of a working pixel-art pipeline.`;
+}
+
+/**
+ * Explains the sd.cpp cancellation mechanism and, only when this run's
+ * cancellation actually confirmed a kill (outcome `terminated`), that the
+ * cancel-to-idle number is a whole-process-kill proxy — not asserted when
+ * the outcome was `idle-cpu`/`timeout`/`unsupported`, since no such number
+ * exists to describe in those cases (see the Cancellation table).
+ */
+function buildSdCppCancelMechanismCaveat(summary: Summary): string {
+  const sdcppCancel = summary.cancellations.find((c) => c.arm === "sd.cpp");
+  const confirmedKillNote =
+    sdcppCancel?.outcome === "terminated"
+      ? " The recorded cancel-to-idle number is therefore a whole-process-kill proxy, not a graceful in-job cancel."
+      : sdcppCancel
+        ? ` This run's outcome was \`${sdcppCancel.outcome}\`, not a confirmed kill — see the Cancellation table for why no cancel-to-idle number is reported.`
+        : "";
+  return `This sd-server build's native \`sdcpp\` API reports \`cancel_generating: false\` in \`GET /sdcpp/v1/capabilities\` — \`POST /sdcpp/v1/jobs/{id}/cancel\` only works on a job still queued behind another, not one already generating, so it cannot interrupt the single in-flight job this probe's cancellation test submits. SIGINT to the \`sd-server\` process was tried first and measured to be silently ignored (the process kept running and started its next queued job); SIGTERM reliably terminates it, though not always within a single 250ms poll tick.${confirmedKillNote}`;
+}
+
+/**
+ * An f16 (unquantized) sd.cpp measurement was attempted specifically to
+ * match Draw Things' precision for an engine-isolating comparison (see
+ * buildComparisonNote). It reproducibly crashed this sd-server build
+ * (`master-921-168f7b8`) with or without `--diffusion-fa` — a real,
+ * confirmed bug in LoRA application against non-quantized weights on
+ * Metal (`ggml-backend.cpp:930: pre-allocated tensor ... in a buffer
+ * (MTL0) that cannot run the operation (ADD)`, inside `LoraModel::apply`).
+ * f16 without the LoRA generates successfully, isolating the crash to the
+ * LoRA-on-f16 combination specifically. This caveat only appears when no
+ * f16 sd.cpp arm data exists in the summary, so it disappears automatically
+ * once a fixed build lands and a real f16+LoRA measurement replaces it.
+ */
+function buildF16LoraCrashCaveat(summary: Summary): string {
+  if (sdCppArmByPrecision(summary, "f16")) {
+    return "";
+  }
+  const nonF16Precision = sdCppArmByPrecision(summary, "q8_0")
+    ? "Q8_0"
+    : "Q4_0";
+  return `An f16 (unquantized) sd.cpp + LoRA run was attempted, specifically to match Draw Things' precision for an engine-isolating comparison, but it reproducibly crashed this sd-server build (${SD_CPP_BINARY.tag}) with or without \`--diffusion-fa\` — a real, confirmed bug applying this LoRA against non-quantized (f16) weights on Metal (\`ggml-backend.cpp:930: pre-allocated tensor ... in a buffer (MTL0) that cannot run the operation (ADD)\`, inside \`LoraModel::apply\`). Plain f16 generation *without* the LoRA succeeded, isolating the crash to the LoRA-on-f16 combination specifically, not f16 in general. The Draw Things comparison below is therefore precision-confounded (sd.cpp ${nonF16Precision} vs Draw Things f16), not the engine-isolating comparison this probe set out to make; the f16 checkpoint (${SD15_MODEL_F16.id}, sha256 ${SD15_MODEL_F16.sha256.slice(0, 12)}...) remains downloaded and recorded for whoever revisits this once a fixed build is available.`;
 }
 
 function buildDrawThingsRssCaveat(summary: Summary): string {
@@ -542,7 +717,7 @@ function buildFindings(summary: Summary): readonly string[] {
   }
   for (const cancel of summary.cancellations) {
     findings.push(
-      `Cancellation (${cancel.arm}): supported=${cancel.supported}${cancel.cancelToIdleMs !== undefined ? `, cancel-to-idle ${cancel.cancelToIdleMs}ms` : ""} — ${cancel.note}`,
+      `Cancellation (${cancel.arm}): supported=${cancel.supported}, outcome=${cancel.outcome}${cancel.cancelToIdleMs !== undefined ? `, cancel-to-idle ${cancel.cancelToIdleMs}ms` : ""} — ${cancel.note}`,
     );
   }
   findings.push(
@@ -552,44 +727,106 @@ function buildFindings(summary: Summary): readonly string[] {
 }
 
 function buildBottomLine(summary: Summary): string {
-  const sdcppArm = summary.arms.find((arm) => arm.arm === "sd.cpp");
-  if (!sdcppArm) {
+  const sdcppQ8Arm = sdCppArmByPrecision(summary, "q8_0");
+  const sdcppQ4Arm = sdCppArmByPrecision(summary, "q4_0");
+  const sdcppF16Arm = sdCppArmByPrecision(summary, "f16");
+  // Q8_0 is the recommended base-arm quantization: it is the only one
+  // where the pixel-art LoRA was empirically confirmed to make a real
+  // difference (see buildQuantizationLoraReliabilityCaveat). Q4_0 is
+  // smaller/faster but its LoRA application is unreliable — not used as
+  // the recommendation even though it was measured first.
+  const recommendedArm =
+    sdcppQ8Arm ??
+    sdcppQ4Arm ??
+    sdcppF16Arm ??
+    summary.arms.find((arm) => arm.arm === "sd.cpp");
+  if (!recommendedArm) {
     return "_No sd.cpp arm results recorded yet — no baseline profile to recommend._";
   }
+  const unreliableNote =
+    recommendedArm === sdcppQ4Arm
+      ? " (Q8_0 not yet measured — this Q4_0 profile's LoRA application is unverified/likely unreliable, see Caveat.)"
+      : "";
   const dtArm = drawThingsArmSummary(summary);
   const drawThingsNote = !summary.drawThings.reachable
     ? `Draw Things was not reachable at port ${summary.drawThings.port} during this run and contributes no measured numbers here — it remains an optional, owner-enabled add-on, never a blocker for the base arm.`
     : dtArm && dtArm.errorCount === dtArm.n && dtArm.n > 0
       ? `Draw Things was reachable but its currently selected model (\`${dtArm.model}\`) could not generate (missing required local files) and contributes no measured numbers here — the HTTP API offers no model switch, so this run could not try a different one; it remains an optional add-on, never a blocker for the base arm.`
-      : buildLikeForLikeComparisonNote(sdcppArm, dtArm);
+      : buildComparisonNote(sdcppQ8Arm, sdcppQ4Arm, sdcppF16Arm, dtArm);
   return (
-    `**stable-diffusion.cpp (${sdcppArm.model}) at ${sdcppArm.width}x${sdcppArm.height}, ${sdcppArm.steps} steps is the base arm profile for ADR-0007** — measured warmup ${formatSeconds(sdcppArm.warmupSeconds)}s, ` +
-    `steady-state seconds/image p50/p95 ${formatSeconds(sdcppArm.secondsPerImageP50)}/${formatSeconds(sdcppArm.secondsPerImageP95)}, peak RSS ${formatRss(sdcppArm.peakRssMiB)}. ` +
+    `**stable-diffusion.cpp (${recommendedArm.model}) at ${recommendedArm.width}x${recommendedArm.height}, ${recommendedArm.steps} steps is the recommended base arm profile for ADR-0007** — measured warmup ${formatSeconds(recommendedArm.warmupSeconds)}s, ` +
+    `steady-state seconds/image p50/p95 ${formatSeconds(recommendedArm.secondsPerImageP50)}/${formatSeconds(recommendedArm.secondsPerImageP95)}, peak RSS ${formatRss(recommendedArm.peakRssMiB)}.${unreliableNote} ` +
     `${drawThingsNote}`
   );
 }
 
-function buildLikeForLikeComparisonNote(
-  sdcppArm: ArmSummary,
+/**
+ * Builds the Draw Things comparison note. Prefers a precision-matched
+ * comparison (sd.cpp f16 vs Draw Things f16) when both were measured at
+ * the same resolution/steps — the only case this probe calls "like-for-
+ * like" or "engine-isolating". Falls back to whatever sd.cpp arm exists
+ * (typically Q4_0) with the precision mismatch stated explicitly and the
+ * "gap" finding downgraded to unexplained-and-confounded, never silently
+ * dropping the caveat.
+ */
+function buildComparisonNote(
+  sdcppQ8Arm: ArmSummary | undefined,
+  sdcppQ4Arm: ArmSummary | undefined,
+  sdcppF16Arm: ArmSummary | undefined,
   dtArm: ArmSummary | undefined,
 ): string {
-  if (
-    !dtArm ||
-    dtArm.secondsPerImageP50 === undefined ||
-    sdcppArm.secondsPerImageP50 === undefined
-  ) {
+  if (!dtArm || dtArm.secondsPerImageP50 === undefined) {
+    return "Draw Things was reachable and its measured numbers appear above as an optional add-on arm.";
+  }
+
+  const matchedPrecisionArm =
+    sdcppF16Arm &&
+    sdcppF16Arm.secondsPerImageP50 !== undefined &&
+    sdcppF16Arm.width === dtArm.width &&
+    sdcppF16Arm.height === dtArm.height &&
+    sdcppF16Arm.steps === dtArm.steps &&
+    dtArm.model.toLowerCase().includes("f16")
+      ? sdcppF16Arm
+      : undefined;
+
+  if (matchedPrecisionArm?.secondsPerImageP50 !== undefined) {
+    const ratio =
+      matchedPrecisionArm.secondsPerImageP50 / dtArm.secondsPerImageP50;
+    const otherNote =
+      sdcppQ8Arm && sdcppQ8Arm.secondsPerImageP50 !== undefined
+        ? ` The recommended Q8_0 base-arm profile above is separately measured (${formatSeconds(sdcppQ8Arm.secondsPerImageP50)}s p50) — it is not part of this precision-matched comparison.`
+        : "";
+    return (
+      `Draw Things was reachable and ran the same SD 1.5 checkpoint (f16) + pixel-art LoRA at the same ${matchedPrecisionArm.width}x${matchedPrecisionArm.height}, ${matchedPrecisionArm.steps}-step settings as an sd.cpp f16 arm measured specifically for this comparison — a genuine like-for-like, precision-matched comparison. ` +
+      `Draw Things still measured ${ratio.toFixed(1)}x faster per image (${formatSeconds(dtArm.secondsPerImageP50)}s vs ${formatSeconds(matchedPrecisionArm.secondsPerImageP50)}s p50) at a fraction of the sampled process RSS, on the same weights, precision, and LoRA — with quantization ruled out as the cause, this is a real, measured engine-level gap this probe does not explain (candidates: a more mature Metal attention/kernel path in Draw Things' inference engine vs this stable-diffusion.cpp build's flash-attention support and LoRA "apply at runtime" overhead; unverified, worth a follow-up probe).${otherNote} ` +
+      "It does not change the base-arm recommendation: stable-diffusion.cpp is cross-platform and must work standalone (owner direction), while Draw Things is a macOS/iOS-only optional add-on with no HTTP-level model/LoRA selection or in-flight cancellation."
+    );
+  }
+
+  // No precision-matched pair available: qualify the comparison instead of
+  // implying an engine-isolating measurement that was never taken. Prefer
+  // Q8_0 for this fallback — it's the only sd.cpp quantization confirmed
+  // to apply the LoRA reliably (see buildQuantizationLoraReliabilityCaveat);
+  // Q4_0 would compare a confirmed-unreliable LoRA run against Draw Things.
+  const fallbackArm = sdcppQ8Arm ?? sdcppQ4Arm ?? sdcppF16Arm;
+  if (!fallbackArm || fallbackArm.secondsPerImageP50 === undefined) {
     return "Draw Things was reachable and its measured numbers appear above as an optional add-on arm.";
   }
   const sameSize =
-    dtArm.width === sdcppArm.width && dtArm.height === sdcppArm.height;
-  const sameSteps = dtArm.steps === sdcppArm.steps;
+    dtArm.width === fallbackArm.width && dtArm.height === fallbackArm.height;
+  const sameSteps = dtArm.steps === fallbackArm.steps;
   if (!sameSize || !sameSteps) {
     return "Draw Things was reachable and its measured numbers appear above as an optional add-on arm.";
   }
-  const ratio = sdcppArm.secondsPerImageP50 / dtArm.secondsPerImageP50;
+  const ratio = fallbackArm.secondsPerImageP50 / dtArm.secondsPerImageP50;
+  const fallbackPrecision = fallbackArm.model.toLowerCase().includes("f16")
+    ? "f16"
+    : fallbackArm.model.toLowerCase().includes("q8_0")
+      ? "Q8_0"
+      : "Q4_0";
   return (
-    `Draw Things was reachable and ran the same SD 1.5 checkpoint + pixel-art LoRA at the same ${sdcppArm.width}x${sdcppArm.height}, ${sdcppArm.steps}-step settings as the base arm — a like-for-like comparison. ` +
-    `Draw Things measured ${ratio.toFixed(1)}x faster per image (${formatSeconds(dtArm.secondsPerImageP50)}s vs ${formatSeconds(sdcppArm.secondsPerImageP50)}s p50) at a fraction of the sampled process RSS, on the same weights and LoRA — a real, measured gap this probe does not explain (candidates: a more mature Metal attention/kernel path in Draw Things' inference engine vs this stable-diffusion.cpp build's newer flash-attention support and Q4_0 "apply lora at runtime" overhead; unverified, worth a follow-up probe). ` +
+    `Draw Things was reachable and ran the same SD 1.5 checkpoint + pixel-art LoRA at the same ${fallbackArm.width}x${fallbackArm.height}, ${fallbackArm.steps}-step settings as the sd.cpp arm above, but at a **different precision** (sd.cpp ${fallbackPrecision} vs Draw Things f16) — not an engine-isolating comparison. ` +
+    `Draw Things measured ${ratio.toFixed(1)}x faster per image (${formatSeconds(dtArm.secondsPerImageP50)}s vs ${formatSeconds(fallbackArm.secondsPerImageP50)}s p50). This gap is **unexplained and precision-confounded** — quantization is a plausible partial cause and this probe did not isolate it (an f16 sd.cpp + LoRA measurement was attempted and crashed this server build reproducibly; see Caveat). ` +
     "It does not change the base-arm recommendation: stable-diffusion.cpp is cross-platform and must work standalone (owner direction), while Draw Things is a macOS/iOS-only optional add-on with no HTTP-level model/LoRA selection or in-flight cancellation."
   );
 }
@@ -610,7 +847,9 @@ function buildSummary(
       port: 7860,
     },
     binary: SD_CPP_BINARY,
-    model: SD15_MODEL,
+    model: SD15_MODEL_Q4_0,
+    modelQ8: SD15_MODEL_Q8_0,
+    modelF16: SD15_MODEL_F16,
     lora: PIXEL_ART_LORA,
     environment,
   };
@@ -632,14 +871,14 @@ function writeReadmeFromSummary(summary: Summary): void {
       "**Staging (prerequisite, not timed):**\n\n" +
       "Download the pinned `stable-diffusion.cpp` release (macOS arm64) into `tools/probes/art-local/bin/` (gitignored; tag/sha256 recorded below):\n\n" +
       "```sh\ncurl -sL -o sd.zip https://github.com/leejet/stable-diffusion.cpp/releases/download/master-921-168f7b8/sd-master-168f7b8-bin-Darwin-macOS-26.6.2-arm64.zip\nunzip sd.zip -d bin/\n```\n\n" +
-      "Download the SD 1.5 checkpoint and pixel-art LoRA into `tools/probes/art-local/models/` (gitignored; identifiers/sha256 recorded below):\n\n" +
-      "```sh\ncurl -sL -o models/sd-v1-5-pruned-emaonly-Q4_0.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf\ncurl -sL -o models/loras/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors https://huggingface.co/artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5/resolve/main/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors\n```\n\n" +
-      "Launch `sd-server` (Metal backend on macOS arm64 — `--diffusion-fa` is not optional, see Caveat: the same generation measured ~5x slower without it):\n\n" +
-      "```sh\n./bin/sd-server --model models/sd-v1-5-pruned-emaonly-Q4_0.gguf --lora-model-dir models/loras --listen-port 1234 --diffusion-fa\n```\n\n" +
-      "Draw Things (optional add-on, owner-installed 26.0924.0): Settings → API Server → enable HTTP on 127.0.0.1:7860; select the same base model + LoRA in-app for a like-for-like comparison (no HTTP model/LoRA selection exists, see Caveat). Never leave it enabled after a run — localhost is not a security boundary here, any local process can drive it.\n\n" +
-      "**Suite** (per arm):\n\n" +
-      "```sh\ncd tools/probes/art-local\nbun run src/run.ts suite --arm sd.cpp --base-url http://127.0.0.1:1234 \\\n  --width 512 --height 512 --steps 12 \\\n  --lora-path PixelArtRedmond15V-PixelArt-PIXARFK.safetensors --lora-multiplier 0.6 \\\n  --rss-pid <sd-server-pid> --label sdcpp-512\n\nbun run src/run.ts suite --arm draw-things --base-url http://127.0.0.1:7860 \\\n  --width 512 --height 512 --steps 12 --rss-pid <DrawThings-pid> --label drawthings-512\n```\n\n" +
-      "`--model` is optional for `--arm sd.cpp` (defaults to a literal description) but required in practice for a meaningful README row; for `--arm draw-things` it is auto-read from `GET /sdapi/v1/options` (the app's own selection) if omitted. `--rss-pid` is the generator process's own pid (`pgrep -f sd-server`, or Draw Things' pid from Activity Monitor/`ps`) — the sampler polls its RSS every 250ms and records the peak.\n\n" +
+      "Download the SD 1.5 checkpoints and pixel-art LoRA into `tools/probes/art-local/models/` (gitignored; identifiers/sha256 recorded below). Q8_0 is recommended — the LoRA was empirically confirmed to apply reliably only at this quantization (see Caveat); Q4_0 and f16 are kept for comparison/reproducibility, not as base-arm candidates:\n\n" +
+      "```sh\ncurl -sL -o models/sd-v1-5-pruned-emaonly-Q8_0.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf\ncurl -sL -o models/sd-v1-5-pruned-emaonly-Q4_0.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf\ncurl -sL -o models/sd-v1-5-pruned-emaonly-f16.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-f16.gguf\ncurl -sL -o models/loras/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors https://huggingface.co/artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5/resolve/main/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors\n```\n\n" +
+      "Launch `sd-server` against ONE checkpoint at a time (it loads the model given at startup; `--diffusion-fa` is not optional, see Caveat: the same generation measured ~5x slower without it):\n\n" +
+      "```sh\n# Q8_0 (recommended base arm — LoRA confirmed working, see Caveat)\n./bin/sd-server --model models/sd-v1-5-pruned-emaonly-Q8_0.gguf --lora-model-dir models/loras --listen-port 1234 --diffusion-fa\n\n# Q4_0 (measured for speed/RSS only — LoRA application is unreliable here,\n# see Caveat; do not use this quantization to judge LoRA/pixel-art quality)\n./bin/sd-server --model models/sd-v1-5-pruned-emaonly-Q4_0.gguf --lora-model-dir models/loras --listen-port 1234 --diffusion-fa\n\n# f16 (comparison-only, matches Draw Things' precision — CRASHES this build\n# when the LoRA is applied; see Caveat. Kept documented for whoever retries\n# this once a fixed stable-diffusion.cpp build is available.)\n./bin/sd-server --model models/sd-v1-5-pruned-emaonly-f16.gguf --lora-model-dir models/loras --listen-port 1234 --diffusion-fa\n```\n\n" +
+      "Draw Things (optional add-on, owner-installed 26.0924.0): Settings → API Server → enable HTTP on 127.0.0.1:7860; select the same base model + LoRA in-app (no HTTP model/LoRA selection exists, see Caveat). Never leave it enabled after a run — localhost is not a security boundary here, any local process can drive it.\n\n" +
+      "**Suite** (per arm; `--model` is always explicit — if omitted for `--arm sd.cpp`, it is resolved from the single checkpoint file directly under `models/`, erroring with the candidate list if that's ambiguous or absent; for `--arm draw-things` it is auto-read from `GET /sdapi/v1/options`, the app's own selection, if omitted):\n\n" +
+      "```sh\ncd tools/probes/art-local\nbun run src/run.ts suite --arm sd.cpp --base-url http://127.0.0.1:1234 \\\n  --model sd-v1-5-pruned-emaonly-Q8_0 --width 512 --height 512 --steps 12 \\\n  --lora-path PixelArtRedmond15V-PixelArt-PIXARFK.safetensors --lora-multiplier 0.6 \\\n  --rss-pid <sd-server-pid> --label sdcpp-512\n\nbun run src/run.ts suite --arm draw-things --base-url http://127.0.0.1:7860 \\\n  --width 512 --height 512 --steps 12 --rss-pid <DrawThings-pid> --label drawthings-512\n```\n\n" +
+      "`--rss-pid` is the generator process's own pid (`pgrep -f sd-server`, or Draw Things' pid from Activity Monitor/`ps`) — the sampler polls its RSS every 250ms and records the peak.\n\n" +
       "**Cancellation**:\n\n" +
       "```sh\nbun run src/run.ts cancel --arm sd.cpp --base-url http://127.0.0.1:1234 \\\n  --width 512 --height 512 --steps 20 --baseline-seconds <measured-p50-seconds> \\\n  --lora-path PixelArtRedmond15V-PixelArt-PIXARFK.safetensors --lora-multiplier 0.6 \\\n  --rss-pid <sd-server-pid> --label sdcpp-cancel\n\nbun run src/run.ts cancel --arm draw-things --label drawthings-cancel\n```\n\n" +
       "Submits a job and aborts it at ~30% of `--baseline-seconds`. Tries `POST /sdcpp/v1/jobs/{id}/cancel` first; if this server build reports `cancel_generating: false` (measured true here, see Caveat), `--rss-pid` is required and the fallback SIGTERMs the `sd-server` process itself, measuring time to idle. Draw Things has no cancel path at all and is recorded as unsupported without attempting a request.\n\n" +
@@ -675,7 +914,9 @@ function writeReadmeFromSummary(summary: Summary): void {
     "| Artifact | Identifier | Size | License |",
     "| --- | --- | --- | --- |",
     `| sd-server binary | ${summary.binary.tag} (${summary.binary.asset}) | — | see leejet/stable-diffusion.cpp |`,
-    `| Base checkpoint | ${summary.model.id} | ${(summary.model.sizeBytes / 1024 / 1024).toFixed(0)} MiB | ${summary.model.license} |`,
+    `| Base checkpoint (Q8_0, recommended — LoRA confirmed working) | ${summary.modelQ8.id} | ${(summary.modelQ8.sizeBytes / 1024 / 1024).toFixed(0)} MiB | ${summary.modelQ8.license} |`,
+    `| Base checkpoint (Q4_0, LoRA unreliable, see Caveat) | ${summary.model.id} | ${(summary.model.sizeBytes / 1024 / 1024).toFixed(0)} MiB | ${summary.model.license} |`,
+    `| Base checkpoint (f16, comparison-only${sdCppArmByPrecision(summary, "f16") ? "" : " — LoRA crashes this build, see Caveat"}) | ${summary.modelF16.id} | ${(summary.modelF16.sizeBytes / 1024 / 1024).toFixed(0)} MiB | ${summary.modelF16.license} |`,
     `| Pixel-art LoRA | ${summary.lora.id} | ${(summary.lora.sizeBytes / 1024 / 1024).toFixed(0)} MiB | ${summary.lora.license} |`,
   ].join("\n");
 
@@ -713,7 +954,9 @@ async function cmdReport(): Promise<void> {
     const environment = captureEnvironment({
       extra: {
         "sd-server binary": `${SD_CPP_BINARY.tag} (sha256 ${SD_CPP_BINARY.sha256.slice(0, 12)}...)`,
-        "SD 1.5 checkpoint": SD15_MODEL.id,
+        "SD 1.5 checkpoint (Q8_0, recommended)": SD15_MODEL_Q8_0.id,
+        "SD 1.5 checkpoint (Q4_0, LoRA-unreliable)": SD15_MODEL_Q4_0.id,
+        "SD 1.5 checkpoint (f16, comparison-only)": SD15_MODEL_F16.id,
         "Pixel-art LoRA": PIXEL_ART_LORA.id,
       },
     });

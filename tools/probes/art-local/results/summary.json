@@ -1,17 +1,17 @@
 {
-  "generatedAt": "2026-09-27T13:04:16.329Z",
+  "generatedAt": "2026-09-27T14:22:58.281Z",
   "arms": [
     {
       "arm": "sd.cpp",
-      "model": "sd1.5-q4_0+diffusion-fa+pixelart-lora@0.6",
+      "model": "sd-v1-5-pruned-emaonly-Q8_0",
       "width": 512,
       "height": 512,
       "steps": 12,
       "n": 15,
-      "warmupSeconds": 37.72,
-      "secondsPerImageP50": 37.207,
-      "secondsPerImageP95": 38.146,
-      "peakRssMiB": 2034.671875,
+      "warmupSeconds": 37.805,
+      "secondsPerImageP50": 37.273,
+      "secondsPerImageP95": 37.363,
+      "peakRssMiB": 2319.921875,
       "errorCount": 0,
       "contactSheetPath": "results/images/sdcpp-512-contact-sheet.png"
     },
@@ -28,18 +28,33 @@
       "peakRssMiB": 256.546875,
       "errorCount": 0,
       "contactSheetPath": "results/images/drawthings-512-contact-sheet.png"
+    },
+    {
+      "arm": "sd.cpp",
+      "model": "sd-v1-5-pruned-emaonly-Q4_0",
+      "width": 512,
+      "height": 512,
+      "steps": 12,
+      "n": 15,
+      "warmupSeconds": 40.366,
+      "secondsPerImageP50": 37.089,
+      "secondsPerImageP95": 37.329,
+      "peakRssMiB": 2164.234375,
+      "errorCount": 0,
+      "contactSheetPath": "results/images/sdcpp-q4-512-contact-sheet.png"
     }
   ],
   "cancellations": [
     {
       "arm": "sd.cpp",
-      "supported": true,
-      "cancelToIdleMs": 7,
-      "note": "this sd-server build reports cancel_generating=false, so the in-flight job could not be cancelled over HTTP; SIGINT was tried first and measured to be silently ignored (the process kept running and started its next queued job), so this fell back to SIGTERM on the sd-server process (pid 62542) at ~30% of baseline (16200ms) and measured time-to-idle (cpu-below-threshold). SIGTERM ends the whole server, not just the one job — a real, coarser proxy for \"how fast can the GPU be reclaimed by force\" when the HTTP API cannot cancel an in-flight job."
+      "supported": false,
+      "outcome": "idle-cpu",
+      "note": "this sd-server build reports cancel_generating=false, so the in-flight job could not be cancelled over HTTP; SIGINT was tried first and measured to be silently ignored (the process kept running and started its next queued job), so this fell back to SIGTERM on the sd-server process (pid 72164) at ~30% of baseline (11190ms). SIGTERM ends the whole server, not just the one job — a real, coarser proxy for \"how fast can the GPU be reclaimed by force\" when the HTTP API cannot cancel an in-flight job. The process was still alive 3ms after SIGTERM, with CPU% below the 5% idle threshold — not a confirmed kill (SIGTERM may not have fully terminated it within the poll window), so this is NOT reported as a supported process-kill measurement."
     },
     {
       "arm": "draw-things",
       "supported": false,
+      "outcome": "unsupported",
       "note": "Draw Things' HTTP API (/sdapi/v1/txt2img) exposes no cancellation endpoint; a started job runs to completion or app-level user cancel only."
     }
   ],
@@ -62,6 +77,24 @@
     "quantization": "Q4_0",
     "sizeBytes": 1566768416,
     "sha256": "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f"
+  },
+  "modelQ8": {
+    "id": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf)",
+    "source": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+    "baseModel": "runwayml/stable-diffusion-v1-5",
+    "license": "creativeml-openrail-m",
+    "quantization": "Q8_0",
+    "sizeBytes": 1763578176,
+    "sha256": "d0555243938c62faeefb4ac93f6c7a053ad373a4290c5256bce229aeb193bf94"
+  },
+  "modelF16": {
+    "id": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-f16.gguf)",
+    "source": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-f16.gguf",
+    "baseModel": "runwayml/stable-diffusion-v1-5",
+    "license": "creativeml-openrail-m",
+    "quantization": "f16",
+    "sizeBytes": 2132586944,
+    "sha256": "da017009aa86a3f46468857d95833435fe55e4a2856afab76ba7722ef8ee4d8b"
   },
   "lora": {
     "id": "artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5 (PixelArtRedmond15V-PixelArt-PIXARFK.safetensors)",
@@ -92,7 +125,9 @@
     },
     "extra": {
       "sd-server binary": "master-921-168f7b8 (sha256 2650e3bb9d11...)",
-      "SD 1.5 checkpoint": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf)",
+      "SD 1.5 checkpoint (Q8_0, recommended)": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf)",
+      "SD 1.5 checkpoint (Q4_0, LoRA-unreliable)": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf)",
+      "SD 1.5 checkpoint (f16, comparison-only)": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-f16.gguf)",
       "Pixel-art LoRA": "artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5 (PixelArtRedmond15V-PixelArt-PIXARFK.safetensors)"
     }
   }

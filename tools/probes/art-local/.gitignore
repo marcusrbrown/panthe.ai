@@ -16,3 +16,15 @@ models/
 # per-request records or generated images below.
 results/*
 !results/summary.json
+!results/images/
+results/images/*
+# Three committed contact sheets (owner review, ≤400 KB each) — the only
+# generated-image artifacts durable enough to keep: the recommended sd.cpp
+# Q8_0 arm, the Draw Things add-on arm, and the sd.cpp Q4_0 arm kept
+# specifically as visual evidence for the Caveat's LoRA-reliability finding
+# (Q4_0's LoRA application is confirmed unreliable; this sheet is the
+# supporting comparison, not a base-arm candidate). Every other raw
+# per-run image/contact-sheet dump stays gitignored above.
+!results/images/sdcpp-512-contact-sheet.png
+!results/images/drawthings-512-contact-sheet.png
+!results/images/sdcpp-q4-512-contact-sheet.png

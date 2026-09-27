@@ -265,8 +265,34 @@ export async function runDrawThingsArm(
   };
 }
 
+/**
+ * Discriminates how a cancellation attempt actually ended, so a caller (or
+ * a test) never has to parse `note` prose to tell them apart:
+ *
+ * - `http-cancel`: the sd-server build supports `cancel_generating` and
+ *   the job was cancelled over HTTP.
+ * - `terminated`: the process-signal fallback confirmed the process is
+ *   actually gone (`waitForIdle` reason `process-gone`) — the only
+ *   outcome that counts as a real process-kill proxy.
+ * - `idle-cpu`: the process is still alive but its CPU% dropped below the
+ *   threshold — NOT a confirmed kill; SIGTERM may not have terminated it
+ *   within the poll window, so this must not be reported as "supported".
+ * - `timeout`: neither termination nor an idle CPU reading was observed
+ *   within the poll window.
+ * - `unsupported`: no cancellation path was available at all (missing
+ *   `--rss-pid` for the signal fallback, a failed signal send, or the arm
+ *   has no cancel mechanism, e.g. Draw Things).
+ */
+export type CancellationOutcome =
+  | "http-cancel"
+  | "terminated"
+  | "idle-cpu"
+  | "timeout"
+  | "unsupported";
+
 export interface CancellationResult {
   readonly supported: boolean;
+  readonly outcome: CancellationOutcome;
   readonly cancelToIdleMs: number | undefined;
   readonly note: string;
 }
@@ -324,6 +350,7 @@ export async function runSdCppCancellation(
     const cancelToIdleMs = Date.now() - cancelStartedAt;
     return {
       supported: true,
+      outcome: "http-cancel",
       cancelToIdleMs,
       note: `HTTP cancel (cancel_generating supported), aborted at ~30% of baseline (${abortAtMs.toFixed(0)}ms), job reached '${job.status}'`,
     };
@@ -332,18 +359,66 @@ export async function runSdCppCancellation(
   return runSdCppSignalCancel(options.serverPid, abortAtMs, features);
 }
 
-async function runSdCppSignalCancel(
+/** Injectable seams for {@link runSdCppSignalCancel} so tests can fake the process signal and idle-wait without touching a real process. */
+export interface SignalCancelDeps {
+  readonly killProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  readonly waitForIdleImpl?: typeof waitForIdle;
+}
+
+/**
+ * Maps a {@link waitForIdle} outcome to a {@link CancellationResult}. Pure
+ * and separately exported so the outcome logic — only `process-gone`
+ * counts as a confirmed process-kill proxy — is directly testable without
+ * spawning or signaling a real process.
+ */
+export function mapIdleOutcomeToCancellationResult(
+  idle: {
+    readonly idleAfterMs: number;
+    readonly reason: "cpu-below-threshold" | "process-gone" | "timeout";
+  },
+  cancelToIdleMs: number,
+  baseNote: string,
+): CancellationResult {
+  if (idle.reason === "process-gone") {
+    return {
+      supported: true,
+      outcome: "terminated",
+      cancelToIdleMs,
+      note: `${baseNote} Confirmed terminated (process gone) after ${cancelToIdleMs}ms — this is the process-kill proxy the cancel-to-idle number reflects.`,
+    };
+  }
+  if (idle.reason === "cpu-below-threshold") {
+    return {
+      supported: false,
+      outcome: "idle-cpu",
+      cancelToIdleMs: undefined,
+      note: `${baseNote} The process was still alive ${cancelToIdleMs}ms after SIGTERM, with CPU% below the 5% idle threshold — not a confirmed kill (SIGTERM may not have fully terminated it within the poll window), so this is NOT reported as a supported process-kill measurement.`,
+    };
+  }
+  return {
+    supported: false,
+    outcome: "timeout",
+    cancelToIdleMs: undefined,
+    note: `${baseNote} The process neither terminated nor dropped below the 5% CPU idle threshold within the 30s poll window — cancellation could not be confirmed.`,
+  };
+}
+
+export async function runSdCppSignalCancel(
   serverPid: number | undefined,
   abortAtMs: number,
   features: sdcpp.ImgGenFeatures | undefined,
+  deps: SignalCancelDeps = {},
 ): Promise<CancellationResult> {
   if (!serverPid) {
     return {
       supported: false,
+      outcome: "unsupported",
       cancelToIdleMs: undefined,
       note: `this sd-server build reports cancel_generating=false (only a still-queued job can be cancelled over HTTP, features: ${JSON.stringify(features)}) and no --rss-pid was given for the process-signal fallback, so cancellation could not be measured.`,
     };
   }
+  const kill = deps.killProcess ?? ((pid, signal) => process.kill(pid, signal));
+  const waitForIdleFn = deps.waitForIdleImpl ?? waitForIdle;
   const cancelStartedAt = Date.now();
   try {
     // SIGINT was tried first and measured to be silently ignored by this
@@ -351,30 +426,29 @@ async function runSdCppSignalCancel(
     // next queued job after receiving it. SIGTERM reliably terminates it
     // (confirmed: process gone within one poll tick), so that is what this
     // probe actually uses for the process-level fallback.
-    process.kill(serverPid, "SIGTERM");
+    kill(serverPid, "SIGTERM");
   } catch (error) {
     return {
       supported: false,
+      outcome: "unsupported",
       cancelToIdleMs: undefined,
       note: `SIGTERM to sd-server pid ${serverPid} failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const idle = await waitForIdle(serverPid, {
+  const idle = await waitForIdleFn(serverPid, {
     thresholdPercent: 5,
     timeoutMs: 30_000,
   });
   const cancelToIdleMs = Date.now() - cancelStartedAt;
-  return {
-    supported: true,
-    cancelToIdleMs,
-    note: `this sd-server build reports cancel_generating=false, so the in-flight job could not be cancelled over HTTP; SIGINT was tried first and measured to be silently ignored (the process kept running and started its next queued job), so this fell back to SIGTERM on the sd-server process (pid ${serverPid}) at ~30% of baseline (${abortAtMs.toFixed(0)}ms) and measured time-to-idle (${idle.reason}). SIGTERM ends the whole server, not just the one job — a real, coarser proxy for "how fast can the GPU be reclaimed by force" when the HTTP API cannot cancel an in-flight job.`,
-  };
+  const baseNote = `this sd-server build reports cancel_generating=false, so the in-flight job could not be cancelled over HTTP; SIGINT was tried first and measured to be silently ignored (the process kept running and started its next queued job), so this fell back to SIGTERM on the sd-server process (pid ${serverPid}) at ~30% of baseline (${abortAtMs.toFixed(0)}ms). SIGTERM ends the whole server, not just the one job — a real, coarser proxy for "how fast can the GPU be reclaimed by force" when the HTTP API cannot cancel an in-flight job.`;
+  return mapIdleOutcomeToCancellationResult(idle, cancelToIdleMs, baseNote);
 }
 
 /** Draw Things exposes no cancel endpoint over HTTP — recorded, not worked around. */
 export function drawThingsCancellationNotSupported(): CancellationResult {
   return {
     supported: false,
+    outcome: "unsupported",
     cancelToIdleMs: undefined,
     note: "Draw Things' HTTP API (/sdapi/v1/txt2img) exposes no cancellation endpoint; a started job runs to completion or app-level user cancel only.",
   };

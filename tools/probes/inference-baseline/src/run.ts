@@ -262,6 +262,22 @@ function parseFrameStatsFromLog(content: string): FrameStats | undefined {
   };
 }
 
+/** Parses only the frame-stats dump appended to `content` after `offset`
+ * characters, ignoring anything at or before it. Without this, a keystroke
+ * attempt that silently no-ops (see {@link sampleRendererFrameStats}'s doc
+ * comment on the two keystroke paths) would still find and report a stale
+ * `frameTime` block left over from an earlier dump in the same log — this
+ * is the fix for that: `offset` must be the log's length captured *before*
+ * the keystroke was sent, so a call that appended nothing new correctly
+ * returns `undefined` instead of re-reporting old numbers as fresh.
+ * Exported for unit testing without invoking the OS-level keystroke path. */
+export function parseFrameStatsSince(
+  content: string,
+  offset: number,
+): FrameStats | undefined {
+  return parseFrameStatsFromLog(content.slice(offset));
+}
+
 /** Triggers a metrics dump in the already-running probe-renderer app (`d`
  * keystroke) and reads the frame-time block back out of its captured
  * stdout log. Returns undefined (never throws) if the app or log isn't
@@ -305,7 +321,7 @@ async function sampleRendererFrameStats(
       content = readFileSync(logPath, "utf8");
     }
 
-    return parseFrameStatsFromLog(content);
+    return parseFrameStatsSince(content, before.length);
   } catch {
     return undefined;
   }
@@ -764,6 +780,83 @@ function summaryToReportData(summary: Summary): ReportData {
   };
 }
 
+function suiteKey(
+  s: Pick<SuiteAggregate, "model" | "server" | "tier">,
+): string {
+  return `${s.model}\u0000${s.server}\u0000${s.tier}`;
+}
+
+function parallelKey(
+  p: Pick<ParallelAggregate, "model" | "tier" | "concurrency">,
+): string {
+  return `${p.model}\u0000${p.tier}\u0000${p.concurrency ?? "?"}`;
+}
+
+function outageKey(
+  o: Pick<OutageAggregate, "model" | "tier" | "killedAfter">,
+): string {
+  return `${o.model}\u0000${o.tier}\u0000${o.killedAfter ?? "?"}`;
+}
+
+/**
+ * Merges a committed `results/summary.json` aggregate with freshly-loaded
+ * raw records for an incremental re-run — e.g. benching one additional
+ * candidate against an already-published matrix without every prior
+ * candidate's gitignored raw `results/*.json` records still on disk (they
+ * don't survive a fresh checkout or worktree; only `summary.json` is
+ * committed). Without this merge, `report` finding even one raw record
+ * present would take the "raw records exist" branch of its three-way
+ * dispatch and render *only* those records, silently dropping every other
+ * previously-published candidate from the README instead of adding to it.
+ *
+ * Fresh entries (same model/server/tier for suites, model/tier/concurrency
+ * for parallel, model/tier/killedAfter for outage) take precedence over a
+ * committed entry with the same key; committed entries with no fresh
+ * counterpart are kept unchanged. The rendered environment follows
+ * whichever suite ends up ranked best after the merge: the fresh
+ * environment if a freshly-measured suite is now the recommendation, the
+ * committed one otherwise (it already reflects the machine that produced
+ * the still-current recommendation's numbers).
+ */
+function mergeReportData(committed: ReportData, fresh: ReportData): ReportData {
+  const suites = new Map<string, SuiteAggregate>();
+  for (const s of committed.suites) {
+    suites.set(suiteKey(s), s);
+  }
+  for (const s of fresh.suites) {
+    suites.set(suiteKey(s), s);
+  }
+
+  const parallel = new Map<string, ParallelAggregate>();
+  for (const p of committed.parallel) {
+    parallel.set(parallelKey(p), p);
+  }
+  for (const p of fresh.parallel) {
+    parallel.set(parallelKey(p), p);
+  }
+
+  const outage = new Map<string, OutageAggregate>();
+  for (const o of committed.outage) {
+    outage.set(outageKey(o), o);
+  }
+  for (const o of fresh.outage) {
+    outage.set(outageKey(o), o);
+  }
+
+  const mergedSuites = [...suites.values()];
+  const best = rankCandidates(mergedSuites)[0];
+  const bestIsFresh =
+    best !== undefined &&
+    fresh.suites.some((s) => suiteKey(s) === suiteKey(best));
+
+  return {
+    suites: mergedSuites,
+    parallel: [...parallel.values()],
+    outage: [...outage.values()],
+    environment: bestIsFresh ? fresh.environment : committed.environment,
+  };
+}
+
 /** Every `results/*.json` file except the committed aggregate itself —
  * `summary.json` has no `kind` field and is not a {@link StoredRecord}; a
  * naive "read every .json file" would misparse it as one (see
@@ -969,7 +1062,7 @@ function writeReadmeFromData(data: ReportData): void {
 
 function buildCaveat(suites: readonly SuiteAggregate[]): string {
   const parts: string[] = [
-    "Candidate substitutions from the plan's named models: no `qwen3.5` 4B tier exists on the Ollama library (available sizes are 0.8B/2B/27B/35B/122B) — substituted `qwen3.5:2b-q4_K_M`, the nearest smaller tier. \"Gemma 4 E4B\" does not exist as a current model family; substituted `gemma3n:e4b` (Gemma 3n's elastic E4B execution profile), the nearest current equivalent. `ministral-3:8b-instruct-2512-q4_K_M`, `phi4-mini:3.8b`, and `llama3.2:3b` match the plan exactly.",
+    "Candidate substitutions from the plan's named models: no `qwen3.5` 4B tier exists on the Ollama library (available sizes are 0.8B/2B/27B/35B/122B) — substituted `qwen3.5:2b-q4_K_M`, the nearest smaller tier. Gemma 4 exists on Ollama (`gemma4:e4b`, benched here — an owner correction of this probe's earlier claim that no Gemma 4 family existed); `gemma3n:e4b` was benched first as a substitute under that mistaken assumption and is retained below since it's still valid measured data, not because it's still needed as a stand-in. `ministral-3:8b-instruct-2512-q4_K_M`, `phi4-mini:3.8b`, and `llama3.2:3b` match the plan exactly.",
     "Ollama results use its native `/api/chat` endpoint, not `/v1/chat/completions` — the OpenAI-compatible endpoint has no per-request context-size control (Ollama's own docs: changing context size requires a Modelfile-derived model), while the native endpoint accepts `options.num_ctx` per request and the identical JSON Schema object via `format` that `response_format.json_schema.schema` would carry on the OpenAI-compatible endpoint. Only the transport differs; schema comparability with llama-server and Unit 6's future hosted adapters is unaffected.",
     "Renderer concurrency: `apps/probe-renderer`'s packaged `.app` (already ad-hoc signed by Unit 2) run directly (not via `open`, so its stdout is capturable), with its frame-time metrics dump (`d` keystroke, sent via `osascript`/System Events) sampled before and after each suite run — not continuously during — because a continuous automated-keystroke sampler would itself compete for the same CPU the renderer's animation loop runs on.",
     "This machine was not a clean, dedicated 16GB baseline during this run: a co-resident `qemu-system-aarch64` process held ~7.4GB RSS and overall swap usage measured ~6.9GB/8GB at the start of staging, which is real contention this run's absolute latency/RSS numbers reflect (a conservative, not best-case, reading) but also a confound against a truly idle-machine baseline.",
@@ -990,9 +1083,11 @@ function buildCaveat(suites: readonly SuiteAggregate[]): string {
     best.rendererFrameP95 === undefined &&
     framesElsewhere.length > 0
   ) {
-    const representative = Math.max(...framesElsewhere);
+    const lo = Math.min(...framesElsewhere);
+    const hi = Math.max(...framesElsewhere);
+    const representative = lo === hi ? `${hi}` : `${lo}–${hi}`;
     parts.push(
-      `The recommended baseline profile's own renderer frame p95 sample is unavailable: the \`d\`-keystroke dump (both the \`osascript\`/System Events path and a \`cliclick\` fallback were tried) never reached the packaged renderer app during its re-measurement run — \`osascript\` reported success and the process was visible to System Events, but \`count windows\` returned 0 and a full-screen capture showed no windows at all, consistent with \`renderer-webgl2/README.md\`'s documented finding that this machine's screen/window server is shared with other concurrent automated sessions and window visibility isn't reliably controllable here. Citing the other candidate suites' renderer frame p95 instead, since the signal is driven by the renderer app itself and shouldn't materially differ by which local model is running alongside it: every other suite in the matrix measured **${representative}ms**, consistent across all of them.`,
+      `The recommended baseline profile's own renderer frame p95 sample is unavailable: the \`d\`-keystroke dump (both the \`osascript\`/System Events path and a \`cliclick\` fallback were tried) never reached the packaged renderer app during its re-measurement run — \`osascript\` reported success and the process was visible to System Events, but \`count windows\` returned 0 and a full-screen capture showed no windows at all, consistent with \`renderer-webgl2/README.md\`'s documented finding that this machine's screen/window server is shared with other concurrent automated sessions and window visibility isn't reliably controllable here. Citing the other candidate suites' renderer frame p95 instead, since the signal is driven by the renderer app itself and shouldn't materially differ by which local model is running alongside it: the other suites in the matrix measured **${representative}ms** (${framesElsewhere.length} suites).`,
     );
   }
   return parts.join(" ");
@@ -1020,6 +1115,14 @@ function buildFindings(
   if (qwenSuite) {
     findings.push(
       "Qwen3.5 defaults to hidden `<think>` reasoning tokens even under a JSON-schema-constrained call: an early run without `think: false` measured 0% native validity across all 40 prompts at both context tiers because the model's `content` field came back empty (all `--max-tokens` spent on the separate `thinking` field, `done_reason: \"length\"`) — this probe's Ollama adapter now always sends `think: false` (see the Caveat and servers.ts) specifically because of this measured failure mode; a population-scale scheduler routing to a thinking-capable model without an equivalent control would see the same silent failure.",
+    );
+  }
+  const gemma4Suites = suites.filter((s) => s.model.startsWith("gemma4"));
+  const gemma4At1k = gemma4Suites.find((s) => s.tier === "1k");
+  const gemma4At4k = gemma4Suites.find((s) => s.tier === "4k");
+  if (gemma4At1k && gemma4At4k) {
+    findings.push(
+      `\`gemma4:e4b\` also defaults to hidden reasoning tokens (\`ollama show\` reports a \`thinking\` capability with \`default: true\`, the same profile Qwen3.5 has) — unlike Qwen3.5's early failure above, this probe's \`think: false\` fix was already in place before this candidate was ever benched, so there was no repeat of the empty-\`content\`/budget-exhaustion failure: native schema validity measured ${formatPct(gemma4At1k.nativeValidRate)}/${formatPct(gemma4At4k.nativeValidRate)} at 1k/4k, not the 0% Qwen3.5 hit pre-fix.`,
     );
   }
   const phi4Suites = suites.filter((s) => s.model.startsWith("phi4-mini"));
@@ -1123,39 +1226,35 @@ interface Summary {
   readonly environment: EnvironmentInfo | undefined;
 }
 
-function buildSummary(records: readonly StoredRecord[]): Summary {
-  const suites = records.filter(isSuiteRecord).map(toSuiteAggregate);
-  const parallel = records
-    .filter(
-      (r): r is StoredRecord & { kind: "parallel" } => r.kind === "parallel",
-    )
-    .map(toParallelAggregate);
-  const outage = records
-    .filter((r): r is StoredRecord & { kind: "outage" } => r.kind === "outage")
-    .map(toOutageAggregate);
-  const best = rankCandidates(suites)[0];
-  const environment = pickEnvironment(records, best);
-  return {
-    generatedAt: new Date().toISOString(),
-    suites,
-    parallel,
-    outage,
-    environment,
-  };
-}
-
-function writeSummary(records: readonly StoredRecord[]): void {
+function persistSummary(summary: Summary): void {
   mkdirSync(RESULTS_DIR, { recursive: true });
   const path = join(RESULTS_DIR, SUMMARY_FILENAME);
-  writeFileSync(path, JSON.stringify(buildSummary(records), null, 2));
+  writeFileSync(path, JSON.stringify(summary, null, 2));
   console.error(`[inference-baseline] wrote ${path}`);
+}
+
+function reportDataToSummary(data: ReportData): Summary {
+  return {
+    generatedAt: new Date().toISOString(),
+    suites: data.suites,
+    parallel: data.parallel,
+    outage: data.outage,
+    environment: data.environment,
+  };
 }
 
 /**
  * `report`'s three-way dispatch:
  *   1. Raw `results/*.json` records exist (any file besides `summary.json`)
- *      — the normal path after running `suite`/`parallel`/`outage`: render
- *      the README from them and regenerate `summary.json` to match.
+ *      — the normal path after running `suite`/`parallel`/`outage`. If a
+ *      committed `results/summary.json` also exists (an incremental re-run
+ *      adding one more candidate to an already-published matrix, without
+ *      every prior candidate's gitignored raw records on disk), the fresh
+ *      raw-derived data is merged with it (see `mergeReportData`) rather
+ *      than replacing it outright — otherwise a partial set of raw records
+ *      would silently drop every other previously-published candidate.
+ *      Render the README from the (possibly merged) data and regenerate
+ *      `summary.json` to match.
  *   2. No raw records, but the committed `results/summary.json` aggregate
  *      exists — a fresh checkout: render the README from that aggregate
  *      instead, and leave `summary.json` untouched (never rewrite the
@@ -1169,15 +1268,19 @@ function writeSummary(records: readonly StoredRecord[]): void {
  */
 function cmdReport(): void {
   const rawFiles = listRawResultFiles();
+  const committedSummary = loadCommittedSummary();
   if (rawFiles.length > 0) {
     const records = loadRawRecords();
-    writeReadmeFromData(recordsToReportData(records));
-    writeSummary(records);
+    const fresh = recordsToReportData(records);
+    const data = committedSummary
+      ? mergeReportData(summaryToReportData(committedSummary), fresh)
+      : fresh;
+    writeReadmeFromData(data);
+    persistSummary(reportDataToSummary(data));
     return;
   }
-  const summary = loadCommittedSummary();
-  if (summary) {
-    writeReadmeFromData(summaryToReportData(summary));
+  if (committedSummary) {
+    writeReadmeFromData(summaryToReportData(committedSummary));
     console.error(
       "[inference-baseline] rendered README from committed results/summary.json (no raw results/*.json records present) — summary.json left unchanged",
     );
@@ -1207,4 +1310,10 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+// Guarded so report.test.ts (and the new run.test.ts) can import this
+// module's exported pure functions without triggering the CLI dispatch
+// above — `import.meta.main` is only true when this file is the actual
+// entry point (`bun run src/run.ts ...`), not when it's imported.
+if (import.meta.main) {
+  await main();
+}

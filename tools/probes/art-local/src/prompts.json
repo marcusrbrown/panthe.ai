@@ -1,0 +1,107 @@
+[
+  {
+    "id": "s01",
+    "kind": "sprite",
+    "subject": "zeus-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Zeus standing idle, lightning bolt in hand, white robe, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s02",
+    "kind": "sprite",
+    "subject": "hera-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Hera standing idle, peacock feather crown, purple gown, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s03",
+    "kind": "sprite",
+    "subject": "athena-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Athena standing idle, owl companion, bronze helmet and spear, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s04",
+    "kind": "sprite",
+    "subject": "hermes-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Hermes standing idle, winged sandals, winged helmet, caduceus staff, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s05",
+    "kind": "sprite",
+    "subject": "hephaestus-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Hephaestus standing idle, blacksmith apron, hammer, limping leg, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s06",
+    "kind": "sprite",
+    "subject": "poseidon-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Poseidon standing idle, trident, sea-green robe, beard, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s07",
+    "kind": "sprite",
+    "subject": "hades-idle",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of Hades standing idle, dark cloak, helm of darkness, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s08",
+    "kind": "sprite",
+    "subject": "mortal-farmer",
+    "prompt": "PixArFK, pixel art, 32x32 game sprite of a mortal farmer inhabitant, tunic and sandals, holding a hoe, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s09",
+    "kind": "sprite",
+    "subject": "tavern-building",
+    "prompt": "PixArFK, pixel art, 32x32 game asset of a small Greek tavern building, terracotta roof, stone walls, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "s10",
+    "kind": "sprite",
+    "subject": "olive-tree",
+    "prompt": "PixArFK, pixel art, 32x32 game asset of a Mediterranean olive tree, transparent background, top-down RPG asset",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render"
+  },
+  {
+    "id": "p01",
+    "kind": "portrait",
+    "subject": "zeus-portrait",
+    "prompt": "PixArFK, pixel art, portrait of Zeus, king of the gods, white beard, lightning bolt, dramatic lighting, detailed",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render, low quality"
+  },
+  {
+    "id": "p02",
+    "kind": "portrait",
+    "subject": "hera-portrait",
+    "prompt": "PixArFK, pixel art, portrait of Hera, queen of the gods, peacock feather crown, regal expression, detailed",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render, low quality"
+  },
+  {
+    "id": "p03",
+    "kind": "portrait",
+    "subject": "athena-portrait",
+    "prompt": "PixArFK, pixel art, portrait of Athena, goddess of wisdom, bronze helmet, owl on shoulder, detailed",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render, low quality"
+  },
+  {
+    "id": "p04",
+    "kind": "portrait",
+    "subject": "hades-portrait",
+    "prompt": "PixArFK, pixel art, portrait of Hades, lord of the underworld, dark cloak, helm of darkness, detailed",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render, low quality"
+  },
+  {
+    "id": "p05",
+    "kind": "portrait",
+    "subject": "mortal-elder-portrait",
+    "prompt": "PixArFK, pixel art, portrait of an elderly mortal village elder, weathered face, olive branch crown, detailed",
+    "negativePrompt": "blurry, photorealistic, watermark, text, 3d render, low quality"
+  }
+]

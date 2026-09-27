@@ -1,0 +1,18 @@
+# Downloaded sd-server/sd-cli release binary + shared library (staging
+# prerequisite, recorded by tag/sha256 in the README, never committed).
+bin/
+
+# Downloaded model weights and LoRAs (staging prerequisite, recorded by
+# identifier/size/sha256 in the README, never committed — multi-GB
+# checkpoints have no place in a git repo).
+models/
+
+# Raw per-run measurement dumps and generated images (README is the durable
+# record). The one exception is results/summary.json: a published aggregate
+# of already-computed rates, percentiles, and counts (no image bytes) — it
+# is NOT independently recomputable raw samples, only a durable record of
+# numbers this probe already computed, so `bun run src/run.ts report` can
+# still render the README on a fresh checkout that has none of the raw
+# per-request records or generated images below.
+results/*
+!results/summary.json

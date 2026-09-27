@@ -5,27 +5,49 @@
 // explicit that the global mutex is the hypothesis this probe tests, not
 // the conclusion (docs/plans/2026-09-26-001-feat-m0-feasibility-probes-plan.md).
 //
-// Selection order, applied only after every candidate's viability is
-// measured (never assumed):
-//   1. unconstrained, if its LLM p95 penalty over the baseline is <=25%
-//      and it completes at least one image with no process death — the
+// Selection order, applied only after every candidate's evaluability and
+// viability is measured (never assumed):
+//   0. a baseline (or candidate) whose LLM data doesn't clear the
+//      evaluability floor (>=20 successful requests, <=5% error rate) is
+//      "not-evaluable" — its numbers are not trusted for a penalty
+//      comparison, and if the baseline itself fails this floor, no
+//      candidate can be judged at all: the decision is "inconclusive".
+//   1. unconstrained, if its LLM p95 penalty over the baseline is <=25%,
+//      it completes at least one image, and no tracked process died — the
 //      simplest policy wins when the data says it's safe.
 //   2. otherwise, the admission-controlled queue threshold with the best
 //      (lowest) penalty among those that clear the same bar — a stricter
 //      memory gate costs image throughput, not LLM latency, so a lower
 //      viable threshold is preferred when more than one clears the bar.
-//   3. otherwise, the global mutex — the fallback of last resort: it can
-//      never corrupt memory state (image generation and LLM generation
-//      never run concurrently), even when its own penalty is large.
+//   3. otherwise, "inconclusive" — never a silent default to the global
+//      mutex. Mutex is a hypothesis this probe tests, not a fallback: if it
+//      also failed (or every candidate failed/was not-evaluable), the
+//      honest answer is "measure more", not "pick the risky one anyway".
 
 export type PolicyName = "unconstrained" | "mutex" | "admission-queue";
+export type DecisionPolicy = PolicyName | "inconclusive";
+
+/** A scenario needs at least this many successful LLM requests before its p50/p95 is trusted. */
+const MIN_SUCCESSFUL_LLM_REQUESTS = 20;
+/** A scenario whose LLM error rate (of all attempted requests) exceeds this is not evaluable. */
+const MAX_LLM_ERROR_RATE = 0.05;
+const MAX_LLM_P95_PENALTY = 0.25;
 
 /** Measurements common to the baseline scenario and every candidate policy scenario. */
 export interface ScenarioMetrics {
-  readonly llmP50Ms: number;
-  readonly llmP95Ms: number;
+  /** `undefined` when there were zero successful requests to compute a percentile from — never `0` as a false "great latency" reading. */
+  readonly llmP50Ms: number | undefined;
+  readonly llmP95Ms: number | undefined;
+  /** `undefined` when raw per-request records aren't available to recompute from (e.g. historical data carried over without its source records) — distinct from `0`, which means requests were attempted and none succeeded. */
+  readonly llmSuccessCount: number | undefined;
+  readonly llmErrorCount: number | undefined;
+  /** Total LLM requests attempted (success + error), the denominator for error rate. `undefined` alongside the two counts above when unrecomputable. */
+  readonly llmSampleCount: number | undefined;
   readonly imagesCompleted: number;
+  /** Only ever set from a verified post-window measurement; a missing post-window dump must never fall back to a stale pre-window value. */
   readonly rendererFrameP95Ms?: number;
+  /** `false` when the post-window frame dump could not be captured — the frame criterion is then not-evaluable, never silently treated as passing. */
+  readonly frameEvaluable: boolean;
   readonly peakSwapUsedMiB: number;
   /** Minimum observed `free + inactive` memory (MiB) during the scenario. */
   readonly minFreeMiB: number;
@@ -47,33 +69,114 @@ export interface CoexistenceSummary {
 }
 
 export interface PolicyDecision {
-  readonly policy: PolicyName;
+  readonly policy: DecisionPolicy;
   readonly thresholdMiB?: number;
   readonly rationale: string;
 }
 
-const MAX_LLM_P95_PENALTY = 0.25;
-
-/** Fractional LLM p95 penalty of `candidateP95Ms` over `baselineP95Ms`. `0` when the baseline itself measured `0`. */
+/** Fractional LLM p95 penalty of `candidateP95Ms` over `baselineP95Ms`. `undefined` when either input is unavailable (not evaluable). `0`/`Infinity` edge case when the baseline itself measured `0`. */
 export function computePenalty(
-  candidateP95Ms: number,
-  baselineP95Ms: number,
-): number {
+  candidateP95Ms: number | undefined,
+  baselineP95Ms: number | undefined,
+): number | undefined {
+  if (candidateP95Ms === undefined || baselineP95Ms === undefined) {
+    return undefined;
+  }
   if (baselineP95Ms <= 0) {
     return candidateP95Ms > 0 ? Number.POSITIVE_INFINITY : 0;
   }
   return (candidateP95Ms - baselineP95Ms) / baselineP95Ms;
 }
 
-function isViable(
+/** `true` once a scenario's LLM data clears the successful-request floor and error-rate ceiling — a prerequisite for trusting its p50/p95 in a penalty comparison. */
+export function isLlmEvaluable(metrics: ScenarioMetrics): boolean {
+  if (
+    metrics.llmSampleCount === undefined ||
+    metrics.llmSuccessCount === undefined ||
+    metrics.llmErrorCount === undefined
+  ) {
+    return false;
+  }
+  if (metrics.llmSampleCount === 0) {
+    return false;
+  }
+  if (metrics.llmSuccessCount < MIN_SUCCESSFUL_LLM_REQUESTS) {
+    return false;
+  }
+  return metrics.llmErrorCount / metrics.llmSampleCount <= MAX_LLM_ERROR_RATE;
+}
+
+/** Human-readable reason(s) a scenario's LLM data is not evaluable. Empty string if it is evaluable. */
+export function llmEvaluabilityReason(metrics: ScenarioMetrics): string {
+  if (
+    metrics.llmSampleCount === undefined ||
+    metrics.llmSuccessCount === undefined ||
+    metrics.llmErrorCount === undefined
+  ) {
+    return "success/error counts unavailable (raw per-request records not recomputable)";
+  }
+  const reasons: string[] = [];
+  if (metrics.llmSampleCount === 0) {
+    reasons.push("no LLM requests recorded");
+    return reasons.join(", ");
+  }
+  if (metrics.llmSuccessCount < MIN_SUCCESSFUL_LLM_REQUESTS) {
+    reasons.push(
+      `only ${metrics.llmSuccessCount} successful request(s) (need \u2265${MIN_SUCCESSFUL_LLM_REQUESTS})`,
+    );
+  }
+  const errorRate = metrics.llmErrorCount / metrics.llmSampleCount;
+  if (errorRate > MAX_LLM_ERROR_RATE) {
+    reasons.push(
+      `error rate ${(errorRate * 100).toFixed(1)}% (max ${(MAX_LLM_ERROR_RATE * 100).toFixed(0)}%)`,
+    );
+  }
+  return reasons.join(", ");
+}
+
+export type CandidateStatus =
+  | { readonly kind: "viable" }
+  | { readonly kind: "not-evaluable"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string };
+
+/** Evaluates one candidate against the baseline: not-evaluable (missing/insufficient data on either side) beats failed (measured and cleared for judgment, but did not clear the bar) beats viable. Never assumes a fallback. */
+export function evaluateCandidate(
   candidate: CandidateResult,
   baseline: ScenarioMetrics,
-): boolean {
-  return (
-    !candidate.processDied &&
-    candidate.imagesCompleted > 0 &&
-    computePenalty(candidate.llmP95Ms, baseline.llmP95Ms) <= MAX_LLM_P95_PENALTY
-  );
+): CandidateStatus {
+  if (!isLlmEvaluable(baseline)) {
+    return {
+      kind: "not-evaluable",
+      reason: `baseline LLM data not evaluable (${llmEvaluabilityReason(baseline)})`,
+    };
+  }
+  if (!isLlmEvaluable(candidate)) {
+    return {
+      kind: "not-evaluable",
+      reason: `LLM data not evaluable (${llmEvaluabilityReason(candidate)})`,
+    };
+  }
+  if (candidate.processDied) {
+    return {
+      kind: "failed",
+      reason: "a tracked process died during the scenario",
+    };
+  }
+  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
+  if (penalty === undefined) {
+    // Should be unreachable once both sides are LLM-evaluable, but never trust a bare comparison.
+    return { kind: "not-evaluable", reason: "LLM p95 unavailable" };
+  }
+  if (candidate.imagesCompleted === 0) {
+    return { kind: "failed", reason: "completed zero images" };
+  }
+  if (penalty > MAX_LLM_P95_PENALTY) {
+    return {
+      kind: "failed",
+      reason: `LLM p95 penalty ${formatPct(penalty)} exceeds the ${formatPct(MAX_LLM_P95_PENALTY)} bar`,
+    };
+  }
+  return { kind: "viable" };
 }
 
 function formatPct(fraction: number): string {
@@ -85,39 +188,77 @@ function formatPct(fraction: number): string {
   return `${sign}${pct.toFixed(1)}%`;
 }
 
-function describeCandidate(
+function formatMs(value: number | undefined): string {
+  return value === undefined ? "n/a" : `${value.toFixed(0)}ms`;
+}
+
+/** One-line, fully self-contained description of a candidate: LLM p95 + penalty, success/error counts, images, frame evaluability, and its evaluation status — never silently omits why a candidate wasn't picked. */
+export function describeCandidate(
   candidate: CandidateResult,
   baseline: ScenarioMetrics,
 ): string {
-  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
   const label =
     candidate.policy === "admission-queue"
       ? `admission-queue@${candidate.thresholdMiB}MiB`
       : candidate.policy;
-  return `${label}: LLM p95 ${candidate.llmP95Ms.toFixed(0)}ms (${formatPct(penalty)} vs baseline ${baseline.llmP95Ms.toFixed(0)}ms), ${candidate.imagesCompleted} image(s) completed${candidate.processDied ? ", process died" : ""}`;
+  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
+  const penaltyDesc =
+    penalty !== undefined ? ` (${formatPct(penalty)} vs baseline)` : "";
+  const frameDesc = candidate.frameEvaluable
+    ? `frame p95 ${formatMs(candidate.rendererFrameP95Ms)}`
+    : "frame p95 not evaluable (no post-window sample)";
+  const status = evaluateCandidate(candidate, baseline);
+  const statusDesc =
+    status.kind === "viable" ? "viable" : `${status.kind}: ${status.reason}`;
+  const countsDesc =
+    candidate.llmSuccessCount !== undefined &&
+    candidate.llmSampleCount !== undefined
+      ? `${candidate.llmSuccessCount}/${candidate.llmSampleCount} successful LLM requests`
+      : "LLM success/attempt counts unavailable";
+  return (
+    `${label}: LLM p95 ${formatMs(candidate.llmP95Ms)}${penaltyDesc}, ` +
+    `${countsDesc}, ` +
+    `${candidate.imagesCompleted} image(s) completed, ${frameDesc} \u2014 ${statusDesc}`
+  );
 }
 
 /**
  * Picks the heavy-work serialization policy from measured scenario data.
- * Pure function: no I/O, no defaults assumed ahead of measurement.
+ * Pure function: no I/O, no defaults assumed ahead of measurement. Never
+ * falls back to the global mutex — an inconclusive result asks for more
+ * measurement instead of silently picking the riskiest candidate.
  */
 export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
   const { baseline, candidates } = summary;
-  const viable = candidates.filter((c) => isViable(c, baseline));
+
+  if (!isLlmEvaluable(baseline)) {
+    return {
+      policy: "inconclusive",
+      rationale: `Baseline LLM data is not evaluable (${llmEvaluabilityReason(baseline)}) \u2014 no candidate's penalty can be judged against it. Further measurement needed.`,
+    };
+  }
+
+  const statuses = candidates.map((candidate) => ({
+    candidate,
+    status: evaluateCandidate(candidate, baseline),
+  }));
+  const viable = statuses
+    .filter((s) => s.status.kind === "viable")
+    .map((s) => s.candidate);
 
   const viableUnconstrained = viable.find((c) => c.policy === "unconstrained");
   if (viableUnconstrained) {
     return {
       policy: "unconstrained",
-      rationale: `Unconstrained cleared the ${formatPct(MAX_LLM_P95_PENALTY)} LLM p95 penalty bar and completed images — ${describeCandidate(viableUnconstrained, baseline)}. No serialization overhead needed.`,
+      rationale: `Unconstrained cleared the ${formatPct(MAX_LLM_P95_PENALTY)} LLM p95 penalty bar and completed images \u2014 ${describeCandidate(viableUnconstrained, baseline)}. No serialization overhead needed.`,
     };
   }
 
   const viableAdmission = viable
     .filter((c) => c.policy === "admission-queue")
     .sort((a, b) => {
-      const penaltyA = computePenalty(a.llmP95Ms, baseline.llmP95Ms);
-      const penaltyB = computePenalty(b.llmP95Ms, baseline.llmP95Ms);
+      const penaltyA = computePenalty(a.llmP95Ms, baseline.llmP95Ms) ?? 0;
+      const penaltyB = computePenalty(b.llmP95Ms, baseline.llmP95Ms) ?? 0;
       if (penaltyA !== penaltyB) {
         return penaltyA - penaltyB;
       }
@@ -132,20 +273,15 @@ export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
     return {
       policy: "admission-queue",
       thresholdMiB: bestAdmission.thresholdMiB,
-      rationale: `admission-queue@${bestAdmission.thresholdMiB}MiB cleared the ${formatPct(MAX_LLM_P95_PENALTY)} bar without blocking the LLM — ${describeCandidate(bestAdmission, baseline)}. Every other candidate measured worse or failed: ${otherNotes}.`,
+      rationale: `admission-queue@${bestAdmission.thresholdMiB}MiB cleared the ${formatPct(MAX_LLM_P95_PENALTY)} bar without blocking the LLM \u2014 ${describeCandidate(bestAdmission, baseline)}. Every other candidate measured worse, failed, or was not evaluable: ${otherNotes}.`,
     };
   }
 
-  const mutex = candidates.find((c) => c.policy === "mutex");
-  const failureNotes = candidates
-    .filter((c) => c.policy !== "mutex")
+  const notes = candidates
     .map((c) => describeCandidate(c, baseline))
     .join("; ");
-  const mutexNote = mutex
-    ? describeCandidate(mutex, baseline)
-    : "mutex: not measured";
   return {
-    policy: "mutex",
-    rationale: `Neither unconstrained nor any admission-queue threshold cleared the ${formatPct(MAX_LLM_P95_PENALTY)} bar (${failureNotes}). Falling back to the global mutex hypothesis as the safe default: ${mutexNote}.`,
+    policy: "inconclusive",
+    rationale: `No candidate cleared the ${formatPct(MAX_LLM_P95_PENALTY)} LLM p95 penalty bar while completing images, and none was silently defaulted to: ${notes || "no candidates measured"}. Further measurement is needed before recommending a heavy-work policy.`,
   };
 }

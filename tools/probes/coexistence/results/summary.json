@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-27T18:48:04.131Z",
+  "generatedAt": "2026-09-27T19:17:08.092Z",
   "environment": {
     "hardware": {
       "brand": "Apple M1 Pro",
@@ -19,34 +19,41 @@
       "threeFlatland": "0.1.0-alpha.10"
     },
     "extra": {
-      "model": "llama3.2:3b",
-      "ollama": "0.34.4",
-      "sd-server binary": "master-921-168f7b8",
-      "sd 1.5 checkpoint (Q8_0)": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf)"
+      "model": "llama3.2:3b"
     }
   },
   "baseline": {
-    "llmP50Ms": 611.4366659999978,
-    "llmP95Ms": 1535.3504160000011,
+    "llmP50Ms": 645.0217920000141,
+    "llmP95Ms": 1242.1280419999966,
+    "llmSuccessCount": 60,
+    "llmErrorCount": 0,
+    "llmSampleCount": 60,
     "imagesCompleted": 0,
-    "rendererFrameP95Ms": 17,
-    "peakSwapUsedMiB": 7014.5,
-    "minFreeMiB": 3399.84375,
+    "rendererFrameP95Ms": 18,
+    "frameEvaluable": true,
+    "peakSwapUsedMiB": 6966.5,
+    "minFreeMiB": 4305.609375,
     "processDied": false,
-    "label": "A-baseline"
+    "label": "A-baseline",
+    "medianSampleIntervalMs": 501.213291
   },
   "candidates": [
     {
-      "llmP50Ms": 892.2045829999997,
-      "llmP95Ms": 1372.6866669999945,
-      "imagesCompleted": 7,
+      "llmP50Ms": 1574.374250000008,
+      "llmP95Ms": 3085.734917000009,
+      "llmSuccessCount": 60,
+      "llmErrorCount": 0,
+      "llmSampleCount": 60,
+      "imagesCompleted": 6,
       "rendererFrameP95Ms": 18,
-      "peakSwapUsedMiB": 7014.5,
-      "minFreeMiB": 2075.046875,
+      "frameEvaluable": true,
+      "peakSwapUsedMiB": 9211.25,
+      "minFreeMiB": 868.328125,
       "processDied": false,
       "policy": "admission-queue",
       "thresholdMiB": 3072,
-      "label": "D-admission-3gib"
+      "label": "D-admission-3gib",
+      "medianSampleIntervalMs": 500.9047920000012
     },
     {
       "llmP50Ms": 1314.7844170000026,
@@ -106,8 +113,7 @@
     }
   ],
   "decision": {
-    "policy": "admission-queue",
-    "thresholdMiB": 3072,
-    "rationale": "admission-queue@3072MiB cleared the +25.0% bar without blocking the LLM — admission-queue@3072MiB: LLM p95 1373ms (-10.6% vs baseline 1535ms), 7 image(s) completed. Every other candidate measured worse or failed: unconstrained: LLM p95 2216ms (+44.3% vs baseline 1535ms), 7 image(s) completed; admission-queue@5120MiB: LLM p95 960ms (-37.5% vs baseline 1535ms), 0 image(s) completed; mutex: LLM p95 23094ms (+1404.2% vs baseline 1535ms), 8 image(s) completed."
+    "policy": "inconclusive",
+    "rationale": "No candidate cleared the +25.0% LLM p95 penalty bar while completing images, and none was silently defaulted to: admission-queue@3072MiB: LLM p95 3086ms (+148.4% vs baseline), 60/60 successful LLM requests, 6 image(s) completed, frame p95 18ms — failed: LLM p95 penalty +148.4% exceeds the +25.0% bar; unconstrained: LLM p95 2216ms (+78.4% vs baseline), LLM success/attempt counts unavailable, 7 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)); admission-queue@5120MiB: LLM p95 960ms (-22.7% vs baseline), LLM success/attempt counts unavailable, 0 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)); mutex: LLM p95 23094ms (+1759.3% vs baseline), LLM success/attempt counts unavailable, 8 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: LLM data not evaluable (success/error counts unavailable (raw per-request records not recomputable)). Further measurement is needed before recommending a heavy-work policy."
   }
 }

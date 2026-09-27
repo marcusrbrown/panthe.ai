@@ -63,6 +63,10 @@ import {
   type CandidateResult,
   choosePolicy,
   computePenalty,
+  describeCandidate,
+  evaluateCandidate,
+  isLlmEvaluable,
+  llmEvaluabilityReason,
   type PolicyDecision,
   type PolicyName,
   type ScenarioMetrics,
@@ -350,11 +354,12 @@ async function cmdScenario(flags: Record<string, string>): Promise<void> {
   };
   writeResult(label, record);
 
-  const totals = llmSamples.map((s) => s.totalMs);
+  const successTotals = llmSamples.filter((s) => s.ok).map((s) => s.totalMs);
   console.error(
-    `[coexistence] ${label}: LLM p50/p95=${percentile50(totals)?.toFixed(0)}/${percentile95(totals)?.toFixed(0)}ms ` +
+    `[coexistence] ${label}: LLM p50/p95=${percentile50(successTotals)?.toFixed(0) ?? "n/a"}/${percentile95(successTotals)?.toFixed(0) ?? "n/a"}ms ` +
+      `(${successTotals.length}/${llmSamples.length} successful) ` +
       `images=${imageSamples.filter((s) => s.ok).length}/${imageSamples.length} ` +
-      `frameP95 before/after=${rendererFrameP95Before ?? "n/a"}/${rendererFrameP95After ?? "n/a"} ` +
+      `frameP95 after=${rendererFrameP95After ?? "n/a (not evaluable)"} ` +
       `processDied=${record.processDied}`,
   );
 }
@@ -474,31 +479,70 @@ function loadRawRecords(): readonly StoredRecord[] {
   );
 }
 
+/** Median gap (ms) between consecutive memory samples — verifies the 500ms sampler actually kept up under contention rather than silently degrading; published so the report is checkable, not just asserted. `undefined` with fewer than two samples. */
+function computeMedianSampleIntervalMs(
+  samples: readonly MemorySample[],
+): number | undefined {
+  if (samples.length < 2) {
+    return undefined;
+  }
+  const sorted = [...samples].sort((a, b) => a.atMs - b.atMs);
+  const deltas: number[] = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = sorted[i - 1];
+    const current = sorted[i];
+    if (prev && current) {
+      deltas.push(current.atMs - prev.atMs);
+    }
+  }
+  return percentile50(deltas);
+}
+
 function buildScenarioMetrics(record: ScenarioRecord): ScenarioMetrics {
-  const totals = record.llmSamples.map((s) => s.totalMs);
+  // Only successful requests feed the latency percentiles — a timed-out or
+  // errored request measured near `timeoutMs` would otherwise pollute p95
+  // with a number that isn't "how fast a real response came back", and an
+  // all-failed scenario must never silently read as p95=0 (an empty
+  // `percentile95([])` correctly returns `undefined`, not `0`).
+  const successSamples = record.llmSamples.filter((s) => s.ok);
+  const successTotals = successSamples.map((s) => s.totalMs);
+  const llmSuccessCount = successSamples.length;
+  const llmSampleCount = record.llmSamples.length;
+  const llmErrorCount = llmSampleCount - llmSuccessCount;
   const swapValues = record.memorySamples
     .map((s) => s.swapUsedMiB)
     .filter((v): v is number => v !== undefined);
   const admissionValues = record.memorySamples.map((s) => s.admissionMiB);
   return {
-    llmP50Ms: percentile50(totals) ?? 0,
-    llmP95Ms: percentile95(totals) ?? 0,
+    llmP50Ms: percentile50(successTotals),
+    llmP95Ms: percentile95(successTotals),
+    llmSuccessCount,
+    llmErrorCount,
+    llmSampleCount,
     imagesCompleted: record.imageSamples.filter((s) => s.ok).length,
-    rendererFrameP95Ms:
-      record.rendererFrameP95After ?? record.rendererFrameP95Before,
+    // Only the verified post-window measurement counts — falling back to
+    // the pre-window value would silently publish a number that looks like
+    // "frame p95 during contention" when it's actually "frame p95 before
+    // contention started", i.e. a false pass.
+    rendererFrameP95Ms: record.rendererFrameP95After,
+    frameEvaluable: record.rendererFrameP95After !== undefined,
     peakSwapUsedMiB: swapValues.length > 0 ? Math.max(...swapValues) : 0,
     minFreeMiB: admissionValues.length > 0 ? Math.min(...admissionValues) : 0,
     processDied: record.processDied,
   };
 }
 
+interface ScenarioReportExtras {
+  readonly label: string;
+  /** Median gap (ms) between consecutive memory samples — verifies the sampler kept up; published so the report is checkable. */
+  readonly medianSampleIntervalMs: number | undefined;
+}
+
 interface Summary {
   readonly generatedAt: string;
   readonly environment: EnvironmentInfo | undefined;
-  readonly baseline: (ScenarioMetrics & { readonly label: string }) | undefined;
-  readonly candidates: readonly (CandidateResult & {
-    readonly label: string;
-  })[];
+  readonly baseline: (ScenarioMetrics & ScenarioReportExtras) | undefined;
+  readonly candidates: readonly (CandidateResult & ScenarioReportExtras)[];
   readonly transitions: readonly {
     readonly transition: TransitionKind;
     readonly ms: number;
@@ -532,13 +576,20 @@ function buildSummary(records: readonly StoredRecord[]): Summary {
   );
 
   const baseline = baselineRecord
-    ? { ...buildScenarioMetrics(baselineRecord), label: baselineRecord.label }
+    ? {
+        ...buildScenarioMetrics(baselineRecord),
+        label: baselineRecord.label,
+        medianSampleIntervalMs: computeMedianSampleIntervalMs(
+          baselineRecord.memorySamples,
+        ),
+      }
     : undefined;
   const candidates = candidateRecords.map((r) => ({
     ...buildScenarioMetrics(r),
     policy: r.policy as PolicyName,
     thresholdMiB: r.thresholdMiB,
     label: r.label,
+    medianSampleIntervalMs: computeMedianSampleIntervalMs(r.memorySamples),
   }));
 
   const decision =
@@ -577,15 +628,44 @@ function formatMiB(value: number | undefined): string {
   return value === undefined ? "n/a" : value.toFixed(0);
 }
 
+function formatFrame(
+  frameEvaluable: boolean,
+  rendererFrameP95Ms: number | undefined,
+): string {
+  return frameEvaluable ? formatMs(rendererFrameP95Ms) : "n/a (not evaluable)";
+}
+
+function formatCounts(m: ScenarioMetrics): string {
+  return m.llmSuccessCount !== undefined && m.llmSampleCount !== undefined
+    ? `${m.llmSuccessCount}/${m.llmSampleCount}`
+    : "n/a";
+}
+
+function scenarioStatusLabel(
+  candidate: CandidateResult,
+  baseline: ScenarioMetrics | undefined,
+): string {
+  if (!baseline) {
+    return "n/a";
+  }
+  const status = evaluateCandidate(candidate, baseline);
+  return status.kind === "viable"
+    ? "viable"
+    : `${status.kind}: ${status.reason}`;
+}
+
 function buildScenarioTable(summary: Summary): string {
   const rows: string[] = [];
   const header =
-    "| Scenario | LLM p50 (ms) | LLM p95 (ms) | p95 penalty vs A | Images completed | Frame p95 (ms) | Peak swap (MiB) | Min free+inactive (MiB) | Process died |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+    "| Scenario | LLM p50 (ms) | LLM p95 (ms) | p95 penalty vs A | LLM success/attempts | Images completed | Frame p95 (ms) | Peak swap (MiB) | Min free+inactive (MiB) | Sample cadence (median ms) | Process died | Status |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
   rows.push(header);
   if (summary.baseline) {
     const b = summary.baseline;
+    const baselineStatus = isLlmEvaluable(b)
+      ? "evaluable"
+      : `not-evaluable: ${llmEvaluabilityReason(b)}`;
     rows.push(
-      `| A: baseline (renderer + LLM) | ${formatMs(b.llmP50Ms)} | ${formatMs(b.llmP95Ms)} | — | ${b.imagesCompleted} | ${formatMs(b.rendererFrameP95Ms)} | ${formatMiB(b.peakSwapUsedMiB)} | ${formatMiB(b.minFreeMiB)} | ${b.processDied} |`,
+      `| A: baseline (renderer + LLM) | ${formatMs(b.llmP50Ms)} | ${formatMs(b.llmP95Ms)} | — | ${formatCounts(b)} | ${b.imagesCompleted} | ${formatFrame(b.frameEvaluable, b.rendererFrameP95Ms)} | ${formatMiB(b.peakSwapUsedMiB)} | ${formatMiB(b.minFreeMiB)} | ${formatMs(b.medianSampleIntervalMs)} | ${b.processDied} | ${baselineStatus} |`,
     );
   }
   for (const c of summary.candidates) {
@@ -605,7 +685,7 @@ function buildScenarioTable(summary: Summary): string {
           ? "B: unconstrained"
           : "C: mutex";
     rows.push(
-      `| ${name} | ${formatMs(c.llmP50Ms)} | ${formatMs(c.llmP95Ms)} | ${penaltyStr} | ${c.imagesCompleted} | ${formatMs(c.rendererFrameP95Ms)} | ${formatMiB(c.peakSwapUsedMiB)} | ${formatMiB(c.minFreeMiB)} | ${c.processDied} |`,
+      `| ${name} | ${formatMs(c.llmP50Ms)} | ${formatMs(c.llmP95Ms)} | ${penaltyStr} | ${formatCounts(c)} | ${c.imagesCompleted} | ${formatFrame(c.frameEvaluable, c.rendererFrameP95Ms)} | ${formatMiB(c.peakSwapUsedMiB)} | ${formatMiB(c.minFreeMiB)} | ${formatMs(c.medianSampleIntervalMs)} | ${c.processDied} | ${scenarioStatusLabel(c, summary.baseline)} |`,
     );
   }
   return rows.join("\n");
@@ -649,25 +729,27 @@ function buildEnvironmentTable(
 function buildFindings(summary: Summary): readonly string[] {
   const findings: string[] = [];
   if (summary.baseline) {
+    const b = summary.baseline;
+    const evaluability = isLlmEvaluable(b)
+      ? "evaluable"
+      : `NOT evaluable (${llmEvaluabilityReason(b)})`;
     findings.push(
-      `Baseline (renderer + LLM loop only): LLM p50/p95 ${formatMs(summary.baseline.llmP50Ms)}/${formatMs(summary.baseline.llmP95Ms)}ms, renderer frame p95 ${formatMs(summary.baseline.rendererFrameP95Ms)}ms.`,
+      `Baseline (renderer + LLM loop only): LLM p50/p95 ${formatMs(b.llmP50Ms)}/${formatMs(b.llmP95Ms)}ms over ${formatCounts(b)} successful/attempted requests (${evaluability}), renderer frame p95 ${formatFrame(b.frameEvaluable, b.rendererFrameP95Ms)}, sample cadence median ${formatMs(b.medianSampleIntervalMs)}ms.`,
     );
   }
-  for (const c of summary.candidates) {
-    const penalty = summary.baseline
-      ? computePenalty(c.llmP95Ms, summary.baseline.llmP95Ms)
-      : undefined;
-    const label =
-      c.policy === "admission-queue"
-        ? `admission-queue@${c.thresholdMiB}MiB`
-        : c.policy;
-    findings.push(
-      `${label}: LLM p95 ${formatMs(c.llmP95Ms)}ms (${penalty !== undefined && Number.isFinite(penalty) ? `${penalty >= 0 ? "+" : ""}${(penalty * 100).toFixed(1)}%` : "n/a"} vs baseline), ${c.imagesCompleted} image(s) completed, peak swap ${formatMiB(c.peakSwapUsedMiB)}MiB, min free+inactive ${formatMiB(c.minFreeMiB)}MiB${c.processDied ? ", process died" : ""}.`,
-    );
+  if (summary.baseline) {
+    for (const c of summary.candidates) {
+      findings.push(describeCandidate(c, summary.baseline));
+    }
   }
   for (const t of summary.transitions) {
     findings.push(
       `Transition ${t.transition}: ${t.ms.toFixed(0)}ms (ok=${t.ok}).`,
+    );
+  }
+  if (summary.decision?.policy === "inconclusive") {
+    findings.push(
+      "Next measurement steps to resolve this: re-run B (unconstrained), C (mutex), and D-admission-5120MiB with the fixed sampler (success-only percentiles, verified post-window frame samples) so every candidate is evaluable in the same run; and measure at least one intermediate admission threshold between 3072MiB and 5120MiB, since 3072MiB now measures a real +148.4% penalty (images ran almost continuously, rarely gated) while 5120MiB starves image generation to zero — the viable threshold, if one exists on this machine's pre-existing swap floor, likely sits between them.",
     );
   }
   return findings;
@@ -678,6 +760,9 @@ function buildBottomLine(summary: Summary): string {
     return "Not enough scenarios recorded yet to make a policy recommendation — need the baseline plus at least one candidate.";
   }
   const d = summary.decision;
+  if (d.policy === "inconclusive") {
+    return `**No heavy-work serialization policy is recommended yet — inconclusive.** ${d.rationale}`;
+  }
   const label =
     d.policy === "admission-queue"
       ? `admission-queue @ ${d.thresholdMiB}MiB`
@@ -737,8 +822,10 @@ function buildCaveat(): string {
     "Renderer frame p95 is sampled via a `d`-keystroke dump into the packaged app's stdout log before and after each window, not continuously during it (a continuous automated-keystroke sampler would itself compete for the same CPU the renderer's animation loop runs on) — the window server driving synthetic keystrokes measured flaky in this environment; when a dump could not be captured the table records `n/a` rather than a stale or fabricated number.",
     "Draw Things was not exercised here — art-local's stable-diffusion.cpp base arm is the only image-generation adapter under contention (Unit 7's owner direction: sd.cpp is the cross-platform base arm and must work standalone).",
     "The pixel-art LoRA used by art-local's own bench is omitted here: this probe measures memory/latency contention, not image style, and the LoRA is a negligible ~26 MiB addition to sd-server's resident footprint.",
-    "Peak swap reads identically (~7015 MiB) across every scenario below, including the renderer+LLM-only baseline: this machine already had that swap committed before this probe started (a pre-existing, not probe-caused, condition — macOS grows its dynamic swapfiles but does not shrink them again after the pressure that caused them eases, so a prior session's peak persists as this session's floor). Peak swap is therefore not a discriminating signal between candidates in this run; min free+inactive memory and the LLM p95 penalty are.",
+    "This machine carries a large pre-existing swap floor (roughly 7 GiB already committed before this probe's own scenarios ever ran) that macOS's dynamic swapfiles do not shrink again once the pressure that caused them eases — every scenario's peak-swap reading includes that inherited floor, not just this probe's own contribution, so peak swap alone is not a clean discriminating signal between candidates; min free+inactive memory and the LLM p95 penalty are the more reliable ones.",
     "No co-resident qemu-system-aarch64 VM was running during this probe's scenarios (checked via `pgrep -fl qemu` immediately before and after) — unlike the background load noted in tools/probes/inference-baseline/README.md's own caveat, this run's contention is attributable to the three tracked services alone plus the pre-existing swap floor above.",
+    "Fro Bot review on PR #22 found three measurement bugs in the original run: LLM p50/p95 included failed/timed-out requests (inflating or, for an all-failed scenario, silently reading p95=0), a missing post-window frame dump fell back to the pre-window value instead of reading n/a, and 'no viable candidate' silently defaulted to recommending the mutex hypothesis instead of reporting inconclusive. All three are fixed in this run's code (success-only percentiles with a >=20-success/<=5%-error-rate evaluability floor, frame p95 only ever from a verified post-window sample, and an explicit 'inconclusive' outcome that never silently picks a fallback). The A (baseline) and D-admission-3072MiB scenarios were re-measured end to end with the fixed sampler; B (unconstrained), C (mutex), and D-admission-5120MiB were not re-run because their raw per-request records were gitignored and did not survive the worktree that produced them being retired — their rows below carry over the original run's LLM p50/p95/images/peak-swap numbers for context but are marked not-evaluable (their success/error counts and post-window frame samples cannot be recomputed without the lost raw records).",
+    "The re-measured D-admission-queue@3072MiB result changed materially between runs: the original run (same code, same machine, several hours earlier in a long multi-scenario session) measured a -10.6% LLM p95 penalty; this fresh, independently-started re-run measured +148.4%, with LLM latency climbing roughly monotonically across the 3-minute window (352ms first request → 3329ms last) while sd.cpp generated images almost back-to-back (6 images in 180s — the 3072MiB gate was cleared almost continuously and rarely actually throttled image start). Both runs used the same (correct, success-only) percentile logic for this scenario — the difference is real machine-to-machine-session variance, not a measurement artifact, and it means a single 3-minute window's number for this threshold should not be treated as stable without a repeat measurement.",
   ];
   const qemu = process.env.COEXISTENCE_QEMU_NOTE;
   if (qemu) {
@@ -763,12 +850,63 @@ function writeReadmeFromSummary(summary: Summary): void {
   console.error(`[coexistence] wrote ${README_PATH}`);
 }
 
+/**
+ * Merges a fresh raw-derived summary with the previously committed one: a
+ * fresh baseline/candidate/transition entry overrides a committed entry of
+ * the same label (a re-run with corrected instrumentation); a committed
+ * entry whose label has no fresh counterpart (its raw records are gone —
+ * gitignored, not recomputable) is kept as historical context. Historical
+ * entries predate the success/error-count and frame-evaluability fields, so
+ * they read as "not evaluable" wherever those fields are missing — never
+ * silently promoted to look freshly verified.
+ */
+function mergeSummaries(committed: Summary, fresh: Summary): Summary {
+  const baseline = fresh.baseline ?? committed.baseline;
+  const freshLabels = new Set(fresh.candidates.map((c) => c.label));
+  const candidates = [
+    ...fresh.candidates,
+    ...committed.candidates.filter((c) => !freshLabels.has(c.label)),
+  ];
+  const environment = fresh.environment ?? committed.environment;
+  const transitions =
+    fresh.transitions.length > 0 ? fresh.transitions : committed.transitions;
+  const decision =
+    baseline && candidates.length > 0
+      ? choosePolicy({ baseline, candidates })
+      : undefined;
+  return {
+    generatedAt: new Date().toISOString(),
+    environment,
+    baseline,
+    candidates,
+    transitions,
+    decision,
+  };
+}
+
+/**
+ * `report`'s three-way dispatch:
+ *   1. Raw `results/*.json` records exist — build a fresh summary from
+ *      them, merged with the committed aggregate (see
+ *      {@link mergeSummaries}) so a partial re-run (e.g. only the baseline
+ *      and one candidate re-measured after a sampler fix) doesn't silently
+ *      drop every other previously-published candidate whose raw records
+ *      are gone. Render the README and regenerate `summary.json`.
+ *   2. No raw records, but the committed `results/summary.json` aggregate
+ *      exists — a fresh checkout: render the README from that aggregate
+ *      instead, and leave `summary.json` untouched.
+ *   3. Neither exists: nothing to report — exit non-zero without writing
+ *      any file.
+ */
 function cmdReport(): void {
   const rawFiles = listRawResultFiles();
   const committedSummary = loadCommittedSummary();
   if (rawFiles.length > 0) {
     const records = loadRawRecords();
-    const summary = buildSummary(records);
+    const fresh = buildSummary(records);
+    const summary = committedSummary
+      ? mergeSummaries(committedSummary, fresh)
+      : fresh;
     writeReadmeFromSummary(summary);
     persistSummary(summary);
     return;

@@ -346,7 +346,7 @@
         const after = await captureFrame();
         log(
           `center pixel after restore: ${fmtPixel(after)} isBlack=${isBlack(after)} ` +
-            `— unchanged from baseline: ${JSON.stringify(after) !== JSON.stringify(baseline) ? "NO (changed)" : "YES (rendering did not resume)"}`,
+            `— rendering resumed: ${!isBlack(after) && !isBlack(baseline) ? "YES" : "NO (frame is black after restore)"}`,
         );
       });
 

@@ -422,21 +422,31 @@ canvas goes solid white after the restore and stays that way, confirmed
 on two separate restore cycles, screenshot:
 `shots/06-context-loss-no-visual-recovery.png`. **Automatic
 same-instance recovery is unavailable in this build.**
-Application-managed renderer/canvas reconstruction — disposing the whole
-`WebGPURenderer` and building a replacement — has **not been tested**
-in this session; see the recovery-pattern note below for why it isn't a
-drop-in fix either. Sleep/wake (`pmset displaysleepnow`) also remains
-**untested**.
+Application-managed renderer/canvas reconstruction was later exercised in
+a browser, not in the packaged app: `repro/device-loss.html` (single file,
+importmap to unpkg `three@0.185.1`, `forceWebGL: true`; served locally and
+driven in Chrome) reproduces the latch and measures both reconstruction
+paths with a centre-pixel readback after each step:
 
-**The same-canvas trap**: a naive recovery attempt (dispose the lost
-renderer, construct a new `WebGPURenderer` on the *same* `<canvas>`
-element) would very likely fail immediately, because
-`WebGLBackend.dispose()` (`WebGLBackend.js:2829–2836`) itself calls
+| Step | Result |
+| --- | --- |
+| lose + restore | `webglcontextrestored` fires; `_isDeviceLost` stays `true`; frame black |
+| `init()` again | resolves in 0 ms (cached promise); frame still black |
+| `dispose()` + new renderer, **same canvas** | `dispose()` fires a fresh `webglcontextlost`; the new renderer's `init()` **throws** `TypeError: Cannot read properties of null (reading '0')` in `Vector4.fromArray` ← `WebGLState._init` ← `WebGLBackend.init` |
+| new renderer, **new canvas** | init 6 ms; `_isDeviceLost` `false`; frame renders — the only path that resumes |
+
+This is browser evidence for the mechanism; the packaged app has **not**
+run the reconstruction path, and sleep/wake (`pmset displaysleepnow`)
+remains **untested**.
+
+**The same-canvas trap**, confirmed by the repro: `WebGLBackend.dispose()`
+(`WebGLBackend.js:2829–2836`) itself calls
 `this.extensions.get('WEBGL_lose_context').loseContext()` on that canvas
 as part of tearing down the old backend — forcing a *second* context loss
-on the exact canvas a replacement renderer would be trying to attach to.
-Any real recovery path needs a **fresh canvas element**, not the original
-one, for the new renderer.
+on the exact canvas a replacement renderer would be trying to attach to,
+and the replacement then crashes inside `WebGLState._init`. Any real
+recovery path needs a **fresh canvas element**, not the original one, for
+the new renderer.
 
 **Recovery pattern worth designing against, for ADR-0002** (untested here
 — recorded as the shape a fix should take, not a verified one): treat

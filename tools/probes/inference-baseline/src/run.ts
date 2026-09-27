@@ -1083,9 +1083,11 @@ function buildCaveat(suites: readonly SuiteAggregate[]): string {
     best.rendererFrameP95 === undefined &&
     framesElsewhere.length > 0
   ) {
-    const representative = Math.max(...framesElsewhere);
+    const lo = Math.min(...framesElsewhere);
+    const hi = Math.max(...framesElsewhere);
+    const representative = lo === hi ? `${hi}` : `${lo}–${hi}`;
     parts.push(
-      `The recommended baseline profile's own renderer frame p95 sample is unavailable: the \`d\`-keystroke dump (both the \`osascript\`/System Events path and a \`cliclick\` fallback were tried) never reached the packaged renderer app during its re-measurement run — \`osascript\` reported success and the process was visible to System Events, but \`count windows\` returned 0 and a full-screen capture showed no windows at all, consistent with \`renderer-webgl2/README.md\`'s documented finding that this machine's screen/window server is shared with other concurrent automated sessions and window visibility isn't reliably controllable here. Citing the other candidate suites' renderer frame p95 instead, since the signal is driven by the renderer app itself and shouldn't materially differ by which local model is running alongside it: every other suite in the matrix measured **${representative}ms**, consistent across all of them.`,
+      `The recommended baseline profile's own renderer frame p95 sample is unavailable: the \`d\`-keystroke dump (both the \`osascript\`/System Events path and a \`cliclick\` fallback were tried) never reached the packaged renderer app during its re-measurement run — \`osascript\` reported success and the process was visible to System Events, but \`count windows\` returned 0 and a full-screen capture showed no windows at all, consistent with \`renderer-webgl2/README.md\`'s documented finding that this machine's screen/window server is shared with other concurrent automated sessions and window visibility isn't reliably controllable here. Citing the other candidate suites' renderer frame p95 instead, since the signal is driven by the renderer app itself and shouldn't materially differ by which local model is running alongside it: the other suites in the matrix measured **${representative}ms** (${framesElsewhere.length} suites).`,
     );
   }
   return parts.join(" ");

@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>three.js WebGPURenderer (WebGL backend) — device-lost recovery repro</title>
+    <!--
+      Repro for: WebGPURenderer (WebGL backend) never recovers after
+      webglcontextrestored, and dispose() loses the context again.
+      See: .slim/deepwork/three-device-loss-issue-draft.md
+           tools/probes/renderer-webgl2/README.md
+           apps/probe-renderer/src/Scene.tsx (the original discovery site)
+
+      No build step: this is a single plain HTML file with an importmap
+      pointing at unpkg so it can be dropped into a jsfiddle/codepen/plain
+      static server as-is. Pin matches the workspace's installed version:
+      three@0.185.1 (node_modules/.bun/three@0.185.1).
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.185.1/build/three.module.js",
+          "three/webgpu": "https://unpkg.com/three@0.185.1/build/three.webgpu.js",
+          "three/tsl": "https://unpkg.com/three@0.185.1/build/three.tsl.js",
+          "three/addons/": "https://unpkg.com/three@0.185.1/examples/jsm/"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0b0b0f;
+        color: #e8e8ec;
+        font-family:
+          ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          Consolas,
+          monospace;
+      }
+      body {
+        display: grid;
+        grid-template-columns: minmax(320px, 480px) 1fr;
+        grid-template-rows: auto 1fr;
+        gap: 12px;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+      h1 {
+        grid-column: 1 / -1;
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0 0 4px;
+        color: #9aa0a6;
+      }
+      #stage {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      canvas {
+        background: #000;
+        display: block;
+        width: 480px;
+        height: 360px;
+        border: 1px solid #333;
+      }
+      #controls {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      button {
+        font: inherit;
+        padding: 8px 10px;
+        background: #1c1c22;
+        color: #e8e8ec;
+        border: 1px solid #3a3a44;
+        border-radius: 4px;
+        cursor: pointer;
+        text-align: left;
+      }
+      button:hover:not(:disabled) {
+        background: #26262e;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      #log {
+        margin: 0;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #101014;
+        border: 1px solid #2a2a32;
+        border-radius: 4px;
+        padding: 10px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      WebGPURenderer (WebGL backend) device-lost recovery repro — three@0.185.1
+    </h1>
+    <div id="stage">
+      <canvas id="glcanvas" width="480" height="360"></canvas>
+      <div id="controls">
+        <button id="btn-lose" type="button">
+          1. Lose context (loseContext → restoreContext)
+        </button>
+        <button id="btn-init" type="button">2. init() again</button>
+        <button id="btn-dispose-same" type="button">
+          3. dispose() + new renderer, same canvas
+        </button>
+        <button id="btn-new-canvas" type="button">
+          4. new renderer, new canvas (working path)
+        </button>
+      </div>
+    </div>
+    <pre id="log">booting…</pre>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { WebGPURenderer } from "three/webgpu";
+      // three/tsl and three/addons/ are mapped above (matching how this
+      // workspace resolves them, see apps/probe-renderer/src/Scene.tsx) but
+      // this minimal repro doesn't need TSL nodes or addon classes — a
+      // MeshBasicMaterial box is enough to observe the device-lost bug.
+
+      const logEl = document.getElementById("log");
+      logEl.textContent = "";
+      const t0Global = performance.now();
+
+      /** Appends a timestamped line to the on-page log and the console. */
+      function log(msg) {
+        const elapsed = (performance.now() - t0Global).toFixed(1).padStart(8);
+        const line = `[+${elapsed}ms] ${msg}`;
+        console.log(line);
+        logEl.textContent += `${line}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function fmtPixel(px) {
+        return `rgba(${px[0]}, ${px[1]}, ${px[2]}, ${px[3]})`;
+      }
+      function isBlack(px) {
+        return px[0] < 6 && px[1] < 6 && px[2] < 6;
+      }
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      // ---------------------------------------------------------------------
+      // Mutable renderer/canvas/scene state. `canvas` is reassigned by step 4
+      // (new canvas element); `renderer` is reassigned by steps 3 and 4.
+      // ---------------------------------------------------------------------
+      let canvas = document.getElementById("glcanvas");
+      let renderer = null;
+      let scene = null;
+      let camera = null;
+      let mesh = null;
+      let rafId = null;
+      let pendingCaptures = [];
+
+      /** Reads back the single center pixel of `canvas` via a 2D-canvas copy.
+       * No preserveDrawingBuffer is requested, so this only reliably reflects
+       * what was just rendered when called synchronously within the same
+       * rAF callback that called renderer.render() — see captureFrame(). */
+      function readCenterPixel() {
+        const w = canvas.width;
+        const h = canvas.height;
+        const off = document.createElement("canvas");
+        off.width = w;
+        off.height = h;
+        const octx = off.getContext("2d");
+        octx.drawImage(canvas, 0, 0);
+        const { data } = octx.getImageData((w / 2) | 0, (h / 2) | 0, 1, 1);
+        return [data[0], data[1], data[2], data[3]];
+      }
+
+      /** Resolves with the center pixel read back right after the *next*
+       * renderer.render() call inside the animation loop. */
+      function captureFrame() {
+        return new Promise((resolve) => {
+          pendingCaptures.push(resolve);
+        });
+      }
+
+      function logDeviceLost(label) {
+        log(`renderer._isDeviceLost (${label}): ${renderer._isDeviceLost}`);
+      }
+
+      /** Logs webglcontextlost/webglcontextrestored with timestamps for the
+       * given canvas. Deliberately does NOT call event.preventDefault() —
+       * WebGLBackend's own internal listener already does that (verified in
+       * build/three.webgpu.js), so the browser still permits restoration. */
+      function attachContextListeners(c) {
+        const lostHandler = () => {
+          log(`[event] webglcontextlost fired on <canvas id="${c.id}">`);
+        };
+        const restoredHandler = () => {
+          log(`[event] webglcontextrestored fired on <canvas id="${c.id}">`);
+        };
+        c.__lostHandler = lostHandler;
+        c.__restoredHandler = restoredHandler;
+        c.addEventListener("webglcontextlost", lostHandler);
+        c.addEventListener("webglcontextrestored", restoredHandler);
+      }
+      function detachContextListeners(c) {
+        if (c.__lostHandler)
+          c.removeEventListener("webglcontextlost", c.__lostHandler);
+        if (c.__restoredHandler)
+          c.removeEventListener("webglcontextrestored", c.__restoredHandler);
+      }
+
+      function buildSceneObjects() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x101018);
+        camera = new THREE.PerspectiveCamera(
+          50,
+          (canvas.clientWidth || 480) / (canvas.clientHeight || 360),
+          0.1,
+          100,
+        );
+        camera.position.z = 3;
+        mesh = new THREE.Mesh(
+          new THREE.BoxGeometry(1.2, 1.2, 1.2),
+          new THREE.MeshBasicMaterial({ color: 0xff6b35 }),
+        );
+        scene.add(mesh);
+      }
+
+      function startLoop() {
+        if (rafId !== null) return;
+        const step = () => {
+          rafId = requestAnimationFrame(step);
+          if (mesh) {
+            mesh.rotation.x += 0.014;
+            mesh.rotation.y += 0.021;
+          }
+          if (renderer && scene && camera) {
+            try {
+              renderer.render(scene, camera);
+            } catch (err) {
+              log(`renderer.render() threw: ${err && err.message}`);
+            }
+          }
+          if (pendingCaptures.length > 0) {
+            const px = readCenterPixel();
+            const resolvers = pendingCaptures;
+            pendingCaptures = [];
+            for (const resolve of resolvers) resolve(px);
+          }
+        };
+        rafId = requestAnimationFrame(step);
+      }
+      function stopLoop() {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+      }
+
+      async function boot() {
+        buildSceneObjects();
+        renderer = new WebGPURenderer({
+          canvas,
+          forceWebGL: true,
+          antialias: false,
+        });
+        attachContextListeners(canvas);
+        await renderer.init();
+        const backend = renderer.backend;
+        log(
+          `booted — backend.isWebGLBackend=${!!(backend && backend.isWebGLBackend)} ` +
+            `backend.isWebGPUBackend=${!!(backend && backend.isWebGPUBackend)}`,
+        );
+        logDeviceLost("after initial boot");
+        startLoop();
+      }
+
+      // ---------------------------------------------------------------------
+      // Button wiring — a simple busy-guard prevents overlapping clicks from
+      // racing the renderer/canvas swaps, which aren't reentrant-safe.
+      // ---------------------------------------------------------------------
+      const buttons = {
+        lose: document.getElementById("btn-lose"),
+        init: document.getElementById("btn-init"),
+        disposeSame: document.getElementById("btn-dispose-same"),
+        newCanvas: document.getElementById("btn-new-canvas"),
+      };
+      let busy = false;
+      function wire(button, handler) {
+        button.addEventListener("click", async () => {
+          if (busy) return;
+          busy = true;
+          for (const b of Object.values(buttons)) b.disabled = true;
+          try {
+            await handler();
+          } catch (err) {
+            log(`handler threw: ${(err && err.stack) || err}`);
+          } finally {
+            for (const b of Object.values(buttons)) b.disabled = false;
+            busy = false;
+          }
+        });
+      }
+
+      // 1. Lose context, then restore it, and show the renderer stays dead.
+      wire(buttons.lose, async () => {
+        log("\n=== [1] Lose context (loseContext → restoreContext) ===");
+        const baseline = await captureFrame();
+        log(
+          `baseline center pixel (pre-loss): ${fmtPixel(baseline)} isBlack=${isBlack(baseline)}`,
+        );
+        logDeviceLost("before loseContext()");
+
+        const gl = renderer.getContext();
+        const ext = gl && gl.getExtension && gl.getExtension("WEBGL_lose_context");
+        if (!ext) {
+          log(
+            "WEBGL_lose_context unavailable on this context (not a WebGL2 backend?) — aborting",
+          );
+          return;
+        }
+
+        log("calling WEBGL_lose_context.loseContext() …");
+        ext.loseContext();
+        await sleep(300);
+        logDeviceLost("300ms after loseContext()");
+
+        log("calling WEBGL_lose_context.restoreContext() …");
+        ext.restoreContext();
+        await sleep(300);
+        logDeviceLost("300ms after restoreContext()");
+
+        const after = await captureFrame();
+        log(
+          `center pixel after restore: ${fmtPixel(after)} isBlack=${isBlack(after)} ` +
+            `— unchanged from baseline: ${JSON.stringify(after) !== JSON.stringify(baseline) ? "NO (changed)" : "YES (rendering did not resume)"}`,
+        );
+      });
+
+      // 2. Call renderer.init() again — memoized _initPromise, so it's a no-op.
+      wire(buttons.init, async () => {
+        log("\n=== [2] init() again ===");
+        logDeviceLost("before init()");
+        const t0 = performance.now();
+        await renderer.init();
+        const dt = performance.now() - t0;
+        log(
+          `renderer.init() resolved after ${dt.toFixed(2)}ms (near-0ms ⇒ memoized _initPromise, no real reinit)`,
+        );
+        logDeviceLost("after init()");
+        const px = await captureFrame();
+        log(
+          `center pixel after init(): ${fmtPixel(px)} isBlack=${isBlack(px)} — rendering resumed: ${!isBlack(px)}`,
+        );
+      });
+
+      // 3. dispose() the dead renderer, create a new one on the SAME canvas.
+      //    dispose() calls WEBGL_lose_context.loseContext() on its own,
+      //    re-triggering a loss on this canvas.
+      wire(buttons.disposeSame, async () => {
+        log("\n=== [3] dispose() + new WebGPURenderer, SAME canvas ===");
+        stopLoop();
+
+        let disposeTriggeredLoss = false;
+        const onLostFromDispose = () => {
+          disposeTriggeredLoss = true;
+        };
+        canvas.addEventListener("webglcontextlost", onLostFromDispose);
+        renderer.dispose();
+        await sleep(50);
+        canvas.removeEventListener("webglcontextlost", onLostFromDispose);
+        log(
+          `renderer.dispose() triggered a fresh webglcontextlost on this canvas: ${disposeTriggeredLoss}`,
+        );
+
+        renderer = new WebGPURenderer({
+          canvas,
+          forceWebGL: true,
+          antialias: false,
+        });
+        const t0 = performance.now();
+        await renderer.init();
+        log(
+          `new WebGPURenderer initialized on SAME canvas in ${(performance.now() - t0).toFixed(2)}ms`,
+        );
+        logDeviceLost("after new renderer.init() on same canvas");
+
+        startLoop();
+        await sleep(200);
+        const px = await captureFrame();
+        log(
+          `center pixel after step 3: ${fmtPixel(px)} isBlack=${isBlack(px)} — rendering resumed: ${!isBlack(px)}`,
+        );
+      });
+
+      // 4. The documented-nowhere working path: drop the canvas too.
+      wire(buttons.newCanvas, async () => {
+        log("\n=== [4] new WebGPURenderer, NEW canvas (working recovery) ===");
+        stopLoop();
+        try {
+          renderer.dispose();
+        } catch (err) {
+          log(`dispose() threw: ${err && err.message}`);
+        }
+        detachContextListeners(canvas);
+
+        const oldCanvas = canvas;
+        const freshCanvas = document.createElement("canvas");
+        freshCanvas.id = "glcanvas";
+        freshCanvas.width = oldCanvas.width;
+        freshCanvas.height = oldCanvas.height;
+        freshCanvas.style.cssText = oldCanvas.style.cssText;
+        oldCanvas.replaceWith(freshCanvas);
+        canvas = freshCanvas;
+        attachContextListeners(canvas);
+
+        renderer = new WebGPURenderer({
+          canvas,
+          forceWebGL: true,
+          antialias: false,
+        });
+        const t0 = performance.now();
+        await renderer.init();
+        log(
+          `new WebGPURenderer initialized on NEW canvas in ${(performance.now() - t0).toFixed(2)}ms`,
+        );
+        buildSceneObjects();
+        logDeviceLost("after new renderer.init() on new canvas");
+
+        startLoop();
+        await sleep(200);
+        const px = await captureFrame();
+        log(
+          `center pixel after step 4: ${fmtPixel(px)} isBlack=${isBlack(px)} — rendering resumed: ${!isBlack(px)}`,
+        );
+      });
+
+      boot().catch((err) => {
+        log(`boot() failed: ${(err && err.stack) || err}`);
+      });
+    </script>
+  </body>
+</html>

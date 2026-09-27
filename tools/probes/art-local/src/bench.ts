@@ -348,11 +348,17 @@ export async function runSdCppCancellation(
       timeoutMs: 30_000,
     });
     const cancelToIdleMs = Date.now() - cancelStartedAt;
+    // Only a job that ended in `cancelled` proves the cancel request took
+    // effect; `completed` means the server finished before the cancel
+    // landed and `failed` is not a cancellation either.
+    const cancelled = job.status === "cancelled";
     return {
-      supported: true,
+      supported: cancelled,
       outcome: "http-cancel",
       cancelToIdleMs,
-      note: `HTTP cancel (cancel_generating supported), aborted at ~30% of baseline (${abortAtMs.toFixed(0)}ms), job reached '${job.status}'`,
+      note: cancelled
+        ? `HTTP cancel (cancel_generating supported), aborted at ~30% of baseline (${abortAtMs.toFixed(0)}ms), job reached 'cancelled'`
+        : `HTTP cancel requested at ~30% of baseline (${abortAtMs.toFixed(0)}ms) but the job reached '${job.status}', not 'cancelled' — not counted as a successful cancellation`,
     };
   }
 

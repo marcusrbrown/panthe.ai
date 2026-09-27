@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   mapIdleOutcomeToCancellationResult,
+  runSdCppCancellation,
   runSdCppSignalCancel,
 } from "./bench";
 
@@ -111,5 +112,98 @@ describe("runSdCppSignalCancel", () => {
     expect(result.supported).toBe(false);
     expect(result.outcome).toBe("unsupported");
     expect(result.note).toContain("ESRCH");
+  });
+});
+
+describe("runSdCppCancellation (HTTP cancel path)", () => {
+  function stubServer(finalStatus: "cancelled" | "completed") {
+    let cancelRequested = false;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/sdcpp/v1/capabilities") {
+          return Response.json({
+            features_by_mode: {
+              img_gen: { cancel_queued: true, cancel_generating: true },
+            },
+          });
+        }
+        if (url.pathname === "/sdcpp/v1/img_gen" && req.method === "POST") {
+          return Response.json(
+            {
+              id: "job_c1",
+              kind: "img_gen",
+              status: "queued",
+              created: 1,
+              poll_url: "/sdcpp/v1/jobs/job_c1",
+            },
+            { status: 202 },
+          );
+        }
+        if (url.pathname === "/sdcpp/v1/jobs/job_c1/cancel") {
+          cancelRequested = true;
+          return Response.json({ ok: true });
+        }
+        if (url.pathname === "/sdcpp/v1/jobs/job_c1") {
+          const status = cancelRequested ? finalStatus : "generating";
+          return Response.json({
+            id: "job_c1",
+            kind: "img_gen",
+            status,
+            created: 1,
+            started: 2,
+            completed: status === "generating" ? null : 3,
+            queue_position: 0,
+            result:
+              status === "completed"
+                ? { output_format: "png", images: [] }
+                : null,
+            error: null,
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    return server;
+  }
+
+  const prompt = {
+    id: "p",
+    kind: "sprite",
+    subject: "test",
+    prompt: "PixArFK, test",
+  } as const;
+  const options = { width: 64, height: 64, steps: 4, baselineSeconds: 0.7 };
+
+  it("reports a job that reaches 'cancelled' as a supported cancellation", async () => {
+    const server = stubServer("cancelled");
+    try {
+      const result = await runSdCppCancellation(
+        { baseUrl: `http://127.0.0.1:${server.port}` },
+        prompt,
+        options,
+      );
+      expect(result.outcome).toBe("http-cancel");
+      expect(result.supported).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("does not report a job that completed before the cancel as a successful cancellation", async () => {
+    const server = stubServer("completed");
+    try {
+      const result = await runSdCppCancellation(
+        { baseUrl: `http://127.0.0.1:${server.port}` },
+        prompt,
+        options,
+      );
+      expect(result.outcome).toBe("http-cancel");
+      expect(result.supported).toBe(false);
+      expect(result.note).toContain("'completed'");
+    } finally {
+      server.stop(true);
+    }
   });
 });

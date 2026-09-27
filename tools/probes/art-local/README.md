@@ -16,6 +16,7 @@ unzip sd.zip -d bin/
 Download the SD 1.5 checkpoints and pixel-art LoRA into `tools/probes/art-local/models/` (gitignored; identifiers/sha256 recorded below). Q8_0 is recommended — the LoRA was empirically confirmed to apply reliably only at this quantization (see Caveat); Q4_0 and f16 are kept for comparison/reproducibility, not as base-arm candidates:
 
 ```sh
+mkdir -p models/loras
 curl -sL -o models/sd-v1-5-pruned-emaonly-Q8_0.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf
 curl -sL -o models/sd-v1-5-pruned-emaonly-Q4_0.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf
 curl -sL -o models/sd-v1-5-pruned-emaonly-f16.gguf https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-f16.gguf

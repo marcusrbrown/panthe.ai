@@ -21,11 +21,17 @@ import {
   ROUTINE_ONLY_ACTION,
   runFallback,
 } from "./fallback";
+import anthropicFencedAction from "./fixtures/anthropic/messages-fenced-action.json";
+import anthropicNoAction from "./fixtures/anthropic/messages-no-action.json";
+import openaiFencedAction from "./fixtures/openai/responses-fenced-action.json";
+import openaiNoAction from "./fixtures/openai/responses-no-action.json";
 import {
   type CaptureSummary,
   checkOfflineCaptureAvailable,
+  offlineCaptureCommand,
   offlineDnsLogCommand,
   runOfflineRequests,
+  runOfflineWithCapture,
   startCapture,
   summarizeCapture,
 } from "./offline";
@@ -39,7 +45,6 @@ import {
   requestToolCall,
   type StructuredOutputMode,
 } from "./providers";
-import { repairAction } from "./repair";
 
 const PROBE_DIR = new URL("..", import.meta.url).pathname;
 const RESULTS_DIR = join(PROBE_DIR, "results");
@@ -383,39 +388,76 @@ async function runLive(): Promise<LiveResult> {
   };
 }
 
+type OfflineCaptureResult =
+  | {
+      readonly status: "not-requested";
+      readonly command: string;
+      readonly dnsCommand: string;
+    }
+  | {
+      readonly status: "pending-owner-run";
+      readonly command: string;
+      readonly dnsCommand: string;
+      readonly reason: string;
+    }
+  | CaptureSummary;
+
 interface OfflineResult {
   readonly routerGuarantee: {
     readonly requestCount: number;
     readonly hostedClientConstructions: number;
   };
-  readonly capture:
-    | { readonly status: "captured"; readonly summary: CaptureSummary }
-    | {
-        readonly status: "pending-owner-run";
-        readonly command: string;
-        readonly dnsCommand: string;
-      };
+  readonly capture: OfflineCaptureResult;
 }
 
-async function runOffline(): Promise<OfflineResult> {
+function buildOfflineRouterFactory(): () => unknown {
+  return () =>
+    createProviderModel({
+      family: "chat-completions",
+      baseURL: ZEN_BASE_URL,
+      apiKey: "unused-because-offline-must-never-construct-this",
+      modelId: ZEN_MODELS[0].modelId,
+    });
+}
+
+/**
+ * `--offline` alone only proves the router-level guarantee (no hosted
+ * client is ever constructed). `--offline --capture` additionally has the
+ * probe own the whole `sudo tcpdump` window itself: start capture, run
+ * every request while it's running, stop in a `finally`, then read the
+ * pcap back (see {@link runOfflineWithCapture} for the ordering guarantee).
+ */
+async function runOffline(captureRequested: boolean): Promise<OfflineResult> {
   mkdirSync(RESULTS_DIR, { recursive: true });
 
-  const routerRun = await runOfflineRequests(
-    MAX_REQUESTS_PER_MODEL,
-    () =>
-      createProviderModel({
-        family: "chat-completions",
-        baseURL: ZEN_BASE_URL,
-        apiKey: "unused-because-offline-must-never-construct-this",
-        modelId: ZEN_MODELS[0].modelId,
-      }),
-    async () => ROUTINE_ONLY_ACTION,
-  );
+  if (!captureRequested) {
+    const routerRun = await runOfflineRequests(
+      MAX_REQUESTS_PER_MODEL,
+      buildOfflineRouterFactory(),
+      async () => ROUTINE_ONLY_ACTION,
+    );
+    return {
+      routerGuarantee: {
+        requestCount: routerRun.requestCount,
+        hostedClientConstructions: routerRun.hostedClientConstructions,
+      },
+      capture: {
+        status: "not-requested",
+        command: offlineCaptureCommand(OFFLINE_PCAP_DISPLAY_PATH),
+        dnsCommand: offlineDnsLogCommand(),
+      },
+    };
+  }
 
   const availability = await checkOfflineCaptureAvailable(
     OFFLINE_PCAP_DISPLAY_PATH,
   );
   if (availability.status === "pending-owner-run") {
+    const routerRun = await runOfflineRequests(
+      MAX_REQUESTS_PER_MODEL,
+      buildOfflineRouterFactory(),
+      async () => ROUTINE_ONLY_ACTION,
+    );
     return {
       routerGuarantee: {
         requestCount: routerRun.requestCount,
@@ -425,21 +467,29 @@ async function runOffline(): Promise<OfflineResult> {
         status: "pending-owner-run",
         command: availability.command,
         dnsCommand: offlineDnsLogCommand(),
+        reason: availability.reason,
       },
     };
   }
 
-  const capture = startCapture(OFFLINE_PCAP_PATH);
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  await capture.stop();
-  const summary = await summarizeCapture(OFFLINE_PCAP_PATH);
+  const { routerGuarantee, capture } = await runOfflineWithCapture({
+    pcapPath: OFFLINE_PCAP_PATH,
+    startCapture,
+    runRequests: () =>
+      runOfflineRequests(
+        MAX_REQUESTS_PER_MODEL,
+        buildOfflineRouterFactory(),
+        async () => ROUTINE_ONLY_ACTION,
+      ),
+    summarizeCapture,
+  });
 
   return {
     routerGuarantee: {
-      requestCount: routerRun.requestCount,
-      hostedClientConstructions: routerRun.hostedClientConstructions,
+      requestCount: routerGuarantee.requestCount,
+      hostedClientConstructions: routerGuarantee.hostedClientConstructions,
     },
-    capture: { status: "captured", summary },
+    capture,
   };
 }
 
@@ -450,23 +500,102 @@ interface ContractResult {
   readonly noActionFailsIdentically: boolean;
 }
 
+interface FixtureServer {
+  readonly url: string;
+  stop(): void;
+}
+
+/** Replays a recorded response fixture over a local Bun.serve stub — no network. */
+function serveFixture(body: unknown): FixtureServer {
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    stop: () => server.stop(),
+  };
+}
+
+/**
+ * Drives the actual OpenAI (`/responses`) and Anthropic (`/messages`)
+ * adapter path against recorded fixture servers — the same path
+ * `providers.test.ts` exercises — rather than calling `repairAction` on a
+ * hand-written literal. Proves the adapters, not just the repair function.
+ */
 async function runContract(): Promise<ContractResult> {
-  const fencedSample =
-    '```json\n{"kind":"say","to":"zeus","text":"hail, thunderer"}\n```';
-  const openaiRepaired = repairAction(fencedSample);
-  const anthropicRepaired = repairAction(fencedSample);
-  const noActionOpenai = repairAction("no action here");
-  const noActionAnthropic = repairAction("also no action here");
+  const openaiServer = serveFixture(openaiFencedAction);
+  const anthropicServer = serveFixture(anthropicFencedAction);
+  let openaiResult: Awaited<ReturnType<typeof requestStructuredAction>>;
+  let anthropicResult: Awaited<ReturnType<typeof requestStructuredAction>>;
+  try {
+    const openaiModel = createProviderModel({
+      family: "responses",
+      baseURL: openaiServer.url,
+      apiKey: "contract-fixture-key",
+      modelId: "gpt-5-nano",
+    });
+    const anthropicModel = createProviderModel({
+      family: "messages",
+      baseURL: anthropicServer.url,
+      apiKey: "contract-fixture-key",
+      modelId: "claude-haiku-4-5",
+    });
+    openaiResult = await requestStructuredAction(openaiModel, SAMPLE_PROMPT);
+    anthropicResult = await requestStructuredAction(
+      anthropicModel,
+      SAMPLE_PROMPT,
+    );
+  } finally {
+    openaiServer.stop();
+    anthropicServer.stop();
+  }
+
+  const openaiNoActionServer = serveFixture(openaiNoAction);
+  const anthropicNoActionServer = serveFixture(anthropicNoAction);
+  let openaiNoActionResult: Awaited<ReturnType<typeof requestStructuredAction>>;
+  let anthropicNoActionResult: Awaited<
+    ReturnType<typeof requestStructuredAction>
+  >;
+  try {
+    const openaiNoActionModel = createProviderModel({
+      family: "responses",
+      baseURL: openaiNoActionServer.url,
+      apiKey: "contract-fixture-key",
+      modelId: "gpt-5-nano",
+    });
+    const anthropicNoActionModel = createProviderModel({
+      family: "messages",
+      baseURL: anthropicNoActionServer.url,
+      apiKey: "contract-fixture-key",
+      modelId: "claude-haiku-4-5",
+    });
+    openaiNoActionResult = await requestStructuredAction(
+      openaiNoActionModel,
+      SAMPLE_PROMPT,
+    );
+    anthropicNoActionResult = await requestStructuredAction(
+      anthropicNoActionModel,
+      SAMPLE_PROMPT,
+    );
+  } finally {
+    openaiNoActionServer.stop();
+    anthropicNoActionServer.stop();
+  }
 
   return {
-    openaiRepairedAction: openaiRepaired.ok ? openaiRepaired.action : undefined,
-    anthropicRepairedAction: anthropicRepaired.ok
-      ? anthropicRepaired.action
-      : undefined,
+    openaiRepairedAction: openaiResult.action,
+    anthropicRepairedAction: anthropicResult.action,
     parity:
-      JSON.stringify(openaiRepaired) === JSON.stringify(anthropicRepaired),
+      JSON.stringify(openaiResult.action) ===
+      JSON.stringify(anthropicResult.action),
     noActionFailsIdentically:
-      noActionOpenai.ok === false && noActionAnthropic.ok === false,
+      openaiNoActionResult.mode === "failed" &&
+      anthropicNoActionResult.mode === "failed",
   };
 }
 
@@ -522,14 +651,42 @@ function buildFindings(
     findings.push(
       `Offline router guarantee: ${offline.routerGuarantee.hostedClientConstructions} hosted-client construction(s) across ${offline.routerGuarantee.requestCount} offline-mode requests (must be 0).`,
     );
-    if (offline.capture.status === "captured") {
-      findings.push(
-        `Packet capture: ${offline.capture.summary.totalPackets} packets observed, ${offline.capture.summary.nonLoopbackPackets} non-loopback (must be 0 for a silent result).`,
-      );
-    } else {
-      findings.push(
-        `Packet capture: pending owner run — non-interactive sudo is unavailable on this machine. Run \`${offline.capture.command}\` manually, alongside \`${offline.capture.dnsCommand}\`, then re-run \`bun run src/run.ts --offline\`.`,
-      );
+    const capture = offline.capture;
+    switch (capture.status) {
+      case "silent": {
+        findings.push(
+          `Packet capture: ${capture.totalPackets} packets observed, 0 non-loopback — silent.`,
+        );
+        break;
+      }
+      case "not-silent": {
+        findings.push(
+          `Packet capture: ${capture.totalPackets} packets observed, ${capture.nonLoopbackPackets} non-loopback (must be 0 for a silent result) — NOT silent.`,
+        );
+        break;
+      }
+      case "capture-failed": {
+        findings.push(
+          `Packet capture: FAILED to read back a valid capture (${capture.reason}) — this is reported as a failure, never as silence. Re-run \`bun run src/run.ts --offline --capture\`.`,
+        );
+        break;
+      }
+      case "pending-owner-run": {
+        findings.push(
+          `Packet capture: pending owner run — ${capture.reason}. Manual fallback: \`${capture.command}\` (optionally alongside \`${capture.dnsCommand}\`), then re-run \`bun run src/run.ts --offline --capture\`.`,
+        );
+        break;
+      }
+      case "not-requested": {
+        findings.push(
+          `Packet capture: not requested — re-run with \`bun run src/run.ts --offline --capture\` (the probe owns \`${capture.command}\` itself once \`sudo -v\` has primed the sudo timestamp cache).`,
+        );
+        break;
+      }
+      default: {
+        const neverCapture: never = capture;
+        throw new Error(`unhandled capture status: ${String(neverCapture)}`);
+      }
     }
   }
 
@@ -571,16 +728,36 @@ function buildBottomLine(
     }
   }
   if (offline) {
-    if (offline.capture.status === "captured") {
-      parts.push(
-        offline.capture.summary.silent
-          ? "Offline mode was silent on the wire: zero non-loopback packets during the capture window."
-          : "Offline mode was NOT silent — non-loopback packets were observed; see the capture summary before treating offline mode as network-isolated.",
-      );
-    } else {
-      parts.push(
-        "Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet-capture proof is pending an owner-run sudo tcpdump — do not treat offline mode as proven silent until that capture completes.",
-      );
+    switch (offline.capture.status) {
+      case "silent": {
+        parts.push(
+          "Offline mode was silent on the wire: zero non-loopback packets during the capture window.",
+        );
+        break;
+      }
+      case "not-silent": {
+        parts.push(
+          "Offline mode was NOT silent — non-loopback packets were observed; see the capture summary before treating offline mode as network-isolated.",
+        );
+        break;
+      }
+      case "capture-failed": {
+        parts.push(
+          "Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet capture itself FAILED to produce a readable result — do not treat this as silence; re-run --offline --capture.",
+        );
+        break;
+      }
+      case "pending-owner-run":
+      case "not-requested": {
+        parts.push(
+          "Offline mode's router-level guarantee held (zero hosted-client constructions), but the packet-capture proof has not completed yet — do not treat offline mode as proven silent until --offline --capture reports a captured result.",
+        );
+        break;
+      }
+      default: {
+        const neverCapture: never = offline.capture;
+        throw new Error(`unhandled capture status: ${String(neverCapture)}`);
+      }
     }
   }
   return parts.join(" ");
@@ -617,7 +794,9 @@ function loadLatestModeResult<T>(prefix: string): T | undefined {
 }
 
 async function main(): Promise<void> {
-  const mode = process.argv.slice(2)[0];
+  const args = process.argv.slice(2);
+  const mode = args[0];
+  const captureRequested = args.includes("--capture");
   mkdirSync(RESULTS_DIR, { recursive: true });
 
   let live: LiveResult | undefined;
@@ -627,11 +806,11 @@ async function main(): Promise<void> {
   if (mode === "--live") {
     live = await runLive();
   } else if (mode === "--offline") {
-    offline = await runOffline();
+    offline = await runOffline(captureRequested);
   } else if (mode === "--contract") {
     contract = await runContract();
   } else {
-    console.error("usage: run.ts --live | --offline | --contract");
+    console.error("usage: run.ts --live | --offline [--capture] | --contract");
     process.exitCode = 1;
     return;
   }
@@ -682,14 +861,16 @@ async function main(): Promise<void> {
       "Can hosted provider adapters (OpenCode Zen, OpenCode Go, OpenAI/Anthropic by contract) " +
       "produce structured actions and a bounded fallback chain, and is offline mode silent on the wire?",
     howToRun:
-      "```sh\ncd tools/probes/provider-matrix\nbun install\nbun test                 # unit tests (auth, providers, repair, fallback — no network)\nbun run src/run.ts --contract  # OpenAI/Anthropic fixture-server contract check\nbun run src/run.ts --live      # live Zen/Go matrix (requires ~/.local/share/opencode/auth.json)\n\n# Offline proof needs one elevated step (see Caveat) plus a DNS-query log,\n# both running for the whole window the next command exercises:\nsudo tcpdump -i any -w results/offline.pcap &\nlog stream --predicate 'process == \"mDNSResponder\"' > results/offline-dns.log &\nbun run src/run.ts --offline   # 20 offline-mode requests + capture summary\n```",
+      "```sh\ncd tools/probes/provider-matrix\nbun install\nbun test                 # unit tests (auth, providers, repair, fallback, offline capture ordering — no network)\nbun run src/run.ts --contract  # OpenAI/Anthropic fixture-server contract check\nbun run src/run.ts --live      # live Zen/Go matrix (requires ~/.local/share/opencode/auth.json)\n\n# Offline proof — the probe owns the whole capture window itself (single owner,\n# no separately-started background tcpdump). Prime sudo once, then run --capture:\nsudo -v\nbun run src/run.ts --offline --capture   # 20 offline-mode requests + capture summary\n\n# If sudo timestamp caching isn't available/persistent on this machine, run the\n# whole command under sudo instead — -E preserves $HOME so auth.json still resolves:\n# sudo -E bun run src/run.ts --offline --capture\n\n# Optional advisory companion (not sudo-gated, run separately if wanted):\n# log stream --predicate 'process == \"mDNSResponder\"' > results/offline-dns.log\n```",
     caveat:
       "Go usage is billed per request against a $10/month subscription cap, so the live Go arm " +
       `intentionally runs ${GO_LIVE_REQUEST_COUNT} requests rather than the full ${MAX_REQUESTS_PER_MODEL}-request cap used for the free Zen models. ` +
       "Zen free-tier models may return 429s under load; the matrix records the count and aborts a model's run early after " +
       `${CONSECUTIVE_429_ABORT_THRESHOLD} consecutive 429s rather than exhausting the cap against a rate limit. ` +
-      "The offline packet capture needs `sudo`; when non-interactive sudo isn't available, this probe reports the exact " +
-      "command for the owner to run rather than claiming silence it can't back up.",
+      "`--offline` alone only proves the router-level guarantee (zero hosted-client constructions); the packet-capture proof needs " +
+      "`--capture` and `sudo`. The probe owns the capture itself (start → run requests → stop → read back) rather than relying on a " +
+      "separately-started background tcpdump, and never reports a result it can't verify: a failed or unreadable capture is reported as " +
+      "`capture-failed`, never as silence.",
     environment: captureEnvironment({
       extra: {
         zenModels: ZEN_MODELS.map((m) => m.modelId).join(", "),

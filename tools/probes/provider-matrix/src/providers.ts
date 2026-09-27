@@ -240,7 +240,7 @@ export async function requestStructuredAction(
       return {
         mode: "repaired",
         action: repaired.action,
-        rawText: textResult.text,
+        rawText: redactSecrets(textResult.text),
       };
     }
     return {

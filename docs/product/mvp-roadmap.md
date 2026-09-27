@@ -32,9 +32,13 @@ every required lifecycle transition (ADR-0003); QuickJS terminates every adversa
 zero escapes (ADR-0004); the local-inference baseline (`llama3.2:3b` @ 4K) and the OpenCode Go
 hosted fallback chain are both measured, and offline mode is proven silent on the wire against a
 positive control (ADR-0005); local image generation on stable-diffusion.cpp settles a base arm,
-quantization profile, and cancellation behavior (ADR-0007); and the three-way coexistence probe
-settles the shared heavy-work memory policy (an admission-controlled queue at 3 GiB free+inactive
-memory) used by ADR-0003/0005/0007. Four independent re-checks remain open — tracked as their own
+quantization profile, and cancellation behavior (ADR-0007). The three-way coexistence probe's
+heavy-work memory-sharing policy remains **open, not decided**: a re-measurement with success-only
+latencies and an evaluability floor found the 3 GiB admission-queue candidate raised LLM p95 by
++148% rather than improving it, reversing the first round's result; the unconstrained and
+global-mutex candidates stay rejected, but no candidate policy is currently supported — this is
+deferred to M1 with a fixed sampler (see [open-decisions.md](open-decisions.md)) and does not block
+M1 from starting. Four independent re-checks also remain open — tracked as their own
 follow-up probes, not blockers to M1: packaged Flatland feature completeness on a second
 WebGL2 GPU/driver, a signed (not ad-hoc) macOS 15 WebGPU re-check, a macOS 26 WKWebView WebGPU
 re-check, and a packaged Windows/Linux renderer run. M1 work may begin without waiting on these.

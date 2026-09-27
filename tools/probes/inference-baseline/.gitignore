@@ -1,0 +1,7 @@
+# Downloaded llama-server release binary + shared libraries (staging
+# prerequisite, recorded by identifier/sha256 in the README, never
+# committed).
+bin/
+
+# Raw per-run measurement dumps (README is the durable record).
+results/

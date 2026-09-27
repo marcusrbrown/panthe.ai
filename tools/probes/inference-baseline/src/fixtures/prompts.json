@@ -1,0 +1,297 @@
+[
+  {
+    "id": "p01",
+    "speaker": "Zeus",
+    "speakerRole": "god",
+    "scene": "Olympus throne room. A mortal petitioner has been arguing with Hera about a broken trade oath at the town market.",
+    "dialogueTurn": "Hera says: \"That merchant swore an oath in your name and broke it within a week. Will you let that stand?\""
+  },
+  {
+    "id": "p02",
+    "speaker": "Zeus",
+    "speakerRole": "god",
+    "scene": "Above the town tavern at dusk. Smoke rises from the chimney; a rowdy crowd has spilled into the street.",
+    "dialogueTurn": "A drunk patron shouts up at the sky: \"Come down here if you're really a god!\""
+  },
+  {
+    "id": "p03",
+    "speaker": "Hades",
+    "speakerRole": "god",
+    "scene": "The Underworld's entry hall. A newly arrived shade waits at the boundary, unsure whether the return condition applies.",
+    "dialogueTurn": "The shade asks: \"Is there any way back from here, lord of the dead?\""
+  },
+  {
+    "id": "p04",
+    "speaker": "Hades",
+    "speakerRole": "god",
+    "scene": "Deep in the Underworld archive, cataloguing recent arrivals against the fate record.",
+    "dialogueTurn": "Nothing has been said for a while; the archive is quiet."
+  },
+  {
+    "id": "p05",
+    "speaker": "Athena",
+    "speakerRole": "god",
+    "scene": "Overlooking the town from Olympus, watching a dispute between two blacksmiths over a shared forge.",
+    "dialogueTurn": "Hephaestus says: \"They both claim the anvil. I'd rather not choose a side.\""
+  },
+  {
+    "id": "p06",
+    "speaker": "Athena",
+    "speakerRole": "god",
+    "scene": "A quiet strategy chamber in Olympus, reviewing the wilderness patrol routes with Hermes.",
+    "dialogueTurn": "Hermes says: \"The eastern trail near the wilderness edge has gone unwatched for three days.\""
+  },
+  {
+    "id": "p07",
+    "speaker": "Hermes",
+    "speakerRole": "god",
+    "scene": "Standing at the crossroads between the town and the wilderness path, message pouch in hand.",
+    "dialogueTurn": "A courier asks: \"Do you have anything for the smithy today?\""
+  },
+  {
+    "id": "p08",
+    "speaker": "Hermes",
+    "speakerRole": "god",
+    "scene": "At the town market stalls, where a trader's cart is short on ordinary goods after a poor harvest.",
+    "dialogueTurn": "Elara the baker says: \"I've flour to spare but no oil left. Anyone willing to trade?\""
+  },
+  {
+    "id": "p09",
+    "speaker": "Poseidon",
+    "speakerRole": "god",
+    "scene": "The harbor at the edge of town, where fishing boats have been idle after a storm.",
+    "dialogueTurn": "Nikos the fisherman says: \"The nets are torn and the tide's against us. We'll lose the week's catch.\""
+  },
+  {
+    "id": "p10",
+    "speaker": "Poseidon",
+    "speakerRole": "god",
+    "scene": "Standing at the shoreline, watching a merchant ship anchor just offshore.",
+    "dialogueTurn": "The ship's captain calls out: \"Grant us safe passage to the southern port, great one!\""
+  },
+  {
+    "id": "p11",
+    "speaker": "Hephaestus",
+    "speakerRole": "god",
+    "scene": "The forge at the edge of town, mid-repair on a cart wheel for a farmer.",
+    "dialogueTurn": "Doros the farmer says: \"The wheel's cracked clean through. Can it be saved before the harvest run?\""
+  },
+  {
+    "id": "p12",
+    "speaker": "Hephaestus",
+    "speakerRole": "god",
+    "scene": "Inspecting a batch of finished tools laid out on the forge bench.",
+    "dialogueTurn": "No one has spoken; the forge fire crackles quietly."
+  },
+  {
+    "id": "p13",
+    "speaker": "Hera",
+    "speakerRole": "god",
+    "scene": "Olympus courtyard, overlooking a wedding feast in the town below.",
+    "dialogueTurn": "Athena says: \"The couple asked for a blessing. Will you give one, or hold your judgment?\""
+  },
+  {
+    "id": "p14",
+    "speaker": "Hera",
+    "speakerRole": "god",
+    "scene": "Walking the Olympus gardens after a report of a broken marriage vow in the town.",
+    "dialogueTurn": "A messenger says: \"The husband has taken up with another and denies it plainly.\""
+  },
+  {
+    "id": "p15",
+    "speaker": "Zeus",
+    "speakerRole": "god",
+    "scene": "Standing over the town square where a grievance has festered for days near the old oak tree.",
+    "dialogueTurn": "Hades warns: \"Striking that tree again will only deepen the grudge you started last season.\""
+  },
+  {
+    "id": "p16",
+    "speaker": "Elara",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "baker",
+    "scene": "The bakery stall at the town market, ovens still warm from the morning bake.",
+    "dialogueTurn": "Nikos the fisherman asks: \"Would you trade a loaf for some fresh catch?\""
+  },
+  {
+    "id": "p17",
+    "speaker": "Elara",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "baker",
+    "scene": "Closing up the bakery stall for the evening, flour dust still on her apron.",
+    "dialogueTurn": "No customers remain; the market is emptying out."
+  },
+  {
+    "id": "p18",
+    "speaker": "Nikos",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "fisherman",
+    "scene": "The harbor dock, mending a torn net after the storm Poseidon's temper left behind.",
+    "dialogueTurn": "Doros the farmer calls from the road: \"Bring your catch up to the market before the flies find it!\""
+  },
+  {
+    "id": "p19",
+    "speaker": "Nikos",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "fisherman",
+    "scene": "Standing at the harbor's edge as the tide turns unusually rough.",
+    "dialogueTurn": "A dockhand shouts: \"That's no ordinary swell — something's stirred the water!\""
+  },
+  {
+    "id": "p20",
+    "speaker": "Doros",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "farmer",
+    "scene": "The wheat field at the edge of the wilderness, cart wheel freshly repaired at Hephaestus's forge.",
+    "dialogueTurn": "A neighbor says: \"Storm clouds are building over the hills. Best get the cart loaded now.\""
+  },
+  {
+    "id": "p21",
+    "speaker": "Doros",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "farmer",
+    "scene": "Resting under the old oak tree at midday, cart already unloaded at the market.",
+    "dialogueTurn": "Nothing stirs; the field is quiet under the noon sun."
+  },
+  {
+    "id": "p22",
+    "speaker": "Thales",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "blacksmith's apprentice",
+    "scene": "The smithy, sharing the forge fire with a rival apprentice over the shared anvil dispute Athena is watching.",
+    "dialogueTurn": "The rival apprentice says: \"You had the anvil all morning. It's my turn.\""
+  },
+  {
+    "id": "p23",
+    "speaker": "Thales",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "blacksmith's apprentice",
+    "scene": "Delivering a repaired tool to a customer at the town market stalls.",
+    "dialogueTurn": "The customer asks: \"What will you take in trade for the mended plow blade?\""
+  },
+  {
+    "id": "p24",
+    "speaker": "Kassandra",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "herbalist",
+    "scene": "The herbalist's stall near the wilderness edge, sorting freshly gathered roots.",
+    "dialogueTurn": "A worried mother says: \"My child has a fever. Do you have anything that might help?\""
+  },
+  {
+    "id": "p25",
+    "speaker": "Kassandra",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "herbalist",
+    "scene": "Walking the wilderness trail at dusk, basket half full of gathered herbs.",
+    "dialogueTurn": "A passing traveler calls out: \"Careful on that path — the trail's been unwatched for days.\""
+  },
+  {
+    "id": "p26",
+    "speaker": "Zeus",
+    "speakerRole": "god",
+    "scene": "Storm gathering over the wilderness, a lone traveler caught out in the open near a tavern shelter.",
+    "dialogueTurn": "Hermes reports: \"The traveler took shelter under the tavern eave. The storm's still building.\""
+  },
+  {
+    "id": "p27",
+    "speaker": "Hades",
+    "speakerRole": "god",
+    "scene": "Reviewing a mortal's fate record after their voluntary permanent death was recorded in the town.",
+    "dialogueTurn": "A minor spirit asks: \"Should their history be sealed, or left open for the living to consult?\""
+  },
+  {
+    "id": "p28",
+    "speaker": "Poseidon",
+    "speakerRole": "god",
+    "scene": "Watching a trade dispute unfold at the harbor over a shipment of salted fish.",
+    "dialogueTurn": "The ship's captain and Nikos the fisherman are both talking over each other about the price."
+  },
+  {
+    "id": "p29",
+    "speaker": "Hermes",
+    "speakerRole": "god",
+    "scene": "Carrying an urgent message from Olympus down toward the town square.",
+    "dialogueTurn": "Athena's message reads: \"Tell Hephaestus the anvil dispute needs settling before nightfall.\""
+  },
+  {
+    "id": "p30",
+    "speaker": "Hephaestus",
+    "speakerRole": "god",
+    "scene": "Weighing whether to give the disputed anvil to Thales or the rival apprentice.",
+    "dialogueTurn": "Thales says: \"I'll trade my morning shift for full use of it this afternoon, if that settles it.\""
+  },
+  {
+    "id": "p31",
+    "speaker": "Elara",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "baker",
+    "scene": "The bakery, weighing whether to travel to the wilderness edge herbalist for a fever remedy.",
+    "dialogueTurn": "Kassandra sent word: \"I have the herb your neighbor needs, but you'll have to come to the wilderness stall.\""
+  },
+  {
+    "id": "p32",
+    "speaker": "Doros",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "farmer",
+    "scene": "Standing at the town square near the old oak tree, cart loaded and ready to leave.",
+    "dialogueTurn": "A town guard says: \"Storm's rolling in fast — you'll want to be off this road soon.\""
+  },
+  {
+    "id": "p33",
+    "speaker": "Nikos",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "fisherman",
+    "scene": "Sitting on the dock after mending the net, catch already sold at the market.",
+    "dialogueTurn": "Nothing more needs doing today; the tide is calm again."
+  },
+  {
+    "id": "p34",
+    "speaker": "Zeus",
+    "speakerRole": "god",
+    "scene": "The old oak tree in the town square, where the grievance Hades warned about has finally boiled over into a shouting match.",
+    "dialogueTurn": "The aggrieved merchant shouts up: \"You let him break the oath once — will you let it happen again?\""
+  },
+  {
+    "id": "p35",
+    "speaker": "Athena",
+    "speakerRole": "god",
+    "scene": "Settling the anvil dispute after hearing Hephaestus's account and Thales's trade offer.",
+    "dialogueTurn": "Hephaestus asks: \"So which of them gets the anvil this afternoon?\""
+  },
+  {
+    "id": "p36",
+    "speaker": "Hera",
+    "speakerRole": "god",
+    "scene": "Considering whether to bless the town wedding Athena mentioned earlier.",
+    "dialogueTurn": "The bride's mother asks quietly: \"Will she be watched over, or left to her own fortune?\""
+  },
+  {
+    "id": "p37",
+    "speaker": "Thales",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "blacksmith's apprentice",
+    "scene": "Given the anvil for the afternoon after Athena's ruling, tools laid out and ready.",
+    "dialogueTurn": "The rival apprentice mutters: \"Fine. Take it. I'll wait my turn.\""
+  },
+  {
+    "id": "p38",
+    "speaker": "Kassandra",
+    "speakerRole": "inhabitant",
+    "speakerOccupation": "herbalist",
+    "scene": "Handing the fever remedy to Elara, who traveled out to the wilderness stall.",
+    "dialogueTurn": "Elara asks: \"What do you want in trade for it?\""
+  },
+  {
+    "id": "p39",
+    "speaker": "Hades",
+    "speakerRole": "god",
+    "scene": "The Underworld boundary, where the shade from earlier has now satisfied the authored return condition.",
+    "dialogueTurn": "The shade says: \"I've done what was asked. Is the way back open now?\""
+  },
+  {
+    "id": "p40",
+    "speaker": "Poseidon",
+    "speakerRole": "god",
+    "scene": "The harbor calm again after the earlier trade dispute was settled without his intervention.",
+    "dialogueTurn": "Nothing more is asked of him; the fishing boats are already back out."
+  }
+]

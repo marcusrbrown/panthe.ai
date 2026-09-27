@@ -27,30 +27,99 @@ export class FrameTimeTracker {
   }
 }
 
+export interface ClickLatencyResolution {
+  spriteId: number;
+  /** Frame index (from the renderer's per-frame counter) in which the
+   * highlighted sprite's new tint was first submitted via `render()`. */
+  appliedFrameIndex: number;
+  /** Frame index of the rAF tick that resolved the latency — always
+   * `appliedFrameIndex + 1` or later, i.e. one full frame after the
+   * highlight was actually committed, not merely queued. */
+  resolvedFrameIndex: number;
+  latencyMs: number;
+}
+
 /**
- * Click-to-visible latency: pointerdown timestamp -> first rAF after the
- * selection highlight has been drawn. The caller marks a pending click in
- * its pointerdown handler (after synchronously applying the highlight
- * change) and calls `resolveIfPending` once per animation frame, after the
- * frame has been rendered.
+ * Click-to-visible latency, measured only for raycast HITS (a miss doesn't
+ * produce a visible change, so it can't have a click-to-visible latency —
+ * misses are counted separately via `markMiss`/`missCount`).
+ *
+ * Timing model: `markHit` records the click timestamp when a hit is
+ * detected and its highlight tint is applied synchronously in the same
+ * event handler. The tint mutation is picked up by whichever `render()`
+ * call happens next (guaranteed, since JS is single-threaded and the
+ * mutation completes before that call) — the caller reports that with
+ * `noteRenderSubmitted(frameIndex)` immediately after `render()` returns.
+ * That marks "the frame in which the highlight rendered", but a submitted
+ * frame is not the same as a *visible* one (the browser still has to
+ * composite/present it), so the latency only resolves on `resolveIfPending`
+ * for the *next* frame index after that — i.e. one full frame after
+ * submission, not on the submission frame itself.
  */
 export class ClickLatencyTracker {
   private pendingSince: number | null = null;
-  private lastLatencyMs: number | null = null;
+  private pendingSpriteId: number | null = null;
+  private appliedFrameIndex: number | null = null;
+  private awaitingRender = false;
+  private lastResolution: ClickLatencyResolution | null = null;
+  missCount = 0;
 
-  markPointerDown(timestampMs: number): void {
+  /** Call from the raycast-hit branch, after synchronously applying the highlight. */
+  markHit(timestampMs: number, spriteId: number): void {
     this.pendingSince = timestampMs;
+    this.pendingSpriteId = spriteId;
+    this.appliedFrameIndex = null;
+    this.awaitingRender = true;
   }
 
-  resolveIfPending(nowMs: number): void {
-    if (this.pendingSince !== null) {
-      this.lastLatencyMs = nowMs - this.pendingSince;
-      this.pendingSince = null;
+  /** Call from the raycast-miss branch. */
+  markMiss(): void {
+    this.missCount += 1;
+  }
+
+  /** Call immediately after `renderer.render()` returns, once per rAF tick. */
+  noteRenderSubmitted(frameIndex: number): void {
+    if (this.awaitingRender) {
+      this.appliedFrameIndex = frameIndex;
+      this.awaitingRender = false;
     }
   }
 
+  /** Call once per rAF tick, after `noteRenderSubmitted` for that same tick. */
+  resolveIfPending(nowMs: number, frameIndex: number): void {
+    if (
+      this.pendingSince !== null &&
+      this.pendingSpriteId !== null &&
+      this.appliedFrameIndex !== null &&
+      frameIndex > this.appliedFrameIndex
+    ) {
+      this.lastResolution = {
+        spriteId: this.pendingSpriteId,
+        appliedFrameIndex: this.appliedFrameIndex,
+        resolvedFrameIndex: frameIndex,
+        latencyMs: nowMs - this.pendingSince,
+      };
+      this.pendingSince = null;
+      this.pendingSpriteId = null;
+      this.appliedFrameIndex = null;
+    }
+  }
+
+  /** Clears any in-flight (unresolved) click state — call on context loss,
+   * since the highlighted sprite it refers to is about to be destroyed. */
+  reset(): void {
+    this.pendingSince = null;
+    this.pendingSpriteId = null;
+    this.appliedFrameIndex = null;
+    this.awaitingRender = false;
+  }
+
   get latestMs(): number | null {
-    return this.lastLatencyMs;
+    return this.lastResolution?.latencyMs ?? null;
+  }
+
+  get lastResolutionSnapshot(): ClickLatencyResolution | null {
+    return this.lastResolution;
   }
 }
 
@@ -59,20 +128,25 @@ export class ContextLossTracker {
   lostCount = 0;
   restoredCount = 0;
 
-  attach(canvas: HTMLCanvasElement, onRestore: () => void): () => void {
-    const onLost = (event: Event) => {
+  attach(
+    canvas: HTMLCanvasElement,
+    onLost: () => void,
+    onRestore: () => void,
+  ): () => void {
+    const handleLost = (event: Event) => {
       event.preventDefault();
       this.lostCount += 1;
+      onLost();
     };
-    const onRestored = () => {
+    const handleRestored = () => {
       this.restoredCount += 1;
       onRestore();
     };
-    canvas.addEventListener("webglcontextlost", onLost);
-    canvas.addEventListener("webglcontextrestored", onRestored);
+    canvas.addEventListener("webglcontextlost", handleLost);
+    canvas.addEventListener("webglcontextrestored", handleRestored);
     return () => {
-      canvas.removeEventListener("webglcontextlost", onLost);
-      canvas.removeEventListener("webglcontextrestored", onRestored);
+      canvas.removeEventListener("webglcontextlost", handleLost);
+      canvas.removeEventListener("webglcontextrestored", handleRestored);
     };
   }
 }
@@ -80,6 +154,22 @@ export class ContextLossTracker {
 export interface EffectFailure {
   effectName: string;
   error: string;
+}
+
+export interface SpriteScreenPosition {
+  id: number;
+  /** Canvas-relative CSS pixels of the sprite's world-space *bounding-box
+   * center* (not its anchor/pivot — `anchor` can offset the pivot well
+   * outside the visually opaque pixels, e.g. the static actor texture's
+   * `anchor: [0.5, 0.2]`), matching the coordinate space
+   * `getBoundingClientRect` uses for pointer events — use directly to
+   * target a click. */
+  x: number;
+  y: number;
+  /** `"animated"` sprites in this scene render a stroked ring (transparent
+   * center) — prefer `"static"` targets (filled diamonds) when picking a
+   * point to click for alpha/bounding hit-testing to land reliably. */
+  kind: "static" | "animated";
 }
 
 export interface MetricsSnapshot {
@@ -90,10 +180,23 @@ export interface MetricsSnapshot {
   userAgent: string;
   webglDebugRenderer: { vendor: string | null; renderer: string | null } | null;
   frameTime: { p50: number; p95: number; sampleCount: number };
+  /** Click-to-visible latency for the most recently *resolved* hit (see
+   * `ClickLatencyTracker`'s doc comment for what "resolved" means). `null`
+   * until at least one hit has resolved. */
   clickToVisibleLatencyMs: number | null;
+  /** Detail behind `clickToVisibleLatencyMs` — which sprite, and which
+   * frame indices the apply/resolve happened on. */
+  lastClickResolution: ClickLatencyResolution | null;
+  /** Raycast misses (clicks that hit no sprite) — these can't produce a
+   * click-to-visible latency, so they're counted here instead. */
+  clickMissCount: number;
   contextLoss: { lostCount: number; restoredCount: number };
   spriteCount: number;
   effectFailures: EffectFailure[];
+  /** Deterministic (seeded-RNG) sprite layout means these screen positions
+   * are stable across runs at a given canvas size — a debug aid for driving
+   * real clicks at known sprite coordinates from outside the WebView. */
+  spriteScreenPositions: SpriteScreenPosition[];
 }
 
 /** Writes the snapshot to the console and (best-effort) the Tauri `dump_metrics` command. */
@@ -107,4 +210,21 @@ export async function dumpMetrics(snapshot: MetricsSnapshot): Promise<void> {
     // Expected when running as a plain browser page (no Tauri IPC bridge).
     console.warn("[probe-renderer] dump_metrics invoke unavailable:", error);
   }
+}
+
+/**
+ * Deterministic PRNG (mulberry32) — used instead of `Math.random()` for
+ * sprite layout so screen positions are reproducible across runs at a
+ * given canvas size (needed to drive real clicks at known sprite
+ * coordinates for click-to-visible latency measurement). Not
+ * cryptographic; a probe-only concern.
+ */
+export function mulberry32(seed: number): () => number {
+  let state = seed | 0;
+  return function random(): number {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }

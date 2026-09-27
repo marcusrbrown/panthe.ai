@@ -34,12 +34,17 @@ import {
   SpriteGroup,
   TileMap2D,
 } from "three-flatland";
-import type { EffectFailure, MetricsSnapshot } from "./metrics";
+import type {
+  EffectFailure,
+  MetricsSnapshot,
+  SpriteScreenPosition,
+} from "./metrics";
 import {
   ClickLatencyTracker,
   ContextLossTracker,
   dumpMetrics,
   FrameTimeTracker,
+  mulberry32,
 } from "./metrics";
 
 const TILE_SIZE = 32;
@@ -50,6 +55,13 @@ const ANIM_FRAME_SIZE = 32;
 const ANIM_FRAME_COUNT = 4;
 const BURST_INTENSITY = 3.4;
 const NORMAL_INTENSITY = 1;
+// Fixed by default so sprite layout — and therefore each sprite's screen
+// position — is reproducible across runs at a given canvas size. This is
+// what makes `spriteScreenPositions` in the metrics dump usable for driving
+// real clicks at known coordinates from outside the WebView. Override with
+// `?seed=N` if a different layout is ever needed.
+const DEFAULT_LAYOUT_SEED = 0x50414e54; // "PANT" — arbitrary, just fixed.
+const CONTEXT_LOSS_RESTORE_DELAY_MS = 2000;
 
 // ---------------------------------------------------------------------------
 // Procedural textures — no binary assets, everything drawn on an offscreen
@@ -335,8 +347,13 @@ export function Scene() {
       current: null,
     };
 
-    const forceWebGL =
-      new URLSearchParams(window.location.search).get("forceWebGL") === "1";
+    const searchParams = new URLSearchParams(window.location.search);
+    const forceWebGL = searchParams.get("forceWebGL") === "1";
+    const seedParam = Number.parseInt(searchParams.get("seed") ?? "", 10);
+    const layoutSeed = Number.isFinite(seedParam)
+      ? seedParam
+      : DEFAULT_LAYOUT_SEED;
+    const rng = mulberry32(layoutSeed);
     const renderer = new WebGPURenderer({
       canvas: canvasEl,
       forceWebGL,
@@ -362,6 +379,10 @@ export function Scene() {
       vendor: string | null;
       renderer: string | null;
     } | null = null;
+    // Retained so the `l` key can force a context loss/restore cycle via
+    // `WEBGL_lose_context` for the context-recovery exercise; unused (stays
+    // null) when the backend isn't WebGL2.
+    let webglContext: WebGL2RenderingContext | null = null;
 
     const group = new SpriteGroup();
     scene.add(group);
@@ -382,8 +403,8 @@ export function Scene() {
       selectableSprites = [];
 
       for (let i = 0; i < ACTOR_COUNT; i++) {
-        const worldX = Math.round((Math.random() - 0.5) * MAP_SIZE * TILE_SIZE);
-        const worldY = Math.round((Math.random() - 0.5) * MAP_SIZE * TILE_SIZE);
+        const worldX = Math.round((rng() - 0.5) * MAP_SIZE * TILE_SIZE);
+        const worldY = Math.round((rng() - 0.5) * MAP_SIZE * TILE_SIZE);
         const sprite = new Sprite2D({
           texture: actorTexture,
           anchor: [0.5, 0.2],
@@ -398,8 +419,8 @@ export function Scene() {
 
       fireEffects = [];
       for (let i = 0; i < ANIM_ACTOR_COUNT; i++) {
-        const worldX = Math.round((Math.random() - 0.5) * MAP_SIZE * TILE_SIZE);
-        const worldY = Math.round((Math.random() - 0.5) * MAP_SIZE * TILE_SIZE);
+        const worldX = Math.round((rng() - 0.5) * MAP_SIZE * TILE_SIZE);
+        const worldY = Math.round((rng() - 0.5) * MAP_SIZE * TILE_SIZE);
         const animSprite = new AnimatedSprite2D({
           spriteSheet: animSheet,
           animation: "pulse",
@@ -443,13 +464,40 @@ export function Scene() {
         `backend: ${backendName} (${backendDetectionProperty})`,
         `forceWebGL: ${forceWebGL}`,
         `frame p50/p95: ${stats.p50.toFixed(2)}ms / ${stats.p95.toFixed(2)}ms (n=${stats.sampleCount})`,
-        `click->visible latency: ${clickLatency.latestMs !== null ? `${clickLatency.latestMs.toFixed(1)}ms` : "—"}`,
+        `click->visible latency: ${clickLatency.latestMs !== null ? `${clickLatency.latestMs.toFixed(1)}ms` : "—"} (misses: ${clickLatency.missCount})`,
         `context lost/restored: ${contextLoss.lostCount}/${contextLoss.restoredCount}`,
         `sprites: ${selectableSprites.length}`,
         `burst: ${burstActive ? "ON" : "off"} (press b to toggle)`,
         `effect failures: ${effectFailures.length}`,
-        "press d or click Dump to write metrics JSON",
+        "press d to dump, b to toggle burst, l to force context loss",
       ].join("\n");
+    }
+
+    const screenPositionScratch = new THREE.Vector3();
+    const boundsScratch = new THREE.Box3();
+
+    /** Canvas-relative CSS-pixel positions for every selectable sprite —
+     * the coordinate space `getBoundingClientRect`-based pointer handling
+     * uses — so these can drive real clicks at known sprite locations.
+     * Uses each sprite's world-space *bounding-box center*, not
+     * `sprite.position` (the anchor/pivot): the static actors use
+     * `anchor: [0.5, 0.2]`, which offsets the pivot well outside the
+     * visually opaque diamond, so clicking at the raw position misses far
+     * more often than the visual footprint's center does. */
+    function computeSpriteScreenPositions(): SpriteScreenPosition[] {
+      const width = canvasEl.clientWidth;
+      const height = canvasEl.clientHeight;
+      return selectableSprites.map((sprite) => {
+        boundsScratch.setFromObject(sprite);
+        boundsScratch.getCenter(screenPositionScratch);
+        screenPositionScratch.project(camera);
+        return {
+          id: sprite.id,
+          x: Math.round(((screenPositionScratch.x + 1) / 2) * width),
+          y: Math.round(((1 - screenPositionScratch.y) / 2) * height),
+          kind: sprite instanceof AnimatedSprite2D ? "animated" : "static",
+        };
+      });
     }
 
     function buildSnapshot(): MetricsSnapshot {
@@ -464,12 +512,15 @@ export function Scene() {
         webglDebugRenderer,
         frameTime: stats,
         clickToVisibleLatencyMs: clickLatency.latestMs,
+        lastClickResolution: clickLatency.lastResolutionSnapshot,
+        clickMissCount: clickLatency.missCount,
         contextLoss: {
           lostCount: contextLoss.lostCount,
           restoredCount: contextLoss.restoredCount,
         },
         spriteCount: selectableSprites.length,
         effectFailures,
+        spriteScreenPositions: computeSpriteScreenPositions(),
       };
     }
 
@@ -478,7 +529,7 @@ export function Scene() {
     };
 
     function onPointerDown(event: PointerEvent): void {
-      clickLatency.markPointerDown(performance.now());
+      const clickTimestamp = performance.now();
       const rect = canvasEl.getBoundingClientRect();
       pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -493,9 +544,13 @@ export function Scene() {
         selectedOriginalTint = hit.tint.clone();
         hit.tint = new THREE.Color(0xffff66);
         selectedSprite = hit;
+        // Latency is only meaningful for a HIT — a miss never produces a
+        // visible change, so there's nothing for click-to-visible to time.
+        clickLatency.markHit(clickTimestamp, hit.id);
       } else {
         selectedSprite = null;
         selectedOriginalTint = null;
+        clickLatency.markMiss();
       }
     }
 
@@ -508,6 +563,24 @@ export function Scene() {
         for (const effect of fireEffects) {
           effect.intensity = intensity;
         }
+      } else if (event.key === "l" || event.key === "L") {
+        const ext = webglContext?.getExtension("WEBGL_lose_context");
+        if (!ext) {
+          console.warn(
+            "[probe-renderer] WEBGL_lose_context unavailable (no WebGL2 context, or backend isn't webgl2)",
+          );
+          return;
+        }
+        console.log(
+          "[probe-renderer] forcing context loss (WEBGL_lose_context.loseContext())",
+        );
+        ext.loseContext();
+        window.setTimeout(() => {
+          console.log(
+            "[probe-renderer] restoring context (WEBGL_lose_context.restoreContext())",
+          );
+          ext.restoreContext();
+        }, CONTEXT_LOSS_RESTORE_DELAY_MS);
       }
     }
 
@@ -534,6 +607,7 @@ export function Scene() {
         backendName = "webgl2";
         backendDetectionProperty = "renderer.backend.isWebGLBackend";
         const gl = canvasEl.getContext("webgl2");
+        webglContext = gl;
         const ext = gl?.getExtension("WEBGL_debug_renderer_info");
         if (gl && ext) {
           webglDebugRenderer = {
@@ -566,23 +640,46 @@ export function Scene() {
 
       populateActors();
 
-      detachContextTracking = contextLoss.attach(canvasEl, () => {
-        for (const child of [...group.children]) group.remove(child);
-        const { staticCount, animatedCount } = populateActors();
-        const expected = staticCount + animatedCount;
-        console.log(
-          `[probe-renderer] context restored — rebuilt ${selectableSprites.length} sprites (expected ${expected}): ${
-            selectableSprites.length === expected ? "OK" : "MISMATCH"
-          }`,
-        );
-      });
+      detachContextTracking = contextLoss.attach(
+        canvasEl,
+        () => {
+          // The highlighted sprite (if any) is about to be disposed below on
+          // restore — drop the stale reference now so nothing re-tints a
+          // destroyed object, and clear any in-flight click-latency timer
+          // that was waiting on a frame that will never come.
+          selectedSprite = null;
+          selectedOriginalTint = null;
+          clickLatency.reset();
+        },
+        () => {
+          for (const child of [...group.children]) {
+            if (child instanceof Sprite2D) {
+              // Own-instance geometry/material (not the shared source
+              // textures — `actorTexture`/`animTexture` are reused by the
+              // sprites `populateActors()` is about to recreate below).
+              child.geometry.dispose();
+              child.material.dispose();
+            }
+            group.remove(child);
+          }
+          const { staticCount, animatedCount } = populateActors();
+          const expected = staticCount + animatedCount;
+          console.log(
+            `[probe-renderer] context restored — rebuilt ${selectableSprites.length} sprites (expected ${expected}): ${
+              selectableSprites.length === expected ? "OK" : "MISMATCH"
+            }`,
+          );
+        },
+      );
 
       window.addEventListener("resize", onResize);
       canvasEl.addEventListener("pointerdown", onPointerDown);
       window.addEventListener("keydown", onKeyDown);
 
       let lastTimestamp = performance.now();
+      let frameIndex = 0;
       renderer.setAnimationLoop((timestamp: number) => {
+        frameIndex += 1;
         const deltaMs = timestamp - lastTimestamp;
         lastTimestamp = timestamp;
         frameTime.record(deltaMs);
@@ -594,7 +691,12 @@ export function Scene() {
         }
 
         renderer.render(scene, camera);
-        clickLatency.resolveIfPending(performance.now());
+        // Marks `frameIndex` as the frame a pending highlight was committed
+        // in (no-op if no click is pending). Resolving only fires on a
+        // *later* frameIndex — one full frame after commit, once the
+        // browser has had a chance to actually present it.
+        clickLatency.noteRenderSubmitted(frameIndex);
+        clickLatency.resolveIfPending(performance.now(), frameIndex);
       });
 
       overlayIntervalHandle = window.setInterval(updateOverlay, 250);

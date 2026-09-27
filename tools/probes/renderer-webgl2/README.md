@@ -40,8 +40,16 @@ Runtime controls once a window is open:
 - `b` key: toggles an "effect burst" — multiplies the fire/lightning
   effect's `intensity` uniform across all animated sprites (`1.0` →
   `3.4`).
+- `l` key: forces a `WEBGL_lose_context` loss, then calls
+  `restoreContext()` after 2s — see Results §3 for what does and does
+  not recover.
 - `?forceWebGL=1` query param: forces `WebGPURenderer`'s WebGL2 backend
   explicitly instead of letting it auto-detect.
+- `?seed=N` query param: overrides the sprite-layout PRNG seed (fixed by
+  default — `mulberry32` — so sprite screen positions, and therefore
+  `spriteScreenPositions` in a metrics dump, are reproducible across runs
+  at a given canvas size; this is what let real clicks be driven at known
+  sprite coordinates from outside the WebView, see Results §3).
 
 ## Caveat
 
@@ -270,6 +278,153 @@ exercised in this follow-up session either — it remains genuinely
 out-of-scope for a CSP fix and can be picked up whenever the packaged-bundle
 criterion needs that specific evidence.
 
+#### Click-to-visible latency on the packaged app (fixed timing model + real clicks)
+
+The original click-to-visible timer had two bugs, both found in Fro Bot
+review: it started on every `pointerdown` (including misses, which have no
+"visible" moment to time) and stopped on the very next `render()` call —
+i.e. the same frame the highlight was *submitted* in, not a later frame
+once the browser had actually had a chance to *present* it. Combined with
+the fact that the only evidence on file was from the `vite preview` +
+Safari route (Results §2's 8.0ms), the packaged app's own dumps had
+`clickToVisibleLatencyMs: null` in every prior dump in this file —
+the 8.0ms number was never packaged-bundle evidence, and this section
+replaces the claim rather than repeating it.
+
+`metrics.ts`'s `ClickLatencyTracker` now: starts the timer only in the
+raycast-*hit* branch of `onPointerDown` (a miss increments a separate
+`clickMissCount` instead); records which frame index the hit's tint
+mutation was first submitted in (`noteRenderSubmitted`, called right after
+`renderer.render()` every tick); and only resolves the latency on a
+*later* frame index than that — one full frame after the submit, not on
+it. Each resolution records `{ spriteId, appliedFrameIndex,
+resolvedFrameIndex, latencyMs }` in the dump (`lastClickResolution`) so the
+timing claim is independently checkable, not just a number.
+
+Driving real clicks at the packaged `.app` from outside the WebView turned
+up two more things, both fixed before this evidence was captured:
+
+- **`osascript`'s `System Events click at {x,y}` does not fire
+  `pointerdown`/`pointerup` in this WKWebView** — confirmed by a temporary
+  diagnostic build that logged every `pointerdown`/`mousedown`/`click`/
+  `pointerup` on the canvas: a synthetic `click at` produced `mousedown`
+  and `click` only. `cliclick` (`brew install cliclick`; genuine
+  `CGEventPost`-level synthetic input) produced the full
+  `pointerdown`→`pointerup`→`click` sequence and is what actually drove
+  every click in this section. `System Events click at` remains fine for
+  *element-targeted* actions (it correctly hit the "Dump metrics" button
+  via its accessibility action in earlier testing) — just not for
+  raw-coordinate pointer input against a canvas.
+  - Follow-up correction: a `d`-dumped `spriteScreenPositions` list was
+    computed against `canvasEl.clientWidth/Height`, which correctly
+    excludes the native title bar — but the *test harness* converting
+    those canvas-relative coordinates to absolute screen coordinates for
+    `cliclick` initially assumed no title-bar offset. Measured directly
+    (a diagnostic `dump_metrics` call echoing `event.clientX/Y`,
+    `canvasEl.clientWidth/Height`, and the raycast hit count for a known
+    click): the standard macOS title bar is exactly 28pt, and this app's
+    WKWebView content view is `windowHeight - 28`, not the full window
+    frame height. `screenX = windowX + canvasX; screenY = windowY + 28 +
+    canvasY` is the correct transform for this window (no custom
+    title-bar/decorations config in `tauri.conf.json`).
+  - `spriteScreenPositions` now reports each sprite's world-space
+    *bounding-box center* (`THREE.Box3.setFromObject(sprite)`), not
+    `sprite.position` — the two coincided for this scene's actors in
+    testing, so this didn't change the miss rate, but it's the physically
+    correct point to target regardless of a sprite's `anchor` setting, and
+    the dump now also reports each sprite's `kind` (`"static" |
+    "animated"`) — the animated ring sprites render a *stroked* circle
+    (transparent center), so a reliable click target should prefer
+    `"static"` (filled diamond) sprites.
+  - Sprite layout is now driven by a fixed-seed `mulberry32` PRNG
+    (`?seed=N` overrides it) instead of `Math.random()`, so
+    `spriteScreenPositions` from one dump stays valid for a subsequent
+    click at the same canvas size — required for driving a whole batch of
+    clicks off one earlier dump's coordinates.
+
+With all of that, 14 real `cliclick`-driven clicks against known static-
+sprite screen coordinates on the running packaged `.app` (binary launched
+directly from a shell, dumped after each click): **14/14 hits, 0 misses**,
+resolving against the exact intended sprite ID every time (`37`, `40`,
+`56`, `58`, `59`, `60`, `63`, `65`, `68`, `70`, `76`, `78`, `86`, `103`).
+Latencies (ms): `28, 23, 20, 23, 28, 28, 26, 27, 31, 26, 29, 18, 31, 30` —
+**p50 = 28ms, p95 = 31ms, n = 14** (one representative resolution below;
+same shape as the rest). Screenshot of a resolved hit (yellow-tinted
+sprite, overlay reading `click->visible latency: 24.0ms (misses: 0)`):
+`shots/05-click-latency-hit.png`.
+
+```json
+{
+  "lastClickResolution": {
+    "spriteId": 37,
+    "appliedFrameIndex": 1555,
+    "resolvedFrameIndex": 1556,
+    "latencyMs": 28
+  },
+  "clickToVisibleLatencyMs": 28,
+  "clickMissCount": 0
+}
+```
+
+#### Context loss/restore on the packaged app (fixed app-level state; upstream renderer limitation found)
+
+Two app-level bugs, both from Fro Bot review: the stale `selectedSprite`/
+`selectedOriginalTint` references (and any in-flight click-latency timer)
+were never cleared on `webglcontextlost`, so a restore could re-tint an
+already-disposed sprite; and the old sprites' `geometry`/`material` were
+never disposed before `populateActors()` rebuilt a fresh set on
+`webglcontextrestored` (the shared source *textures* — `actorTexture`,
+`animTexture` — are intentionally **not** disposed; they're reused by the
+rebuilt sprites, not recreated). `ContextLossTracker.attach()` now takes
+both an `onLost` and an `onRestore` callback; `onLost` clears the stale
+selection state via `clickLatency.reset()`, `onRestore` disposes each
+removed `Sprite2D`/`AnimatedSprite2D`'s own geometry/material before
+`group.remove()`.
+
+Exercised on the packaged `.app` via the new `l` key
+(`WEBGL_lose_context.loseContext()`, then `restoreContext()` after 2s):
+
+```json
+{
+  "contextLoss": { "lostCount": 1, "restoredCount": 1 },
+  "spriteCount": 230,
+  "effectFailures": []
+}
+```
+
+A post-restore click against a freshly rebuilt sprite (new object IDs,
+confirming `populateActors()` actually ran again) also resolved correctly
+— `{ "spriteId": 249, "latencyMs": 21 }`, `clickMissCount` unchanged —
+so hit-testing (pure CPU-side raycasting against the rebuilt `Sprite2D`
+transforms) is fully recovered.
+
+**What did not recover: the actual pixels.** The canvas goes solid white
+after the restore and stays that way — confirmed on two separate restore
+cycles, screenshot: `shots/06-context-loss-no-visual-recovery.png`. This
+is not a bug in this probe's code; it's traced to `three@0.185.1`'s
+`WebGPURenderer` (`three/build/three.webgpu.js`, the exact installed
+build): its default `_onDeviceLost` handler sets a private
+`this._isDeviceLost = true` latch on `webglcontextlost`, and both
+`_renderScene()` (the guts of `render()`) and `compute()` early-return
+whenever that latch is set — but **the module has zero references to
+`webglcontextrestored`** anywhere, so nothing ever clears the latch. Its
+public `init()` is also memoized (`if (this._initPromise !== null) return
+this._initPromise;`), so calling it again after a restore is a no-op, not
+a re-initialization. In this three.js version, once a
+`WebGPURenderer`/WebGL2-backend device is lost, `render()` is a *permanent*
+silent no-op for that renderer instance's remaining lifetime — there is no
+supported recovery path short of disposing the renderer and constructing
+an entirely new one (which would mean re-running most of this file's
+`boot()`, not just `populateActors()`). That's a real product risk to
+flag, not just a probe footnote: a driver reset, a GPU switch on
+display-sleep/wake, or any other real-world context loss would strand a
+shipped app on a permanently blank canvas until the user force-quits and
+relaunches it. `pmset displaysleepnow` sleep/wake itself was **not**
+exercised this session (the `l`-key/`WEBGL_lose_context` path already
+reproduced the failure mode `pmset` was meant to probe for); it remains a
+manual owner step if a real sleep/wake-triggered loss is ever suspected of
+behaving differently from the synthetic one exercised here.
+
 ## Findings
 
 - **D25 backend-fallback claim: confirmed.** `new WebGPURenderer({ canvas,
@@ -305,11 +460,24 @@ criterion needs that specific evidence.
   CSP requirement of the `three-flatland` → `koota` dependency chain
   itself (see Results §3 for the exact stack frame, the A/B verification,
   and why `tauri dev`/`vite preview` never hit it — neither enforces
-  Tauri's CSP at all). **Product implication**: any Panthea surface that
-  imports `three-flatland` needs `'unsafe-eval'` in its `script-src`
-  unless/until `koota` ships a non-`eval` accessor path — this is not a
-  probe-only workaround, it's a real constraint to carry into `apps/client`
-  and `apps/desktop`'s CSP once those adopt `three-flatland`.
+  Tauri's CSP at all). **Product implication, stated precisely**: adopting
+  `'unsafe-eval'` in a renderer surface's `script-src` is conditional on
+  U05 holding for that surface — the generated-behavior runtime (the thing
+  `'unsafe-eval'` would otherwise be a privilege escalation risk for) must
+  stay isolated in the simulation *service*, never load into the
+  renderer's WKWebView/JS realm. That's the architecture today ("the
+  world/simulation service is authoritative; the renderer never decides
+  outcomes", per the repo invariants), so `'unsafe-eval'` here widens what
+  the *renderer's own* trusted first-party code can do, not what generated
+  content can do — it does not, by itself, weaken the generated-code
+  sandbox. It is still a real CSP floor to carry into `apps/client` and
+  `apps/desktop` once those adopt `three-flatland`, and it should be
+  re-checked against U05 whenever that boundary changes. The alternative
+  that would remove the requirement entirely is patching `koota`'s
+  accessor generation to avoid `new Function(...)` (e.g. a generic
+  interpreted accessor, or a build-time codegen step instead of a
+  runtime one) — worth a follow-up upstream issue/PR against `koota`
+  rather than treating `'unsafe-eval'` as permanent.
 - **`PixelPerfectCamera` is not exported by `three-flatland` at
   `0.1.0-alpha.10`** — confirmed by enumerating the full `index.d.ts`
   export list from the installed package (not just the README, which
@@ -342,8 +510,27 @@ criterion needs that specific evidence.
   inheritance `AnimatedSprite2D`) overrides `Object3D.raycast()` directly,
   so a plain `THREE.Raycaster.intersectObjects(selectableSprites, false)`
   against the flat sprite array works without touching any of
-  `three-flatland`'s `events/HitTestMode` exports — confirmed working via
-  the preview-route click test (`click->visible latency: 8.0ms`).
+  `three-flatland`'s `events/HitTestMode` exports — confirmed working on
+  the packaged `.app` itself via 14/14 real `cliclick`-driven hits (p50 =
+  28ms, p95 = 31ms click-to-visible; see Results §3 — the preview-route's
+  8.0ms was real but was never packaged-bundle evidence, and the original
+  timing model it was measured with had since been found to double-count
+  misses and under-count real latency; both are fixed and re-measured
+  directly against the packaged binary now).
+- **`WebGPURenderer` (`three@0.185.1`) does not recover from
+  `webglcontextlost`/`webglcontextrestored` — confirmed from its own
+  source, not just observed behavior.** `_onDeviceLost` sets a
+  private `_isDeviceLost` latch that `_renderScene()`/`compute()` check
+  and early-return on, and the shipped `three.webgpu.js` build has no
+  `webglcontextrestored` handling anywhere to clear it; `init()` is
+  memoized so calling it again isn't a re-initialization either. CPU-side
+  state (the ECS/sprite objects this probe's app code owns, and raycasting
+  against them) recovers correctly after `populateActors()` rebuilds; GPU
+  output does not — `render()` becomes a permanent silent no-op for that
+  renderer instance. See Results §3's context-loss subsection for the
+  full trace and the product-risk framing (real hardware context loss —
+  driver reset, GPU switch on sleep/wake — would strand a shipped app on
+  a blank canvas with this exact renderer/version combination).
 - The production build emits one 1.2MB (342KB gzip) JS chunk with a Vite
   size warning; not investigated further here (out of scope for a D25
   feasibility probe) but worth a manual-chunking pass before this pattern
@@ -357,29 +544,54 @@ Both claims are now answered with evidence, and both are yes.
 primitive set (tilemaps, sortLayer/zIndex-ordered sprites, animated
 sprites, TSL-composed effects, manual hit-testing, a hand-rolled
 pixel-perfect camera) renders correctly on three's `WebGPURenderer` running
-its WebGL2 fallback backend, at a stable ~59fps (17ms frame times), with
-real input latency measured (8.0ms click-to-visible) — on this machine,
-where `navigator.gpu` is unconditionally unavailable to WKWebView (per
-`webgpu-wkwebview`'s probe).
+its WebGL2 fallback backend, at a stable ~59fps (17ms frame times), on this
+machine, where `navigator.gpu` is unconditionally unavailable to WKWebView
+(per `webgpu-wkwebview`'s probe). Real input latency is measured directly
+against the packaged `.app`: 14/14 real (`cliclick`-driven) clicks resolved
+correctly, p50 = 28ms / p95 = 31ms click-to-visible (Results §3) —
+superseding the earlier `vite preview` route's 8.0ms, which was real for
+what it measured but was never packaged-bundle evidence, and was measured
+with a timing model that has since been fixed (it started on misses and
+stopped a frame too early).
 
 **This specific packaged bundle loads its content**: the ad-hoc-signed
 `.app` built by `sign-and-run.sh` renders the identical scene, at the same
-~59fps/17ms frame times, with zero context loss and zero effect failures
-across a 60s steady-state run and a 30s effect-burst run captured directly
-against the packaged binary (Results §3). The blank-WKWebView finding from
-the prior session was real but was a CSP configuration gap
-(`script-src` missing `'unsafe-eval'`, required by `three-flatland`'s
-`koota` dependency), not a packaging or rendering defect — fixed in
-`src-tauri/tauri.conf.json` and `tauri.dev.conf.json`, verified by A/B
-(remove the directive → blank window returns with the identical
-`EvalError`; restore it → renders every time).
+~59fps/17ms frame times, with zero effect failures across a 60s
+steady-state run and a 30s effect-burst run captured directly against the
+packaged binary (Results §3). The blank-WKWebView finding from the prior
+session was real but was a CSP configuration gap (`script-src` missing
+`'unsafe-eval'`, required by `three-flatland`'s `koota` dependency), not a
+packaging or rendering defect — fixed in `src-tauri/tauri.conf.json` and
+`tauri.dev.conf.json`, verified by A/B (remove the directive → blank
+window returns with the identical `EvalError`; restore it → renders every
+time).
+
+**One real limit found, not fixed (upstream)**: `webglcontextlost` /
+`webglcontextrestored` recovery is *partial*, not complete. This probe's
+app-level state (stale-selection clearing, sprite/ECS rebuild, disposing
+old geometry/material, raycast hit-testing) all correctly recovers —
+verified on the packaged `.app` via the new `l` key (`lostCount: 1`,
+`restoredCount: 1`, `spriteCount: 230` rebuilt, a post-restore click
+resolving correctly). But `three@0.185.1`'s `WebGPURenderer` itself never
+resumes rendering after a device-lost event in this version (traced to its
+own source — see Findings) — the canvas stays permanently blank after any
+context loss, packaged or not. This is out of this probe's fix scope (it
+would require disposing and reconstructing the entire renderer, not just
+the sprite scene graph) and is recorded here as a real product risk: a
+driver reset or a GPU switch on display-sleep/wake would strand a shipped
+app exactly this way until relaunched.
 
 P02/P05's packaged-bundle criterion is satisfied for this machine's
-WebGL2-fallback path. The one carry-forward item is the CSP constraint
-itself: **any Panthea surface that imports `three-flatland` must include
+WebGL2-fallback path **for the steady-state and click-input cases**; the
+context-loss-recovery case is only partially satisfied (app state: yes;
+rendering: no, upstream). Two carry-forward items: (1) the CSP constraint
+itself — **any Panthea surface that imports `three-flatland` must include
 `'unsafe-eval'` in `script-src`** until `koota` (or `three-flatland`) ships
-a non-`eval` accessor path — track this against `apps/client`/`apps/desktop`
-when they adopt `three-flatland`, since a security-conscious default CSP
-would otherwise silently reproduce this exact blank-screen failure with no
-`log show`/`log stream` signal (the WKWebView inspector, not the unified
-log, is what surfaces it).
+a non-`eval` accessor path, conditional on U05 holding (see Findings) —
+track this against `apps/client`/`apps/desktop` when they adopt
+`three-flatland`; (2) the `WebGPURenderer` context-loss limitation — if a
+real (not synthetic) context loss is a plausible scenario for the shipped
+product on target hardware, that needs either an upstream three.js fix/PR,
+a pinned-version workaround, or an explicit "relaunch on GPU loss"
+recovery strategy at the app-shell level before this can be called fully
+resolved.

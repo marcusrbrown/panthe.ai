@@ -147,8 +147,21 @@ export interface CaptureStopResult {
 }
 
 export interface CaptureHandle {
+  /**
+   * Resolves once tcpdump has confirmed it's actually listening (parsed
+   * from its stderr "listening on ..." line) — spawning the process is not
+   * the same as it being ready to see traffic. Rejects if tcpdump exits
+   * before that line appears (e.g. `sudo` denied the request) or if
+   * readiness doesn't arrive within the timeout.
+   */
+  readonly ready: Promise<void>;
   stop(): Promise<CaptureStopResult>;
 }
+
+/** tcpdump prints this once it has actually opened the interface and started capturing. */
+const LISTENING_ON_PATTERN = /listening on/i;
+/** How long to wait for tcpdump's readiness line before giving up. */
+export const CAPTURE_READINESS_TIMEOUT_MS = 10_000;
 
 /** Starts `sudo tcpdump` in the background, writing to `pcapPath`. Assumes {@link checkOfflineCaptureAvailable} already confirmed non-interactive sudo works. */
 export function startCapture(pcapPath: string): CaptureHandle {
@@ -156,17 +169,77 @@ export function startCapture(pcapPath: string): CaptureHandle {
     ["sudo", "-n", "tcpdump", "-i", OFFLINE_INTERFACE, "-w", pcapPath],
     { stdout: "ignore", stderr: "pipe" },
   );
-  // Start draining stderr immediately so the child's pipe never backs up
-  // while the capture window is open.
-  const stderrPromise = new Response(proc.stderr).text();
+
+  let stderrAccumulated = "";
+  let readySettled = false;
+  let resolveReady!: () => void;
+  let rejectReady!: (reason: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = () => {
+      readySettled = true;
+      resolve();
+    };
+    rejectReady = (reason: Error) => {
+      readySettled = true;
+      reject(reason);
+    };
+  });
+
+  const readinessTimer = setTimeout(() => {
+    if (!readySettled) {
+      rejectReady(
+        new Error(
+          `capture did not become ready within ${CAPTURE_READINESS_TIMEOUT_MS}ms`,
+        ),
+      );
+    }
+  }, CAPTURE_READINESS_TIMEOUT_MS);
+
+  // Drain stderr as it arrives (so the child's pipe never backs up while
+  // the capture window is open) and watch for the readiness line.
+  const stderrDrained = (async () => {
+    const reader = proc.stderr.getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        stderrAccumulated += decoder.decode(value, { stream: true });
+        if (!readySettled && LISTENING_ON_PATTERN.test(stderrAccumulated)) {
+          clearTimeout(readinessTimer);
+          resolveReady();
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  })();
+
+  // tcpdump exiting before it ever reported readiness (e.g. sudo denied
+  // the request, or the interface couldn't be opened) is itself a
+  // readiness failure, not a later "capture stopped cleanly" outcome.
+  void proc.exited.then((exitCode) => {
+    if (!readySettled) {
+      clearTimeout(readinessTimer);
+      rejectReady(
+        new Error(
+          `tcpdump exited before becoming ready (code ${exitCode})${
+            stderrAccumulated.trim() ? `: ${stderrAccumulated.trim()}` : ""
+          }`,
+        ),
+      );
+    }
+  });
+
   return {
+    ready,
     async stop(): Promise<CaptureStopResult> {
+      clearTimeout(readinessTimer);
       proc.kill("SIGTERM");
-      const [exitCode, stderr] = await Promise.all([
-        proc.exited,
-        stderrPromise,
-      ]);
-      return { exitCode, stderr };
+      const [exitCode] = await Promise.all([proc.exited, stderrDrained]);
+      return { exitCode, stderr: stderrAccumulated };
     },
   };
 }
@@ -250,17 +323,46 @@ export interface CaptureOrchestrationResult {
   readonly capture: CaptureSummary;
 }
 
+/** A router-guarantee placeholder for when the capture never became ready and zero requests were run. */
+const ZERO_REQUESTS_RUN: OfflineRunSummary = {
+  requestCount: 0,
+  hostedClientConstructions: 0,
+  allRoutineOnly: true,
+};
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Orchestrates the ordering the offline proof depends on: start the
- * capture, run every request while it's running, stop the capture in a
- * `finally` (so a failing request run still stops tcpdump), and only then
- * read the pcap back. A capture that fails to stop cleanly is reported as
- * `capture-failed` rather than silently summarized.
+ * capture, wait for it to actually become ready (not just spawned), run
+ * every request only after that, stop the capture in a `finally` (so a
+ * failing request run still stops tcpdump), and only then read the pcap
+ * back. A capture that never becomes ready, or fails to stop cleanly, is
+ * reported as `capture-failed` rather than silently summarized — and when
+ * readiness itself fails, no request is ever run.
  */
 export async function runOfflineWithCapture(
   deps: CaptureOrchestrationDeps,
 ): Promise<CaptureOrchestrationResult> {
   const handle = deps.startCapture(deps.pcapPath);
+
+  try {
+    await handle.ready;
+  } catch (error) {
+    // Best-effort cleanup only; the capture never became ready so there's
+    // nothing meaningful to read back, and no request may run.
+    await handle.stop().catch(() => undefined);
+    return {
+      routerGuarantee: ZERO_REQUESTS_RUN,
+      capture: {
+        status: "capture-failed",
+        reason: describeError(error),
+      },
+    };
+  }
+
   let routerGuarantee: OfflineRunSummary;
   let stopResult: CaptureStopResult;
   try {

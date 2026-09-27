@@ -497,6 +497,14 @@ interface ContractResult {
   readonly openaiRepairedAction: unknown;
   readonly anthropicRepairedAction: unknown;
   readonly parity: boolean;
+  /**
+   * Set when parity could not be claimed at all because one or both
+   * adapters failed to produce a validated (ok:true) action — `parity` is
+   * `false` in that case too, but this field says *why* so the README never
+   * silently reports "identical parsed action" off two failures that
+   * happen to both be `undefined`.
+   */
+  readonly parityDisclaimer?: string;
   readonly noActionFailsIdentically: boolean;
 }
 
@@ -587,12 +595,36 @@ async function runContract(): Promise<ContractResult> {
     anthropicNoActionServer.stop();
   }
 
+  // Parity may only be claimed when BOTH adapters actually produced a
+  // validated action (mode !== "failed" and an action is present) — never
+  // when both merely failed identically, which would otherwise compare
+  // `undefined === undefined` and misreport as "identical".
+  const openaiValidated =
+    openaiResult.mode !== "failed" && openaiResult.action !== undefined;
+  const anthropicValidated =
+    anthropicResult.mode !== "failed" && anthropicResult.action !== undefined;
+
+  let parity = false;
+  let parityDisclaimer: string | undefined;
+  if (openaiValidated && anthropicValidated) {
+    parity =
+      JSON.stringify(openaiResult.action) ===
+      JSON.stringify(anthropicResult.action);
+  } else {
+    const which =
+      !openaiValidated && !anthropicValidated
+        ? "both adapters"
+        : !openaiValidated
+          ? "the OpenAI adapter"
+          : "the Anthropic adapter";
+    parityDisclaimer = `no parity claim: ${which} failed to produce a validated action`;
+  }
+
   return {
     openaiRepairedAction: openaiResult.action,
     anthropicRepairedAction: anthropicResult.action,
-    parity:
-      JSON.stringify(openaiResult.action) ===
-      JSON.stringify(anthropicResult.action),
+    parity,
+    parityDisclaimer,
     noActionFailsIdentically:
       openaiNoActionResult.mode === "failed" &&
       anthropicNoActionResult.mode === "failed",
@@ -692,7 +724,12 @@ function buildFindings(
 
   if (contract) {
     findings.push(
-      `Contract repair parity across OpenAI/Anthropic fixture shapes: ${contract.parity ? "identical parsed action" : "MISMATCH — see raw results"}; no-valid-action fixtures fail identically: ${contract.noActionFailsIdentically}.`,
+      `Contract repair parity across OpenAI/Anthropic fixture shapes: ${
+        contract.parityDisclaimer ??
+        (contract.parity
+          ? "identical parsed action"
+          : "MISMATCH — see raw results")
+      }; no-valid-action fixtures fail identically: ${contract.noActionFailsIdentically}.`,
     );
   }
 

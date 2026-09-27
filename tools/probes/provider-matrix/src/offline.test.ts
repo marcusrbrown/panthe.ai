@@ -17,14 +17,22 @@ const SILENT_SUMMARY: CaptureSummary = { status: "silent", totalPackets: 4 };
 
 function fakeHandle(
   order: string[],
-  exitCode: number | null = 0,
+  options: {
+    readonly exitCode?: number | null;
+    readonly ready?: Promise<void>;
+  } = {},
 ): CaptureHandle {
   return {
+    ready: options.ready ?? Promise.resolve(),
     async stop() {
       order.push("stop");
-      return { exitCode, stderr: "" };
+      return { exitCode: options.exitCode ?? 0, stderr: "" };
     },
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("runOfflineWithCapture (CLI-level, injectable fake capture — no sudo)", () => {
@@ -65,6 +73,62 @@ describe("runOfflineWithCapture (CLI-level, injectable fake capture — no sudo)
     expect(summarizeCalledAt).toBeGreaterThan(stopIndex);
     expect(result.capture).toEqual(SILENT_SUMMARY);
     expect(result.routerGuarantee).toEqual(OK_RUN_SUMMARY);
+  });
+
+  test("waits for readiness before running the first request, even when readiness resolves after a delay", async () => {
+    let readyResolvedAt = -1;
+    let firstRequestAt = -1;
+    let resolveReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+
+    const readyDelayPromise = delay(20).then(() => {
+      readyResolvedAt = performance.now();
+      resolveReady();
+    });
+
+    const result = await runOfflineWithCapture({
+      pcapPath: "/tmp/fake.pcap",
+      startCapture: () => fakeHandle([], { ready }),
+      runRequests: async () => {
+        firstRequestAt = performance.now();
+        return OK_RUN_SUMMARY;
+      },
+      summarizeCapture: async () => SILENT_SUMMARY,
+    });
+
+    await readyDelayPromise;
+    expect(readyResolvedAt).toBeGreaterThan(0);
+    expect(firstRequestAt).toBeGreaterThan(readyResolvedAt);
+    expect(result.routerGuarantee).toEqual(OK_RUN_SUMMARY);
+  });
+
+  test("a rejecting readiness yields capture-failed and runs zero requests", async () => {
+    const order: string[] = [];
+    let runRequestsCalled = false;
+
+    const result = await runOfflineWithCapture({
+      pcapPath: "/tmp/fake.pcap",
+      startCapture: () =>
+        fakeHandle(order, {
+          ready: Promise.reject(new Error("capture did not become ready")),
+        }),
+      runRequests: async () => {
+        runRequestsCalled = true;
+        return OK_RUN_SUMMARY;
+      },
+      summarizeCapture: async () => SILENT_SUMMARY,
+    });
+
+    expect(runRequestsCalled).toBe(false);
+    expect(result.routerGuarantee.requestCount).toBe(0);
+    expect(result.capture).toEqual({
+      status: "capture-failed",
+      reason: "capture did not become ready",
+    });
+    // Cleanup (stop) still runs even though readiness never arrived.
+    expect(order).toContain("stop");
   });
 
   test("still stops the capture when the request run throws (finally guarantee)", async () => {
@@ -117,7 +181,7 @@ describe("runOfflineWithCapture (CLI-level, injectable fake capture — no sudo)
 
     const result = await runOfflineWithCapture({
       pcapPath: "/tmp/fake.pcap",
-      startCapture: () => fakeHandle(order, 1),
+      startCapture: () => fakeHandle(order, { exitCode: 1 }),
       runRequests: async () => OK_RUN_SUMMARY,
       summarizeCapture: async () => {
         summarizeCalled = true;

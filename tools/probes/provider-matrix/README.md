@@ -46,9 +46,9 @@ Go usage is billed per request against a $10/month subscription cap, so the live
 
 | Metric | Unit | Samples | p50 | p95 |
 | --- | --- | --- | --- | --- |
-| zen/nemotron-3.5-lightning-free latency | ms | 2 | 340.722958 | 465.113792 |
-| zen/muse-spark-1.3-contributor-free latency | ms | 2 | 328.077041 | 442.48854099999994 |
-| go-bonus/mimo-v2.5 latency | ms | 3 | 29787.403958 | 35774.690333000006 |
+| zen/nemotron-3.5-lightning-free latency | ms | 2 | 318.2420830000001 | 1393.841834 |
+| zen/muse-spark-1.3-contributor-free latency | ms | 2 | 316.9622089999998 | 340.902208 |
+| go-bonus/mimo-v2.5 latency | ms | 3 | 40390.323958 | 41861.458708 |
 
 ## Findings
 

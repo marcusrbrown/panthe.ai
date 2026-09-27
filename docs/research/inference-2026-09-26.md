@@ -27,12 +27,12 @@ Memory: unified memory pool shared by renderer, LLM weights/KV, and image model.
 | Option | Interface | Platform |
 | --- | --- | --- |
 | stable-diffusion.cpp | CLI + `sd-server` HTTP; Metal | Cross-platform. <https://github.com/leejet/stable-diffusion.cpp> |
-| Draw Things | HTTP/gRPC API server + `draw-things-cli` | macOS/iOS only. <https://docs.drawthings.ai/> |
+| Draw Things | HTTP `POST /sdapi/v1/txt2img` (A1111-shaped, port 7860; no model/LoRA selection, model list, or cancel) + gRPC (7859) + community `gRPCServerCLI-macOS` / `draw-things-cli` headless | macOS/iOS only. Installed here (26.0924.0, Qwen Image 2.1 support). <https://docs.drawthings.ai/>, <https://github.com/drawthingsai/draw-things-community> |
 | ComfyUI | HTTP `/prompt` with API-format workflow | Python; cross-platform; heavy dependency. |
 | mflux | CLI/Python subprocess | Apple MLX only. |
 | Diffusers | Python worker | Cross-platform; MPS on macOS. |
 
-Model fit: start with SD 1.5 at 512px plus a pixel-art LoRA (PixelArt.Redmond 1.5V; `pixel_dream_LORA` — verify licenses). SDXL-Turbo and FLUX quantized variants are benchmark tasks, not assumptions. No verified M1 Pro 16 GB seconds-per-image figure.
+Qwen Image 2.1 (7B visual generator + large text encoder; Qwen Research License, non-commercial; 16 GB fit and M1 Pro timing unverified) is a candidate arm in the art probe. Model fit: start with SD 1.5 at 512px plus a pixel-art LoRA (PixelArt.Redmond 1.5V; `pixel_dream_LORA` — verify licenses). SDXL-Turbo and FLUX quantized variants are benchmark tasks, not assumptions. No verified M1 Pro 16 GB seconds-per-image figure.
 
 ## Langfuse and OpenTelemetry
 

@@ -180,7 +180,14 @@ function applyExpectationOverride(
   childOutput: ChildRunOutput | undefined,
   expect: FixtureExpectation | undefined,
 ): FixtureOutcome {
-  if (!expect || !childOutput || outcome === "terminated") {
+  // Deliberately does NOT bypass this check for a "terminated" outcome: a
+  // supervisor-killed or interrupted run can still have committed calls
+  // (e.g. a partial commit right before an unrelated resource kill), and an
+  // integrity check that only ever runs on a clean-looking result can't
+  // catch a bad value that happened to coincide with an abnormal ending.
+  // The check runs whenever there is a `childOutput` and an `expect` to
+  // check it against, full stop.
+  if (!expect || !childOutput) {
     return outcome;
   }
   if (

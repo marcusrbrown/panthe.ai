@@ -26,6 +26,10 @@ import {
 import { type FixtureRunRecord, runFixtureInSubprocess } from "./host";
 import { runLuaFixture } from "./lua";
 import { MAX_JOBS_TOTAL, runQuickJsFixture } from "./quickjs";
+import {
+  buildProxyFixNarrative,
+  checkIntegrityFixtures,
+} from "./readme-narrative";
 
 const SRC_DIR = import.meta.dir;
 const SANDBOX_DIR = join(SRC_DIR, "..");
@@ -232,95 +236,6 @@ function writeReadme(
   writeFileSync(README_PATH, withMatrix);
 }
 
-function firstCommittedArgsText(record: FixtureRunRecord | undefined): string {
-  const firstCall = record?.childOutput?.apiLog.calls[0] as
-    | { readonly args?: unknown }
-    | undefined;
-  const committed = firstCall?.args;
-  return committed && typeof committed === "object"
-    ? `\`${JSON.stringify(committed)}\``
-    : "no call committed";
-}
-
-function buildProxyFixNarrative(records: readonly FixtureRunRecord[]): string {
-  const find = (id: string) =>
-    records.find((r) => r.fixtureId === id && r.runtime === "quickjs");
-  const proxyRecord = find("malformed-proxy-args");
-  const nestedRecord = find("malformed-nested-getter-parity");
-  const getterRecord = find("malformed-getter-side-effect");
-  const overwriteRecord = find("malformed-overwrite-descriptor-fn");
-  const descriptorTrapRecord = find("malformed-proxy-descriptor-trap");
-
-  const isClosed =
-    proxyRecord?.outcome !== "escaped" &&
-    nestedRecord?.outcome !== "escaped" &&
-    overwriteRecord?.outcome !== "escaped";
-  const getterInvoked = (getterRecord?.childOutput?.returnValue ?? "").includes(
-    "getterInvoked=true",
-  );
-  const nestedReadsMatch = (nestedRecord?.childOutput?.returnValue ?? "").match(
-    /innerReads=(\d+)/,
-  );
-  const nestedReads = nestedReadsMatch ? nestedReadsMatch[1] : "?";
-
-  const round1 =
-    "**Round 1 (escape found)**: a `Proxy` `get` trap that alternates its " +
-    "answer by call-count parity got `{x: 999999, y: 1}` committed as " +
-    "`move()`'s target, because the host read each field via " +
-    "`context.dump()`'s ordinary `[[Get]]`-based traversal. A naive fix " +
-    "(dump the same handle twice, reject on disagreement) was tried and " +
-    "**measured to not work**: with exactly two fields and one `get` call " +
-    "per field per dump, every dump starts on the same parity phase as the " +
-    "last, so two independent dumps always agree with each other while " +
-    "both are equally wrong — verified directly against the fixture before " +
-    "being discarded.";
-  const round2 =
-    "**Round 2 (descriptor fix, still bypassed)**: reading fields via " +
-    "`Object.getOwnPropertyDescriptor` (`[[GetOwnProperty]]`) instead of " +
-    "`[[Get]]` closed the parity-flip Proxy, but a code review " +
-    "(Fro Bot) reproduced a stronger bypass: the descriptor-reading helper " +
-    "was a small function evaluated *inside the guest context*, and its " +
-    "body still referenced the identifier `Object.getOwnPropertyDescriptor` " +
-    " — a dynamic lookup resolved at CALL time, not at the time the helper " +
-    "was defined. `malformed-overwrite-descriptor-fn` reassigns that global " +
-    "to a function returning a fabricated `{value: 999999, ...}` descriptor " +
-    "before ever calling `api.move()`, and the helper faithfully read the " +
-    "fabricated value back — reproduced directly before this fix.";
-  const round3 =
-    "**Round 3 (this fix)**: the *function value* of " +
-    "`Object.getOwnPropertyDescriptor` is captured as a `QuickJSHandle` " +
-    "immediately after `newContext()`, before a single byte of guest " +
-    "source has evaluated. Every later field read calls that captured " +
-    "handle directly via `context.callFunction` — never by looking up an " +
-    "identifier again — so there is no global binding left for a guest to " +
-    "poison. Any descriptor carrying a `get`/`set` function, or that isn't " +
-    "writable/enumerable/configurable, is rejected outright, which is why " +
-    "`malformed-getter-side-effect` and `malformed-nested-getter-parity` " +
-    "(plain getters, no Proxy) are rejected before their getters ever run " +
-    `(measured: getterInvoked=${String(getterInvoked)}, innerReads=${nestedReads}).`;
-  const residual =
-    "**Residual, accepted limitation**: capturing the function only stops " +
-    "a *global reassignment* attack. A Proxy that defines its OWN " +
-    "`getOwnPropertyDescriptor` trap (not just `get`) is still legitimately " +
-    "invoked by the real, captured function — that trap IS the object's " +
-    "`[[GetOwnProperty]]`, and refusing to call it isn't possible without " +
-    "refusing to read the object at all. `malformed-proxy-descriptor-trap` " +
-    `measures exactly this: the trap fabricates x's value, and the ` +
-    `committed value (${firstCommittedArgsText(descriptorTrapRecord)}) equals ` +
-    "exactly what the trap presented — predictable and bounded to a " +
-    "schema-valid number, never a host escape, never a corrupted or " +
-    "unrelated field, and still subject to ordinary value validation " +
-    "afterward. This is accepted as-is, not closed by this unit.";
-  const status =
-    "**Current measured status**: `malformed-proxy-args` → `" +
-    `${proxyRecord?.outcome ?? "not run"}\`, committed ${firstCommittedArgsText(proxyRecord)}; \`malformed-overwrite-descriptor-fn\` → \`${overwriteRecord?.outcome ?? "not run"}\`, committed ${firstCommittedArgsText(overwriteRecord)} — ` +
-    (isClosed
-      ? "both are the *true* target values, the guest's tampering had zero effect, the escape is closed."
-      : "**still escaping — regression, do not ship**.");
-
-  return [round1, round2, round3, residual, status].join(" ");
-}
-
 function buildFindings(
   records: readonly FixtureRunRecord[],
   nextRunHealth: readonly NextRunHealthRecord[],
@@ -432,9 +347,8 @@ function buildBottomLine(
   const escapedHostCapability = records.filter(
     (r) => r.outcome === "escaped" && r.category === "external-capability",
   );
-  const escapedValidation = records.filter(
-    (r) => r.outcome === "escaped" && r.category !== "external-capability",
-  );
+  const integrityChecks = checkIntegrityFixtures(records);
+  const failedIntegrityChecks = integrityChecks.filter((c) => !c.ok);
   const unhealthy = nextRunHealth.filter((entry) => !entry.healthy);
   const QUICKJS_MEMORY_LIMIT_MIB = 64;
   const quickjsAllocRecords = records.filter(
@@ -449,17 +363,17 @@ function buildBottomLine(
   }
 
   const parts: string[] = [];
-  if (escapedValidation.length > 0) {
+  if (failedIntegrityChecks.length > 0) {
     parts.push(
-      `**No host-boundary breach, but a real input-validation gap**: ${escapedValidation.length} malformed-input fixture(s) (${escapedValidation.map((r) => `\`${r.runtime}/${r.fixtureId}\``).join(", ")}) committed a value the world-API validator should have rejected — see Findings for the exact mechanism and required fix. This must be tracked and closed before generated behaviors reach a real Proxy-capable guest.`,
+      `**Inconclusive** — the \`malformed-proxy-args\` descriptor-capture fix cannot be confirmed from this run: ${failedIntegrityChecks.map((c) => `\`${c.fixtureId}\` ${c.reason}`).join("; ")}. A missing or \`terminated\` integrity fixture means the fix is unverified this run, not that it regressed — but it also means it must not be trusted until every integrity fixture runs and matches its expected outcome. See Findings for the full root-cause narrative and required fix if any check actually mismatched.`,
     );
   } else {
     parts.push(
-      "The `malformed-proxy-args` Proxy-parity escape found earlier in this probe's development is closed: the world API now reads object-argument fields via property descriptors rather than `[[Get]]`, and rejects any accessor (getter/setter) descriptor outright. See Findings for the root cause and why a naive dump-twice-and-compare fix did not work.",
+      "The `malformed-proxy-args` Proxy-parity escape found earlier in this probe's development is closed: the world API now reads object-argument fields via property descriptors rather than `[[Get]]`, and rejects any accessor (getter/setter) descriptor outright. Every integrity fixture (proxy-args, getter-side-effect, nested-getter-parity, overwrite-descriptor-fn, proxy-descriptor-trap) ran and matched its expected outcome. See Findings for the root cause and why a naive dump-twice-and-compare fix did not work.",
     );
   }
   parts.push(
-    `QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated \`Bun.spawn\` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture, and every malformed-input fixture either committed exactly the true (schema-validated) value, was rejected outright, or — in one accepted residual case (a Proxy's own \`getOwnPropertyDescriptor\` trap) — committed exactly what the trap presented, bounded by ordinary value validation, never a host escape${escapedValidation.length > 0 ? " (**except the value-integrity gap noted above, which is a live regression**)" : ""}. QuickJS can \`try\`/\`catch\` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter.`,
+    `QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated \`Bun.spawn\` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture, and every malformed-input fixture either committed exactly the true (schema-validated) value, was rejected outright, or — in one accepted residual case (a Proxy's own \`getOwnPropertyDescriptor\` trap) — committed exactly what the trap presented, bounded by ordinary value validation, never a host escape${failedIntegrityChecks.length > 0 ? " (**unverified this run — see the inconclusive note above**)" : ""}. QuickJS can \`try\`/\`catch\` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter.`,
   );
   parts.push(
     'Allocation defenses are **not** a uniform success story — do not read the category as "solved": which mechanism stops a given allocation pattern (the deadline, `setMemoryLimit` raising OOM, or an unrelated engine invariant like max-string-length) is pattern-dependent, and this run measured `setMemoryLimit` itself firing zero times. ' +

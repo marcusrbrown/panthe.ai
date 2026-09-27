@@ -32,6 +32,15 @@
 //
 //   report [--out README.md]
 //     Reads every results/*.json record and renders the README.
+//
+//   publish-raw
+//     Redacts results/A-baseline.json and results/D-admission-3gib.json
+//     (the two scenarios re-measured with the fixed instrumentation) down
+//     to per-request {t, ok, latencyMs} and per-tick {t, freeMiB,
+//     inactiveMiB, swapUsedMiB, rss} arrays — no prompts, no completions,
+//     no environment strings — and writes them under results/raw/, which
+//     is un-ignored so they can be committed. Downsamples memory ticks to
+//     1-second buckets if the combined payload would exceed 300 KB.
 
 import {
   existsSync,
@@ -63,7 +72,6 @@ import {
   type CandidateResult,
   choosePolicy,
   computePenalty,
-  describeCandidate,
   evaluateCandidate,
   isLlmEvaluable,
   llmEvaluabilityReason,
@@ -536,6 +544,16 @@ interface ScenarioReportExtras {
   readonly label: string;
   /** Median gap (ms) between consecutive memory samples — verifies the sampler kept up; published so the report is checkable. */
   readonly medianSampleIntervalMs: number | undefined;
+  /**
+   * `false` when this entry's raw record was measured in the run that
+   * produced the current report (a "fresh" entry); `true` when it was
+   * carried over from a previously committed summary with no raw record
+   * in this run to re-derive it from (see {@link mergeSummaries}). A
+   * percentage penalty between a fresh baseline and a historical
+   * candidate compares two different measurement sessions and is not
+   * trustworthy — see `formatPenaltyForReport`.
+   */
+  readonly historical: boolean;
 }
 
 interface Summary {
@@ -582,6 +600,7 @@ function buildSummary(records: readonly StoredRecord[]): Summary {
         medianSampleIntervalMs: computeMedianSampleIntervalMs(
           baselineRecord.memorySamples,
         ),
+        historical: false,
       }
     : undefined;
   const candidates = candidateRecords.map((r) => ({
@@ -590,6 +609,7 @@ function buildSummary(records: readonly StoredRecord[]): Summary {
     thresholdMiB: r.thresholdMiB,
     label: r.label,
     medianSampleIntervalMs: computeMedianSampleIntervalMs(r.memorySamples),
+    historical: false,
   }));
 
   const decision =
@@ -654,6 +674,42 @@ function scenarioStatusLabel(
     : `${status.kind}: ${status.reason}`;
 }
 
+/**
+ * A percentage penalty only means something when both sides were measured
+ * in the same run. A historical candidate (carried over with no raw record
+ * this run — see {@link mergeSummaries}) compared against a freshly
+ * re-measured baseline (or vice versa) is a cross-session comparison: the
+ * two numbers were never observed under the same concurrent conditions, so
+ * the delta between them conflates "policy effect" with "which day this was
+ * measured on" (see the corrected D-admission-3072MiB result, which swung
+ * from -10.6% to +148.4% between two same-code, different-session runs).
+ * Rendering a percentage here would misrepresent it as directly comparable.
+ */
+function formatPenaltyForReport(
+  candidate: {
+    readonly llmP95Ms: number | undefined;
+    readonly historical: boolean;
+  },
+  baseline:
+    | { readonly llmP95Ms: number | undefined; readonly historical: boolean }
+    | undefined,
+): string {
+  if (!baseline) {
+    return "n/a";
+  }
+  if (candidate.historical !== baseline.historical) {
+    return "n/a (different session)";
+  }
+  const penalty = computePenalty(candidate.llmP95Ms, baseline.llmP95Ms);
+  if (penalty === undefined) {
+    return "n/a";
+  }
+  if (!Number.isFinite(penalty)) {
+    return "n/a (baseline p95 was 0ms)";
+  }
+  return `${penalty >= 0 ? "+" : ""}${(penalty * 100).toFixed(1)}%`;
+}
+
 function buildScenarioTable(summary: Summary): string {
   const rows: string[] = [];
   const header =
@@ -669,15 +725,7 @@ function buildScenarioTable(summary: Summary): string {
     );
   }
   for (const c of summary.candidates) {
-    const penalty = summary.baseline
-      ? computePenalty(c.llmP95Ms, summary.baseline.llmP95Ms)
-      : undefined;
-    const penaltyStr =
-      penalty === undefined
-        ? "n/a"
-        : Number.isFinite(penalty)
-          ? `${penalty >= 0 ? "+" : ""}${(penalty * 100).toFixed(1)}%`
-          : "n/a (baseline p95 was 0ms)";
+    const penaltyStr = formatPenaltyForReport(c, summary.baseline);
     const name =
       c.policy === "admission-queue"
         ? `D: admission-queue @ ${c.thresholdMiB}MiB`
@@ -738,8 +786,24 @@ function buildFindings(summary: Summary): readonly string[] {
     );
   }
   if (summary.baseline) {
+    const baselineRef = summary.baseline;
     for (const c of summary.candidates) {
-      findings.push(describeCandidate(c, summary.baseline));
+      const label =
+        c.policy === "admission-queue"
+          ? `admission-queue@${c.thresholdMiB}MiB`
+          : c.policy;
+      const penaltyDesc = formatPenaltyForReport(c, baselineRef);
+      const status = evaluateCandidate(c, baselineRef);
+      const statusDesc =
+        status.kind === "viable"
+          ? "viable"
+          : `${status.kind}: ${status.reason}`;
+      const sessionNote = c.historical
+        ? " [historical: carried over, not independently re-verified this session]"
+        : "";
+      findings.push(
+        `${label}: LLM p95 ${formatMs(c.llmP95Ms)}ms (${penaltyDesc} vs baseline), ${formatCounts(c)} successful/attempted LLM requests, ${c.imagesCompleted} image(s) completed, frame p95 ${formatFrame(c.frameEvaluable, c.rendererFrameP95Ms)} \u2014 ${statusDesc}${sessionNote}`,
+      );
     }
   }
   for (const t of summary.transitions) {
@@ -760,14 +824,25 @@ function buildBottomLine(summary: Summary): string {
     return "Not enough scenarios recorded yet to make a policy recommendation — need the baseline plus at least one candidate.";
   }
   const d = summary.decision;
+  // The rationale text below is built inside policies.ts's pure choosePolicy
+  // and states each candidate's raw LLM p95 percentage as computed directly
+  // from the numbers — it has no concept of "session". A historical
+  // candidate's percentage there is not comparable to a freshly re-measured
+  // baseline (see formatPenaltyForReport); this note keeps the bottom line
+  // from silently contradicting the Findings/table above, which render
+  // those same comparisons as "n/a (different session)".
+  const hasHistorical = summary.candidates.some((c) => c.historical);
+  const historicalNote = hasHistorical
+    ? ' The percentages quoted above for historical candidates (carried over with no raw record re-measured this session) are cross-session comparisons against the current baseline and are not directly comparable — see the Findings/table above, which render those as "n/a (different session)".'
+    : "";
   if (d.policy === "inconclusive") {
-    return `**No heavy-work serialization policy is recommended yet — inconclusive.** ${d.rationale}`;
+    return `**No heavy-work serialization policy is recommended yet — inconclusive.** ${d.rationale}${historicalNote}`;
   }
   const label =
     d.policy === "admission-queue"
       ? `admission-queue @ ${d.thresholdMiB}MiB`
       : d.policy;
-  return `**Recommended heavy-work serialization policy: ${label}.** ${d.rationale}`;
+  return `**Recommended heavy-work serialization policy: ${label}.** ${d.rationale}${historicalNote}`;
 }
 
 const QUESTION =
@@ -814,7 +889,9 @@ bun run src/run.ts sdserver-spawn --binary ./bin/sd-server --model models/sd-v1-
   --port 1234 --transition sdserver-cold-after-llm-resident --label sdserver-cold-after-llm
 \`\`\`
 
-**Report**: \`bun run src/run.ts report\` — renders this README from raw \`results/*.json\` records when present (and regenerates the committed \`results/summary.json\` published aggregate to match); on a fresh checkout with no raw records, renders from that committed aggregate instead and leaves it untouched; with neither present, exits non-zero and writes nothing.`;
+**Report**: \`bun run src/run.ts report\` — renders this README from raw \`results/*.json\` records when present (and regenerates the committed \`results/summary.json\` published aggregate to match); on a fresh checkout with no raw records, renders from that committed aggregate instead and leaves it untouched; with neither present, exits non-zero and writes nothing.
+
+**Publish raw**: \`bun run src/run.ts publish-raw\` — writes redacted per-request/per-tick sample records for the re-measured scenarios under \`results/raw/\` (see Caveat).`;
 
 function buildCaveat(): string {
   const parts: string[] = [
@@ -826,6 +903,8 @@ function buildCaveat(): string {
     "No co-resident qemu-system-aarch64 VM was running during this probe's scenarios (checked via `pgrep -fl qemu` immediately before and after) — unlike the background load noted in tools/probes/inference-baseline/README.md's own caveat, this run's contention is attributable to the three tracked services alone plus the pre-existing swap floor above.",
     "Fro Bot review on PR #22 found three measurement bugs in the original run: LLM p50/p95 included failed/timed-out requests (inflating or, for an all-failed scenario, silently reading p95=0), a missing post-window frame dump fell back to the pre-window value instead of reading n/a, and 'no viable candidate' silently defaulted to recommending the mutex hypothesis instead of reporting inconclusive. All three are fixed in this run's code (success-only percentiles with a >=20-success/<=5%-error-rate evaluability floor, frame p95 only ever from a verified post-window sample, and an explicit 'inconclusive' outcome that never silently picks a fallback). The A (baseline) and D-admission-3072MiB scenarios were re-measured end to end with the fixed sampler; B (unconstrained), C (mutex), and D-admission-5120MiB were not re-run because their raw per-request records were gitignored and did not survive the worktree that produced them being retired — their rows below carry over the original run's LLM p50/p95/images/peak-swap numbers for context but are marked not-evaluable (their success/error counts and post-window frame samples cannot be recomputed without the lost raw records).",
     "The re-measured D-admission-queue@3072MiB result changed materially between runs: the original run (same code, same machine, several hours earlier in a long multi-scenario session) measured a -10.6% LLM p95 penalty; this fresh, independently-started re-run measured +148.4%, with LLM latency climbing roughly monotonically across the 3-minute window (352ms first request → 3329ms last) while sd.cpp generated images almost back-to-back (6 images in 180s — the 3072MiB gate was cleared almost continuously and rarely actually throttled image start). Both runs used the same (correct, success-only) percentile logic for this scenario — the difference is real machine-to-machine-session variance, not a measurement artifact, and it means a single 3-minute window's number for this threshold should not be treated as stable without a repeat measurement.",
+    "Fro Bot's round-2 review on PR #22 found three more issues: a candidate could be recommended even when its (or the baseline's) renderer frame p95 had no verified post-window sample; the global mutex was structurally excluded from ever winning instead of being judged by the same criteria as every other candidate; and a historical candidate's LLM p95 percentage was compared directly against a freshly re-measured baseline as if both came from the same run. All three are fixed: evaluateCandidate/choosePolicy now treat a missing post-window frame sample (baseline or candidate) as not-evaluable — nothing can be recommended without one; the mutex is evaluated under the identical healthy/completes-images/<=25%-penalty/frame-evaluable bar as unconstrained and admission-queue, and can win on its own merits (it does not, here — see the table); and any comparison between a historical candidate and the current (fresh) baseline now renders as 'n/a (different session)' rather than a number, in both the results table and the findings list.",
+    "Redacted raw sample records for the two re-measured scenarios (A-baseline, D-admission-3gib) are published under results/raw/ (bun run src/run.ts publish-raw): per-request {t, ok, latencyMs} and per-tick {t, freeMiB, inactiveMiB, swapUsedMiB, rss} — no prompts, no completions, no environment strings — so the table above is independently checkable, not just an assertion. Combined payload here is well under the 300 KB budget (no downsampling needed); if a future re-run's combined payload exceeds it, memory ticks are downsampled to 1-second buckets and the published record says so via its own downsampled field.",
   ];
   const qemu = process.env.COEXISTENCE_QEMU_NOTE;
   if (qemu) {
@@ -861,11 +940,17 @@ function writeReadmeFromSummary(summary: Summary): void {
  * silently promoted to look freshly verified.
  */
 function mergeSummaries(committed: Summary, fresh: Summary): Summary {
-  const baseline = fresh.baseline ?? committed.baseline;
+  const baseline =
+    fresh.baseline ??
+    (committed.baseline
+      ? { ...committed.baseline, historical: true }
+      : undefined);
   const freshLabels = new Set(fresh.candidates.map((c) => c.label));
   const candidates = [
     ...fresh.candidates,
-    ...committed.candidates.filter((c) => !freshLabels.has(c.label)),
+    ...committed.candidates
+      .filter((c) => !freshLabels.has(c.label))
+      .map((c) => ({ ...c, historical: true })),
   ];
   const environment = fresh.environment ?? committed.environment;
   const transitions =
@@ -924,6 +1009,155 @@ function cmdReport(): void {
   process.exitCode = 1;
 }
 
+const RAW_DIR = join(RESULTS_DIR, "raw");
+/** Total budget for every published redacted raw record combined — kept small deliberately so it's cheap to commit and review; downsample rather than blow through it. */
+const MAX_PUBLISHED_RAW_BYTES = 300 * 1024;
+/** The only two scenarios re-measured with the fixed instrumentation (see the README caveat); the rest are historical and have no raw record left to redact. */
+const PUBLISHABLE_RAW_LABELS = ["A-baseline", "D-admission-3gib"];
+
+interface RedactedLlmSample {
+  readonly t: number;
+  readonly ok: boolean;
+  readonly latencyMs: number;
+}
+
+interface RedactedMemoryTick {
+  readonly t: number;
+  readonly freeMiB: number;
+  readonly inactiveMiB: number;
+  readonly swapUsedMiB: number | undefined;
+  readonly rss: Readonly<Record<string, number>>;
+}
+
+interface RedactedScenario {
+  readonly label: string;
+  readonly durationMs: number;
+  readonly llmSamples: readonly RedactedLlmSample[];
+  readonly memoryTicks: readonly RedactedMemoryTick[];
+  /** `true` if `memoryTicks` was downsampled to keep the published total under {@link MAX_PUBLISHED_RAW_BYTES}. */
+  readonly downsampled: boolean;
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/**
+ * Strips a raw {@link ScenarioRecord} down to exactly the fields this
+ * probe's decision depends on — per-request `{t, ok, latencyMs}` and
+ * per-tick `{t, freeMiB, inactiveMiB, swapUsedMiB, rss}` — and nothing
+ * else: no prompts, no completions, no environment strings, no derived
+ * fields already published in `summary.json`. Never throws; `t` values are
+ * relative milliseconds since the scenario started, never wall-clock
+ * timestamps.
+ */
+function redactScenarioRecord(record: ScenarioRecord): RedactedScenario {
+  const llmSamples: RedactedLlmSample[] = record.llmSamples.map((s) => ({
+    t: Math.round(s.atMs),
+    ok: s.ok,
+    latencyMs: Math.round(s.totalMs),
+  }));
+  const memoryTicks: RedactedMemoryTick[] = record.memorySamples.map((s) => ({
+    t: Math.round(s.atMs),
+    freeMiB: round1(s.freeMiB),
+    inactiveMiB: round1(s.inactiveMiB),
+    swapUsedMiB:
+      s.swapUsedMiB !== undefined ? round1(s.swapUsedMiB) : undefined,
+    rss: Object.fromEntries(
+      Object.entries(s.processRssMiB).map(([name, mib]) => [name, round1(mib)]),
+    ),
+  }));
+  return {
+    label: record.label,
+    durationMs: record.durationMs,
+    llmSamples,
+    memoryTicks,
+    downsampled: false,
+  };
+}
+
+/** Keeps only the first tick in each 1-second bucket — a coarser but still trend-legible series. */
+function downsampleMemoryTicksToOneSecond(
+  ticks: readonly RedactedMemoryTick[],
+): readonly RedactedMemoryTick[] {
+  const buckets = new Map<number, RedactedMemoryTick>();
+  for (const tick of ticks) {
+    const bucketKey = Math.floor(tick.t / 1000);
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, tick);
+    }
+  }
+  return [...buckets.values()];
+}
+
+function byteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+/**
+ * Publishes redacted raw sample records for the scenarios re-measured with
+ * the fixed instrumentation ({@link PUBLISHABLE_RAW_LABELS}) under
+ * `results/raw/`, so the report's numbers are independently checkable
+ * without trusting `summary.json`'s already-computed aggregates alone.
+ * Downsamples memory ticks to 1-second buckets (and says so in the
+ * published record) if the combined redacted payload would otherwise
+ * exceed {@link MAX_PUBLISHED_RAW_BYTES}.
+ */
+function cmdPublishRaw(): void {
+  const redacted: RedactedScenario[] = [];
+  for (const label of PUBLISHABLE_RAW_LABELS) {
+    const path = join(RESULTS_DIR, `${label}.json`);
+    if (!existsSync(path)) {
+      console.error(
+        `[coexistence] publish-raw: no raw record for ${label} on disk, skipping`,
+      );
+      continue;
+    }
+    const record = JSON.parse(readFileSync(path, "utf8")) as ScenarioRecord;
+    redacted.push(redactScenarioRecord(record));
+  }
+  if (redacted.length === 0) {
+    console.error(
+      "[coexistence] publish-raw: no publishable raw records found — nothing written",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  let totalBytes = byteLength(redacted);
+  if (totalBytes > MAX_PUBLISHED_RAW_BYTES) {
+    for (let i = 0; i < redacted.length; i += 1) {
+      const entry = redacted[i];
+      if (entry) {
+        redacted[i] = {
+          ...entry,
+          memoryTicks: downsampleMemoryTicksToOneSecond(entry.memoryTicks),
+          downsampled: true,
+        };
+      }
+    }
+    totalBytes = byteLength(redacted);
+    console.error(
+      `[coexistence] publish-raw: downsampled memory ticks to 1s to fit the ${MAX_PUBLISHED_RAW_BYTES}-byte budget`,
+    );
+  }
+
+  mkdirSync(RAW_DIR, { recursive: true });
+  for (const entry of redacted) {
+    const outPath = join(RAW_DIR, `${entry.label}.json`);
+    writeFileSync(outPath, JSON.stringify(entry, null, 2));
+    console.error(`[coexistence] wrote ${outPath}`);
+  }
+  console.error(
+    `[coexistence] publish-raw: ${redacted.length} file(s), ${totalBytes} bytes total (budget ${MAX_PUBLISHED_RAW_BYTES})`,
+  );
+  if (totalBytes > MAX_PUBLISHED_RAW_BYTES) {
+    console.error(
+      `[coexistence] publish-raw: WARNING — still over budget after 1s downsampling (${totalBytes} > ${MAX_PUBLISHED_RAW_BYTES} bytes)`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
@@ -940,9 +1174,12 @@ async function main(): Promise<void> {
     case "report":
       cmdReport();
       return;
+    case "publish-raw":
+      cmdPublishRaw();
+      return;
     default:
       console.error(
-        "usage: bun run src/run.ts <scenario|transition-llm|sdserver-spawn|report> [flags]",
+        "usage: bun run src/run.ts <scenario|transition-llm|sdserver-spawn|report|publish-raw> [flags]",
       );
       process.exitCode = 1;
   }

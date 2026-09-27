@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-27T19:17:08.092Z",
+  "generatedAt": "2026-09-27T19:33:18.227Z",
   "environment": {
     "hardware": {
       "brand": "Apple M1 Pro",
@@ -35,7 +35,8 @@
     "minFreeMiB": 4305.609375,
     "processDied": false,
     "label": "A-baseline",
-    "medianSampleIntervalMs": 501.213291
+    "medianSampleIntervalMs": 501.213291,
+    "historical": false
   },
   "candidates": [
     {
@@ -53,7 +54,8 @@
       "policy": "admission-queue",
       "thresholdMiB": 3072,
       "label": "D-admission-3gib",
-      "medianSampleIntervalMs": 500.9047920000012
+      "medianSampleIntervalMs": 500.9047920000012,
+      "historical": false
     },
     {
       "llmP50Ms": 1314.7844170000026,
@@ -64,7 +66,8 @@
       "minFreeMiB": 2059.390625,
       "processDied": false,
       "policy": "unconstrained",
-      "label": "B-unconstrained"
+      "label": "B-unconstrained",
+      "historical": true
     },
     {
       "llmP50Ms": 625.7830830000166,
@@ -76,7 +79,8 @@
       "processDied": false,
       "policy": "admission-queue",
       "thresholdMiB": 5120,
-      "label": "D-admission-5gib"
+      "label": "D-admission-5gib",
+      "historical": true
     },
     {
       "llmP50Ms": 22784.14979200001,
@@ -87,7 +91,8 @@
       "minFreeMiB": 2383.96875,
       "processDied": false,
       "policy": "mutex",
-      "label": "C-mutex"
+      "label": "C-mutex",
+      "historical": true
     }
   ],
   "transitions": [

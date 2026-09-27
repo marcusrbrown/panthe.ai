@@ -375,22 +375,113 @@ test("a baseline that isn't evaluable makes the whole decision inconclusive, reg
   expect(decision.rationale).toContain("Baseline LLM data is not evaluable");
 });
 
-test("a missing post-window frame dump is reported as not evaluable and never fabricated as a passing number", () => {
-  const viableNoFrame = candidate({
+test("a missing post-window candidate frame dump is reported as not evaluable and never fabricated as a passing number, and blocks that candidate's selection", () => {
+  const candidateNoFrame = candidate({
     policy: "unconstrained",
     llmP95Ms: 1550,
     imagesCompleted: 5,
     rendererFrameP95Ms: undefined,
     frameEvaluable: false,
   });
-  const description = describeCandidate(viableNoFrame, baseline);
+  const description = describeCandidate(candidateNoFrame, baseline);
   expect(description).toContain("frame p95 not evaluable");
   expect(description).not.toMatch(/frame p95 \d/);
 
-  // Missing frame data does not block selection — frame was never a
-  // viability gate, only latency/images/process-health are — but the
-  // decision's rationale must still say so, not silently pass it.
-  const decision = choosePolicy({ baseline, candidates: [viableNoFrame] });
-  expect(decision.policy).toBe("unconstrained");
+  // Nothing without a verified post-window frame sample can be
+  // recommended — this candidate is otherwise perfect (small penalty,
+  // completes images, healthy process) but must still be excluded.
+  const decision = choosePolicy({
+    baseline,
+    candidates: [candidateNoFrame],
+  });
+  expect(decision.policy).toBe("inconclusive");
   expect(decision.rationale).toContain("frame p95 not evaluable");
+});
+
+test("a candidate with a verified frame sample is still selected when it clears every other bar", () => {
+  const decision = choosePolicy({
+    baseline,
+    candidates: [
+      candidate({
+        policy: "unconstrained",
+        llmP95Ms: 1550,
+        imagesCompleted: 5,
+        rendererFrameP95Ms: 19,
+        frameEvaluable: true,
+      }),
+    ],
+  });
+  expect(decision.policy).toBe("unconstrained");
+});
+
+test("a missing baseline frame dump makes the whole decision inconclusive, regardless of how healthy every candidate looks", () => {
+  const noFrameBaseline: ScenarioMetrics = {
+    ...baseline,
+    rendererFrameP95Ms: undefined,
+    frameEvaluable: false,
+  };
+  const decision = choosePolicy({
+    baseline: noFrameBaseline,
+    candidates: [
+      candidate({
+        policy: "unconstrained",
+        llmP95Ms: 1550,
+        imagesCompleted: 5,
+      }),
+      candidate({
+        policy: "admission-queue",
+        thresholdMiB: 3072,
+        llmP95Ms: 1600,
+        imagesCompleted: 4,
+      }),
+    ],
+  });
+  expect(decision.policy).toBe("inconclusive");
+  expect(decision.rationale).toContain("Baseline frame p95 is not evaluable");
+});
+
+test("the mutex is evaluated under the same criteria as every other candidate and is selected when it is the only one that clears the bar", () => {
+  const decision = choosePolicy({
+    baseline,
+    candidates: [
+      candidate({
+        policy: "unconstrained",
+        llmP95Ms: 6000, // +300%, fails
+        imagesCompleted: 6,
+      }),
+      candidate({
+        policy: "admission-queue",
+        thresholdMiB: 3072,
+        llmP95Ms: 2400, // +60%, fails
+        imagesCompleted: 2,
+      }),
+      candidate({
+        policy: "admission-queue",
+        thresholdMiB: 5120,
+        imagesCompleted: 0, // fails: zero images
+      }),
+      candidate({
+        policy: "mutex",
+        llmP95Ms: 1650, // +10%, clears the bar
+        imagesCompleted: 3,
+      }),
+    ],
+  });
+  expect(decision.policy).toBe("mutex");
+  expect(decision.rationale).toContain("Mutex cleared the");
+  expect(decision.rationale).not.toContain("Falling back");
+});
+
+test("the mutex is never selected when it fails its own viability criteria, even as the last remaining candidate", () => {
+  const decision = choosePolicy({
+    baseline,
+    candidates: [
+      candidate({
+        policy: "mutex",
+        llmP95Ms: 23094, // +1439%, fails badly
+        imagesCompleted: 8,
+      }),
+    ],
+  });
+  expect(decision.policy).toBe("inconclusive");
 });

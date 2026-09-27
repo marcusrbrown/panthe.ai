@@ -8,9 +8,10 @@
 // Selection order, applied only after every candidate's evaluability and
 // viability is measured (never assumed):
 //   0. a baseline (or candidate) whose LLM data doesn't clear the
-//      evaluability floor (>=20 successful requests, <=5% error rate) is
+//      evaluability floor (>=20 successful requests, <=5% error rate), or
+//      whose renderer frame p95 has no verified post-window sample, is
 //      "not-evaluable" — its numbers are not trusted for a penalty
-//      comparison, and if the baseline itself fails this floor, no
+//      comparison, and if the baseline itself fails either floor, no
 //      candidate can be judged at all: the decision is "inconclusive".
 //   1. unconstrained, if its LLM p95 penalty over the baseline is <=25%,
 //      it completes at least one image, and no tracked process died — the
@@ -19,9 +20,14 @@
 //      (lowest) penalty among those that clear the same bar — a stricter
 //      memory gate costs image throughput, not LLM latency, so a lower
 //      viable threshold is preferred when more than one clears the bar.
-//   3. otherwise, "inconclusive" — never a silent default to the global
-//      mutex. Mutex is a hypothesis this probe tests, not a fallback: if it
-//      also failed (or every candidate failed/was not-evaluable), the
+//   3. otherwise, the global mutex — evaluated under the exact same
+//      criteria as every other candidate (healthy, completes images,
+//      <=25% penalty, frame evaluable), never given a free pass and never
+//      excluded either. Mutex is a hypothesis this probe tests, not an
+//      assumed fallback: it wins here only when it is measured to clear
+//      the same bar everything else had to clear.
+//   4. otherwise, "inconclusive" — never a silent default to any
+//      candidate. If every candidate failed or was not-evaluable, the
 //      honest answer is "measure more", not "pick the risky one anyway".
 
 export type PolicyName = "unconstrained" | "mutex" | "admission-queue";
@@ -150,10 +156,23 @@ export function evaluateCandidate(
       reason: `baseline LLM data not evaluable (${llmEvaluabilityReason(baseline)})`,
     };
   }
+  if (!baseline.frameEvaluable) {
+    return {
+      kind: "not-evaluable",
+      reason:
+        "baseline frame p95 not evaluable (no post-window sample) — nothing can be recommended without a verified renderer reading for the baseline",
+    };
+  }
   if (!isLlmEvaluable(candidate)) {
     return {
       kind: "not-evaluable",
       reason: `LLM data not evaluable (${llmEvaluabilityReason(candidate)})`,
+    };
+  }
+  if (!candidate.frameEvaluable) {
+    return {
+      kind: "not-evaluable",
+      reason: "frame p95 not evaluable (no post-window sample)",
     };
   }
   if (candidate.processDied) {
@@ -224,9 +243,11 @@ export function describeCandidate(
 
 /**
  * Picks the heavy-work serialization policy from measured scenario data.
- * Pure function: no I/O, no defaults assumed ahead of measurement. Never
- * falls back to the global mutex — an inconclusive result asks for more
- * measurement instead of silently picking the riskiest candidate.
+ * Pure function: no I/O, no defaults assumed ahead of measurement. Mutex is
+ * evaluated under the same viability criteria as every other candidate
+ * (see {@link evaluateCandidate}) — it can win on its own measured merits,
+ * but is never chosen as an unconditional fallback when nothing else
+ * qualifies; an inconclusive result asks for more measurement instead.
  */
 export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
   const { baseline, candidates } = summary;
@@ -235,6 +256,13 @@ export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
     return {
       policy: "inconclusive",
       rationale: `Baseline LLM data is not evaluable (${llmEvaluabilityReason(baseline)}) \u2014 no candidate's penalty can be judged against it. Further measurement needed.`,
+    };
+  }
+  if (!baseline.frameEvaluable) {
+    return {
+      policy: "inconclusive",
+      rationale:
+        "Baseline frame p95 is not evaluable (no post-window sample) \u2014 no candidate can be recommended without a verified renderer frame reading for the baseline. Further measurement needed.",
     };
   }
 
@@ -274,6 +302,18 @@ export function choosePolicy(summary: CoexistenceSummary): PolicyDecision {
       policy: "admission-queue",
       thresholdMiB: bestAdmission.thresholdMiB,
       rationale: `admission-queue@${bestAdmission.thresholdMiB}MiB cleared the ${formatPct(MAX_LLM_P95_PENALTY)} bar without blocking the LLM \u2014 ${describeCandidate(bestAdmission, baseline)}. Every other candidate measured worse, failed, or was not evaluable: ${otherNotes}.`,
+    };
+  }
+
+  const viableMutex = viable.find((c) => c.policy === "mutex");
+  if (viableMutex) {
+    const otherNotes = candidates
+      .filter((c) => c !== viableMutex)
+      .map((c) => describeCandidate(c, baseline))
+      .join("; ");
+    return {
+      policy: "mutex",
+      rationale: `Mutex cleared the ${formatPct(MAX_LLM_P95_PENALTY)} LLM p95 penalty bar and completed images \u2014 ${describeCandidate(viableMutex, baseline)}. Mutex is measured under the same criteria as every other candidate here, not assumed as a fallback; every other candidate measured worse, failed, or was not evaluable: ${otherNotes}.`,
     };
   }
 

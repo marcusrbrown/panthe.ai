@@ -1,0 +1,3 @@
+# Generated matrix run output (JSON per run); the README carries the
+# committed summary. Never commit raw result artifacts.
+/results/

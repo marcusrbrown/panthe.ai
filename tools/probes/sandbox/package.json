@@ -1,0 +1,16 @@
+{
+  "name": "@panthea/tools-probes-sandbox",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "matrix": "bun run src/run.ts --all"
+  },
+  "dependencies": {
+    "@panthea/tools-probes-shared": "workspace:*",
+    "quickjs-emscripten": "0.32.0",
+    "wasmoon": "1.16.0"
+  }
+}

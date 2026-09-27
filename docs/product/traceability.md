@@ -36,8 +36,8 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | U03 | M4 | planned | — | — |
 | U04 | M4 | planned | — | tools/probes/sandbox/README.md |
 | U05 | M0 | planned | — | tools/probes/sandbox/README.md |
-| U06 | M0 | planned | — | — |
-| U07 | M4 | planned | — | — |
+| U06 | M0 | planned | — | tools/probes/art-local/README.md |
+| U07 | M4 | planned | — | tools/probes/art-local/README.md |
 | U08 | M4 | planned | — | — |
 | X01 | M5 | planned | — | — |
 | X02 | M5 | planned | — | — |

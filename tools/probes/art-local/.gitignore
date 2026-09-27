@@ -1,0 +1,30 @@
+# Downloaded sd-server/sd-cli release binary + shared library (staging
+# prerequisite, recorded by tag/sha256 in the README, never committed).
+bin/
+
+# Downloaded model weights and LoRAs (staging prerequisite, recorded by
+# identifier/size/sha256 in the README, never committed — multi-GB
+# checkpoints have no place in a git repo).
+models/
+
+# Raw per-run measurement dumps and generated images (README is the durable
+# record). The one exception is results/summary.json: a published aggregate
+# of already-computed rates, percentiles, and counts (no image bytes) — it
+# is NOT independently recomputable raw samples, only a durable record of
+# numbers this probe already computed, so `bun run src/run.ts report` can
+# still render the README on a fresh checkout that has none of the raw
+# per-request records or generated images below.
+results/*
+!results/summary.json
+!results/images/
+results/images/*
+# Three committed contact sheets (owner review, ≤400 KB each) — the only
+# generated-image artifacts durable enough to keep: the recommended sd.cpp
+# Q8_0 arm, the Draw Things add-on arm, and the sd.cpp Q4_0 arm kept
+# specifically as visual evidence for the Caveat's LoRA-reliability finding
+# (Q4_0's LoRA application is confirmed unreliable; this sheet is the
+# supporting comparison, not a base-arm candidate). Every other raw
+# per-run image/contact-sheet dump stays gitignored above.
+!results/images/sdcpp-512-contact-sheet.png
+!results/images/drawthings-512-contact-sheet.png
+!results/images/sdcpp-q4-512-contact-sheet.png

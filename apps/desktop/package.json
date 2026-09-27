@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "typecheck": "echo 'apps/desktop has no TypeScript sources (see src-tauri/ for the Rust shell)'"
+    "typecheck": "echo 'apps/desktop has no TypeScript sources (see src-tauri/ for the Rust shell)'",
+    "sidecar:build": "bash ../../tools/probes/backend-lifecycle/scripts/build-sidecar.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.0"

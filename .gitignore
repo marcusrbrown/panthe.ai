@@ -177,5 +177,9 @@ dist/
 target/
 apps/desktop/src-tauri/gen/
 apps/probe-renderer/src-tauri/gen/
-src-tauri/binaries/
+**/src-tauri/binaries/
 *.local
+
+# backend-lifecycle probe run output (raw timestamped log; curated evidence
+# lives in tools/probes/backend-lifecycle/README.md, not this file).
+tools/probes/backend-lifecycle/lifecycle-results.txt

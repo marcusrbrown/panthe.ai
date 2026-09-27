@@ -99,6 +99,13 @@
       "name": "@panthea/tools-probes",
       "version": "0.1.0",
     },
+    "tools/probes/backend-lifecycle": {
+      "name": "@panthea/tools-probes-backend-lifecycle",
+      "version": "0.1.0",
+      "dependencies": {
+        "@panthea/tools-probes-shared": "workspace:*",
+      },
+    },
     "tools/probes/sandbox": {
       "name": "@panthea/tools-probes-sandbox",
       "version": "0.1.0",
@@ -275,6 +282,8 @@
     "@panthea/tools-content": ["@panthea/tools-content@workspace:tools/content"],
 
     "@panthea/tools-probes": ["@panthea/tools-probes@workspace:tools/probes"],
+
+    "@panthea/tools-probes-backend-lifecycle": ["@panthea/tools-probes-backend-lifecycle@workspace:tools/probes/backend-lifecycle"],
 
     "@panthea/tools-probes-sandbox": ["@panthea/tools-probes-sandbox@workspace:tools/probes/sandbox"],
 

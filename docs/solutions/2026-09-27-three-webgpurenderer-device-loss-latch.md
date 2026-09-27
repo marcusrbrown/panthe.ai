@@ -21,7 +21,8 @@ A packaged renderer must survive display sleep/wake and other events that drop t
 context. three.js documents recovery for `WebGPURenderer` via an `onDeviceLost` hook that
 re-calls `init()` ([three.js PR #29767](https://github.com/mrdoob/three.js/pull/29767)). On the
 pinned 0.185.1 with the WebGL2 backend, that contract does not hold: the browser restores the
-context, the renderer instance never resumes.
+context, the renderer instance never resumes. This has been reported upstream as
+[mrdoob/three.js#34682](https://github.com/mrdoob/three.js/issues/34682).
 
 ## Symptoms
 

@@ -183,3 +183,5 @@ apps/probe-renderer/src-tauri/gen/
 # backend-lifecycle probe run output (raw timestamped log; curated evidence
 # lives in tools/probes/backend-lifecycle/README.md, not this file).
 tools/probes/backend-lifecycle/lifecycle-results.txt
+# Probe run outputs (raw JSON results, packet captures) — only probe source is checked in
+tools/probes/*/results/

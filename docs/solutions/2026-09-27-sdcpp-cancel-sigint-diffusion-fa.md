@@ -38,7 +38,7 @@ job.
 - HTTP cancel on an in-flight job — the capability bit says no, and it did nothing.
 - `SIGINT` — ignored.
 - Publishing "SIGTERM → idle in 7 ms" as a cancellation result. Fro Bot's review on
-  [PR #21](https://github.com/marcusrbrown/panthe.ai/pull/21) rejected it: a low-CPU reading with
+  [PR #21](https://github.com/marcusrbrown/panthea/pull/21) rejected it: a low-CPU reading with
   the process alive is not termination, and a whole-process kill is not job cancellation.
 
 ## Solution
@@ -92,4 +92,4 @@ do not document `--diffusion-fa` or the cancel semantics; the probe artifacts ar
 - [A LoRA on a quantized stable-diffusion.cpp checkpoint can silently no-op](2026-09-27-lora-silent-noop-on-quantized-sdcpp-weights.md)
   — same arm, quantization/LoRA behaviour
 - [tools/probes/art-local/README.md](../../tools/probes/art-local/README.md),
-  [PR #21](https://github.com/marcusrbrown/panthe.ai/pull/21)
+  [PR #21](https://github.com/marcusrbrown/panthea/pull/21)

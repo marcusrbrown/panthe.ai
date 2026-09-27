@@ -20,7 +20,7 @@ The world API bridge exposed to a QuickJS guest (`move(x, y)` and friends) must 
 out of guest-supplied objects without letting the guest decide what value the host reads.
 Reading fields through the context's ordinary `[[Get]]` traversal was bypassable, and the first
 two fixes were each bypassed in turn across three review rounds on
-[PR #14](https://github.com/marcusrbrown/panthe.ai/pull/14).
+[PR #14](https://github.com/marcusrbrown/panthea/pull/14).
 
 ## Symptoms
 
@@ -104,4 +104,4 @@ Rejecting accessor descriptors up front removes getters/setters as a smuggling c
 - [U04, U05](../product/requirements.md)
 - [tools/probes/sandbox/README.md](../../tools/probes/sandbox/README.md),
   [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md) (sandbox section),
-  [PR #14](https://github.com/marcusrbrown/panthe.ai/pull/14)
+  [PR #14](https://github.com/marcusrbrown/panthea/pull/14)

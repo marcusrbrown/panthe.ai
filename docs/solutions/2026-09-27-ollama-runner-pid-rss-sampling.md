@@ -21,7 +21,7 @@ Measuring peak resident memory for a locally served model means polling a proces
 `ollama serve`'s pid is stable across a run but is only a supervisor: the weights live in a
 separate `llama-server`-shaped runner child that Ollama spawns per loaded model. Sampling the
 supervisor reports tens of MiB and looks plausible enough to publish — which the first version of
-the inference probe did, until [PR #19](https://github.com/marcusrbrown/panthe.ai/pull/19)'s
+the inference probe did, until [PR #19](https://github.com/marcusrbrown/panthea/pull/19)'s
 review compared it with the parallel run.
 
 ## Symptoms
@@ -84,4 +84,4 @@ parent/child shape before trusting new RSS numbers.
   — same "signal or sample the real child, not the wrapper" pattern
 - [tools/probes/inference-baseline/README.md](../../tools/probes/inference-baseline/README.md),
   [docs/research/inference-2026-09-26.md](../research/inference-2026-09-26.md),
-  [PR #19](https://github.com/marcusrbrown/panthe.ai/pull/19)
+  [PR #19](https://github.com/marcusrbrown/panthea/pull/19)

@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-09-27T19:43:14.832Z",
+  "environment": {
+    "hardware": {
+      "brand": "Apple M1 Pro",
+      "memoryBytes": "17179869184"
+    },
+    "os": {
+      "productName": "macOS",
+      "productVersion": "15.7.9",
+      "buildVersion": "24G830"
+    },
+    "bun": {
+      "version": "1.4.2"
+    },
+    "pinned": {
+      "tauri": "2.12.0",
+      "three": "0.185.1",
+      "threeFlatland": "0.1.0-alpha.10"
+    },
+    "extra": {
+      "model": "llama3.2:3b"
+    }
+  },
+  "baseline": {
+    "llmP50Ms": 645.0217920000141,
+    "llmP95Ms": 1242.1280419999966,
+    "llmSuccessCount": 60,
+    "llmErrorCount": 0,
+    "llmSampleCount": 60,
+    "imagesCompleted": 0,
+    "rendererFrameP95Ms": 18,
+    "frameEvaluable": true,
+    "peakSwapUsedMiB": 6966.5,
+    "minFreeMiB": 4305.609375,
+    "processDied": false,
+    "label": "A-baseline",
+    "medianSampleIntervalMs": 501.213291,
+    "historical": false
+  },
+  "candidates": [
+    {
+      "llmP50Ms": 1574.374250000008,
+      "llmP95Ms": 3085.734917000009,
+      "llmSuccessCount": 60,
+      "llmErrorCount": 0,
+      "llmSampleCount": 60,
+      "imagesCompleted": 6,
+      "rendererFrameP95Ms": 18,
+      "frameEvaluable": true,
+      "peakSwapUsedMiB": 9211.25,
+      "minFreeMiB": 868.328125,
+      "processDied": false,
+      "policy": "admission-queue",
+      "thresholdMiB": 3072,
+      "label": "D-admission-3gib",
+      "medianSampleIntervalMs": 500.9047920000012,
+      "historical": false
+    },
+    {
+      "llmP50Ms": 1314.7844170000026,
+      "llmP95Ms": 2215.734541999991,
+      "imagesCompleted": 7,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 2059.390625,
+      "processDied": false,
+      "policy": "unconstrained",
+      "label": "B-unconstrained",
+      "historical": true
+    },
+    {
+      "llmP50Ms": 625.7830830000166,
+      "llmP95Ms": 960.1608330000163,
+      "imagesCompleted": 0,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 3465.734375,
+      "processDied": false,
+      "policy": "admission-queue",
+      "thresholdMiB": 5120,
+      "label": "D-admission-5gib",
+      "historical": true
+    },
+    {
+      "llmP50Ms": 22784.14979200001,
+      "llmP95Ms": 23094.459958000007,
+      "imagesCompleted": 8,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 2383.96875,
+      "processDied": false,
+      "policy": "mutex",
+      "label": "C-mutex",
+      "historical": true
+    }
+  ],
+  "transitions": [
+    {
+      "transition": "sdserver-cold-after-llm-resident",
+      "ms": 36088.598333999995,
+      "ok": true
+    },
+    {
+      "transition": "llm-cold-baseline",
+      "ms": 1508.500083,
+      "ok": true
+    },
+    {
+      "transition": "llm-cold-after-sdcpp-resident",
+      "ms": 1727.2721250000002,
+      "ok": true
+    },
+    {
+      "transition": "sdserver-cold-baseline",
+      "ms": 24595.914708,
+      "ok": true
+    }
+  ],
+  "decision": {
+    "policy": "inconclusive",
+    "rationale": "No candidate cleared the +25.0% LLM p95 penalty bar while completing images, and none was silently defaulted to: admission-queue@3072MiB: LLM p95 3086ms (+148.4% vs baseline), 60/60 successful LLM requests, 6 image(s) completed, frame p95 18ms — failed: LLM p95 penalty +148.4% exceeds the +25.0% bar; unconstrained: LLM p95 2216ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 7 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with; admission-queue@5120MiB: LLM p95 960ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 0 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with; mutex: LLM p95 23094ms (n/a (different session) vs baseline), LLM success/attempt counts unavailable, 8 image(s) completed, frame p95 not evaluable (no post-window sample) — not-evaluable: measured in a different session than the baseline — its LLM p95 cannot be judged against a baseline it wasn't concurrently measured with. Further measurement is needed before recommending a heavy-work policy."
+  }
+}

@@ -1,0 +1,16 @@
+# Raw per-scenario measurement dumps (README is the durable record). The one
+# exception is results/summary.json: a published aggregate of already-
+# computed rates, percentiles, and counts (no raw per-sample memory/latency
+# series) — it is NOT independently recomputable raw samples, only a
+# durable record of numbers this probe already computed, so
+# `bun run src/run.ts report` can still render the README on a fresh
+# checkout that has none of the raw per-scenario records below.
+results/*
+!results/summary.json
+# Redacted raw sample records for the two scenarios re-measured with the
+# fixed instrumentation (per-request {t, ok, latencyMs}, per-tick {t,
+# freeMiB, inactiveMiB, swapUsedMiB, rss} — no prompts/completions), written
+# by `bun run src/run.ts publish-raw`. Kept under a size budget (see
+# MAX_PUBLISHED_RAW_BYTES in run.ts) so the report's numbers are
+# independently checkable without every full raw dump.
+!results/raw/

@@ -16,6 +16,7 @@ import {
 } from "@panthea/tools-probes-shared";
 import { loadOpenCodeAuth } from "./auth";
 import {
+  DEFAULT_STEP_ORDER,
   type DegradedEvent,
   type FallbackTraceEntry,
   ROUTINE_ONLY_ACTION,
@@ -60,14 +61,30 @@ const OFFLINE_PCAP_DISPLAY_PATH = "results/offline.pcap";
 const MAX_REQUESTS_PER_MODEL = 20;
 const CONSECUTIVE_429_ABORT_THRESHOLD = 3;
 /**
- * Go is billed per request against a $10/month subscription usage cap
- * (docs/plans Unit 6 KTD). Sending the full 20-request cap on every probe
- * run would burn a meaningful fraction of the monthly allowance for no
- * additional evidence value, so the live Go arm intentionally runs a much
- * smaller sample and records that choice in the README rather than
- * pretending the cap was exhausted.
+ * Zen `zen/v1` free models return an unconditional 403 `FreeTierError` from
+ * a non-public inference service regardless of headers, endpoint, or key
+ * source (investigated separately — 23 requests across every combination
+ * tried, all 403; see the README's Zen scope-note finding). One request per
+ * model per run is enough to reconfirm the gate is still in effect; it is
+ * not a search for a workaround.
  */
-const GO_LIVE_REQUEST_COUNT = 3;
+const ZEN_SCOPE_NOTE_REQUEST_COUNT = 1;
+/**
+ * Go's free models (`space-bunny-free`, `longcat-2.5-preview-free`) are
+ * reachable with the same shared credential and aren't billed, but they
+ * are slow (longcat measured ~20s p50 per request) — 4 requests keeps a
+ * live run finishable while still giving a real p50/p95.
+ */
+const GO_FREE_LIVE_REQUEST_COUNT = 4;
+/**
+ * Go's paid model is billed per request against a $10/month subscription
+ * usage cap (docs/plans Unit 6 KTD). Sending the full 20-request cap on
+ * every probe run would burn a meaningful fraction of the monthly
+ * allowance for no additional evidence value, so the live paid-Go arm
+ * intentionally runs a much smaller sample and records that choice in the
+ * README rather than pretending the cap was exhausted.
+ */
+const GO_PAID_LIVE_REQUEST_COUNT = 3;
 
 const SAMPLE_PROMPT =
   "You are Zeus, king of the gods, deciding what to do next in a small " +
@@ -82,7 +99,9 @@ interface ModelMatrixEntry {
   readonly free: boolean;
 }
 
-const ZEN_MODELS: readonly ModelMatrixEntry[] = [
+// Zen `zen/v1` scope-note models: kept only to reconfirm, on every live
+// run, that the free-tier gate is still in effect — not a candidate arm.
+const ZEN_SCOPE_NOTE_MODELS: readonly ModelMatrixEntry[] = [
   {
     modelId: "nemotron-3.5-lightning-free",
     family: "chat-completions",
@@ -99,12 +118,32 @@ const ZEN_MODELS: readonly ModelMatrixEntry[] = [
   },
 ];
 
-// Cheapest listed Go model as of the docs snapshot taken for this probe
-// (https://opencode.ai/docs/go/, Usage limits table): MiMo-V2.5 and
+// Go `zen/go/v1` free models — the primary OpenCode arm for ADR-0005.
+// Verified reachable over `/chat/completions` with the same shared
+// credential (they don't support `/responses`: `ModelProtocolUnsupported`).
+const GO_FREE_MODELS: readonly ModelMatrixEntry[] = [
+  {
+    modelId: "space-bunny-free",
+    family: "chat-completions",
+    baseURL: GO_BASE_URL,
+    providerName: "opencode-go",
+    free: true,
+  },
+  {
+    modelId: "longcat-2.5-preview-free",
+    family: "chat-completions",
+    baseURL: GO_BASE_URL,
+    providerName: "opencode-go",
+    free: true,
+  },
+];
+
+// Cheapest listed *paid* Go model as of the docs snapshot taken for this
+// probe (https://opencode.ai/docs/go/, Usage limits table): MiMo-V2.5 and
 // MiMo-V2.6-Flash tie at $0.14/$0.28 per 1M input/output tokens; MiMo-V2.5
-// is used here since it isn't a "-Flash" variant already covered by the
-// naming pattern of the Zen free arm.
-const GO_MODEL: ModelMatrixEntry = {
+// is used here since it isn't a "-Flash" variant. Secondary arm, after the
+// Go free models.
+const GO_PAID_MODEL: ModelMatrixEntry = {
   modelId: "mimo-v2.5",
   family: "chat-completions",
   baseURL: GO_BASE_URL,
@@ -233,17 +272,14 @@ async function runModelMatrix(
 
 interface LiveResult {
   readonly authKeyName: { zen?: string; go?: string };
+  /** True when the `opencode` and `opencode-go` auth.json entries hold the same credential (they do, on every account checked so far). */
+  readonly sameCredential: boolean;
+  /** Scope-note only: reconfirms Zen `zen/v1` free models are still gated. Not a candidate arm. */
   readonly zenModels: ModelRunResult[];
-  readonly goModel?: ModelRunResult;
-  readonly goSkippedReason?: string;
-  /**
-   * A small, separately-labeled Go verification run outside the strict
-   * "only if Zen succeeds" gate. Populated only when Zen's failure is the
-   * documented free-tier client restriction (a permanent, categorical fact,
-   * not an outage signal) — see Findings for why the gate alone would
-   * otherwise silently under-report Go's real viability.
-   */
-  readonly goBonusVerification?: ModelRunResult;
+  /** Primary OpenCode arm for ADR-0005: Go's free models. */
+  readonly goFreeModels: ModelRunResult[];
+  /** Secondary OpenCode arm: Go's paid model. */
+  readonly goPaidModel?: ModelRunResult;
   readonly fallbackTrace: readonly FallbackTraceEntry[];
   readonly fallbackDegraded: boolean;
 }
@@ -260,118 +296,127 @@ async function runLive(): Promise<LiveResult> {
     );
   }
 
+  const sameCredential =
+    auth.go.configured && auth.zen.credential === auth.go.credential;
+
+  // Scope-note only — one request per model, just to reconfirm the gate.
   const zenModels: ModelRunResult[] = [];
-  for (const entry of ZEN_MODELS) {
-    const result = await runModelMatrix(
-      entry,
-      auth.zen.credential,
-      MAX_REQUESTS_PER_MODEL,
+  for (const entry of ZEN_SCOPE_NOTE_MODELS) {
+    zenModels.push(
+      await runModelMatrix(
+        entry,
+        auth.zen.credential,
+        ZEN_SCOPE_NOTE_REQUEST_COUNT,
+      ),
     );
-    zenModels.push(result);
   }
 
-  const zenAllSucceeded = zenModels.every(
-    (result) => result.structuredModes.failed < result.requestCount,
-  );
-
-  let goModel: ModelRunResult | undefined;
-  let goSkippedReason: string | undefined;
-  let goBonusVerification: ModelRunResult | undefined;
-  if (!zenAllSucceeded) {
-    goSkippedReason =
-      'skipped under the plan\'s "only if Zen succeeds" gate: at least one Zen free model run failed entirely';
-    const zenFailedOnClientRestriction = zenModels.some((m) =>
-      isFreeTierClientRestriction(m.sampleError),
-    );
-    if (zenFailedOnClientRestriction && auth.go.configured) {
-      // Feasibility-conflict handling (AGENTS.md): the Zen gate wasn't met,
-      // but the reason is a categorical client restriction, not an outage —
-      // so report the conflict AND a concrete alternative rather than
-      // silently reducing scope to "Go untested".
-      goBonusVerification = await runModelMatrix(
-        GO_MODEL,
-        auth.go.credential,
-        GO_LIVE_REQUEST_COUNT,
+  // Primary arm: Go's free models. Always attempted — no gating on Zen,
+  // since Zen's free tier is out of scope entirely, not a signal of outage.
+  const goFreeModels: ModelRunResult[] = [];
+  if (auth.go.configured) {
+    for (const entry of GO_FREE_MODELS) {
+      goFreeModels.push(
+        await runModelMatrix(
+          entry,
+          auth.go.credential,
+          GO_FREE_LIVE_REQUEST_COUNT,
+        ),
       );
     }
-  } else if (!auth.go.configured) {
-    goSkippedReason = "skipped: OpenCode Go is not configured in auth.json";
-  } else {
-    goModel = await runModelMatrix(
-      GO_MODEL,
-      auth.go.credential,
-      GO_LIVE_REQUEST_COUNT,
-    );
   }
 
-  // A real fallback trace against the actually-configured providers: Zen
-  // first (expected to succeed, given the check above), then Go, then the
-  // local Ollama loopback (expected absent), demonstrating the chain
-  // top-to-bottom without spending extra hosted requests forcing failures
-  // that the stubbed fallback.test.ts already covers deterministically.
-  const zenModel = createProviderModel({
-    family: ZEN_MODELS[0].family,
-    baseURL: ZEN_MODELS[0].baseURL,
-    apiKey: auth.zen.credential,
-    modelId: ZEN_MODELS[0].modelId,
-    providerName: ZEN_MODELS[0].providerName,
-  });
+  // Secondary arm: Go's paid model.
+  const goPaidModel = auth.go.configured
+    ? await runModelMatrix(
+        GO_PAID_MODEL,
+        auth.go.credential,
+        GO_PAID_LIVE_REQUEST_COUNT,
+      )
+    : undefined;
+
+  // A real fallback trace against the actually-configured providers, in the
+  // documented order (fallback.ts's DEFAULT_STEP_ORDER): Go free models
+  // first, then Go paid, then the local Ollama loopback (expected absent).
+  // Zen `zen/v1` is intentionally NOT a step — it's out of scope, not a
+  // fallback candidate.
   const ollamaReachable = await isOllamaReachable();
   let fallbackDegradedEvent: DegradedEvent | undefined;
-  const fallbackResult = await runFallback(
-    [
-      {
-        name: "zen",
-        attempt: async () => {
-          const attempt = await requestStructuredAction(
-            zenModel,
-            SAMPLE_PROMPT,
-          );
-          if (!attempt.action) {
-            throw new Error(attempt.error ?? "zen produced no action");
-          }
-          return attempt.action;
-        },
+
+  const fallbackSteps = [
+    ...(auth.go.configured
+      ? GO_FREE_MODELS.map((entry) => ({
+          name: `go-free:${entry.modelId}`,
+          attempt: async () => {
+            const model = createProviderModel({
+              family: entry.family,
+              baseURL: entry.baseURL,
+              apiKey: auth.go.configured ? auth.go.credential : "",
+              modelId: entry.modelId,
+              providerName: entry.providerName,
+            });
+            const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+            if (!attempt.action) {
+              throw new Error(
+                attempt.error ?? `${entry.modelId} produced no action`,
+              );
+            }
+            return attempt.action;
+          },
+        }))
+      : []),
+    {
+      name: `go-paid:${GO_PAID_MODEL.modelId}`,
+      attempt: async () => {
+        if (!auth.go.configured) {
+          throw new Error("go not configured");
+        }
+        const model = createProviderModel({
+          family: GO_PAID_MODEL.family,
+          baseURL: GO_PAID_MODEL.baseURL,
+          apiKey: auth.go.credential,
+          modelId: GO_PAID_MODEL.modelId,
+          providerName: GO_PAID_MODEL.providerName,
+        });
+        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+        if (!attempt.action) {
+          throw new Error(attempt.error ?? "go-paid produced no action");
+        }
+        return attempt.action;
       },
-      {
-        name: "go",
-        attempt: async () => {
-          if (!auth.go.configured) {
-            throw new Error("go not configured");
-          }
-          const model = createProviderModel({
-            family: GO_MODEL.family,
-            baseURL: GO_MODEL.baseURL,
-            apiKey: auth.go.credential,
-            modelId: GO_MODEL.modelId,
-            providerName: GO_MODEL.providerName,
-          });
-          const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
-          if (!attempt.action) {
-            throw new Error(attempt.error ?? "go produced no action");
-          }
-          return attempt.action;
-        },
-      },
-      {
-        name: "ollama",
-        attempt: async () => {
-          if (!ollamaReachable) {
-            throw new Error("ollama not reachable");
-          }
-          const model = createOllamaModel("llama3.2:3b");
-          const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
-          if (!attempt.action) {
-            throw new Error(attempt.error ?? "ollama produced no action");
-          }
-          return attempt.action;
-        },
-      },
-    ],
-    (event) => {
-      fallbackDegradedEvent = event;
     },
-  );
+    {
+      name: "ollama",
+      attempt: async () => {
+        if (!ollamaReachable) {
+          throw new Error("ollama not reachable");
+        }
+        const model = createOllamaModel("llama3.2:3b");
+        const attempt = await requestStructuredAction(model, SAMPLE_PROMPT);
+        if (!attempt.action) {
+          throw new Error(attempt.error ?? "ollama produced no action");
+        }
+        return attempt.action;
+      },
+    },
+  ];
+
+  // Consistency check, not just a comment: when Go is configured, the
+  // constructed step names must exactly match fallback.ts's documented
+  // DEFAULT_STEP_ORDER, so the two never silently drift apart.
+  if (auth.go.configured) {
+    const actualOrder = fallbackSteps.map((step) => step.name);
+    const expectedOrder: readonly string[] = DEFAULT_STEP_ORDER;
+    if (JSON.stringify(actualOrder) !== JSON.stringify(expectedOrder)) {
+      console.warn(
+        `fallback step order drifted from fallback.ts's DEFAULT_STEP_ORDER: actual=${JSON.stringify(actualOrder)} expected=${JSON.stringify(expectedOrder)}`,
+      );
+    }
+  }
+
+  const fallbackResult = await runFallback(fallbackSteps, (event) => {
+    fallbackDegradedEvent = event;
+  });
   void fallbackDegradedEvent;
 
   return {
@@ -379,10 +424,10 @@ async function runLive(): Promise<LiveResult> {
       zen: auth.zen.configured ? auth.zen.keyName : undefined,
       go: auth.go.configured ? auth.go.keyName : undefined,
     },
+    sameCredential,
     zenModels,
-    goModel,
-    goSkippedReason,
-    goBonusVerification,
+    goFreeModels,
+    goPaidModel,
     fallbackTrace: fallbackResult.trace,
     fallbackDegraded: fallbackResult.degraded,
   };
@@ -414,9 +459,9 @@ function buildOfflineRouterFactory(): () => unknown {
   return () =>
     createProviderModel({
       family: "chat-completions",
-      baseURL: ZEN_BASE_URL,
+      baseURL: GO_BASE_URL,
       apiKey: "unused-because-offline-must-never-construct-this",
-      modelId: ZEN_MODELS[0].modelId,
+      modelId: GO_FREE_MODELS[0].modelId,
     });
 }
 
@@ -644,38 +689,43 @@ function buildFindings(
 
   if (live) {
     findings.push(
-      `Zen auth.json key: \`${live.authKeyName.zen ?? "not configured"}\`; Go auth.json key: \`${live.authKeyName.go ?? "not configured"}\`.`,
+      `Zen auth.json key: \`${live.authKeyName.zen ?? "not configured"}\`; Go auth.json key: \`${live.authKeyName.go ?? "not configured"}\` — ${live.sameCredential ? "the SAME credential (confirmed by direct comparison)" : "different credentials"}; this is not a key/subscription distinction.`,
     );
+
+    // Zen zen/v1 scope note.
     for (const model of live.zenModels) {
       findings.push(
-        `Zen \`${model.modelId}\` (${model.family}): ${model.requestCount} requests, ` +
-          `structured native=${model.structuredModes.native} repaired=${model.structuredModes.repaired} failed=${model.structuredModes.failed}, ` +
-          `tool call ${model.toolCallSupported > 0 ? "supported" : "unsupported"}, ` +
-          `429s=${model.rateLimitCount}${model.abortedEarly ? " (aborted early)" : ""}${model.sampleError ? ` — sample error: "${model.sampleError}"` : ""}.`,
-      );
-    }
-    if (live.goModel) {
-      findings.push(
-        `Go \`${live.goModel.modelId}\`: ${live.goModel.requestCount} requests (capped below the ${MAX_REQUESTS_PER_MODEL}-request ceiling given per-request Go billing), ` +
-          `structured native=${live.goModel.structuredModes.native} repaired=${live.goModel.structuredModes.repaired} failed=${live.goModel.structuredModes.failed}.`,
-      );
-    } else if (live.goSkippedReason) {
-      findings.push(`Go arm: ${live.goSkippedReason}.`);
-    }
-    if (live.goBonusVerification) {
-      const bonus = live.goBonusVerification;
-      findings.push(
-        `**Feasibility-conflict finding**: Zen's free-tier models reject direct third-party API access outright ` +
-          `("OpenCode's free tier can only be used from within OpenCode" — a permanent, documented client restriction, not a transient outage), ` +
-          `so this unit's "only if Zen succeeds" Go gate is never met from this probe. As the concrete alternative, Go's own endpoint was verified ` +
-          `independently (bonus check, outside the gate): \`${bonus.modelId}\`, ${bonus.requestCount} requests, ` +
-          `structured native=${bonus.structuredModes.native} repaired=${bonus.structuredModes.repaired} failed=${bonus.structuredModes.failed}, ` +
-          `tool call ${bonus.toolCallSupported > 0 ? "supported" : "unsupported"}. Go required the documented \`x-opencode-session\` header ` +
-          `(https://opencode.ai/docs/go/#where-can-i-use-it); Zen free models still reject the request with that header present.`,
+        `Zen \`${model.modelId}\` (${model.family}, scope note only): ${model.requestCount} request(s), ` +
+          `${model.sampleError ? `typed 403 \`FreeTierError\`: "${model.sampleError}"` : "unexpectedly did not return the FreeTierError this run — see raw results"}.`,
       );
     }
     findings.push(
-      `Fallback trace: ${live.fallbackTrace.map((e) => `${e.step}(${e.outcome}, ${e.attempts} attempt${e.attempts === 1 ? "" : "s"})`).join(" -> ")}${live.fallbackDegraded ? " -> degraded/routine-only" : ""}.`,
+      "**Zen `zen/v1` free-tier gate (investigated separately, not re-run every time)**: every request to Zen's free models returns a typed 403 " +
+        "`FreeTierError` from a non-public inference service, regardless of headers (none / session-only / the full `x-opencode-session`, " +
+        "`x-opencode-project`, `x-opencode-request`, `x-opencode-client`, `User-Agent` set), endpoint (`/chat/completions` and `/responses`), or which " +
+        "auth.json entry sourced the credential — 23 requests, 23 `FreeTierError` 403s, zero exceptions. A follow-up check for a reported request-shape " +
+        "heuristic (anomalyco/opencode#50627: a `bash`-style tool in the `tools` array) did not reproduce here either (6/6 still 403, both a bash-only " +
+        "tool and a broader OpenCode-like tool set, with and without `x-opencode-client`). This is a scope note for ADR-0005, not a blocker: Zen's " +
+        "free tier is simply out of scope for direct third-party API access.",
+    );
+
+    // Go free models — the primary OpenCode arm.
+    for (const model of live.goFreeModels) {
+      findings.push(
+        `Go free \`${model.modelId}\` (\`/chat/completions\` only — \`/responses\` returns \`ModelProtocolUnsupported\`): ${model.requestCount} requests, ` +
+          `structured native=${model.structuredModes.native} repaired=${model.structuredModes.repaired} failed=${model.structuredModes.failed}, ` +
+          `tool call ${model.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
+      );
+    }
+    if (live.goPaidModel) {
+      findings.push(
+        `Go paid \`${live.goPaidModel.modelId}\`: ${live.goPaidModel.requestCount} requests (capped given per-request Go billing), ` +
+          `structured native=${live.goPaidModel.structuredModes.native} repaired=${live.goPaidModel.structuredModes.repaired} failed=${live.goPaidModel.structuredModes.failed}, ` +
+          `tool call ${live.goPaidModel.toolCallSupported > 0 ? "supported" : "unsupported"}.`,
+      );
+    }
+    findings.push(
+      `Fallback trace (Go free → Go paid → local → routine-only; see fallback.ts's \`DEFAULT_STEP_ORDER\`): ${live.fallbackTrace.map((e) => `${e.step}(${e.outcome}, ${e.attempts} attempt${e.attempts === 1 ? "" : "s"})`).join(" -> ")}${live.fallbackDegraded ? " -> degraded/routine-only" : ""}.`,
     );
   }
 
@@ -742,27 +792,15 @@ function buildBottomLine(
 ): string {
   const parts: string[] = [];
   if (live) {
-    const allClientRestricted = live.zenModels.every((m) =>
-      isFreeTierClientRestriction(m.sampleError),
+    parts.push(
+      "OpenCode Zen and OpenCode Go share one credential (the `opencode` and `opencode-go` auth.json entries hold the same key) — the earlier " +
+        "framing of this as a key/subscription difference was wrong. Zen's `zen/v1` base gates its free models with an unconditional 403 " +
+        "`FreeTierError` from a non-public service (measured across headers, endpoint, and key-source combinations, plus a #50627 tool-shape " +
+        "heuristic check that also didn't reproduce it) — a scope note for ADR-0005, not a blocker. Go's base (`zen/go/v1`) applies no such gate: its " +
+        "own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the same credential over `/chat/completions`, both " +
+        "repair to valid structured actions and support tool calls. For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid " +
+        "model (`mimo-v2.5`) as the fallback within Go.",
     );
-    const anyFailed = live.zenModels.some(
-      (m) => m.structuredModes.failed === m.requestCount,
-    );
-    if (allClientRestricted) {
-      parts.push(
-        "Zen's free-tier models cannot be exercised via direct third-party API access at all (measured: every request rejected with " +
-          "\"OpenCode's free tier can only be used from within OpenCode\", regardless of headers) — this is a hard capability conflict for ADR-0005's " +
-          "hosted section, not a flaky/rate-limited failure. Concrete alternative, measured in the same run: OpenCode Go's endpoint works over direct " +
-          "third-party API access once the documented `x-opencode-session` header is sent, so the fallback chain's Go arm is viable even though its " +
-          "free-tier Zen arm is not reachable this way.",
-      );
-    } else {
-      parts.push(
-        anyFailed
-          ? "At least one Zen free model failed every request in this run — see Findings for the error classes before relying on it as a fallback arm."
-          : "Both Zen free models and the fallback chain produced usable structured actions (native or repaired) during this run.",
-      );
-    }
   }
   if (offline) {
     switch (offline.capture.status) {
@@ -872,22 +910,19 @@ async function main(): Promise<void> {
   if (live) {
     for (const model of live.zenModels) {
       metrics.push(
-        metricFor(`zen/${model.modelId} latency`, model.latenciesMs),
+        metricFor(`zen-scope-note/${model.modelId} latency`, model.latenciesMs),
       );
     }
-    if (live.goModel) {
+    for (const model of live.goFreeModels) {
       metrics.push(
-        metricFor(
-          `go/${live.goModel.modelId} latency`,
-          live.goModel.latenciesMs,
-        ),
+        metricFor(`go-free/${model.modelId} latency`, model.latenciesMs),
       );
     }
-    if (live.goBonusVerification) {
+    if (live.goPaidModel) {
       metrics.push(
         metricFor(
-          `go-bonus/${live.goBonusVerification.modelId} latency`,
-          live.goBonusVerification.latenciesMs,
+          `go-paid/${live.goPaidModel.modelId} latency`,
+          live.goPaidModel.latenciesMs,
         ),
       );
     }
@@ -900,18 +935,23 @@ async function main(): Promise<void> {
     howToRun:
       "```sh\ncd tools/probes/provider-matrix\nbun install\nbun test                 # unit tests (auth, providers, repair, fallback, offline capture ordering — no network)\nbun run src/run.ts --contract  # OpenAI/Anthropic fixture-server contract check\nbun run src/run.ts --live      # live Zen/Go matrix (requires ~/.local/share/opencode/auth.json)\n\n# Offline proof — the probe owns the whole capture window itself (single owner,\n# no separately-started background tcpdump). Prime sudo once, then run --capture:\nsudo -v\nbun run src/run.ts --offline --capture   # 20 offline-mode requests + capture summary\n\n# If sudo timestamp caching isn't available/persistent on this machine, run the\n# whole command under sudo instead — -E preserves $HOME so auth.json still resolves:\n# sudo -E bun run src/run.ts --offline --capture\n\n# Optional advisory companion (not sudo-gated, run separately if wanted):\n# log stream --predicate 'process == \"mDNSResponder\"' > results/offline-dns.log\n```",
     caveat:
-      "Go usage is billed per request against a $10/month subscription cap, so the live Go arm " +
-      `intentionally runs ${GO_LIVE_REQUEST_COUNT} requests rather than the full ${MAX_REQUESTS_PER_MODEL}-request cap used for the free Zen models. ` +
-      "Zen free-tier models may return 429s under load; the matrix records the count and aborts a model's run early after " +
-      `${CONSECUTIVE_429_ABORT_THRESHOLD} consecutive 429s rather than exhausting the cap against a rate limit. ` +
+      "Zen `zen/v1` free models are a scope note, not a tested arm — one request per model per run just reconfirms the 403 `FreeTierError` gate " +
+      "documented below is still in effect; see Findings for the full investigation (23 requests, 23 403s, across headers/endpoint/key-source " +
+      "combinations and a #50627 tool-shape follow-up). Go's free models (`space-bunny-free`, `longcat-2.5-preview-free`) aren't billed but are " +
+      `slow (longcat measured ~20s p50), so the live arm runs ${GO_FREE_LIVE_REQUEST_COUNT} requests each rather than the full ${MAX_REQUESTS_PER_MODEL}-request cap. ` +
+      `Go's paid model is billed per request against a $10/month subscription cap, so it intentionally runs ${GO_PAID_LIVE_REQUEST_COUNT} requests. ` +
+      `Any live model may return 429s under load; the matrix records the count and aborts a model's run early after ${CONSECUTIVE_429_ABORT_THRESHOLD} consecutive 429s rather than exhausting the cap against a rate limit. ` +
       "`--offline` alone only proves the router-level guarantee (zero hosted-client constructions); the packet-capture proof needs " +
       "`--capture` and `sudo`. The probe owns the capture itself (start → run requests → stop → read back) rather than relying on a " +
       "separately-started background tcpdump, and never reports a result it can't verify: a failed or unreadable capture is reported as " +
       "`capture-failed`, never as silence.",
     environment: captureEnvironment({
       extra: {
-        zenModels: ZEN_MODELS.map((m) => m.modelId).join(", "),
-        goModel: GO_MODEL.modelId,
+        zenScopeNoteModels: ZEN_SCOPE_NOTE_MODELS.map((m) => m.modelId).join(
+          ", ",
+        ),
+        goFreeModels: GO_FREE_MODELS.map((m) => m.modelId).join(", "),
+        goPaidModel: GO_PAID_MODEL.modelId,
       },
     }),
     metrics,

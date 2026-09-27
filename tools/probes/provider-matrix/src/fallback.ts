@@ -1,12 +1,33 @@
-// The configured fallback sequence: Zen -> Go -> local Ollama -> routine
-// only. Each step gets at most `maxAttemptsPerStep` attempts with a flat,
-// bounded backoff between them — a 429 counts as an ordinary failure and
-// never grows the backoff (Unit 6 approach: "429 = failure without
-// exponential inflation"). When every step fails, exactly one `degraded`
-// event fires and the routine-only action is returned.
+// The configured fallback sequence for ADR-0005's OpenCode arm: Go free
+// models first, then Go's paid model, then local Ollama, then routine-only.
+// OpenCode Zen's `zen/v1` base is intentionally NOT part of this chain: its
+// free models return an unconditional 403 `FreeTierError` from a non-public
+// inference service regardless of headers, endpoint, or which auth.json
+// entry sources the (shared) credential — a scope note for ADR-0005, not a
+// step worth spending a retry budget on (see provider-matrix/README.md for
+// the investigation). Each step gets at most `maxAttemptsPerStep` attempts
+// with a flat, bounded backoff between them — a 429 counts as an ordinary
+// failure and never grows the backoff (Unit 6 approach: "429 = failure
+// without exponential inflation"). When every step fails, exactly one
+// `degraded` event fires and the routine-only action is returned.
 
 import type { Action } from "@panthea/tools-probes-shared";
 import { classifyError, type ErrorClass } from "./providers";
+
+/**
+ * The default OpenCode-arm fallback order (ADR-0005): Go's free models
+ * first (verified reachable with the shared credential), then Go's paid
+ * model, then local Ollama, then routine-only. Callers building the actual
+ * {@link FallbackStep} closures (which need live model handles) should name
+ * their steps to match this order so the trace in a README/log lines up
+ * with the documented sequence.
+ */
+export const DEFAULT_STEP_ORDER = [
+  "go-free:space-bunny-free",
+  "go-free:longcat-2.5-preview-free",
+  "go-paid:mimo-v2.5",
+  "ollama",
+] as const;
 
 /** Production default: at most one retry (two attempts total) per step. */
 export const MAX_ATTEMPTS_PER_STEP = 2;

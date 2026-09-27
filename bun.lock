@@ -79,6 +79,10 @@
       "name": "@panthea/tools-probes",
       "version": "0.1.0",
     },
+    "tools/probes/shared": {
+      "name": "@panthea/tools-probes-shared",
+      "version": "0.1.0",
+    },
     "tools/scenarios": {
       "name": "@panthea/tools-scenarios",
       "version": "0.1.0",
@@ -230,6 +234,8 @@
     "@panthea/tools-content": ["@panthea/tools-content@workspace:tools/content"],
 
     "@panthea/tools-probes": ["@panthea/tools-probes@workspace:tools/probes"],
+
+    "@panthea/tools-probes-shared": ["@panthea/tools-probes-shared@workspace:tools/probes/shared"],
 
     "@panthea/tools-scenarios": ["@panthea/tools-scenarios@workspace:tools/scenarios"],
 

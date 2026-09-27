@@ -9,7 +9,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | P03 | M0 | planned | package.json (workspaces), bun.lock, .github/workflows/ci.yaml, tools/probes/shared/, apps/desktop/src-tauri/ | docs/decisions/0001-workspace-and-tooling.md, tools/probes/README.md, tools/probes/backend-lifecycle/README.md |
 | P04 | M0 | planned (baseline llama3.2:3b @ 4K; gemma4:e4b quality runner-up) | — | tools/probes/inference-baseline/README.md, tools/probes/inference-baseline/results/summary.json |
 | P05 | M0 | planned (Linux gated on a packaged either-backend probe, ADR-0002) | — | docs/decisions/0002-renderer-backend.md, tools/probes/renderer-webgl2/README.md |
-| P06 | M0 | planned (schedule budget ~34 turns/min at the baseline p95) | — | tools/probes/inference-baseline/README.md, tools/probes/inference-baseline/results/summary.json |
+| P06 | M0 | planned (schedule budget ~39 turns/min at the baseline p95) | — | tools/probes/inference-baseline/README.md, tools/probes/inference-baseline/results/summary.json |
 | P07 | M0 | planned (offline wire proof: silent + positive control, probe router only) | — | tools/probes/provider-matrix/README.md |
 | P08 | M7 | planned | — | — |
 | W01 | M2 | planned | — | — |

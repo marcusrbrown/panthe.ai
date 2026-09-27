@@ -1,0 +1,231 @@
+// Supervises exactly one fixture execution in a `Bun.spawn` subprocess. A
+// Worker is in-process and shares the heap, so it cannot give a separate RSS
+// boundary or survive a memory bomb — the measured RSS and termination here
+// belong to the isolated child, never to this supervising process.
+//
+// Two independent bounds protect the supervisor itself: a wall-clock
+// deadline (kill -9 on expiry) and a peak-RSS ceiling sampled at short
+// intervals (kill -9 if the child's own resident set outgrows a sane bound,
+// in case a memory bomb outgrows the runtime's own soft memory limit before
+// the deadline). Both are the *control path*, not the boundary under test —
+// the primary mechanism being measured is the runtime's own interrupt
+// handler / memory limit / stack limit, recorded via the child's JSON
+// output (`interruptFired` / `timedOut` / `limitKind`).
+
+import type {
+  FixtureCategory,
+  FixtureOutcome,
+  Runtime,
+} from "./fixtures/manifest";
+
+export interface ChildRunOutput {
+  readonly ok: boolean;
+  readonly returnValue?: string;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly interruptFired?: boolean;
+  readonly limitKind?: string;
+  readonly timedOut?: boolean;
+  readonly durationMs: number;
+  readonly apiLog: {
+    readonly calls: readonly unknown[];
+    readonly status: string;
+  };
+}
+
+export interface FixtureRunRecord {
+  readonly fixtureId: string;
+  readonly runtime: Runtime;
+  readonly category: FixtureCategory;
+  readonly outcome: FixtureOutcome;
+  readonly timeToTerminationMs: number;
+  readonly peakRssBytes: number | undefined;
+  readonly exitCode: number | null;
+  readonly exitSignal: string | null;
+  readonly supervisorKilled: boolean;
+  readonly childOutput: ChildRunOutput | undefined;
+  readonly stderrTail: string | undefined;
+}
+
+/** Per-category outer wall-clock deadlines. Adversarial loop/allocation/
+ * async-hang fixtures get a tight bound since their whole point is running
+ * away; everything else gets a generous bound since it should finish almost
+ * instantly. */
+const DEFAULT_DEADLINE_MS: Record<FixtureCategory, number> = {
+  "happy-path": 2000,
+  "external-capability": 2000,
+  "loop-recursion": 1200,
+  allocation: 1200,
+  "async-hang": 1200,
+  "malformed-input": 2000,
+  "partial-failure": 2000,
+};
+
+const DEFAULT_RSS_LIMIT_BYTES = 512 * 1024 * 1024;
+const RSS_SAMPLE_INTERVAL_MS = 40;
+
+function sampleRssBytes(pid: number): number | undefined {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
+    if (result.exitCode !== 0) {
+      return undefined;
+    }
+    const text = result.stdout.toString().trim();
+    if (text.length === 0) {
+      return undefined;
+    }
+    const kb = Number(text);
+    return Number.isFinite(kb) ? kb * 1024 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function classifyOutcome(
+  category: FixtureCategory,
+  supervisorKilled: boolean,
+  childOutput: ChildRunOutput | undefined,
+): FixtureOutcome {
+  if (supervisorKilled) {
+    return "terminated";
+  }
+  if (!childOutput) {
+    return "terminated";
+  }
+
+  const limitFired = Boolean(
+    childOutput.interruptFired || childOutput.timedOut || childOutput.limitKind,
+  );
+
+  switch (category) {
+    case "loop-recursion":
+    case "allocation":
+      return limitFired ? "terminated" : "completed";
+    case "async-hang":
+      if (limitFired) {
+        return "terminated";
+      }
+      return childOutput.ok ? "completed" : "blocked";
+    case "external-capability":
+    case "malformed-input":
+      if (limitFired) {
+        return "terminated";
+      }
+      if (!childOutput.ok) {
+        return "blocked";
+      }
+      if (typeof childOutput.returnValue === "string") {
+        if (childOutput.returnValue.startsWith("REACHED")) {
+          return "escaped";
+        }
+        if (childOutput.returnValue.startsWith("BLOCKED")) {
+          return "blocked";
+        }
+      }
+      return "completed";
+    case "partial-failure":
+      return "completed";
+    case "happy-path":
+      return childOutput.ok ? "completed" : "terminated";
+    default:
+      return "completed";
+  }
+}
+
+export interface RunFixtureInSubprocessOptions {
+  readonly runFilePath: string;
+  readonly runtime: Runtime;
+  readonly fixtureId: string;
+  readonly category: FixtureCategory;
+  readonly deadlineMs?: number;
+  readonly rssLimitBytes?: number;
+}
+
+export async function runFixtureInSubprocess(
+  options: RunFixtureInSubprocessOptions,
+): Promise<FixtureRunRecord> {
+  const deadlineMs =
+    options.deadlineMs ?? DEFAULT_DEADLINE_MS[options.category];
+  const rssLimitBytes = options.rssLimitBytes ?? DEFAULT_RSS_LIMIT_BYTES;
+
+  const proc = Bun.spawn(
+    [
+      "bun",
+      options.runFilePath,
+      "--runtime",
+      options.runtime,
+      "--fixture",
+      options.fixtureId,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+
+  let peakRssBytes: number | undefined;
+  let supervisorKilled = false;
+  const startedAt = performance.now();
+
+  const sampleTimer = setInterval(() => {
+    const rss = sampleRssBytes(proc.pid);
+    if (rss !== undefined) {
+      peakRssBytes =
+        peakRssBytes === undefined ? rss : Math.max(peakRssBytes, rss);
+      if (rss > rssLimitBytes && !supervisorKilled) {
+        supervisorKilled = true;
+        proc.kill("SIGKILL");
+      }
+    }
+  }, RSS_SAMPLE_INTERVAL_MS);
+
+  const killTimer = setTimeout(() => {
+    if (!supervisorKilled) {
+      supervisorKilled = true;
+    }
+    proc.kill("SIGKILL");
+  }, deadlineMs);
+
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+
+  clearInterval(sampleTimer);
+  clearTimeout(killTimer);
+  const timeToTerminationMs = performance.now() - startedAt;
+
+  let childOutput: ChildRunOutput | undefined;
+  try {
+    const lastLine = stdout
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .at(-1);
+    childOutput = lastLine
+      ? (JSON.parse(lastLine) as ChildRunOutput)
+      : undefined;
+  } catch {
+    childOutput = undefined;
+  }
+
+  const exitCode = proc.exitCode;
+  const exitSignal = proc.signalCode ?? null;
+  const outcome = classifyOutcome(
+    options.category,
+    supervisorKilled,
+    childOutput,
+  );
+
+  return {
+    fixtureId: options.fixtureId,
+    runtime: options.runtime,
+    category: options.category,
+    outcome,
+    timeToTerminationMs,
+    peakRssBytes,
+    exitCode,
+    exitSignal,
+    supervisorKilled,
+    childOutput,
+    stderrTail: stderr.length > 0 ? stderr.slice(-2000) : undefined,
+  };
+}

@@ -3,5 +3,9 @@
 # committed).
 bin/
 
-# Raw per-run measurement dumps (README is the durable record).
-results/
+# Raw per-run measurement dumps (README is the durable record). The one
+# exception is results/summary.json: a compact, sanitized aggregate (no
+# per-prompt content) committed so published README numbers stay
+# recomputable without every raw per-request record.
+results/*
+!results/summary.json

@@ -41,6 +41,7 @@ import {
 import { join } from "node:path";
 import {
   captureEnvironment,
+  type EnvironmentInfo,
   p50 as percentile50,
   p95 as percentile95,
   renderReport,
@@ -116,22 +117,108 @@ interface RssSamples {
   readonly sampleCount: number;
 }
 
-function pollExternalRss(pid: number, intervalMs = 1500) {
+function readRssKb(pid: number): number | undefined {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
+    const kb = Number(result.stdout.toString().trim());
+    return Number.isFinite(kb) && kb > 0 ? kb : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Ollama's own process (`ollama serve`, whatever pid it was started with)
+ * never holds model weights in its own RSS — it spawns a separate
+ * `llama-server` runner child process per loaded model (a new pid each time
+ * a model loads), and that child is the actual memory consumer. This finds
+ * that child, re-resolved on every call since the runner pid changes across
+ * model loads/unloads: `pgrep -P <supervisorPid>` for direct children,
+ * preferring ones whose command name looks like a runner; if none is named
+ * that way (a differently-named child, or none loaded yet), every direct
+ * child pid is returned as the fallback — summed RSS across the whole
+ * process tree rather than assuming a specific binary name.
+ */
+function findOllamaRunnerPids(supervisorPid: number): readonly number[] {
+  try {
+    const pgrepResult = Bun.spawnSync(["pgrep", "-P", String(supervisorPid)]);
+    const childPids = pgrepResult.stdout
+      .toString()
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map(Number)
+      .filter((pid) => Number.isFinite(pid));
+    if (childPids.length === 0) {
+      return [];
+    }
+    const namedRunners = childPids.filter((pid) => {
+      try {
+        const commResult = Bun.spawnSync([
+          "ps",
+          "-o",
+          "command=",
+          "-p",
+          String(pid),
+        ]);
+        const command = commResult.stdout.toString().trim();
+        return command.includes("llama-server") || command.includes("runner");
+      } catch {
+        return false;
+      }
+    });
+    return namedRunners.length > 0 ? namedRunners : childPids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolves the pid(s) whose RSS actually represents `serverName`'s resident
+ * memory: for `ollama`, the supplied pid is the `ollama serve` supervisor,
+ * so this resolves to its runner child(ren) instead (falling back to the
+ * supervisor pid itself if no runner has spawned yet, e.g. before the first
+ * request loads a model); for `llama-server`, the supplied pid already
+ * holds the weights directly, so it's returned unchanged.
+ */
+function resolveRssPids(
+  serverName: string,
+  suppliedPid: number,
+): readonly number[] {
+  if (serverName !== "ollama") {
+    return [suppliedPid];
+  }
+  const runners = findOllamaRunnerPids(suppliedPid);
+  return runners.length > 0 ? runners : [suppliedPid];
+}
+
+/** Polls RSS at `intervalMs`, re-resolving the target pid(s) via
+ * {@link resolveRssPids} on every tick (not just once at start) so a
+ * runner that spawns partway through the first request, or a runner that
+ * gets replaced across a model reload, is still captured. */
+function pollExternalRss(
+  serverName: string,
+  pid: number,
+  intervalMs = 1500,
+): { stop(): RssSamples } {
   let peakKb = 0;
   let sampleCount = 0;
   const timer = setInterval(() => {
-    try {
-      const result = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
-      const text = result.stdout.toString().trim();
-      const kb = Number(text);
-      if (Number.isFinite(kb) && kb > 0) {
-        sampleCount += 1;
-        if (kb > peakKb) {
-          peakKb = kb;
-        }
+    const pids = resolveRssPids(serverName, pid);
+    let totalKb = 0;
+    let anySampled = false;
+    for (const target of pids) {
+      const kb = readRssKb(target);
+      if (kb !== undefined) {
+        totalKb += kb;
+        anySampled = true;
       }
-    } catch {
-      // Process gone (e.g. the outage test's mid-run kill) — stop counting.
+    }
+    if (anySampled) {
+      sampleCount += 1;
+      if (totalKb > peakKb) {
+        peakKb = totalKb;
+      }
     }
   }, intervalMs);
   return {
@@ -194,6 +281,23 @@ async function sampleRendererFrameStats(
   }
 }
 
+/** Env details known ahead of time (versions/release pins), independent of
+ * whatever process happens to be running when a given result is captured. */
+const STATIC_ENV_EXTRAS = {
+  ollama: "0.34.4",
+  "llama-server release": "b11205 (ggml-org/llama.cpp, macos-arm64)",
+  "llama-server sha256":
+    "97b06f59ad15e2b4b6044ba7338c4e3f40354c6dc2b9c5cda234e2bd6b9fd65e",
+} as const;
+
+/** Captures the environment at measurement time so a later `report` run (on
+ * a different machine, or after this one has changed) still renders the
+ * environment that actually produced the numbers, not whatever machine
+ * happens to run `report`. */
+function captureProbeEnvironment(): EnvironmentInfo {
+  return captureEnvironment({ extra: { ...STATIC_ENV_EXTRAS } });
+}
+
 function writeResult(label: string, record: Record<string, unknown>): void {
   mkdirSync(RESULTS_DIR, { recursive: true });
   const path = join(RESULTS_DIR, `${label}.json`);
@@ -250,7 +354,8 @@ async function cmdSuite(flags: Record<string, string>): Promise<void> {
     (p) => p.id,
   );
 
-  const rssPoller = rssPid !== undefined ? pollExternalRss(rssPid) : undefined;
+  const rssPoller =
+    rssPid !== undefined ? pollExternalRss(serverName, rssPid) : undefined;
   const rendererBefore = rendererLog
     ? await sampleRendererFrameStats(rendererLog)
     : undefined;
@@ -291,6 +396,7 @@ async function cmdSuite(flags: Record<string, string>): Promise<void> {
     model,
     tier: tierRaw,
     timestamp: new Date().toISOString(),
+    environment: captureProbeEnvironment(),
     wallMs,
     results,
     rss,
@@ -317,7 +423,8 @@ async function cmdParallel(flags: Record<string, string>): Promise<void> {
   const server = buildServer(serverName, baseUrl);
   const contextTokens = tierRaw === "1k" ? 1024 : 4096;
   const prompts = PROMPTS.slice(0, sampleCount);
-  const rssPoller = rssPid !== undefined ? pollExternalRss(rssPid) : undefined;
+  const rssPoller =
+    rssPid !== undefined ? pollExternalRss(serverName, rssPid) : undefined;
 
   console.error(
     `[inference-baseline] parallel ${label}: ${serverName} ${model} @ ${tierRaw}, concurrency=${concurrency}, ${prompts.length} prompts`,
@@ -355,6 +462,7 @@ async function cmdParallel(flags: Record<string, string>): Promise<void> {
     tier: tierRaw,
     concurrency,
     timestamp: new Date().toISOString(),
+    environment: captureProbeEnvironment(),
     wallMs,
     throughputPerSec,
     results,
@@ -416,6 +524,7 @@ async function cmdOutage(flags: Record<string, string>): Promise<void> {
     tier: tierRaw,
     killedAfter: killAfter,
     timestamp: new Date().toISOString(),
+    environment: captureProbeEnvironment(),
     results,
   });
 }
@@ -448,6 +557,9 @@ interface StoredRecord {
   readonly wallMs?: number;
   readonly throughputPerSec?: number;
   readonly killedAfter?: number;
+  /** Environment captured at measurement time (see `captureProbeEnvironment`) —
+   * absent on any record written before this field existed. */
+  readonly environment?: EnvironmentInfo;
 }
 
 function loadResults(): readonly StoredRecord[] {
@@ -604,20 +716,23 @@ function buildScheduleMarkdown(records: readonly StoredRecord[]): string {
 
 function buildReadme(): void {
   const records = loadResults();
-  const environment = captureEnvironment({
-    extra: {
-      ollama: "0.34.4",
-      "llama-server release": "b11205 (ggml-org/llama.cpp, macos-arm64)",
-      "llama-server sha256":
-        "97b06f59ad15e2b4b6044ba7338c4e3f40354c6dc2b9c5cda234e2bd6b9fd65e",
-    },
-  });
+  // Prefer the environment captured alongside the recommended baseline
+  // profile's own measurement (the numbers the Bottom line actually cites),
+  // falling back to any other stored record, and only to a fresh live
+  // capture (which would describe whatever machine happens to run `report`,
+  // not the machine that produced the numbers) if no record has one at all
+  // — e.g. before any suite has ever run.
+  const best = rankCandidates(records)[0];
+  const environment =
+    best?.environment ??
+    records.find((r) => r.environment)?.environment ??
+    captureProbeEnvironment();
 
   const base = renderReport({
     question:
       "Which locally-servable model, quantization, and context size meet the acceptance plan's 10s-first-reply / 30s-p95-completion model-feedback target on the M1 Pro 16GB baseline with the renderer scene running concurrently, and what reasoning-turn cadence does that support for 7 gods + 20 inhabitants?",
     howToRun:
-      "**Staging (prerequisite, not timed):**\n\n```sh\nollama serve &                      # native /api/chat on :11434\nollama pull <model>                  # e.g. qwen3.5:2b-q4_K_M\n```\n\nllama-server (cross-server check, one GGUF): download the pinned `ggml-org/llama.cpp` release into `tools/probes/inference-baseline/bin/` (gitignored; identifier + sha256 recorded below), find the candidate's GGUF blob via `ollama show <model> --modelfile` (its `FROM` line), then:\n\n```sh\n./bin/llama-server --model <blob-path> --port 8090 -c 4096\n```\n\nRenderer concurrency: launch the already ad-hoc-signed packaged app directly (not via `open`, so stdout is capturable) and keep it running for every suite/parallel/outage invocation below:\n\n```sh\n/tmp/PantheaProbe/panthea-probe-renderer.app/Contents/MacOS/panthea-probe-renderer > /tmp/panthea-probe-renderer.stdout.log 2>&1 &\n```\n\n**Suite** (per model × context tier):\n\n```sh\ncd tools/probes/inference-baseline\nbun run src/run.ts suite --server ollama --base-url http://localhost:11434 \\\n  --model <model> --tier 1k --max-tokens 150 --timeout-ms 30000 \\\n  --repair-audit 8 --rss-pid <ollama-pid> --renderer-log /tmp/panthea-probe-renderer.stdout.log \\\n  --label <model>-1k\n```\n\nReasoning-capable models (Qwen3.5) default to hidden `<think>` tokens that can consume the whole `--max-tokens` budget before any action JSON is emitted — this probe's Ollama adapter always sends `think: false` (see servers.ts) for that reason.\n\n**Parallel**: `bun run src/run.ts parallel --server ollama --base-url ... --model <best> --tier 4k --concurrency 2 --sample-count 20 --rss-pid <pid> --label <best>-parallel2` (compare against a `--concurrency 1` run of the same sample).\n\n**Outage**: `bun run src/run.ts outage --server ollama --base-url ... --model <model> --kill-pid <ollama-pid> --kill-after 2 --request-count 5 --label <model>-outage` — sends SIGTERM to the server after 2 completed requests and confirms the remaining requests resolve as a clean timeout/error, not a bench crash.\n\n**Report**: `bun run src/run.ts report` (reads every `results/*.json`, renders this README).",
+      "**Staging (prerequisite, not timed):**\n\n```sh\nollama serve &                      # native /api/chat on :11434\nollama pull <model>                  # e.g. qwen3.5:2b-q4_K_M\n```\n\nllama-server (cross-server check, one GGUF): download the pinned `ggml-org/llama.cpp` release into `tools/probes/inference-baseline/bin/` (gitignored; identifier + sha256 recorded below), find the candidate's GGUF blob via `ollama show <model> --modelfile` (its `FROM` line), then:\n\n```sh\n./bin/llama-server --model <blob-path> --port 8090 -c 4096\n```\n\nRenderer concurrency: launch the already ad-hoc-signed packaged app directly (not via `open`, so stdout is capturable) and keep it running for every suite/parallel/outage invocation below:\n\n```sh\n/tmp/PantheaProbe/panthea-probe-renderer.app/Contents/MacOS/panthea-probe-renderer > /tmp/panthea-probe-renderer.stdout.log 2>&1 &\n```\n\n**Suite** (per model × context tier):\n\n```sh\ncd tools/probes/inference-baseline\nbun run src/run.ts suite --server ollama --base-url http://localhost:11434 \\\n  --model <model> --tier 1k --max-tokens 150 --timeout-ms 30000 \\\n  --repair-audit 8 --rss-pid <ollama-serve-pid> --renderer-log /tmp/panthea-probe-renderer.stdout.log \\\n  --label <model>-1k\n```\n\n`--rss-pid` for `--server ollama` is the `ollama serve` supervisor's own pid (`pgrep -f 'ollama serve'`, or whatever your shell already has from starting it) — the sampler auto-resolves and re-resolves its actual `llama-server` runner child every poll tick (a new pid each time a model loads; see servers.ts's doc comment on `findOllamaRunnerPids`/`resolveRssPids`), summing the whole child tree if the runner isn't the only child or is named differently. For `--server llama-server`, pass that process's own pid directly (it holds the weights itself, no child to resolve). Reasoning-capable models (Qwen3.5) default to hidden `<think>` tokens that can consume the whole `--max-tokens` budget before any action JSON is emitted — this probe's Ollama adapter always sends `think: false` (see servers.ts) for that reason.\n\n**Parallel**: `bun run src/run.ts parallel --server ollama --base-url ... --model <best> --tier 4k --concurrency 2 --sample-count 20 --rss-pid <ollama-serve-pid> --label <best>-parallel2` (compare against a `--concurrency 1` run of the same sample).\n\n**Outage**: `bun run src/run.ts outage --server ollama --base-url ... --model <model> --kill-pid <ollama-serve-pid> --kill-after 2 --request-count 5 --label <model>-outage` — sends SIGTERM to the server after 2 completed requests and confirms the remaining requests resolve as a clean timeout/error, not a bench crash.\n\n**Report**: `bun run src/run.ts report` (reads every `results/*.json`, renders this README and writes the committed `results/summary.json` aggregate).",
     caveat: buildCaveat(records),
     environment,
     metrics: [],
@@ -664,7 +779,7 @@ function buildCaveat(records: readonly StoredRecord[]): string {
     "Ollama results use its native `/api/chat` endpoint, not `/v1/chat/completions` — the OpenAI-compatible endpoint has no per-request context-size control (Ollama's own docs: changing context size requires a Modelfile-derived model), while the native endpoint accepts `options.num_ctx` per request and the identical JSON Schema object via `format` that `response_format.json_schema.schema` would carry on the OpenAI-compatible endpoint. Only the transport differs; schema comparability with llama-server and Unit 6's future hosted adapters is unaffected.",
     "Renderer concurrency: `apps/probe-renderer`'s packaged `.app` (already ad-hoc signed by Unit 2) run directly (not via `open`, so its stdout is capturable), with its frame-time metrics dump (`d` keystroke, sent via `osascript`/System Events) sampled before and after each suite run — not continuously during — because a continuous automated-keystroke sampler would itself compete for the same CPU the renderer's animation loop runs on.",
     "This machine was not a clean, dedicated 16GB baseline during this run: a co-resident `qemu-system-aarch64` process held ~7.4GB RSS and overall swap usage measured ~6.9GB/8GB at the start of staging, which is real contention this run's absolute latency/RSS numbers reflect (a conservative, not best-case, reading) but also a confound against a truly idle-machine baseline.",
-    "RSS sampling bug found mid-run: `ollama serve`'s own process never holds model weights — it spawns a separate `llama-server` runner child (a new pid, per loaded model) that actually holds them. Every one of the five candidates' suite runs sampled the supervisor's pid, so their recorded 'RSS peak' was the harness's own idle footprint (tens of MB), not the model's. Fixed for the parallel/outage runs and the recommended baseline profile below (which sample the real runner pid); the five-candidate matrix instead shows on-disk model size (†) as a lower-bound proxy — weights only, no KV cache or activation overhead, so the true resident figure is higher, especially at 4K context.",
+    "RSS sampling bug found mid-run, since fixed: `ollama serve`'s own process never holds model weights — it spawns a separate `llama-server` runner child (a new pid, per loaded model) that actually holds them. The five-candidate matrix below predates the fix and sampled the supervisor's pid, so its recorded 'RSS peak' was the harness's own idle footprint (tens of MB), not the model's; it instead shows on-disk model size (†) as a lower-bound proxy (weights only, no KV cache or activation overhead, so the true resident figure is higher, especially at 4K context). The harness (`resolveRssPids`/`findOllamaRunnerPids` in run.ts) now auto-resolves and re-resolves the actual runner child pid on every poll tick, re-sampling it fresh each time since a model reload spawns a new one; the recommended baseline profile below, and the parallel/outage runs, were re-measured with the fix and carry a real runner RSS figure, not a proxy.",
   ];
   const repairSample = records.find(
     (r) =>
@@ -796,6 +911,121 @@ function buildBottomLine(records: readonly StoredRecord[]): string {
   );
 }
 
+interface SummarySuiteEntry {
+  readonly model: string;
+  readonly server: string;
+  readonly tier: ContextTier;
+  readonly sampleCount: number;
+  readonly nativeValidRate: number;
+  readonly kindAcceptableRate: number;
+  readonly repairedValidRate: number | undefined;
+  readonly timeoutCount: number;
+  readonly errorCount: number;
+  readonly ttftP50: number | undefined;
+  readonly ttftP95: number | undefined;
+  readonly totalP50: number | undefined;
+  readonly totalP95: number | undefined;
+  readonly tokPerSecP50: number | undefined;
+  readonly rssPeakBytes: number | undefined;
+  readonly rssBug: boolean;
+  readonly diskSizeBytes: number | undefined;
+}
+
+interface SummaryParallelEntry {
+  readonly model: string;
+  readonly tier: ContextTier;
+  readonly concurrency: number | undefined;
+  readonly requestCount: number;
+  readonly wallMs: number | undefined;
+  readonly throughputPerSec: number | undefined;
+  readonly rssPeakBytes: number | undefined;
+}
+
+interface SummaryOutageEntry {
+  readonly model: string;
+  readonly tier: ContextTier;
+  readonly killedAfter: number | undefined;
+  readonly requestCount: number;
+  readonly postKillOutcomes: readonly string[];
+}
+
+interface Summary {
+  readonly generatedAt: string;
+  readonly suites: readonly SummarySuiteEntry[];
+  readonly parallel: readonly SummaryParallelEntry[];
+  readonly outage: readonly SummaryOutageEntry[];
+}
+
+/**
+ * Compact, sanitized aggregate of `results/*.json` — per model×context
+ * counts, validity rates, latency percentiles, TTFT, and RSS, with no
+ * per-prompt content (no prompt text, no raw completions) — committed so
+ * the README's published numbers stay independently recomputable without
+ * every raw per-request record (those stay gitignored).
+ */
+function buildSummary(records: readonly StoredRecord[]): Summary {
+  const suites = records
+    .filter((r): r is StoredRecord & { kind: "suite" } => r.kind === "suite")
+    .map((r) => {
+      const validity = summarizeValidity(r.results);
+      const latency = summarizeLatency(r.results);
+      return {
+        model: r.model,
+        server: r.server,
+        tier: r.tier,
+        sampleCount: validity.total,
+        nativeValidRate: validity.nativeValidRate,
+        kindAcceptableRate: validity.kindAcceptableRate,
+        repairedValidRate: validity.repairedValidRate,
+        timeoutCount: validity.timeoutCount,
+        errorCount: validity.errorCount,
+        ttftP50: latency.ttftP50,
+        ttftP95: latency.ttftP95,
+        totalP50: latency.totalP50,
+        totalP95: latency.totalP95,
+        tokPerSecP50: latency.tokPerSecP50,
+        rssPeakBytes: r.rss?.peakBytes,
+        rssBug: r.rssBug ?? false,
+        diskSizeBytes: r.diskSizeBytes,
+      };
+    });
+  const parallel = records
+    .filter((r) => r.kind === "parallel")
+    .map((r) => ({
+      model: r.model,
+      tier: r.tier,
+      concurrency: r.concurrency,
+      requestCount: r.results.length,
+      wallMs: r.wallMs,
+      throughputPerSec: r.throughputPerSec,
+      rssPeakBytes: r.rss?.peakBytes,
+    }));
+  const outage = records
+    .filter((r) => r.kind === "outage")
+    .map((r) => ({
+      model: r.model,
+      tier: r.tier,
+      killedAfter: r.killedAfter,
+      requestCount: r.results.length,
+      postKillOutcomes: r.results
+        .slice(r.killedAfter ?? 0)
+        .map((res) => res.outcome),
+    }));
+  return {
+    generatedAt: new Date().toISOString(),
+    suites,
+    parallel,
+    outage,
+  };
+}
+
+function writeSummary(records: readonly StoredRecord[]): void {
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const path = join(RESULTS_DIR, "summary.json");
+  writeFileSync(path, JSON.stringify(buildSummary(records), null, 2));
+  console.error(`[inference-baseline] wrote ${path}`);
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
@@ -807,6 +1037,7 @@ async function main(): Promise<void> {
     await cmdOutage(flags);
   } else if (command === "report") {
     buildReadme();
+    writeSummary(loadResults());
   } else {
     throw new Error(
       `usage: bun run src/run.ts <suite|parallel|outage|report> [--flags]`,

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Confirmation requires the M0/M4 local-art probes (baseline memory, duration, cancellation, coexistence with gameplay).
+Accepted (2026-09-27). Confirmed by the M0 art-local and coexistence probes: a base arm, quantization profile, cancellation behavior, and the shared heavy-work memory policy are all measured below; M4 revisits coexistence under full population load.
 
 ## Context
 
@@ -10,15 +10,27 @@ D15 requires procedural and image-model visual generation with activity taking p
 
 ## Decision
 
-Procedural composition ships first and is always available, independent of any image model. The first local image-model adapter candidate is `stable-diffusion.cpp` (`sd-server` HTTP interface, Metal acceleration, cross-platform), starting from SD 1.5 at 512px plus a pixel-art LoRA (candidates: PixelArt.Redmond 1.5V, `pixel_dream_LORA` — verify licenses before bundling). Draw Things is a macOS/iOS-only alternate if `sd-server` proves insufficient on that platform. A hosted image adapter remains optional and explicitly configured, never a silent fallback.
+Procedural composition ships first and is always available, independent of any image model — confirmed deterministic (`placeholder.ts`, [tools/probes/art-local/README.md](../../tools/probes/art-local/README.md)): the same inputs produce the same placeholder URI and image hash, and an unknown part name falls back to a default silhouette rather than throwing. The product pattern is placeholder-then-hot-swap: the deterministic placeholder displays immediately and is swapped for the generated image once the job completes (D15).
+
+Confirmed base arm: **stable-diffusion.cpp** (`sd-server`, Metal, `master-921-168f7b8`) with **SD 1.5 at Q8_0 quantization** (`stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf`, creativeml-openrail-m) plus the PixelArtRedmond pixel-art LoRA (`PixelArtRedmond15V-PixelArt-PIXARFK.safetensors`, bespoke-lora-trained-license, non-commercial-oriented — verify before any content-pack use), run with `--diffusion-fa` (measured ~5x speedup on this build; not optional). Measured at 512×512, 12 steps, 15 prompts: warmup 37.8 s, steady-state seconds/image p50/p95 37.3/37.4 s, peak RSS 2320 MiB, 0 errors. The LoRA's trigger word (`PixArFK`) must be the first prompt token to reliably fire.
+
+Quantization is now measured, not assumed: **Q4_0 makes the LoRA a silent no-op** — verified by a fixed-seed generation with and without the LoRA at Q4_0 producing indistinguishable output, versus a visible style change at Q8_0 — so Q4_0 is recorded for speed/RSS comparison only and must never be used to judge pixel-art quality or ship as a default. **f16 plus this LoRA crashes** the pinned `stable-diffusion.cpp` build on Metal, reproducibly — a confirmed upstream bug applying a LoRA to non-quantized weights — ruling out f16 as a candidate until a fixed build is available. Q8_0 is therefore the only quantization confirmed to combine a working LoRA with a stable server.
+
+Draw Things (26.0924.0, owner-installed) is confirmed **optional and macOS/iOS-only**, not the base arm — per owner direction, stable-diffusion.cpp must work standalone and cross-platform regardless of Draw Things' results. The same SD 1.5 checkpoint + LoRA at f16 precision measured 6.5x faster on Draw Things (5.7 s p50 / 5.9 s p95, 15 prompts, 257 MiB peak RSS) than the sd.cpp Q8_0 arm, but this comparison is **precision-confounded, not an engine-isolating one** (an f16 sd.cpp+LoRA run would be the fair comparison and crashes, per above) and does not change the base-arm recommendation. Draw Things' HTTP surface (`/sdapi/v1/txt2img`, A1111-shaped) exposes **no model/LoRA selection, no model list, and no cancellation** — the active model is whatever the app has selected in its own UI, read back via `GET /sdapi/v1/options` rather than assumed; Draw Things must never be left running with its API server enabled after a session (localhost is not a security boundary — any local process can drive it). Qwen Image 2.1 under Draw Things ships under the Qwen Research License (non-commercial) — allowed for Panthea's noncommercial release (D01) but a commercial fork would need a different default.
+
+Cancellation, confirmed and a real limitation to design around: this `sd-server` build reports `cancel_generating: false`; `SIGINT` is silently ignored (the process keeps running its queue); the only working cancel path is `SIGTERM` to the whole server, which kills every in-flight and queued job, not just one — measured ~11.2 s from signal to the process dropping below an idle-CPU threshold, though not confirmed fully terminated within the poll window. A future implementation needs a subprocess-restart cancellation strategy for the sd.cpp arm, not an HTTP job-cancel call. Draw Things has no cancellation path at all (unsupported, by design of its HTTP surface).
+
+A hosted image adapter remains optional and explicitly configured, never a silent fallback (unchanged — not probed in M0).
+
+**Heavy-work memory policy** (measured by the M0 coexistence probe, [tools/probes/coexistence/README.md](../../tools/probes/coexistence/README.md); canonical wording and full numbers in [ADR-0005](0005-model-providers.md)): image generation is admission-gated — a new image job starts only when free+inactive memory is ≥ 3 GiB, and only one image job runs at a time; LLM inference is never blocked by an image job. This measured LLM p95 -10.6% versus a renderer+LLM-only baseline while completing 7/7 queued image jobs; a global mutex (+1404% LLM p95) and unconstrained concurrency (+44% LLM p95) are both rejected, and a stricter 5 GiB gate starved image generation to 0/7 completed jobs on this machine's memory floor.
 
 ## Consequences
 
-No verified seconds-per-image figure exists yet for the M1 Pro 16 GB baseline; the M0/M4 probes set the real scheduling and generation-profile numbers. Image jobs can take minutes; core simulation and input must never block on them (D15, technical-constraints.md). LoRA/model licensing must be checked before any asset ships in the content pack.
+**Superseded by measurement (kept for history)**: no verified seconds-per-image figure existed for the M1 Pro 16 GB baseline at proposal time — confirmed now: 37.3 s/image p50 (sd.cpp Q8_0, 512×512, 12 steps) is the real number for this profile; higher resolutions/step counts were not measured and may push generation further into minutes-scale. Image jobs can take minutes; core simulation and input must never block on them (D15, technical-constraints.md) — confirmed by the placeholder-then-hot-swap pattern and by the admission queue keeping LLM/renderer performance unaffected while jobs run. LoRA/model licensing must be checked before any asset ships in the content pack — confirmed checked for both the SD 1.5 checkpoint (creativeml-openrail-m) and the pixel-art LoRA (bespoke-lora-trained-license, non-commercial-oriented) recorded above.
 
 ## Evidence/links
 
-[inference-2026-09-26.md](../research/inference-2026-09-26.md) local image generation table; [technical-constraints.md](../product/technical-constraints.md) model and image adapters.
+[inference-2026-09-26.md](../research/inference-2026-09-26.md) local image generation table; [technical-constraints.md](../product/technical-constraints.md) model and image adapters; [tools/probes/art-local/README.md](../../tools/probes/art-local/README.md); [tools/probes/coexistence/README.md](../../tools/probes/coexistence/README.md).
 
 ## Requirement IDs
 

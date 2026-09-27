@@ -1150,6 +1150,35 @@ export function buildFindings(
   return findings;
 }
 
+/**
+ * Derives an accurate summary of Go's free-model matrix from measured
+ * results rather than a fixed sentence — a model that failed to produce a
+ * valid action, or didn't support tool calls, must not be silently rolled
+ * into a "both X" claim that was only ever true for the run that first
+ * wrote this sentence.
+ */
+function summarizeGoFreeModels(
+  goFreeModels: readonly ModelRunResult[],
+): string {
+  if (goFreeModels.length === 0) {
+    return "no Go free models were exercised this run";
+  }
+  const names = goFreeModels.map((m) => `\`${m.modelId}\``).join(", ");
+  const valid = goFreeModels.filter(
+    (m) => m.structuredModes.native + m.structuredModes.repaired > 0,
+  );
+  const withToolCalls = goFreeModels.filter((m) => m.toolCallSupported > 0);
+  const validPart =
+    valid.length === goFreeModels.length
+      ? `${names} all produced a valid structured action (native or repaired)`
+      : `${valid.length}/${goFreeModels.length} of ${names} produced a valid structured action (native or repaired)`;
+  const toolPart =
+    withToolCalls.length === goFreeModels.length
+      ? "all supported tool calls"
+      : `${withToolCalls.length}/${goFreeModels.length} supported tool calls`;
+  return `${validPart} this run, and ${toolPart}`;
+}
+
 export function buildBottomLine(
   live: LiveResult | undefined,
   offline: OfflineResult | undefined,
@@ -1190,9 +1219,8 @@ export function buildBottomLine(
       parts.push(`Go matrix skipped this run: ${live.goSkippedReason}.`);
     } else {
       parts.push(
-        "Go's base (`zen/go/v1`) applies no such gate: its own free models (`space-bunny-free`, `longcat-2.5-preview-free`) are reachable with the " +
-          "same credential over `/chat/completions`, both repairing to valid structured actions and supporting tool calls this run. For ADR-0005, the " +
-          "OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go.",
+        `Go's base (\`zen/go/v1\`) applies no such gate: its own free models are reachable over \`/chat/completions\` — ${summarizeGoFreeModels(live.goFreeModels)}. ` +
+          "For ADR-0005, the OpenCode arm is **Go**, with its free models first and the paid model (`mimo-v2.5`) as the fallback within Go.",
       );
     }
   }

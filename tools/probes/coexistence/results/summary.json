@@ -1,0 +1,113 @@
+{
+  "generatedAt": "2026-09-27T18:48:04.131Z",
+  "environment": {
+    "hardware": {
+      "brand": "Apple M1 Pro",
+      "memoryBytes": "17179869184"
+    },
+    "os": {
+      "productName": "macOS",
+      "productVersion": "15.7.9",
+      "buildVersion": "24G830"
+    },
+    "bun": {
+      "version": "1.4.2"
+    },
+    "pinned": {
+      "tauri": "2.12.0",
+      "three": "0.185.1",
+      "threeFlatland": "0.1.0-alpha.10"
+    },
+    "extra": {
+      "model": "llama3.2:3b",
+      "ollama": "0.34.4",
+      "sd-server binary": "master-921-168f7b8",
+      "sd 1.5 checkpoint (Q8_0)": "second-state/stable-diffusion-v1-5-GGUF (stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf)"
+    }
+  },
+  "baseline": {
+    "llmP50Ms": 611.4366659999978,
+    "llmP95Ms": 1535.3504160000011,
+    "imagesCompleted": 0,
+    "rendererFrameP95Ms": 17,
+    "peakSwapUsedMiB": 7014.5,
+    "minFreeMiB": 3399.84375,
+    "processDied": false,
+    "label": "A-baseline"
+  },
+  "candidates": [
+    {
+      "llmP50Ms": 892.2045829999997,
+      "llmP95Ms": 1372.6866669999945,
+      "imagesCompleted": 7,
+      "rendererFrameP95Ms": 18,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 2075.046875,
+      "processDied": false,
+      "policy": "admission-queue",
+      "thresholdMiB": 3072,
+      "label": "D-admission-3gib"
+    },
+    {
+      "llmP50Ms": 1314.7844170000026,
+      "llmP95Ms": 2215.734541999991,
+      "imagesCompleted": 7,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 2059.390625,
+      "processDied": false,
+      "policy": "unconstrained",
+      "label": "B-unconstrained"
+    },
+    {
+      "llmP50Ms": 625.7830830000166,
+      "llmP95Ms": 960.1608330000163,
+      "imagesCompleted": 0,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 3465.734375,
+      "processDied": false,
+      "policy": "admission-queue",
+      "thresholdMiB": 5120,
+      "label": "D-admission-5gib"
+    },
+    {
+      "llmP50Ms": 22784.14979200001,
+      "llmP95Ms": 23094.459958000007,
+      "imagesCompleted": 8,
+      "rendererFrameP95Ms": 17,
+      "peakSwapUsedMiB": 7014.5,
+      "minFreeMiB": 2383.96875,
+      "processDied": false,
+      "policy": "mutex",
+      "label": "C-mutex"
+    }
+  ],
+  "transitions": [
+    {
+      "transition": "sdserver-cold-after-llm-resident",
+      "ms": 36088.598333999995,
+      "ok": true
+    },
+    {
+      "transition": "llm-cold-baseline",
+      "ms": 1508.500083,
+      "ok": true
+    },
+    {
+      "transition": "llm-cold-after-sdcpp-resident",
+      "ms": 1727.2721250000002,
+      "ok": true
+    },
+    {
+      "transition": "sdserver-cold-baseline",
+      "ms": 24595.914708,
+      "ok": true
+    }
+  ],
+  "decision": {
+    "policy": "admission-queue",
+    "thresholdMiB": 3072,
+    "rationale": "admission-queue@3072MiB cleared the +25.0% bar without blocking the LLM — admission-queue@3072MiB: LLM p95 1373ms (-10.6% vs baseline 1535ms), 7 image(s) completed. Every other candidate measured worse or failed: unconstrained: LLM p95 2216ms (+44.3% vs baseline 1535ms), 7 image(s) completed; admission-queue@5120MiB: LLM p95 960ms (-37.5% vs baseline 1535ms), 0 image(s) completed; mutex: LLM p95 23094ms (+1404.2% vs baseline 1535ms), 8 image(s) completed."
+  }
+}

@@ -113,6 +113,13 @@
         "@panthea/tools-probes-shared": "workspace:*",
       },
     },
+    "tools/probes/coexistence": {
+      "name": "@panthea/tools-probes-coexistence",
+      "version": "0.1.0",
+      "dependencies": {
+        "@panthea/tools-probes-shared": "workspace:*",
+      },
+    },
     "tools/probes/inference-baseline": {
       "name": "@panthea/tools-probes-inference-baseline",
       "version": "0.1.0",
@@ -323,6 +330,8 @@
     "@panthea/tools-probes-art-local": ["@panthea/tools-probes-art-local@workspace:tools/probes/art-local"],
 
     "@panthea/tools-probes-backend-lifecycle": ["@panthea/tools-probes-backend-lifecycle@workspace:tools/probes/backend-lifecycle"],
+
+    "@panthea/tools-probes-coexistence": ["@panthea/tools-probes-coexistence@workspace:tools/probes/coexistence"],
 
     "@panthea/tools-probes-inference-baseline": ["@panthea/tools-probes-inference-baseline@workspace:tools/probes/inference-baseline"],
 

@@ -296,7 +296,8 @@ env:
     Attention" in the report.
 
     OUTPUT — ONE PERPETUAL SUMMARY ISSUE
-    Maintain exactly one daily report. Create an issue titled
+    Creating, updating, and closing the daily report issue is authorized in
+    this run. Maintain exactly one daily report. Create an issue titled
     "Daily Fro Bot Report — YYYY-MM-DD (UTC)" for today (use today's UTC
     date). Before or after creating it, CLOSE every older open issue whose
     title starts with "Daily Fro Bot Report —", leaving a one-line closing
@@ -405,3 +406,13 @@ jobs:
           model: ${{ vars.FRO_BOT_MODEL }}
           opencode-config: ${{ secrets.OPENCODE_CONFIG }}
           prompt: ${{ env.TASK_PROMPT }}
+          # The omitted/auto mode resolves to working-dir, whose delivery contract
+          # lists only non-mutating shell commands and stops the daily report
+          # from creating its issue. branch-pr is the mode the schedule needs;
+          # it still never pushes to main.
+          output-mode: >-
+            ${{
+              (github.event_name == 'schedule' ||
+               (github.event_name == 'workflow_dispatch' && !github.event.inputs.prompt))
+              && 'branch-pr' || 'auto'
+            }}

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Scans the compiled sidecar binary for build-host leakage: the builder's
+# $HOME, the builder's username, or the value of any live env var whose
+# name matches *_KEY/*_TOKEN/*_SECRET. Fails the probe (non-zero exit) if
+# any are found — a compiled binary should never embed anything from the
+# machine or environment that built it.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROBE_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(cd "$PROBE_DIR/../../.." && pwd)"
+
+TRIPLE="${PANTHEA_SIDECAR_TRIPLE:-aarch64-apple-darwin}"
+BINARY="${1:-$REPO_ROOT/apps/desktop/src-tauri/binaries/panthea-sim-$TRIPLE}"
+
+if [[ ! -f "$BINARY" ]]; then
+  echo "scan-binary: $BINARY not found; run scripts/build-sidecar.sh first" >&2
+  exit 1
+fi
+
+echo "scan-binary: scanning $BINARY"
+STRINGS_OUT="$(mktemp)"
+trap 'rm -f "$STRINGS_OUT"' EXIT
+strings -a "$BINARY" >"$STRINGS_OUT"
+
+fail=0
+
+if grep -qF "$HOME" "$STRINGS_OUT"; then
+  echo "scan-binary: FAIL - build-host \$HOME ($HOME) found in binary" >&2
+  fail=1
+fi
+
+USERNAME="$(id -un)"
+if grep -qF "$USERNAME" "$STRINGS_OUT"; then
+  echo "scan-binary: FAIL - build-host username ($USERNAME) found in binary" >&2
+  fail=1
+fi
+
+# Any live env value whose name matches *_KEY/*_TOKEN/*_SECRET (length >= 8,
+# to skip trivial/placeholder values), present literally in the binary.
+while IFS='=' read -r name value; do
+  if [[ "$name" =~ (_KEY|_TOKEN|_SECRET)$ ]] && [[ ${#value} -ge 8 ]]; then
+    if grep -qF "$value" "$STRINGS_OUT"; then
+      echo "scan-binary: FAIL - value of env var $name found in binary" >&2
+      fail=1
+    fi
+  fi
+done < <(env)
+
+if [[ "$fail" -eq 0 ]]; then
+  echo "scan-binary: PASS - no \$HOME, username, or *_KEY/*_TOKEN/*_SECRET env values found"
+fi
+
+exit "$fail"

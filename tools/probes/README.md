@@ -4,7 +4,7 @@ Hardware, provider, renderer, and sandbox probes live in `tools/probes/<name>/`,
 
 - [webgpu-wkwebview](webgpu-wkwebview/README.md) — WebGPU-in-WKWebView probe via an unsigned Swift WKWebView script (not a packaged app).
 - [renderer-webgl2](renderer-webgl2/README.md) — packaged Three Flatland scene on the WebGL2 backend (D25): 59 fps, 28 ms p50 / 31 ms p95 click-to-visible latency measured on the packaged `.app` (14/14 real clicks), koota CSP constraint (ADR-0002); with `three@0.185.1`'s `WebGPURenderer`, synthetic context loss/restore both occur but the renderer instance stays latched (`_isDeviceLost` never cleared) — automatic same-instance recovery is unavailable in this build, app-managed renderer/canvas reconstruction is untested, sleep/wake is untested.
-- `backend-lifecycle` (planned) — Bun sidecar under Tauri: supervised lifecycle, crash restart, no orphan, no double time advancement (ADR-0003).
+- [backend-lifecycle](backend-lifecycle/README.md) — Bun sidecar under Tauri: supervised lifecycle, crash restart, no orphan, no double time advancement (ADR-0003).
 - `inference-baseline` (planned) — local model profile measured for schema validity, latency, throughput, and memory with the renderer running (ADR-0005).
 - `art-local` (planned) — local pixel-art generation via Draw Things and stable-diffusion.cpp, measured for time, memory, and cancellation (ADR-0007).
 - `sandbox` (planned) — QuickJS and Lua adversarial fixture matrix measuring termination behavior for the generated-code runtime (ADR-0004).

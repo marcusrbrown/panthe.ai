@@ -6,7 +6,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | --- | --- | --- | --- | --- |
 | P01 | M7 | planned | — | — |
 | P02 | M0 | planned (amended by D25 / ADR-0002) | apps/probe-renderer/ | tools/probes/webgpu-wkwebview/README.md, tools/probes/renderer-webgl2/README.md, docs/decisions/0002-renderer-backend.md, docs/product/technical-constraints.md |
-| P03 | M0 | planned | package.json (workspaces), bun.lock, .github/workflows/ci.yaml, tools/probes/shared/ | docs/decisions/0001-workspace-and-tooling.md, tools/probes/README.md |
+| P03 | M0 | planned | package.json (workspaces), bun.lock, .github/workflows/ci.yaml, tools/probes/shared/, apps/desktop/src-tauri/ | docs/decisions/0001-workspace-and-tooling.md, tools/probes/README.md, tools/probes/backend-lifecycle/README.md |
 | P04 | M0 | planned | — | — |
 | P05 | M0 | planned (Linux gated on a packaged either-backend probe, ADR-0002) | — | docs/decisions/0002-renderer-backend.md, tools/probes/renderer-webgl2/README.md |
 | P06 | M0 | planned | — | — |
@@ -14,7 +14,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | P08 | M7 | planned | — | — |
 | W01 | M2 | planned | — | — |
 | W02 | M1 | planned | — | — |
-| W03 | M1 | planned | — | — |
+| W03 | M1 | planned | — | tools/probes/backend-lifecycle/README.md |
 | W04 | M2 | planned | — | — |
 | W05 | M1 | planned | — | — |
 | W06 | M1 | planned | — | — |
@@ -47,7 +47,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | X06 | M5 | planned | — | — |
 | O01 | M1 | planned | — | — |
 | O02 | M6 | planned | — | — |
-| O03 | M1 | planned | — | — |
+| O03 | M1 | planned | — | tools/probes/backend-lifecycle/README.md |
 | O04 | M1 | planned | — | — |
 | O05 | M6 | planned | — | — |
 | O06 | M6 | planned | — | — |

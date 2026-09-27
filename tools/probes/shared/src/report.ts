@@ -8,6 +8,7 @@
 
 import { homedir, hostname, userInfo } from "node:os";
 import type { EnvironmentInfo } from "./env";
+import { redactSecrets } from "./redact";
 import { p50, p95 } from "./timing";
 
 export interface MetricInput {
@@ -134,5 +135,9 @@ export function renderReport(input: ReportInput): string {
     heading("Findings", renderFindings(input.findings)),
     heading("Bottom line", input.bottomLine),
   );
-  return scrub(sections.join("\n\n"));
+  // Identity scrub (home/username/hostname/serial) first, then a secret
+  // redaction pass over the fully-assembled markdown so a secret embedded
+  // in any input field — question, findings, environment extras, etc. —
+  // is caught regardless of which section it landed in.
+  return redactSecrets(scrub(sections.join("\n\n")));
 }

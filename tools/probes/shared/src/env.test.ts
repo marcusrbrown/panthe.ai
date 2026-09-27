@@ -43,4 +43,13 @@ describe("captureEnvironment", () => {
     });
     expect(environment.extra.modelId).toBe("qwen3.5-4b-q4");
   });
+
+  test("redacts a secret embedded within a larger string in an extra field", () => {
+    process.env[SEEDED_KEY] = SEEDED_VALUE;
+    const environment = captureEnvironment({
+      extra: { provider: `Bearer token failure: ${SEEDED_VALUE} was rejected` },
+    });
+    expect(environment.extra.provider).not.toContain(SEEDED_VALUE);
+    expect(environment.extra.provider).toContain("[redacted]");
+  });
 });

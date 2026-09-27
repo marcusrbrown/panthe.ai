@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { homedir, userInfo } from "node:os";
 import type { EnvironmentInfo } from "./env";
 import { renderReport } from "./report";
@@ -89,4 +89,31 @@ test("empty metric samples render 'no samples' rather than NaN", () => {
   });
   expect(markdown).toContain("no samples");
   expect(markdown).not.toContain("NaN");
+});
+
+const SEEDED_KEY = "OPENCODE_REPORT_TEST_TOKEN";
+const SEEDED_VALUE = "provider-secret-abcdefgh12345";
+
+afterEach(() => {
+  delete process.env[SEEDED_KEY];
+});
+
+test("redacts a provider-error-shaped secret (Authorization header) forwarded through extra", () => {
+  process.env[SEEDED_KEY] = SEEDED_VALUE;
+  const environment: EnvironmentInfo = {
+    ...fixtureEnvironment(),
+    extra: {
+      providerError: `request failed: Authorization: Bearer ${SEEDED_VALUE} rejected with 401`,
+    },
+  };
+  const markdown = renderReport({
+    question: "q",
+    howToRun: "run",
+    environment,
+    metrics: [],
+    findings: [],
+    bottomLine: "n/a",
+  });
+  expect(markdown).not.toContain(SEEDED_VALUE);
+  expect(markdown).toContain("[redacted]");
 });

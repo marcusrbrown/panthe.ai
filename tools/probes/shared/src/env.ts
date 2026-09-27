@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isSensitiveEnvName, redactSecrets } from "./redact";
 
 const UNKNOWN = "unknown";
 
@@ -44,38 +45,56 @@ export interface EnvironmentOverrides {
   readonly workspaceRoot?: string;
 }
 
-const SENSITIVE_ENV_NAME = /^(OPENCODE_|.*_KEY$|.*_TOKEN$|.*_SECRET$)/i;
-
-function isSensitiveEnvName(name: string): boolean {
-  return SENSITIVE_ENV_NAME.test(name);
-}
-
-function sensitiveEnvValues(): ReadonlySet<string> {
-  const values = new Set<string>();
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && isSensitiveEnvName(key)) {
-      values.add(value);
-    }
-  }
-  return values;
-}
-
-/** Drops sensitively-named keys and redacts values that match a live secret env var. */
-function scrubExtra(
+/** Drops fields whose key name itself looks like a secret (e.g. a caller passing `OPENCODE_API_KEY` through as a field name). */
+function dropSensitiveKeys(
   extra: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> {
   if (!extra) {
     return {};
   }
-  const sensitive = sensitiveEnvValues();
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(extra)) {
     if (isSensitiveEnvName(key)) {
       continue;
     }
-    result[key] = sensitive.has(value) ? "[redacted]" : value;
+    result[key] = value;
   }
   return result;
+}
+
+/**
+ * Runs every string field of a captured environment block through
+ * `redactSecrets`, including nested `extra` values, so a secret embedded
+ * inside a larger string (not just an exact-value match) never survives.
+ */
+function redactEnvironmentFields(
+  environment: EnvironmentInfo,
+): EnvironmentInfo {
+  return {
+    hardware: {
+      brand: redactSecrets(environment.hardware.brand),
+      memoryBytes: redactSecrets(environment.hardware.memoryBytes),
+    },
+    os: {
+      productName: redactSecrets(environment.os.productName),
+      productVersion: redactSecrets(environment.os.productVersion),
+      buildVersion: redactSecrets(environment.os.buildVersion),
+    },
+    bun: {
+      version: redactSecrets(environment.bun.version),
+    },
+    pinned: {
+      tauri: redactSecrets(environment.pinned.tauri),
+      three: redactSecrets(environment.pinned.three),
+      threeFlatland: redactSecrets(environment.pinned.threeFlatland),
+    },
+    extra: Object.fromEntries(
+      Object.entries(environment.extra).map(([key, value]) => [
+        key,
+        redactSecrets(value),
+      ]),
+    ),
+  };
 }
 
 function defaultRunCommand(command: readonly string[]): string | undefined {
@@ -151,7 +170,7 @@ export function captureEnvironment(
   const runCommand = overrides.runCommand ?? defaultRunCommand;
   const root = overrides.workspaceRoot ?? findWorkspaceRoot(import.meta.dir);
 
-  return {
+  const captured: EnvironmentInfo = {
     hardware: {
       brand:
         runCommand(["sysctl", "-n", "machdep.cpu.brand_string"]) ?? UNKNOWN,
@@ -179,6 +198,8 @@ export function captureEnvironment(
         "three-flatland",
       ),
     },
-    extra: scrubExtra(overrides.extra),
+    extra: dropSensitiveKeys(overrides.extra),
   };
+
+  return redactEnvironmentFields(captured);
 }

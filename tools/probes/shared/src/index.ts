@@ -3,6 +3,7 @@
 // schema. This package never imports a probe (Output Structure, plan).
 
 export * from "./env";
+export * from "./redact";
 export * from "./report";
 export * from "./schema";
 export * from "./timing";

@@ -1,0 +1,14 @@
+{
+  "name": "@panthea/tools-probes-inference-baseline",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "bench": "bun run src/run.ts"
+  },
+  "dependencies": {
+    "@panthea/tools-probes-shared": "workspace:*"
+  }
+}

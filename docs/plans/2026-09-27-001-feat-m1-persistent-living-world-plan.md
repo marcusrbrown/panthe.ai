@@ -263,7 +263,7 @@ flowchart TB
 
 ### Phase A — Foundations
 
-- [ ] **Unit 1: Versioned contracts**
+- [x] **Unit 1: Versioned contracts**
 
 **Goal:** Define and parse every M1 wire and storage shape: entity/world IDs, observation records, proposals, events (with correlation/causation), rejection reasons, snapshots and deltas with sequence numbers, archive manifest, and content data.
 
@@ -297,7 +297,7 @@ flowchart TB
 
 **Verification:** All M1 shapes have a parser with tests; `bun run check` green.
 
-- [ ] **Unit 2: Persistence and causal trace store**
+- [x] **Unit 2: Persistence and causal trace store**
 
 **Goal:** A per-world SQLite store with migrations, atomic tick commits, event log + projections, persisted clock cursor and PRNG state, checkpointing, snapshots, archive export/import into a new slot, and a trace store with a "follow this event" query.
 
@@ -343,7 +343,7 @@ flowchart TB
 
 **Verification:** Store, snapshot, archive, and trace behaviors covered; file modes asserted in tests.
 
-- [ ] **Unit 3: World core, geography, and action pipeline**
+- [x] **Unit 3: World core, geography, and action pipeline**
 
 **Goal:** Entities, three-realm location graphs, simulation time, the action queue, and execution-time validation for movement and realm transition.
 

@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { FixtureCategory } from "./fixtures/manifest";
+import { type FixtureCategory, getFixture } from "./fixtures/manifest";
 import { runFixtureInSubprocess } from "./host";
 
 const RUN_FILE_PATH = join(import.meta.dir, "run.ts");
@@ -16,6 +16,7 @@ function run(fixtureId: string, category: FixtureCategory) {
     runtime: "quickjs",
     fixtureId,
     category,
+    expect: getFixture(fixtureId).expect,
   });
 }
 
@@ -88,5 +89,52 @@ describe("quickjs sandbox", () => {
     const record = await run("partial-failure", "partial-failure");
     expect(record.childOutput?.apiLog.calls.length).toBe(2);
     expect(record.childOutput?.apiLog.status).toBe("rolled-back");
+  }, 5_000);
+
+  test("malformed-proxy-args: the parity-flip Proxy never gets its poisoned value committed", async () => {
+    const record = await run("malformed-proxy-args", "malformed-input");
+    expect(record.outcome).toBe("completed");
+    expect(record.childOutput?.apiLog.calls).toEqual([
+      { index: 1, call: "move", args: { x: 1, y: 1 } },
+    ]);
+    expect(record.childOutput?.apiLog.status).toBe("committed");
+  }, 5_000);
+
+  test("guest overwriting the global Object.getOwnPropertyDescriptor has zero effect: the true values still commit", async () => {
+    const record = await run(
+      "malformed-overwrite-descriptor-fn",
+      "malformed-input",
+    );
+    expect(record.outcome).toBe("completed");
+    expect(record.childOutput?.apiLog.calls).toEqual([
+      { index: 1, call: "move", args: { x: 1, y: 1 } },
+    ]);
+  }, 5_000);
+
+  test("a Proxy's own getOwnPropertyDescriptor trap can only lie about the value it returns, exactly and no more", async () => {
+    const record = await run(
+      "malformed-proxy-descriptor-trap",
+      "malformed-input",
+    );
+    // The trap fabricates x; the committed value must equal exactly what
+    // the trap presented (x: 999999) — never something else, never a
+    // value that should have failed schema validation, and y (untouched
+    // by the trap) must be the real target value.
+    expect(record.childOutput?.apiLog.calls).toEqual([
+      { index: 1, call: "move", args: { x: 999999, y: 1 } },
+    ]);
+    expect(record.outcome).toBe("completed");
+  }, 5_000);
+
+  test("an infinitely self-requeuing microtask chain is drained under the deadline and terminated, not silently ignored", async () => {
+    const record = await run("async-microtask-recursion", "async-hang");
+    expect(record.outcome).toBe("terminated");
+    expect(record.childOutput?.jobsExecuted).toBeGreaterThan(0);
+  }, 5_000);
+
+  test("allocation-string-doubling is terminated (by the engine's max-string-length invariant), not completed", async () => {
+    const record = await run("allocation-string-doubling", "allocation");
+    expect(record.outcome).toBe("terminated");
+    expect(record.childOutput?.ok).toBe(false);
   }, 5_000);
 });

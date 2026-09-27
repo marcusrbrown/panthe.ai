@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { FixtureCategory } from "./fixtures/manifest";
+import { type FixtureCategory, getFixture } from "./fixtures/manifest";
 import { runFixtureInSubprocess } from "./host";
 
 const RUN_FILE_PATH = join(import.meta.dir, "run.ts");
@@ -14,6 +14,7 @@ function run(fixtureId: string, category: FixtureCategory) {
     runtime: "lua",
     fixtureId,
     category,
+    expect: getFixture(fixtureId).expect,
   });
 }
 

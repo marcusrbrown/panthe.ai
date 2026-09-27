@@ -21,6 +21,25 @@ export type FixtureCategory =
 /** The four outcome buckets the README matrix reports per fixture. */
 export type FixtureOutcome = "blocked" | "terminated" | "escaped" | "completed";
 
+/** An expected staged call, checked against the real API log's `call`/`args`
+ * (its `index` is not compared). Order-sensitive. */
+export interface ExpectedCall {
+  readonly call: "move" | "say" | "spend";
+  readonly args: unknown;
+}
+
+/** Optional, stronger check than `expectedOutcome` alone: the exact set of
+ * calls the API log must contain and/or the exact commit status it must
+ * resolve to. A fixture whose reported outcome looks fine (e.g.
+ * `completed`, no throw) but whose committed values or status disagree with
+ * this is reclassified as `escaped` by `host.ts` — this is what makes a
+ * value-integrity bypass (not just a capability reach) impossible to
+ * silently pass as "fixed". */
+export interface FixtureExpectation {
+  readonly committed?: readonly ExpectedCall[];
+  readonly status?: "committed" | "rolled-back";
+}
+
 export interface FixtureDefinition {
   readonly id: string;
   readonly category: FixtureCategory;
@@ -28,6 +47,7 @@ export interface FixtureDefinition {
   readonly expectedOutcome: FixtureOutcome;
   readonly quickjsFile?: string;
   readonly luaFile?: string;
+  readonly expect?: FixtureExpectation;
 }
 
 export const FIXTURES: readonly FixtureDefinition[] = [
@@ -39,6 +59,16 @@ export const FIXTURES: readonly FixtureDefinition[] = [
     expectedOutcome: "completed",
     quickjsFile: "quickjs/happy-path/happy-path.js",
     luaFile: "lua/happy-path/happy-path.lua",
+    expect: {
+      committed: [
+        { call: "move", args: { x: 2, y: 3 } },
+        {
+          call: "say",
+          args: { to: "npc-1", text: "hello from a valid behavior" },
+        },
+      ],
+      status: "committed",
+    },
   },
 
   // --- external capability access -------------------------------------
@@ -230,6 +260,10 @@ export const FIXTURES: readonly FixtureDefinition[] = [
       "Pass a Proxy with a parity-flipping get trap as move()'s target (TOCTOU probe). A well-formed target legitimately succeeds; the check is whether the *committed* values are the true ones, not the trap's poisoned ones. No Lua equivalent (no Proxy without enableProxy).",
     expectedOutcome: "completed",
     quickjsFile: "quickjs/malformed-input/proxy-args.js",
+    expect: {
+      committed: [{ call: "move", args: { x: 1, y: 1 } }],
+      status: "committed",
+    },
   },
   {
     id: "malformed-getter-side-effect",
@@ -238,6 +272,11 @@ export const FIXTURES: readonly FixtureDefinition[] = [
       "Pass an object whose x/y are accessor properties (getters). The host's safe-field extractor rejects any get/set-carrying descriptor outright, so the getter never runs at all, benign or not.",
     expectedOutcome: "blocked",
     quickjsFile: "quickjs/malformed-input/getter-side-effect.js",
+    // The fixture catches the ValidationError itself (try/catch around
+    // api.move) and returns a BLOCKED marker, so the *script* completes
+    // normally (status: committed) even though the call was rejected —
+    // zero calls landed, which is the actual evidence.
+    expect: { committed: [], status: "committed" },
   },
   {
     id: "malformed-nested-getter-parity",
@@ -246,6 +285,33 @@ export const FIXTURES: readonly FixtureDefinition[] = [
       "Same parity-flip idea as malformed-proxy-args, reached through plain (non-Proxy) accessor properties one layer of nesting down, to confirm the descriptor-based defense generalizes beyond Proxy.",
     expectedOutcome: "blocked",
     quickjsFile: "quickjs/malformed-input/nested-getter-parity.js",
+    // Same as malformed-getter-side-effect: the guest's own try/catch
+    // swallows the rejection, so the script completes normally.
+    expect: { committed: [], status: "committed" },
+  },
+  {
+    id: "malformed-overwrite-descriptor-fn",
+    category: "malformed-input",
+    description:
+      "Guest reassigns the global Object.getOwnPropertyDescriptor to a function that always returns a fabricated {value: 999999, ...} descriptor, then calls move() with a genuine plain {x:1,y:1}. The host must never look up that global by name at call time — it calls a descriptor-getter FUNCTION VALUE captured before any guest code ran, so the guest's replacement has zero effect and the true values (1,1) are what get committed.",
+    expectedOutcome: "completed",
+    quickjsFile: "quickjs/malformed-input/overwrite-descriptor-fn.js",
+    expect: {
+      committed: [{ call: "move", args: { x: 1, y: 1 } }],
+      status: "committed",
+    },
+  },
+  {
+    id: "malformed-proxy-descriptor-trap",
+    category: "malformed-input",
+    description:
+      "A Proxy that defines its OWN getOwnPropertyDescriptor trap (not just get), fabricating x's descriptor while passing y through untouched. This is a residual, accepted limitation: capturing the host's real Object.getOwnPropertyDescriptor before guest code runs stops a guest from swapping out the FUNCTION, but a Proxy's own exotic getOwnPropertyDescriptor trap is still legitimately invoked by that real function — it can lie about a VALUE (still bounded by ordinary schema validation afterward), it cannot escape the host or corrupt anything beyond the argument's own fields. The committed value is asserted to equal exactly what the trap presented — predictable and bounded, not a silent corruption.",
+    expectedOutcome: "completed",
+    quickjsFile: "quickjs/malformed-input/proxy-descriptor-trap.js",
+    expect: {
+      committed: [{ call: "move", args: { x: 999999, y: 1 } }],
+      status: "committed",
+    },
   },
   {
     id: "malformed-coercion",
@@ -273,6 +339,13 @@ export const FIXTURES: readonly FixtureDefinition[] = [
     expectedOutcome: "completed",
     quickjsFile: "quickjs/partial-failure/partial-failure.js",
     luaFile: "lua/partial-failure/partial-failure.lua",
+    expect: {
+      committed: [
+        { call: "move", args: { x: 1, y: 1 } },
+        { call: "say", args: { to: "npc-1", text: "hello" } },
+      ],
+      status: "rolled-back",
+    },
   },
 ];
 

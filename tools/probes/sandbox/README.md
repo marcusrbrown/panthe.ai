@@ -42,54 +42,54 @@ Stock QuickJS's `setMemoryLimit` is a **soft** limit against the prebuilt WASM v
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `happy-path` | completed | completed | 30 | n/a | exit 0 |
-| lua | `happy-path` | completed | completed | 35 | n/a | exit 0 |
+| quickjs | `happy-path` | completed | completed | 31 | n/a | exit 0 |
+| lua | `happy-path` | completed | completed | 30 | n/a | exit 0 |
 
 #### External capability access
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `external-require` | blocked | blocked | 30 | n/a | exit 0 |
-| quickjs | `external-process` | blocked | blocked | 30 | n/a | exit 0 |
-| quickjs | `external-fetch` | blocked | blocked | 32 | n/a | exit 0 |
-| quickjs | `external-bun-global` | blocked | blocked | 29 | n/a | exit 0 |
-| quickjs | `external-globalthis-leak` | blocked | blocked | 32 | n/a | exit 0 |
-| quickjs | `external-function-eval-ctor` | blocked | blocked | 30 | n/a | exit 0 |
-| quickjs | `external-symbol-for` | blocked | blocked | 29 | n/a | exit 0 |
-| quickjs | `external-webassembly` | blocked | blocked | 32 | n/a | exit 0 |
-| quickjs | `external-atomics-wait` | blocked | blocked | 32 | n/a | exit 0 |
+| quickjs | `external-require` | blocked | blocked | 35 | n/a | exit 0 |
+| quickjs | `external-process` | blocked | blocked | 31 | n/a | exit 0 |
+| quickjs | `external-fetch` | blocked | blocked | 31 | n/a | exit 0 |
+| quickjs | `external-bun-global` | blocked | blocked | 32 | n/a | exit 0 |
+| quickjs | `external-globalthis-leak` | blocked | blocked | 35 | n/a | exit 0 |
+| quickjs | `external-function-eval-ctor` | blocked | blocked | 33 | n/a | exit 0 |
+| quickjs | `external-symbol-for` | blocked | blocked | 32 | n/a | exit 0 |
+| quickjs | `external-webassembly` | blocked | blocked | 31 | n/a | exit 0 |
+| quickjs | `external-atomics-wait` | blocked | blocked | 30 | n/a | exit 0 |
 | quickjs | `external-timers` | blocked | blocked | 30 | n/a | exit 0 |
-| lua | `external-require` | blocked | blocked | 30 | n/a | exit 0 |
-| lua | `external-io-os` | blocked | blocked | 30 | n/a | exit 0 |
-| lua | `external-process` | blocked | blocked | 31 | n/a | exit 0 |
-| lua | `external-globalthis-leak` | blocked | blocked | 33 | n/a | exit 0 |
-| lua | `external-function-eval-ctor` | blocked | blocked | 32 | n/a | exit 0 |
+| lua | `external-require` | blocked | blocked | 33 | n/a | exit 0 |
+| lua | `external-io-os` | blocked | blocked | 32 | n/a | exit 0 |
+| lua | `external-process` | blocked | blocked | 32 | n/a | exit 0 |
+| lua | `external-globalthis-leak` | blocked | blocked | 31 | n/a | exit 0 |
+| lua | `external-function-eval-ctor` | blocked | blocked | 31 | n/a | exit 0 |
 
 #### Loop / recursion
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `loop-infinite` | terminated | terminated | 278 | 70.7 MiB | exit 0 |
-| quickjs | `loop-deep-recursion` | terminated | terminated | 31 | n/a | exit 0 |
-| lua | `loop-infinite` | terminated | terminated | 282 | 74.8 MiB | exit 0 |
-| lua | `loop-deep-recursion` | terminated | terminated | 283 | 74.4 MiB | exit 0 |
+| quickjs | `loop-infinite` | terminated | terminated | 280 | 70.1 MiB | exit 0 |
+| quickjs | `loop-deep-recursion` | terminated | terminated | 34 | n/a | exit 0 |
+| lua | `loop-infinite` | terminated | terminated | 281 | 74.8 MiB | exit 0 |
+| lua | `loop-deep-recursion` | terminated | terminated | 283 | 81.1 MiB | exit 0 |
 
 #### Allocation
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `allocation-array-growth` | terminated | terminated | 355 | 317.0 MiB | exit 0 |
-| quickjs | `allocation-string-doubling` | terminated | completed | 34 | n/a | exit 0 |
-| quickjs | `allocation-json-stringify-bomb` | terminated | terminated | 292 | 96.1 MiB | exit 0 |
-| lua | `allocation-array-growth` | terminated | terminated | 258 | 597.8 MiB | killed by supervisor (SIGKILL) |
-| lua | `allocation-string-doubling` | terminated | terminated | 96 | 624.4 MiB | killed by supervisor (SIGKILL) |
+| quickjs | `allocation-array-growth` | terminated | terminated | 354 | 295.1 MiB | exit 0 |
+| quickjs | `allocation-string-doubling` | terminated | terminated | 32 | n/a | exit 0 |
+| quickjs | `allocation-json-stringify-bomb` | terminated | terminated | 295 | 93.3 MiB | exit 0 |
+| lua | `allocation-array-growth` | terminated | terminated | 261 | 549.7 MiB | killed by supervisor (SIGKILL) |
+| lua | `allocation-string-doubling` | terminated | terminated | 97 | 574.4 MiB | killed by supervisor (SIGKILL) |
 
 #### Async hang
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `async-unresolved-promise` | completed | completed | 33 | n/a | exit 0 |
-| quickjs | `async-microtask-recursion` | terminated | completed | 30 | n/a | exit 0 |
+| quickjs | `async-unresolved-promise` | completed | completed | 32 | n/a | exit 0 |
+| quickjs | `async-microtask-recursion` | terminated | terminated | 96 | 68.7 MiB | exit 0 |
 | lua | `async-coroutine-attempt` | blocked | blocked | 32 | n/a | exit 0 |
 
 #### Malformed API input
@@ -97,23 +97,25 @@ Stock QuickJS's `setMemoryLimit` is a **soft** limit against the prebuilt WASM v
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
 | quickjs | `malformed-wrong-types` | blocked | blocked | 32 | n/a | exit 0 |
-| quickjs | `malformed-stale-entity-id` | blocked | blocked | 30 | n/a | exit 0 |
+| quickjs | `malformed-stale-entity-id` | blocked | blocked | 32 | n/a | exit 0 |
 | quickjs | `malformed-over-budget` | blocked | blocked | 32 | n/a | exit 0 |
 | quickjs | `malformed-proxy-args` | completed | completed | 32 | n/a | exit 0 |
-| quickjs | `malformed-getter-side-effect` | blocked | blocked | 33 | n/a | exit 0 |
-| quickjs | `malformed-nested-getter-parity` | blocked | blocked | 33 | n/a | exit 0 |
+| quickjs | `malformed-getter-side-effect` | blocked | blocked | 31 | n/a | exit 0 |
+| quickjs | `malformed-nested-getter-parity` | blocked | blocked | 31 | n/a | exit 0 |
+| quickjs | `malformed-overwrite-descriptor-fn` | completed | completed | 32 | n/a | exit 0 |
+| quickjs | `malformed-proxy-descriptor-trap` | completed | completed | 32 | n/a | exit 0 |
 | quickjs | `malformed-coercion` | blocked | blocked | 30 | n/a | exit 0 |
-| lua | `malformed-wrong-types` | blocked | blocked | 30 | n/a | exit 0 |
-| lua | `malformed-stale-entity-id` | blocked | blocked | 30 | n/a | exit 0 |
+| lua | `malformed-wrong-types` | blocked | blocked | 31 | n/a | exit 0 |
+| lua | `malformed-stale-entity-id` | blocked | blocked | 31 | n/a | exit 0 |
 | lua | `malformed-over-budget` | blocked | blocked | 31 | n/a | exit 0 |
-| lua | `malformed-string-metatable` | blocked | blocked | 30 | n/a | exit 0 |
+| lua | `malformed-string-metatable` | blocked | blocked | 32 | n/a | exit 0 |
 
 #### Partial-failure rollback
 
 | Runtime | Fixture | Expected | Outcome | Time (ms) | Peak RSS | Exit |
 | --- | --- | --- | --- | --- | --- | --- |
-| quickjs | `partial-failure` | completed | completed | 33 | n/a | exit 0 |
-| lua | `partial-failure` | completed | completed | 30 | n/a | exit 0 |
+| quickjs | `partial-failure` | completed | completed | 31 | n/a | exit 0 |
+| lua | `partial-failure` | completed | completed | 33 | n/a | exit 0 |
 
 #### Next-run health (after a terminated fixture)
 
@@ -131,16 +133,17 @@ No external-capability fixture escaped the host boundary in this run.
 
 ## Findings
 
-- **`malformed-proxy-args` escape, root cause, and fix (ADR-0004 world-API rule)**: this fixture originally escaped — a `Proxy` `get` trap that alternates its answer by a call-count parity got `{x: 999999, y: 1}` committed as `move()`'s target, because the host read each field via `context.dump()`'s ordinary `[[Get]]`-based traversal. A first attempted fix (dump the same handle twice, reject on disagreement) was tried and **measured to not work**: with exactly two fields and one `get` call per field per dump, every dump starts on the same parity phase as the last, so two independent dumps of the same object always agree with each other while both are equally wrong — verified directly against the running fixture before being discarded. The actual fix reads object fields via property **descriptors** (`Object.getOwnPropertyDescriptor`, i.e. `[[GetOwnProperty]]`) instead of `[[Get]]`: the fixture's Proxy defines only a `get` trap, so the default `getOwnPropertyDescriptor` behavior reads the *target*'s real descriptor directly and the adversarial trap is never invoked at all. Any descriptor carrying a `get`/`set` function, or that isn't writable/enumerable/configurable, is rejected outright — this is why `malformed-getter-side-effect` and the added `malformed-nested-getter-parity` fixture (plain getters, no Proxy, one layer of nesting) are now rejected before their getters ever run (measured: getterInvoked=false, innerReads=0). This is now the standing ADR-0004 rule for every world-API argument, both runtimes: snapshot to plain data using a mechanism that cannot be gamed by a stateful trap (descriptors, not property access), then reject anything that isn't a plain value, array, or `Object.prototype` object with no functions and no accessors. Current measured status: `malformed-proxy-args` → `completed`, committed value `{"x":1,"y":1}` (the *true* target values, not the trap's poisoned ones) — the escape is closed.
+- **Round 1 (escape found)**: a `Proxy` `get` trap that alternates its answer by call-count parity got `{x: 999999, y: 1}` committed as `move()`'s target, because the host read each field via `context.dump()`'s ordinary `[[Get]]`-based traversal. A naive fix (dump the same handle twice, reject on disagreement) was tried and **measured to not work**: with exactly two fields and one `get` call per field per dump, every dump starts on the same parity phase as the last, so two independent dumps always agree with each other while both are equally wrong — verified directly against the fixture before being discarded. **Round 2 (descriptor fix, still bypassed)**: reading fields via `Object.getOwnPropertyDescriptor` (`[[GetOwnProperty]]`) instead of `[[Get]]` closed the parity-flip Proxy, but a code review (Fro Bot) reproduced a stronger bypass: the descriptor-reading helper was a small function evaluated *inside the guest context*, and its body still referenced the identifier `Object.getOwnPropertyDescriptor`  — a dynamic lookup resolved at CALL time, not at the time the helper was defined. `malformed-overwrite-descriptor-fn` reassigns that global to a function returning a fabricated `{value: 999999, ...}` descriptor before ever calling `api.move()`, and the helper faithfully read the fabricated value back — reproduced directly before this fix. **Round 3 (this fix)**: the *function value* of `Object.getOwnPropertyDescriptor` is captured as a `QuickJSHandle` immediately after `newContext()`, before a single byte of guest source has evaluated. Every later field read calls that captured handle directly via `context.callFunction` — never by looking up an identifier again — so there is no global binding left for a guest to poison. Any descriptor carrying a `get`/`set` function, or that isn't writable/enumerable/configurable, is rejected outright, which is why `malformed-getter-side-effect` and `malformed-nested-getter-parity` (plain getters, no Proxy) are rejected before their getters ever run (measured: getterInvoked=false, innerReads=0). **Residual, accepted limitation**: capturing the function only stops a *global reassignment* attack. A Proxy that defines its OWN `getOwnPropertyDescriptor` trap (not just `get`) is still legitimately invoked by the real, captured function — that trap IS the object's `[[GetOwnProperty]]`, and refusing to call it isn't possible without refusing to read the object at all. `malformed-proxy-descriptor-trap` measures exactly this: the trap fabricates x's value, and the committed value (`{"x":999999,"y":1}`) equals exactly what the trap presented — predictable and bounded to a schema-valid number, never a host escape, never a corrupted or unrelated field, and still subject to ordinary value validation afterward. This is accepted as-is, not closed by this unit. **Current measured status**: `malformed-proxy-args` → `completed`, committed `{"x":1,"y":1}`; `malformed-overwrite-descriptor-fn` → `completed`, committed `{"x":1,"y":1}` — both are the *true* target values, the guest's tampering had zero effect, the escape is closed.
 - No fixture in either runtime reached a real host capability (filesystem, process, network, Bun, WebAssembly, Atomics) — every external-capability fixture ended `blocked`.
-- 13 QuickJS fixture(s) have no Lua equivalent (`fetch`, `Bun`, `WebAssembly`, `Atomics.wait`, timers, `Proxy`-based coercion) because Lua's config (`openStandardLibs: false`, `injectObjects: false`, `enableProxy: false`) leaves no ambient surface for those concepts to exist on in the first place — the absence itself is the finding, not a gap in fixture coverage.
+- 15 QuickJS fixture(s) have no Lua equivalent (`fetch`, `Bun`, `WebAssembly`, `Atomics.wait`, timers, `Proxy`-based coercion) because Lua's config (`openStandardLibs: false`, `injectObjects: false`, `enableProxy: false`) leaves no ambient surface for those concepts to exist on in the first place — the absence itself is the finding, not a gap in fixture coverage.
 - With `openStandardLibs: false`, the Lua guest has no base library at all: no `pcall`, `error`, `tostring`, `getmetatable`, or `load` beyond the raw language and the injected `api` table. Every bad-path Lua fixture therefore ends the whole chunk with an uncaught runtime error rather than a guest-caught, continuable failure — QuickJS's fixtures can (and do) `try`/`catch` around a rejected call and keep running; Lua's cannot.
-- Of 3 QuickJS allocation fixtures: 0 were actually stopped by `setMemoryLimit` raising an out-of-memory error, 1 hit the engine's own max-string-length invariant instead, and 2 grew past 96 MiB (1.5x the configured 64 MiB limit) before anything stopped them (measured peak RSS: `allocation-array-growth` 317 MiB, `allocation-json-stringify-bomb` 96 MiB) — direct, measured confirmation of quickjs-emscripten#255 (`setMemoryLimit` is soft against this growable-WASM build).
+- Of 3 QuickJS allocation fixtures: 0 were actually stopped by `setMemoryLimit` raising an out-of-memory error, 1 hit the engine's own max-string-length invariant instead, and 1 grew past 96 MiB (1.5x the configured 64 MiB limit) before anything stopped them (measured peak RSS: `allocation-array-growth` 295 MiB) — direct, measured confirmation of quickjs-emscripten#255 (`setMemoryLimit` is soft against this growable-WASM build). Correction: `allocation-string-doubling` was previously mis-reported as `completed` here — it actually ends in an uncaught engine error (`string too long`) that the classifier didn't recognize as a stop signal unless tagged with a known `limitKind`. The fix is two-fold: `limitKind` now explicitly recognizes the `string too long` message (`"string-length"`), and the loop-recursion/allocation category classifier now treats *any* abnormal ending (`ok: false`) as `terminated`, not just a recognized one — `completed` in this category means the fixture ran to the end genuinely unstopped, never "stopped for an unrecognized reason." None of the three measured stopping mechanisms here (deadline, `setMemoryLimit`, string-length cap) should be read as "allocation defenses work uniformly" — which one fires is pattern-dependent and only the deadline/RSS supervisor is guaranteed present for every pattern; see the bottom line.
 - Every runtime's supervisor stayed healthy after a terminated fixture: the very next execution, in a fresh runtime/process, completed normally.
-- An unresolved, un-chained promise did not hang this driver (outcome `completed` in 33ms): this driver never calls `runtime.executePendingJobs()`, so a settled-never promise with no reaction simply has nothing left to run. A driver that does drain the job queue would need its own bounded pump loop — the infinite-microtask-recursion fixture exists precisely to measure that case.
+- An unresolved, un-chained promise did not hang this driver (outcome `completed` in 32ms, jobsExecuted=0): it creates no reaction job at all (nothing calls `.then()` on it), so even with the job pump below actively running after every fixture, there is nothing queued to drain.
+- The infinitely self-requeuing microtask fixture is now actually exercised: this driver runs a bounded pending-job pump (`runtime.executePendingJobs()` in batches, under the same interrupt deadline) after the top-level script returns, rather than never draining the job queue at all. Measured: `50000` jobs executed before the pump's own 50,000-job budget tripped (`limitKind: "job-budget"`) in 96ms — faster than either the job budget or the interrupt deadline alone would guarantee, so both bounds are real, independent backstops, not just one masking the other. Outcome: `terminated`.
 - The partial-failure fixture staged exactly 2 call(s) before its intentional throw, and the log's status resolved to `rolled-back` — confirming the transaction boundary holds regardless of how the guest execution ends.
-- wasmoon's `CreateEngineOptions` has no memory-limit field at all — capping Lua memory requires the separate, undocumented-here `traceAllocations`+`setMemoryMax` pair, which this probe does not configure per the plan's stated options (`openStandardLibs`, `injectObjects`, `enableProxy`, `functionTimeout`). Both measured Lua allocation fixtures grew unchecked until the outer supervisor's RSS bound killed them (measured peak RSS: `allocation-array-growth` 598 MiB, `allocation-string-doubling` 624 MiB) — unlike QuickJS, Lua as configured here has *no* in-runtime memory boundary, only the external supervisor.
+- wasmoon's `CreateEngineOptions` has no memory-limit field at all — capping Lua memory requires the separate, undocumented-here `traceAllocations`+`setMemoryMax` pair, which this probe does not configure per the plan's stated options (`openStandardLibs`, `injectObjects`, `enableProxy`, `functionTimeout`). Both measured Lua allocation fixtures grew unchecked until the outer supervisor's RSS bound killed them (measured peak RSS: `allocation-array-growth` 550 MiB, `allocation-string-doubling` 574 MiB) — unlike QuickJS, Lua as configured here has *no* in-runtime memory boundary, only the external supervisor.
 
 ## Bottom line
 
-The `malformed-proxy-args` Proxy-parity escape found earlier in this probe's development is closed: the world API now reads object-argument fields via property descriptors rather than `[[Get]]`, and rejects any accessor (getter/setter) descriptor outright. See Findings for the root cause and why a naive dump-twice-and-compare fix did not work. QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated `Bun.spawn` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture and every malformed-input fixture, it can `try`/`catch` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter. The runtime's own `setMemoryLimit` is **not** sufficient by itself: measured allocation fixtures grew well past the configured 64 MiB before the deadline (not the memory limit) stopped them, confirming quickjs-emscripten#255/#219 directly on this machine. A fixed-memory (non-growable) WASM build, or accepting the subprocess wall-clock/RSS bound as the *real* memory boundary, is required before relying on `setMemoryLimit` alone. Lua (wasmoon 1.16.x) does not win on any measured criterion here: it terminates loops via the same class of mechanism (a `lua_sethook` count hook reachable through `Thread.run({ timeout })`, not through `functionTimeout`/`doString` alone, which only bounds JS callbacks invoked *from* Lua), but its locked-down configuration (`openStandardLibs: false`) leaves generated behaviors with no base library at all, making even ordinary error handling unavailable to the guest. ADR-0004 should stay on QuickJS.
+The `malformed-proxy-args` Proxy-parity escape found earlier in this probe's development is closed: the world API now reads object-argument fields via property descriptors rather than `[[Get]]`, and rejects any accessor (getter/setter) descriptor outright. See Findings for the root cause and why a naive dump-twice-and-compare fix did not work. QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated `Bun.spawn` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture, and every malformed-input fixture either committed exactly the true (schema-validated) value, was rejected outright, or — in one accepted residual case (a Proxy's own `getOwnPropertyDescriptor` trap) — committed exactly what the trap presented, bounded by ordinary value validation, never a host escape. QuickJS can `try`/`catch` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter. Allocation defenses are **not** a uniform success story — do not read the category as "solved": which mechanism stops a given allocation pattern (the deadline, `setMemoryLimit` raising OOM, or an unrelated engine invariant like max-string-length) is pattern-dependent, and this run measured `setMemoryLimit` itself firing zero times. Measured allocation fixtures grew well past the configured 64 MiB before anything recognized stopped them, confirming quickjs-emscripten#255/#219 directly on this machine. The only mechanism guaranteed present for every pattern is the outer subprocess wall-clock/RSS supervisor — treat that as the *real* memory boundary, and `setMemoryLimit`/the engine's own invariants as an unreliable bonus, not the other way around. A fixed-memory (non-growable) WASM build is the only way to make `setMemoryLimit` itself trustworthy. Async hangs are now actually measured, not merely assumed absent: this driver runs a bounded pending-job pump after the top-level script returns, under the same interrupt deadline, so an infinitely self-requeuing microtask chain is drained (and terminated by a job-count budget) instead of never being exercised at all. An unresolved, un-chained promise remains a non-issue on its own merits (it queues no reaction job), not because the driver ignores the job queue. Lua (wasmoon 1.16.x) does not win on any measured criterion here: it terminates loops via the same class of mechanism (a `lua_sethook` count hook reachable through `Thread.run({ timeout })`, not through `functionTimeout`/`doString` alone, which only bounds JS callbacks invoked *from* Lua), but its locked-down configuration (`openStandardLibs: false`) leaves generated behaviors with no base library at all, making even ordinary error handling unavailable to the guest. ADR-0004 should stay on QuickJS.

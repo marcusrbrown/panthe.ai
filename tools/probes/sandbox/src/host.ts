@@ -13,7 +13,9 @@
 // output (`interruptFired` / `timedOut` / `limitKind`).
 
 import type {
+  ExpectedCall,
   FixtureCategory,
+  FixtureExpectation,
   FixtureOutcome,
   Runtime,
 } from "./fixtures/manifest";
@@ -26,6 +28,7 @@ export interface ChildRunOutput {
   readonly interruptFired?: boolean;
   readonly limitKind?: string;
   readonly timedOut?: boolean;
+  readonly jobsExecuted?: number;
   readonly durationMs: number;
   readonly apiLog: {
     readonly calls: readonly unknown[];
@@ -100,7 +103,16 @@ function classifyOutcome(
   switch (category) {
     case "loop-recursion":
     case "allocation":
-      return limitFired ? "terminated" : "completed";
+      // Any abnormal ending counts as "terminated" here, not just a
+      // recognized limitKind: a category whose entire point is adversarial
+      // resource pressure must never silently report "completed" just
+      // because the specific error message didn't match a known pattern
+      // (e.g. `allocation-string-doubling` hitting the engine's own
+      // max-string-length invariant, `errorMessage: "string too long"`,
+      // was previously mis-reported as `completed` before `limitKind`
+      // learned to recognize it — this fallback is the backstop for the
+      // NEXT unrecognized message too).
+      return limitFired || !childOutput.ok ? "terminated" : "completed";
     case "async-hang":
       if (limitFired) {
         return "terminated";
@@ -132,6 +144,57 @@ function classifyOutcome(
   }
 }
 
+/** True only if `actualCalls` has exactly the same `call`/`args` sequence
+ * as `expectedCalls` (each `args` compared by JSON deep-equality; `index`
+ * is never compared). */
+function callsMatchExpectation(
+  actualCalls: readonly unknown[],
+  expectedCalls: readonly ExpectedCall[],
+): boolean {
+  if (actualCalls.length !== expectedCalls.length) {
+    return false;
+  }
+  return actualCalls.every((rawCall, index) => {
+    const actual = rawCall as { call?: unknown; args?: unknown };
+    const expected = expectedCalls[index];
+    return (
+      actual.call === expected.call &&
+      JSON.stringify(actual.args) === JSON.stringify(expected.args)
+    );
+  });
+}
+
+/**
+ * A category-level outcome (`completed`, `blocked`, ...) only tells you the
+ * fixture *looked* fine — it says nothing about whether the values it
+ * actually committed were the right ones. `expect.committed`/`expect.status`
+ * assert that directly: a `completed`/`blocked` verdict whose committed
+ * calls or final status disagree with the manifest's declared expectation
+ * is downgraded to `escaped`, regardless of how clean the guest's own
+ * self-report (`returnValue`) looked. This is what makes a value-integrity
+ * bypass (not just a capability reach) impossible to silently pass as
+ * fixed — exactly the gap a `CALLED:no-throw` self-report can't see.
+ */
+function applyExpectationOverride(
+  outcome: FixtureOutcome,
+  childOutput: ChildRunOutput | undefined,
+  expect: FixtureExpectation | undefined,
+): FixtureOutcome {
+  if (!expect || !childOutput || outcome === "terminated") {
+    return outcome;
+  }
+  if (
+    expect.committed &&
+    !callsMatchExpectation(childOutput.apiLog.calls, expect.committed)
+  ) {
+    return "escaped";
+  }
+  if (expect.status && childOutput.apiLog.status !== expect.status) {
+    return "escaped";
+  }
+  return outcome;
+}
+
 export interface RunFixtureInSubprocessOptions {
   readonly runFilePath: string;
   readonly runtime: Runtime;
@@ -139,6 +202,7 @@ export interface RunFixtureInSubprocessOptions {
   readonly category: FixtureCategory;
   readonly deadlineMs?: number;
   readonly rssLimitBytes?: number;
+  readonly expect?: FixtureExpectation;
 }
 
 export async function runFixtureInSubprocess(
@@ -209,10 +273,10 @@ export async function runFixtureInSubprocess(
 
   const exitCode = proc.exitCode;
   const exitSignal = proc.signalCode ?? null;
-  const outcome = classifyOutcome(
-    options.category,
-    supervisorKilled,
+  const outcome = applyExpectationOverride(
+    classifyOutcome(options.category, supervisorKilled, childOutput),
     childOutput,
+    options.expect,
   );
 
   return {

@@ -25,7 +25,7 @@ import {
 } from "./fixtures/manifest";
 import { type FixtureRunRecord, runFixtureInSubprocess } from "./host";
 import { runLuaFixture } from "./lua";
-import { runQuickJsFixture } from "./quickjs";
+import { MAX_JOBS_TOTAL, runQuickJsFixture } from "./quickjs";
 
 const SRC_DIR = import.meta.dir;
 const SANDBOX_DIR = join(SRC_DIR, "..");
@@ -232,29 +232,29 @@ function writeReadme(
   writeFileSync(README_PATH, withMatrix);
 }
 
-function buildProxyFixNarrative(records: readonly FixtureRunRecord[]): string {
-  const proxyRecord = records.find(
-    (r) => r.fixtureId === "malformed-proxy-args" && r.runtime === "quickjs",
-  );
-  const nestedRecord = records.find(
-    (r) =>
-      r.fixtureId === "malformed-nested-getter-parity" &&
-      r.runtime === "quickjs",
-  );
-  const getterRecord = records.find(
-    (r) =>
-      r.fixtureId === "malformed-getter-side-effect" && r.runtime === "quickjs",
-  );
-  const firstCall = proxyRecord?.childOutput?.apiLog.calls[0] as
+function firstCommittedArgsText(record: FixtureRunRecord | undefined): string {
+  const firstCall = record?.childOutput?.apiLog.calls[0] as
     | { readonly args?: unknown }
     | undefined;
   const committed = firstCall?.args;
-  const committedText =
-    committed && typeof committed === "object"
-      ? `\`${JSON.stringify(committed)}\``
-      : "no call committed";
-  const isFixed =
-    proxyRecord?.outcome !== "escaped" && nestedRecord?.outcome !== "escaped";
+  return committed && typeof committed === "object"
+    ? `\`${JSON.stringify(committed)}\``
+    : "no call committed";
+}
+
+function buildProxyFixNarrative(records: readonly FixtureRunRecord[]): string {
+  const find = (id: string) =>
+    records.find((r) => r.fixtureId === id && r.runtime === "quickjs");
+  const proxyRecord = find("malformed-proxy-args");
+  const nestedRecord = find("malformed-nested-getter-parity");
+  const getterRecord = find("malformed-getter-side-effect");
+  const overwriteRecord = find("malformed-overwrite-descriptor-fn");
+  const descriptorTrapRecord = find("malformed-proxy-descriptor-trap");
+
+  const isClosed =
+    proxyRecord?.outcome !== "escaped" &&
+    nestedRecord?.outcome !== "escaped" &&
+    overwriteRecord?.outcome !== "escaped";
   const getterInvoked = (getterRecord?.childOutput?.returnValue ?? "").includes(
     "getterInvoked=true",
   );
@@ -263,48 +263,62 @@ function buildProxyFixNarrative(records: readonly FixtureRunRecord[]): string {
   );
   const nestedReads = nestedReadsMatch ? nestedReadsMatch[1] : "?";
 
-  const part1 =
-    "**`malformed-proxy-args` escape, root cause, and fix (ADR-0004 world-API rule)**: " +
-    "this fixture originally escaped — a `Proxy` `get` trap that alternates its answer " +
-    "by a call-count parity got `{x: 999999, y: 1}` committed as `move()`'s target, " +
-    "because the host read each field via `context.dump()`'s ordinary `[[Get]]`-based " +
-    "traversal. A first attempted fix (dump the same handle twice, reject on " +
-    "disagreement) was tried and **measured to not work**: with exactly two fields and " +
-    "one `get` call per field per dump, every dump starts on the same parity phase as " +
-    "the last, so two independent dumps of the same object always agree with each " +
-    "other while both are equally wrong — verified directly against the running " +
-    "fixture before being discarded.";
-  const part2 =
-    "The actual fix reads object fields via property **descriptors** " +
-    "(`Object.getOwnPropertyDescriptor`, i.e. `[[GetOwnProperty]]`) instead of " +
-    "`[[Get]]`: the fixture's Proxy defines only a `get` trap, so the default " +
-    "`getOwnPropertyDescriptor` behavior reads the *target*'s real descriptor directly " +
-    "and the adversarial trap is never invoked at all. Any descriptor carrying a " +
-    "`get`/`set` function, or that isn't writable/enumerable/configurable, is rejected " +
-    "outright — this is why `malformed-getter-side-effect` and the added " +
-    "`malformed-nested-getter-parity` fixture (plain getters, no Proxy, one layer of " +
-    "nesting) are now rejected before their getters ever run (measured: getterInvoked=" +
-    String(getterInvoked) +
-    ", innerReads=" +
-    nestedReads +
-    ").";
-  const part3 =
-    "This is now the standing ADR-0004 rule for every world-API argument, both " +
-    "runtimes: snapshot to plain data using a mechanism that cannot be gamed by a " +
-    "stateful trap (descriptors, not property access), then reject anything that " +
-    "isn't a plain value, array, or `Object.prototype` object with no functions and " +
-    "no accessors.";
-  const part4 =
-    "Current measured status: `malformed-proxy-args` → `" +
-    (proxyRecord?.outcome ?? "not run") +
-    "`, committed value " +
-    committedText +
-    " (the *true* target values, not the trap's poisoned ones) — " +
-    (isFixed
-      ? "the escape is closed."
+  const round1 =
+    "**Round 1 (escape found)**: a `Proxy` `get` trap that alternates its " +
+    "answer by call-count parity got `{x: 999999, y: 1}` committed as " +
+    "`move()`'s target, because the host read each field via " +
+    "`context.dump()`'s ordinary `[[Get]]`-based traversal. A naive fix " +
+    "(dump the same handle twice, reject on disagreement) was tried and " +
+    "**measured to not work**: with exactly two fields and one `get` call " +
+    "per field per dump, every dump starts on the same parity phase as the " +
+    "last, so two independent dumps always agree with each other while " +
+    "both are equally wrong — verified directly against the fixture before " +
+    "being discarded.";
+  const round2 =
+    "**Round 2 (descriptor fix, still bypassed)**: reading fields via " +
+    "`Object.getOwnPropertyDescriptor` (`[[GetOwnProperty]]`) instead of " +
+    "`[[Get]]` closed the parity-flip Proxy, but a code review " +
+    "(Fro Bot) reproduced a stronger bypass: the descriptor-reading helper " +
+    "was a small function evaluated *inside the guest context*, and its " +
+    "body still referenced the identifier `Object.getOwnPropertyDescriptor` " +
+    " — a dynamic lookup resolved at CALL time, not at the time the helper " +
+    "was defined. `malformed-overwrite-descriptor-fn` reassigns that global " +
+    "to a function returning a fabricated `{value: 999999, ...}` descriptor " +
+    "before ever calling `api.move()`, and the helper faithfully read the " +
+    "fabricated value back — reproduced directly before this fix.";
+  const round3 =
+    "**Round 3 (this fix)**: the *function value* of " +
+    "`Object.getOwnPropertyDescriptor` is captured as a `QuickJSHandle` " +
+    "immediately after `newContext()`, before a single byte of guest " +
+    "source has evaluated. Every later field read calls that captured " +
+    "handle directly via `context.callFunction` — never by looking up an " +
+    "identifier again — so there is no global binding left for a guest to " +
+    "poison. Any descriptor carrying a `get`/`set` function, or that isn't " +
+    "writable/enumerable/configurable, is rejected outright, which is why " +
+    "`malformed-getter-side-effect` and `malformed-nested-getter-parity` " +
+    "(plain getters, no Proxy) are rejected before their getters ever run " +
+    `(measured: getterInvoked=${String(getterInvoked)}, innerReads=${nestedReads}).`;
+  const residual =
+    "**Residual, accepted limitation**: capturing the function only stops " +
+    "a *global reassignment* attack. A Proxy that defines its OWN " +
+    "`getOwnPropertyDescriptor` trap (not just `get`) is still legitimately " +
+    "invoked by the real, captured function — that trap IS the object's " +
+    "`[[GetOwnProperty]]`, and refusing to call it isn't possible without " +
+    "refusing to read the object at all. `malformed-proxy-descriptor-trap` " +
+    `measures exactly this: the trap fabricates x's value, and the ` +
+    `committed value (${firstCommittedArgsText(descriptorTrapRecord)}) equals ` +
+    "exactly what the trap presented — predictable and bounded to a " +
+    "schema-valid number, never a host escape, never a corrupted or " +
+    "unrelated field, and still subject to ordinary value validation " +
+    "afterward. This is accepted as-is, not closed by this unit.";
+  const status =
+    "**Current measured status**: `malformed-proxy-args` → `" +
+    `${proxyRecord?.outcome ?? "not run"}\`, committed ${firstCommittedArgsText(proxyRecord)}; \`malformed-overwrite-descriptor-fn\` → \`${overwriteRecord?.outcome ?? "not run"}\`, committed ${firstCommittedArgsText(overwriteRecord)} — ` +
+    (isClosed
+      ? "both are the *true* target values, the guest's tampering had zero effect, the escape is closed."
       : "**still escaping — regression, do not ship**.");
 
-  return [part1, part2, part3, part4].join(" ");
+  return [round1, round2, round3, residual, status].join(" ");
 }
 
 function buildFindings(
@@ -353,15 +367,13 @@ function buildFindings(
     (r) => r.childOutput?.limitKind === "memory",
   );
   const stoppedByOwnStringCap = quickjsAllocRecords.filter(
-    (r) =>
-      !r.childOutput?.limitKind &&
-      /string too long/i.test(r.childOutput?.errorMessage ?? ""),
+    (r) => r.childOutput?.limitKind === "string-length",
   );
   const exceededConfiguredLimit = quickjsAllocRecords.filter(
     (r) => (r.peakRssBytes ?? 0) > QUICKJS_MEMORY_LIMIT_MIB * 1024 * 1024 * 1.5,
   );
   findings.push(
-    `Of ${quickjsAllocRecords.length} QuickJS allocation fixtures: ${stoppedByOwnMemoryLimit.length} were actually stopped by \`setMemoryLimit\` raising an out-of-memory error, ${stoppedByOwnStringCap.length} hit the engine's own max-string-length invariant instead, and ${exceededConfiguredLimit.length} grew past ${QUICKJS_MEMORY_LIMIT_MIB * 1.5} MiB (1.5x the configured ${QUICKJS_MEMORY_LIMIT_MIB} MiB limit) before anything stopped them${exceededConfiguredLimit.length > 0 ? ` (measured peak RSS: ${exceededConfiguredLimit.map((r) => `\`${r.fixtureId}\` ${((r.peakRssBytes ?? 0) / (1024 * 1024)).toFixed(0)} MiB`).join(", ")})` : ""} — direct, measured confirmation of quickjs-emscripten#255 (\`setMemoryLimit\` is soft against this growable-WASM build).`,
+    `Of ${quickjsAllocRecords.length} QuickJS allocation fixtures: ${stoppedByOwnMemoryLimit.length} were actually stopped by \`setMemoryLimit\` raising an out-of-memory error, ${stoppedByOwnStringCap.length} hit the engine's own max-string-length invariant instead, and ${exceededConfiguredLimit.length} grew past ${QUICKJS_MEMORY_LIMIT_MIB * 1.5} MiB (1.5x the configured ${QUICKJS_MEMORY_LIMIT_MIB} MiB limit) before anything stopped them${exceededConfiguredLimit.length > 0 ? ` (measured peak RSS: ${exceededConfiguredLimit.map((r) => `\`${r.fixtureId}\` ${((r.peakRssBytes ?? 0) / (1024 * 1024)).toFixed(0)} MiB`).join(", ")})` : ""} — direct, measured confirmation of quickjs-emscripten#255 (\`setMemoryLimit\` is soft against this growable-WASM build). Correction: \`allocation-string-doubling\` was previously mis-reported as \`completed\` here — it actually ends in an uncaught engine error (\`string too long\`) that the classifier didn't recognize as a stop signal unless tagged with a known \`limitKind\`. The fix is two-fold: \`limitKind\` now explicitly recognizes the \`string too long\` message (\`"string-length"\`), and the loop-recursion/allocation category classifier now treats *any* abnormal ending (\`ok: false\`) as \`terminated\`, not just a recognized one — \`completed\` in this category means the fixture ran to the end genuinely unstopped, never "stopped for an unrecognized reason." None of the three measured stopping mechanisms here (deadline, \`setMemoryLimit\`, string-length cap) should be read as "allocation defenses work uniformly" — which one fires is pattern-dependent and only the deadline/RSS supervisor is guaranteed present for every pattern; see the bottom line.`,
   );
 
   const unhealthy = nextRunHealth.filter((entry) => !entry.healthy);
@@ -379,7 +391,15 @@ function buildFindings(
   );
   if (unresolvedPromise) {
     findings.push(
-      `An unresolved, un-chained promise did not hang this driver (outcome \`${unresolvedPromise.outcome}\` in ${unresolvedPromise.timeToTerminationMs.toFixed(0)}ms): this driver never calls \`runtime.executePendingJobs()\`, so a settled-never promise with no reaction simply has nothing left to run. A driver that does drain the job queue would need its own bounded pump loop — the infinite-microtask-recursion fixture exists precisely to measure that case.`,
+      `An unresolved, un-chained promise did not hang this driver (outcome \`${unresolvedPromise.outcome}\` in ${unresolvedPromise.timeToTerminationMs.toFixed(0)}ms, jobsExecuted=${unresolvedPromise.childOutput?.jobsExecuted ?? 0}): it creates no reaction job at all (nothing calls \`.then()\` on it), so even with the job pump below actively running after every fixture, there is nothing queued to drain.`,
+    );
+  }
+  const microtaskRecursion = asyncRecords.find(
+    (r) => r.fixtureId === "async-microtask-recursion",
+  );
+  if (microtaskRecursion) {
+    findings.push(
+      `The infinitely self-requeuing microtask fixture is now actually exercised: this driver runs a bounded pending-job pump (\`runtime.executePendingJobs()\` in batches, under the same interrupt deadline) after the top-level script returns, rather than never draining the job queue at all. Measured: \`${microtaskRecursion.childOutput?.jobsExecuted ?? 0}\` jobs executed before the pump's own ${MAX_JOBS_TOTAL.toLocaleString()}-job budget tripped (\`limitKind: "job-budget"\`) in ${microtaskRecursion.timeToTerminationMs.toFixed(0)}ms — faster than either the job budget or the interrupt deadline alone would guarantee, so both bounds are real, independent backstops, not just one masking the other. Outcome: \`${microtaskRecursion.outcome}\`.`,
     );
   }
 
@@ -439,12 +459,17 @@ function buildBottomLine(
     );
   }
   parts.push(
-    `QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated \`Bun.spawn\` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture${escapedValidation.length > 0 ? " and every malformed-input fixture except the Proxy value-integrity gap noted above" : " and every malformed-input fixture"}, it can \`try\`/\`catch\` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter.`,
+    `QuickJS (quickjs-emscripten 0.32.x), run one fresh interpreter per execution inside an isolated \`Bun.spawn\` subprocess with an outer wall-clock/RSS supervisor, is the mechanism this probe recommends for ADR-0004: it blocked every external-capability fixture, and every malformed-input fixture either committed exactly the true (schema-validated) value, was rejected outright, or — in one accepted residual case (a Proxy's own \`getOwnPropertyDescriptor\` trap) — committed exactly what the trap presented, bounded by ordinary value validation, never a host escape${escapedValidation.length > 0 ? " (**except the value-integrity gap noted above, which is a live regression**)" : ""}. QuickJS can \`try\`/\`catch\` a rejected API call and keep running (Lua's zero-stdlib config cannot), and the world's action validator remains the real authority regardless of interpreter.`,
   );
   parts.push(
-    quickjsAllocExceededLimit
-      ? "The runtime's own `setMemoryLimit` is **not** sufficient by itself: measured allocation fixtures grew well past the configured 64 MiB before the deadline (not the memory limit) stopped them, confirming quickjs-emscripten#255/#219 directly on this machine. A fixed-memory (non-growable) WASM build, or accepting the subprocess wall-clock/RSS bound as the *real* memory boundary, is required before relying on `setMemoryLimit` alone."
-      : "The runtime's own `setMemoryLimit`/interrupt handler stopped every measured allocation fixture within the configured bound in this run, though quickjs-emscripten#255/#219 mean that is not a guarantee across allocation patterns — the subprocess wall-clock/RSS bound stays the documented, always-on backstop regardless.",
+    'Allocation defenses are **not** a uniform success story — do not read the category as "solved": which mechanism stops a given allocation pattern (the deadline, `setMemoryLimit` raising OOM, or an unrelated engine invariant like max-string-length) is pattern-dependent, and this run measured `setMemoryLimit` itself firing zero times. ' +
+      (quickjsAllocExceededLimit
+        ? "Measured allocation fixtures grew well past the configured 64 MiB before anything recognized stopped them, confirming quickjs-emscripten#255/#219 directly on this machine."
+        : "No allocation fixture in this run exceeded 1.5x the configured 64 MiB before something stopped it, though quickjs-emscripten#255/#219 mean that is not a guarantee across allocation patterns.") +
+      " The only mechanism guaranteed present for every pattern is the outer subprocess wall-clock/RSS supervisor — treat that as the *real* memory boundary, and `setMemoryLimit`/the engine's own invariants as an unreliable bonus, not the other way around. A fixed-memory (non-growable) WASM build is the only way to make `setMemoryLimit` itself trustworthy.",
+  );
+  parts.push(
+    "Async hangs are now actually measured, not merely assumed absent: this driver runs a bounded pending-job pump after the top-level script returns, under the same interrupt deadline, so an infinitely self-requeuing microtask chain is drained (and terminated by a job-count budget) instead of never being exercised at all. An unresolved, un-chained promise remains a non-issue on its own merits (it queues no reaction job), not because the driver ignores the job queue.",
   );
   parts.push(
     "Lua (wasmoon 1.16.x) does not win on any measured criterion here: it terminates loops via the same class of mechanism (a `lua_sethook` count hook reachable through `Thread.run({ timeout })`, not through `functionTimeout`/`doString` alone, which only bounds JS callbacks invoked *from* Lua), but its locked-down configuration (`openStandardLibs: false`) leaves generated behaviors with no base library at all, making even ordinary error handling unavailable to the guest. ADR-0004 should stay on QuickJS.",
@@ -469,6 +494,7 @@ async function runAll(): Promise<void> {
         runtime,
         fixtureId: fixture.id,
         category: fixture.category,
+        expect: fixture.expect,
       });
       records.push(record);
       console.error(
@@ -495,12 +521,14 @@ async function runAll(): Promise<void> {
       runtime,
       fixtureId: priorFixture.id,
       category: priorFixture.category,
+      expect: priorFixture.expect,
     });
     const followUp = await runFixtureInSubprocess({
       runFilePath,
       runtime,
       fixtureId: NEXT_RUN_HEALTH_PROBE_FIXTURE,
       category: "happy-path",
+      expect: getFixture(NEXT_RUN_HEALTH_PROBE_FIXTURE).expect,
     });
     nextRunHealth.push({
       runtime,

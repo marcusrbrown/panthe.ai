@@ -4,6 +4,11 @@
 # inspection — see README "Caveat" for why this isn't the HTTP API), and
 # `PRAGMA integrity_check` results after every kill.
 #
+# `set -euo pipefail`: every transition asserts its condition and the
+# script exits non-zero (immediately, fail-fast) the moment one doesn't
+# hold, rather than logging a soft "FAIL" and continuing into a state a
+# later transition would silently misinterpret.
+#
 # The sidecar's per-launch auth token is minted by the Rust shell, passed
 # only over the child's stdin, and never written to logs, disk, or this
 # script's output (System-Wide Impact, plan). This script therefore never
@@ -14,7 +19,7 @@
 #
 # Requires: the packaged .app already built and ad-hoc signed (this script
 # does that first). macOS only, per M0 scope.
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROBE_DIR="$(dirname "$SCRIPT_DIR")"
@@ -43,14 +48,33 @@ section() {
   log "=== $* ==="
 }
 
-# --- process helpers -------------------------------------------------------
+fail() {
+  log "FAIL: $*"
+  exit 1
+}
 
-app_pid() { pgrep -f "$APP_BIN" | head -n1; }
-sidecar_pid() { pgrep -f "src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/MacOS/panthea-sim" | head -n1; }
+pass() {
+  log "PASS: $*"
+}
+
+# --- process helpers -------------------------------------------------------
+# Every helper below always exits 0 itself (an absent process is a valid,
+# expected outcome to report as an empty string) so callers can assign
+# `x="$(helper)"` safely under `set -e` — bash does not apply `-e` to the
+# right-hand side of `||`, so the guard belongs inside each helper.
+
+app_pid() { pgrep -f "$APP_BIN" 2>/dev/null | head -n1 || true; }
+sidecar_pid() { pgrep -f "src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/MacOS/panthea-sim" 2>/dev/null | head -n1 || true; }
+sidecar_count() { pgrep -f "src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app/Contents/MacOS/panthea-sim" 2>/dev/null | wc -l | tr -d ' ' || true; }
 
 is_alive() {
   local pid="$1"
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+window_count() {
+  local pid="$1"
+  osascript -e "tell application \"System Events\" to count windows of (first process whose unix id is $pid)" 2>/dev/null || echo "-1"
 }
 
 rss_snapshot() {
@@ -71,6 +95,15 @@ rss_snapshot() {
   fi
 }
 
+# Prints `<event count> <max id>` for the current DB (0 0 if absent/empty).
+event_snapshot() {
+  if [[ ! -f "$DB_PATH" ]]; then
+    echo "0 0"
+    return
+  fi
+  sqlite3 "$DB_PATH" "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM events;" | tr '|' ' '
+}
+
 db_status() {
   local label="$1"
   log "--- DB status: $label ---"
@@ -84,13 +117,19 @@ db_status() {
   fi
 }
 
+# Asserts `PRAGMA integrity_check` is exactly "ok" — a real assertion, not
+# just a logged observation.
 integrity_check() {
   local label="$1"
-  if [[ -f "$DB_PATH" ]]; then
-    log "PRAGMA integrity_check ($label): $(sqlite3 "$DB_PATH" 'PRAGMA integrity_check;')"
-  else
-    log "PRAGMA integrity_check ($label): (no db)"
+  if [[ ! -f "$DB_PATH" ]]; then
+    fail "integrity_check ($label): no db at $DB_PATH"
   fi
+  local result
+  result="$(sqlite3 "$DB_PATH" 'PRAGMA integrity_check;')"
+  if [[ "$result" != "ok" ]]; then
+    fail "integrity_check ($label): expected 'ok', got '$result'"
+  fi
+  pass "integrity_check ($label): ok"
 }
 
 lock_status() {
@@ -111,28 +150,41 @@ launch_app() {
   local a
   a="$(app_pid)"
   if [[ -z "$a" ]]; then
-    log "FAIL: app did not stay running after launch"
-    return 1
+    fail "app did not stay running after launch"
   fi
   log "app pid=$a"
-  # Give the sidecar a moment to bind + start ticking.
-  sleep 2
+  # Wait for the sidecar to appear and bind + start ticking, rather than a
+  # fixed guess — poll up to 10s.
+  local s=""
+  for _ in $(seq 1 20); do
+    s="$(sidecar_pid)"
+    [[ -n "$s" ]] && break
+    sleep 0.5
+  done
+  if [[ -z "$s" ]]; then
+    fail "sidecar did not appear within 10s of shell launch"
+  fi
+  log "sidecar pid=$s"
 }
 
 stop_app_gracefully() {
   local a
   a="$(app_pid)"
-  if [[ -n "$a" ]]; then
-    log "SIGTERM app pid=$a (Quit-equivalent — see README Caveat on tray automation)"
-    kill -TERM "$a" 2>/dev/null || true
-    for _ in $(seq 1 20); do
-      is_alive "$a" || break
-      sleep 0.5
-    done
+  if [[ -z "$a" ]]; then
+    return 0
+  fi
+  log "SIGTERM app pid=$a (Quit-equivalent — see README Caveat on tray automation)"
+  kill -TERM "$a" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    is_alive "$a" || break
+    sleep 0.5
+  done
+  if is_alive "$a"; then
+    fail "app pid=$a did not exit within 10s of SIGTERM"
   fi
 }
 
-# --- build -------------------------------------------------------------
+# --- build -----------------------------------------------------------------
 
 build_and_sign() {
   section "Build + ad-hoc sign"
@@ -143,8 +195,7 @@ build_and_sign() {
   (cd "$DESKTOP_DIR" && bun run tauri build) 2>&1 | tee -a "$RESULTS_FILE"
 
   if [[ ! -d "$APP_BUNDLE" ]]; then
-    log "FAIL: expected bundle not found at $APP_BUNDLE"
-    exit 1
+    fail "expected bundle not found at $APP_BUNDLE"
   fi
 
   log "ad-hoc signing (M0 probe only — never release guidance): codesign -s - + xattr -cr"
@@ -153,42 +204,69 @@ build_and_sign() {
   codesign -dv "$APP_BUNDLE" 2>&1 | tee -a "$RESULTS_FILE" || true
 }
 
-# --- transitions ---------------------------------------------------------
+# --- transitions -----------------------------------------------------------
 
 transition_close_window_then_quit() {
   section "Transition 1: start -> close window -> verify tick continues -> Quit -> verify exit"
   rm -f "$LOCK_PATH"
-  launch_app || return 1
+  launch_app
   rss_snapshot "after start"
   db_status "after start"
 
-  log "closing main window via AppleScript (System Events)"
-  osascript -e "tell application \"System Events\" to tell (first process whose unix id is $(app_pid)) to click button 1 of window 1" \
-    2>&1 | tee -a "$RESULTS_FILE" || log "(AppleScript close-window failed — see README manual fallback)"
-  sleep 3
+  local a
+  a="$(app_pid)"
 
-  if is_alive "$(app_pid)"; then
-    log "PASS: shell process still alive after window close (kept running in tray)"
-  else
-    log "FAIL: shell process exited on window close (tray behavior not working)"
+  log "waiting for the main window to appear (pid=$a)"
+  local before=-1
+  for _ in $(seq 1 20); do
+    before="$(window_count "$a")"
+    [[ "$before" -ge 1 ]] && break
+    sleep 0.5
+  done
+  if [[ "$before" -lt 1 ]]; then
+    fail "main window never appeared for pid $a (window_count=$before)"
   fi
 
+  log "closing main window via AppleScript (System Events)"
+  osascript -e "tell application \"System Events\" to tell (first process whose unix id is $a) to click button 1 of window 1" \
+    2>&1 | tee -a "$RESULTS_FILE" || true
+
+  local after=-1
+  for _ in $(seq 1 20); do
+    after="$(window_count "$a")"
+    [[ "$after" -eq 0 ]] && break
+    sleep 0.5
+  done
+  if [[ "$after" -ne 0 ]]; then
+    fail "window count did not drop to 0 within 10s of the close click (still $after)"
+  fi
+  pass "window count dropped from $before to 0 after close"
+
+  if ! is_alive "$a"; then
+    fail "shell process exited on window close (tray behavior not working)"
+  fi
+  pass "shell process still alive after window close (kept running in tray)"
+
+  local events_before max_id_before
+  read -r events_before max_id_before <<<"$(event_snapshot)"
   db_status "before waiting for tick after close"
   sleep 5
+  local events_after max_id_after
+  read -r events_after max_id_after <<<"$(event_snapshot)"
   db_status "after waiting 5s post-close (tick should have advanced)"
+  if [[ "$events_after" -le "$events_before" ]]; then
+    fail "event count did not strictly increase after window close ($events_before -> $events_after)"
+  fi
+  pass "event count strictly increased after window close ($events_before -> $events_after)"
 
   stop_app_gracefully
-  sleep 1
-  if is_alive "$(app_pid)"; then
-    log "FAIL: shell process still alive after Quit-equivalent SIGTERM"
-  else
-    log "PASS: shell process exited after Quit-equivalent SIGTERM"
-  fi
+  pass "shell process exited after Quit-equivalent SIGTERM"
+
   if is_alive "$(sidecar_pid)"; then
-    log "FAIL: sidecar still alive after shell exit (orphan)"
-  else
-    log "PASS: sidecar not running after shell exit (no orphan)"
+    fail "sidecar still alive after shell exit (orphan)"
   fi
+  pass "sidecar not running after shell exit (no orphan)"
+
   integrity_check "after transition 1"
   lock_status "after transition 1"
 }
@@ -196,33 +274,42 @@ transition_close_window_then_quit() {
 transition_kill_sidecar_restart() {
   section "Transition 2: start -> kill -9 sidecar -> verify supervisor restarts + event continuity"
   rm -f "$LOCK_PATH"
-  launch_app || return 1
+  launch_app
   db_status "before kill"
+
   local before_sidecar_pid
   before_sidecar_pid="$(sidecar_pid)"
+  if [[ -z "$before_sidecar_pid" ]]; then
+    fail "no sidecar process found to kill"
+  fi
   log "sidecar pid before kill: $before_sidecar_pid"
 
-  if [[ -z "$before_sidecar_pid" ]]; then
-    log "FAIL: no sidecar process found to kill"
-    stop_app_gracefully
-    return 1
-  fi
+  local events_before
+  events_before="$(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM events;')"
 
   kill -9 "$before_sidecar_pid"
   log "sent kill -9 to sidecar pid $before_sidecar_pid"
-  sleep 5
 
-  local after_sidecar_pid
-  after_sidecar_pid="$(sidecar_pid)"
-  log "sidecar pid after supervisor restart: $after_sidecar_pid"
-  if [[ -n "$after_sidecar_pid" && "$after_sidecar_pid" != "$before_sidecar_pid" ]]; then
-    log "PASS: supervisor restarted the sidecar with a new pid"
-  else
-    log "FAIL: supervisor did not restart the sidecar (pid=$after_sidecar_pid)"
+  local after_sidecar_pid=""
+  for _ in $(seq 1 10); do
+    sleep 1
+    after_sidecar_pid="$(sidecar_pid)"
+    [[ -n "$after_sidecar_pid" && "$after_sidecar_pid" != "$before_sidecar_pid" ]] && break
+  done
+  if [[ -z "$after_sidecar_pid" || "$after_sidecar_pid" == "$before_sidecar_pid" ]]; then
+    fail "supervisor did not restart the sidecar with a new pid within 10s (pid=$after_sidecar_pid)"
   fi
+  pass "supervisor restarted the sidecar with a new pid ($before_sidecar_pid -> $after_sidecar_pid)"
 
   sleep 3
   db_status "after restart (event ids should continue increasing, not reset)"
+  local events_after
+  events_after="$(sqlite3 "$DB_PATH" 'SELECT COUNT(*) FROM events;')"
+  if [[ "$events_after" -le "$events_before" ]]; then
+    fail "event count did not strictly increase across the restart ($events_before -> $events_after)"
+  fi
+  pass "event count strictly increased across the restart ($events_before -> $events_after, no reset)"
+
   integrity_check "after transition 2"
   rss_snapshot "after transition 2"
 
@@ -232,7 +319,7 @@ transition_kill_sidecar_restart() {
 transition_kill_app_force() {
   section "Transition 3: start -> kill -9 app -> verify sidecar exits <=10s and lock reclaimable"
   rm -f "$LOCK_PATH"
-  launch_app || return 1
+  launch_app
   local a s
   a="$(app_pid)"
   s="$(sidecar_pid)"
@@ -248,29 +335,28 @@ transition_kill_app_force() {
   done
 
   if is_alive "$s"; then
-    log "FAIL: sidecar still alive ${waited}s after app force-kill (orphaned)"
-  else
-    log "PASS: sidecar exited within ${waited}s of app force-kill (no orphan)"
+    fail "sidecar still alive ${waited}s after app force-kill (orphaned)"
   fi
+  pass "sidecar exited within ${waited}s of app force-kill (no orphan)"
+
   integrity_check "after transition 3"
   lock_status "after transition 3 (pid $s should now be dead)"
 
   log "starting a fresh app instance to verify the stale lock is reclaimed"
-  launch_app || return 1
+  launch_app
   sleep 2
   lock_status "after reclaim attempt (pid should be the new sidecar's pid)"
-  if grep -q "reclaimed stale lock" "$APP_LOG"; then
-    log "PASS: app log shows the stale lock was reclaimed"
-  else
-    log "NOTE: 'reclaimed stale lock' not found in app log — check $APP_LOG manually"
+  if ! grep -q "reclaimed stale lock" "$APP_LOG"; then
+    fail "app log does not show the stale lock was reclaimed (expected 'reclaimed stale lock' in $APP_LOG)"
   fi
+  pass "app log shows the stale lock was reclaimed"
   stop_app_gracefully
 }
 
 transition_duplicate_start() {
   section "Transition 4: second launch while running -> refused"
   rm -f "$LOCK_PATH"
-  launch_app || return 1
+  launch_app
   local first_pid
   first_pid="$(app_pid)"
   log "first instance pid=$first_pid"
@@ -281,43 +367,85 @@ transition_duplicate_start() {
   sleep 2
 
   if is_alive "$second_pid"; then
-    log "FAIL: second instance still running as its own process (single-instance plugin did not refuse it)"
     kill -9 "$second_pid" 2>/dev/null || true
-  else
-    log "PASS: second instance exited immediately (tauri-plugin-single-instance refused it)"
+    fail "second instance still running as its own process (single-instance plugin did not refuse it)"
   fi
+  pass "second instance exited immediately (tauri-plugin-single-instance refused it)"
 
   local after_first_pid
   after_first_pid="$(app_pid)"
-  if [[ "$after_first_pid" == "$first_pid" ]]; then
-    log "PASS: original instance (pid=$first_pid) is still the only one running"
-  else
-    log "NOTE: original instance pid changed unexpectedly (was $first_pid, now $after_first_pid)"
+  if [[ "$after_first_pid" != "$first_pid" ]]; then
+    fail "original instance pid changed unexpectedly (was $first_pid, now $after_first_pid)"
   fi
+  pass "original instance (pid=$first_pid) is still the only one running"
+
+  local second_sidecar_count
+  second_sidecar_count="$(sidecar_count)"
+  if [[ "$second_sidecar_count" -ne 1 ]]; then
+    fail "expected exactly 1 sidecar process after the refused duplicate launch, found $second_sidecar_count"
+  fi
+  pass "exactly 1 sidecar process running (the duplicate launch never reached spawn_sidecar)"
 
   stop_app_gracefully
 }
 
 transition_simulated_sleep() {
-  section "Transition 5: SIGSTOP sidecar 120s, SIGCONT -> interval applied once (pmset sleepnow is a manual owner step, see README)"
+  section "Transition 5: SIGSTOP sidecar 120s, SIGCONT -> interval applied exactly once (pmset sleepnow is a manual owner step, see README)"
   rm -f "$LOCK_PATH"
-  launch_app || return 1
+  launch_app
   sleep 3
   local s
   s="$(sidecar_pid)"
+
+  local last_id_before
+  last_id_before="$(sqlite3 "$DB_PATH" 'SELECT COALESCE(MAX(id), 0) FROM events;')"
   db_status "before SIGSTOP"
 
+  local stop_duration_s=120
   log "SIGSTOP sidecar pid=$s"
   kill -STOP "$s"
-  log "sleeping 120s with the sidecar stopped (simulates display sleep; the shell process stays running)"
-  sleep 120
+  log "sleeping ${stop_duration_s}s with the sidecar stopped (simulates display sleep; the shell process stays running)"
+  sleep "$stop_duration_s"
 
   log "SIGCONT sidecar pid=$s"
   kill -CONT "$s"
+
+  local resumed=0
+  local last_id_after="$last_id_before"
+  for _ in $(seq 1 30); do
+    sleep 1
+    last_id_after="$(sqlite3 "$DB_PATH" 'SELECT COALESCE(MAX(id), 0) FROM events;')"
+    if [[ "$last_id_after" -gt "$last_id_before" ]]; then
+      resumed=1
+      break
+    fi
+  done
+  if [[ "$resumed" -ne 1 ]]; then
+    fail "no new tick within 30s of SIGCONT (last_id stayed at $last_id_before)"
+  fi
+  pass "ticking resumed after SIGCONT (last_id $last_id_before -> $last_id_after)"
+
+  # A few more seconds so the post-resume window is stable before asserting
+  # on it (the catch-up tick plus at least one or two normal-cadence ticks).
   sleep 3
-  db_status "after SIGCONT (one tick should show a ~120000ms jump, not a repeat)"
-  sleep 3
-  db_status "one tick later (should be a normal ~1000ms increment, confirming the jump wasn't reapplied)"
+  db_status "after SIGCONT (one tick should show a jump >= the stop duration, not a repeat)"
+
+  local threshold_ms=$((stop_duration_s * 1000))
+  local big_count
+  big_count="$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM events WHERE id > $last_id_before AND CAST(REPLACE(REPLACE(note, 'tick applied=', ''), 'ms', '') AS INTEGER) >= $threshold_ms;")"
+  if [[ "$big_count" -ne 1 ]]; then
+    fail "expected exactly 1 catch-up tick >= ${threshold_ms}ms after resume, found $big_count"
+  fi
+  pass "exactly one catch-up tick >= ${threshold_ms}ms found (interval applied once, not zero, not twice)"
+
+  local max_applied_ms
+  max_applied_ms="$(sqlite3 "$DB_PATH" "SELECT COALESCE(MAX(CAST(REPLACE(REPLACE(note, 'tick applied=', ''), 'ms', '') AS INTEGER)), 0) FROM events WHERE id > $last_id_before;")"
+  if [[ "$max_applied_ms" -lt "$threshold_ms" ]]; then
+    fail "catch-up tick applied=${max_applied_ms}ms is less than the stop duration ${threshold_ms}ms"
+  fi
+  pass "catch-up tick applied=${max_applied_ms}ms >= stop duration ${threshold_ms}ms"
+
+  db_status "one tick later (confirming the jump wasn't reapplied)"
   integrity_check "after transition 5"
 
   stop_app_gracefully
@@ -330,7 +458,7 @@ main() {
   transition_kill_app_force
   transition_duplicate_start
   transition_simulated_sleep
-  section "Done — see $RESULTS_FILE and $APP_LOG"
+  section "Done — every transition asserted PASS. See $RESULTS_FILE and $APP_LOG"
 }
 
 main "$@"

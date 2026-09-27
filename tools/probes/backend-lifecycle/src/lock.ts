@@ -20,7 +20,13 @@
 // interpreted as recovery state.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 
 export interface LockInfo {
   readonly pid: number;
@@ -87,8 +93,22 @@ export function readLock(path: string): LockInfo | undefined {
   }
 }
 
+/**
+ * Writes the lock file and enforces 0600 regardless of umask —
+ * `writeFileSync`'s `mode` option is still subject to the process umask, so
+ * a fresh acquire *and* a reclaim of an existing (differently-moded) lock
+ * file both need an explicit `chmodSync` afterward, asserted by re-reading
+ * the mode rather than trusted blindly.
+ */
 export function writeLock(path: string, info: LockInfo): void {
-  writeFileSync(path, JSON.stringify(info), { encoding: "utf8", mode: 0o600 });
+  writeFileSync(path, JSON.stringify(info), "utf8");
+  chmodSync(path, 0o600);
+  const actual = statSync(path).mode & 0o777;
+  if (actual !== 0o600) {
+    throw new Error(
+      `lock: failed to enforce file mode 0600 on ${path} (got ${actual.toString(8)})`,
+    );
+  }
 }
 
 export interface AcquireLockDeps {

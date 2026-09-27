@@ -10,8 +10,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROBE_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(cd "$PROBE_DIR/../../.." && pwd)"
 
-TRIPLE="${PANTHEA_SIDECAR_TRIPLE:-aarch64-apple-darwin}"
-BINARY="${1:-$REPO_ROOT/apps/desktop/src-tauri/binaries/panthea-sim-$TRIPLE}"
+# Same derivation as build-sidecar.sh — see there for rationale. Only used
+# to find the default binary path when none is passed as $1.
+detect_host_triple() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  if [[ "$os" != "Darwin" ]]; then
+    echo "scan-binary: unsupported OS '$os' -- this probe only auto-derives a target for macOS (M0 scope); set PANTHEA_SIDECAR_TRIPLE explicitly, or pass the binary path as \$1" >&2
+    exit 1
+  fi
+  case "$arch" in
+    arm64) echo "aarch64-apple-darwin" ;;
+    x86_64) echo "x86_64-apple-darwin" ;;
+    *)
+      echo "scan-binary: unrecognized macOS architecture '$arch'" >&2
+      exit 1
+      ;;
+  esac
+}
+
+if [[ $# -ge 1 ]]; then
+  BINARY="$1"
+elif [[ -n "${PANTHEA_SIDECAR_TRIPLE:-}" ]]; then
+  BINARY="$REPO_ROOT/apps/desktop/src-tauri/binaries/panthea-sim-$PANTHEA_SIDECAR_TRIPLE"
+else
+  BINARY="$REPO_ROOT/apps/desktop/src-tauri/binaries/panthea-sim-$(detect_host_triple)"
+fi
 
 if [[ ! -f "$BINARY" ]]; then
   echo "scan-binary: $BINARY not found; run scripts/build-sidecar.sh first" >&2

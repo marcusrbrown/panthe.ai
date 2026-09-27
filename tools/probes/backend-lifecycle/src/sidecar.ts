@@ -358,8 +358,15 @@ function main(): void {
     if (handle) {
       handle.shutdown("stdin-eof");
     } else {
-      // EOF arrived before any token line — nothing was started yet.
-      process.exit(0);
+      // EOF arrived before any token line was ever received. This should
+      // never happen via the real Tauri spawn path (the shell writes the
+      // token immediately after spawn) — refuse to start rather than
+      // exiting cleanly, since a sidecar with no token can never have
+      // been authorized to serve.
+      console.error(
+        "sidecar: stdin closed before a launch token was received; refusing to start",
+      );
+      process.exit(1);
     }
   });
 }

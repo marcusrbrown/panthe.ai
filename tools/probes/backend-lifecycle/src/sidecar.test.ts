@@ -136,4 +136,32 @@ describe("sidecar (bun run src/sidecar.ts)", () => {
     const exitCode = await proc.exited;
     expect(exitCode).toBe(0);
   });
+
+  test("error path: stdin EOF before any token line refuses to start (non-zero exit, never serves)", async () => {
+    const proc = Bun.spawn(["bun", "run", SIDECAR_ENTRY], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PANTHEA_APP_DATA_DIR: appDataDir,
+      },
+    });
+
+    const stdin = proc.stdin;
+    if (typeof stdin === "number" || !stdin) {
+      throw new Error("expected a FileSink stdin (spawned with stdin: 'pipe')");
+    }
+    // Close stdin immediately — no token line is ever written. The real
+    // Tauri spawn path always writes a token right after spawn, so this
+    // only happens on a broken launch; the sidecar must refuse to start
+    // rather than exiting as if it had been gracefully asked to shut down.
+    stdin.end();
+
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).not.toContain("PANTHEA_PORT=");
+  });
 });

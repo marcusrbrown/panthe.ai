@@ -45,8 +45,21 @@ env:
     Rust shell in apps/desktop/src-tauri). Read AGENTS.md first: its
     Invariants section is the review contract, backed by authority in
     docs/product/decisions.md (D01–D25), docs/product/defaults.md, and
-    docs/product/requirements.md. Prefer false positives over false
-    negatives for security and invariant violations.
+    docs/product/requirements.md. docs/solutions/ holds solved problems and
+    practices by category, with YAML frontmatter (module, tags, problem_type);
+    it is relevant when a change touches a documented area. Prefer false
+    positives over false negatives for security and invariant violations.
+
+    Panthea is greenfield, pre-release, and single-user with no shipped
+    data. Apply the rent test in
+    docs/solutions/best-practices/greenfield-anti-over-engineering-2026-09-27.md
+    to every hardening you request: raise a safeguard only when it defends a
+    concrete threat in the app's real trust model or maps to a requirement ID
+    or an AGENTS.md invariant. Do not request migrations, upcasters, or
+    compatibility shims for unshipped formats, contracts ahead of their
+    consumer, or limits and checks that a superseded plan decision already
+    declined; if you disagree with such a decision, say so once under
+    Non-blocking concerns.
 
     Review the diff directly. Do NOT invoke `ce:review` or any other `ce:*`
     skill (ce:work, ce:plan, ce:brainstorm, ce:compound, etc.). Those are
@@ -108,8 +121,11 @@ env:
     packages/*, tools/*; React 19 + Three.js/Three Flatland client; Rust
     shell in apps/desktop/src-tauri). Read AGENTS.md, docs/README.md,
     docs/product/decisions.md, docs/product/requirements.md,
-    docs/product/traceability.md, docs/product/mvp-roadmap.md, and
-    docs/decisions/README.md first.
+    docs/product/traceability.md, docs/product/mvp-roadmap.md,
+    docs/decisions/README.md, and docs/solutions/README.md first.
+    docs/solutions/ holds solved problems and practices by category, with
+    YAML frontmatter (module, tags, problem_type); it is relevant when
+    working in a documented area.
 
     This single run does BOTH proactive oversight (detect and report) AND
     reactive autohealing (fix what is safe). Prioritize minimal, reversible
@@ -236,8 +252,8 @@ env:
          15 WebGPU comparison; macOS 26 WKWebView WebGPU; packaged
          Windows/Linux results. Never fabricate probe execution.
        - Stale TODO/FIXME annotations older than 90 days (git blame);
-         convention drift from AGENTS.md layout; docs/solutions frontmatter
-         schema drift.
+         convention drift from AGENTS.md layout; docs/solutions category
+         layout and frontmatter schema drift.
        Make no changes in this category.
 
     6. CROSS-PROJECT INTELLIGENCE (report-only)

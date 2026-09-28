@@ -1,0 +1,154 @@
+import { expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type { WorldViewModel } from "../store";
+import { ClientSurface } from "./surface";
+
+function view(overrides: Partial<WorldViewModel> = {}): WorldViewModel {
+  return {
+    sequence: 1,
+    sessionId: "session-1",
+    tick: 3,
+    status: "running",
+    realms: {
+      mortal: [
+        {
+          id: "town-square",
+          name: "Town Square",
+          realm: "mortal",
+          edges: [],
+          actors: [
+            {
+              id: "wanderer",
+              locationId: "town-square",
+              alive: true,
+              isDeity: false,
+              inventory: [],
+            },
+          ],
+          buildings: [],
+        },
+      ],
+      olympus: [
+        {
+          id: "hall",
+          name: "Hall",
+          realm: "olympus",
+          edges: [],
+          actors: [],
+          buildings: [],
+        },
+      ],
+      underworld: [
+        {
+          id: "gate",
+          name: "Gate",
+          realm: "underworld",
+          edges: [],
+          actors: [],
+          buildings: [],
+        },
+      ],
+    },
+    recentEvents: [],
+    ...overrides,
+  } as WorldViewModel;
+}
+
+test("target picker renders actor and locations grouped by realm", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface view={view()} observation={{ kind: "idle" }} />,
+  );
+
+  expect(html.indexOf("Mortal")).toBeLessThan(html.indexOf("Olympus"));
+  expect(html.indexOf("Olympus")).toBeLessThan(html.indexOf("Underworld"));
+  expect(html).toContain("Wanderer");
+  expect(html).toContain("Town Square");
+});
+
+test("the displayed realm follows the actor into the Underworld", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface
+      view={view()}
+      observation={{
+        kind: "following",
+        target: { kind: "actor", id: "wanderer" },
+        locationId: "gate",
+        realm: "underworld",
+      }}
+    />,
+  );
+
+  expect(html).toContain('data-realm="underworld"');
+  expect(html).toContain("Underworld");
+});
+
+test("a lost target shows its held location and reason", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface
+      view={view()}
+      observation={{
+        kind: "held",
+        target: { kind: "actor", id: "wanderer" },
+        reason: "died",
+        lastKnown: { locationId: "town-square", realm: "mortal" },
+      }}
+    />,
+  );
+
+  expect(html).toContain("Lost sight: died");
+  expect(html).toContain("Town Square");
+});
+
+test("catch-up summary is presented as a dismissible panel", () => {
+  const summaryView = view({
+    catchUpSummary: {
+      appliedMs: 7_200_000,
+      skippedMs: 10_800_000,
+      majorOutcomes: ["tavern fire spread"],
+    },
+  });
+  const html = renderToStaticMarkup(
+    <ClientSurface view={summaryView} observation={{ kind: "idle" }} />,
+  );
+  const dismissedHtml = renderToStaticMarkup(
+    <ClientSurface
+      view={summaryView}
+      observation={{ kind: "idle" }}
+      dismissedSummary
+    />,
+  );
+
+  expect(html).toContain("Caught up: 2h applied, 3h skipped");
+  expect(html).toContain('aria-label="Dismiss catch-up summary"');
+  expect(dismissedHtml).not.toContain("Caught up:");
+});
+
+test("paused status is visible without exposing world controls", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface
+      view={view({ status: "paused" })}
+      observation={{ kind: "idle" }}
+    />,
+  );
+
+  expect(html).toContain("World paused");
+  expect(html).not.toContain("Resume");
+  expect(html).not.toContain("Stop world");
+});
+
+test("degraded status remains visible until a later frame clears it", () => {
+  const degraded = view({ status: "degraded", degradedReason: "disk-full" });
+  const degradedHtml = renderToStaticMarkup(
+    <ClientSurface view={degraded} observation={{ kind: "idle" }} />,
+  );
+  const runningHtml = renderToStaticMarkup(
+    <ClientSurface
+      view={view({ sequence: 2, status: "running" })}
+      observation={{ kind: "idle" }}
+    />,
+  );
+
+  expect(degradedHtml).toContain("disk-full");
+  expect(runningHtml).not.toContain("disk-full");
+});

@@ -358,6 +358,7 @@ function economyFixtureState(): WorldState {
     capabilities: [],
     inventory: new Map([["wood", 4]]),
     drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    gathers: "wood",
     revision: 0,
   });
   state = withActor(state, {
@@ -451,6 +452,34 @@ test("a gather proposal after the favor expires yields only the base amount", ()
       amount: 2,
     });
   }
+});
+
+test("a gather proposal for a resource the actor is not authored to gather is rejected", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "gather",
+      resource: "currency",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+});
+
+test("a gather proposal from an actor with no authored gather resource is rejected", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "gather",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
 });
 
 test("a gather proposal always commits for a living actor", () => {
@@ -645,6 +674,23 @@ test("a fair trade a neutral-drives counterparty accepts commits as one atomic t
       receive: [{ resource: "currency", amount: 2 }],
     });
   }
+});
+
+test("a trade naming the actor as its own counterparty is rejected and leaves inventory unchanged", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "woodcutter",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "wood", amount: 2 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  const woodcutter = state.actors.get(toEntityId("woodcutter"));
+  expect(woodcutter?.inventory.get("wood")).toBe(4);
 });
 
 test("a strike with enough divine power ignites a combustible target", () => {

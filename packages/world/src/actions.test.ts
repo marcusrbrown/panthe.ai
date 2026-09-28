@@ -294,6 +294,7 @@ function economyWalkState(): WorldState {
     capabilities: [],
     inventory: new Map(),
     drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    gathers: "wood",
     revision: 0,
   });
   state = withActor(state, {

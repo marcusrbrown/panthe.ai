@@ -122,6 +122,11 @@ export function transferBetweenActors(
   give: readonly ResourceAmount[],
   receive: readonly ResourceAmount[],
 ): WorldState {
+  if (fromId === toId) {
+    throw new Error(
+      `transferBetweenActors: fromId and toId must differ, both were ${fromId}`,
+    );
+  }
   const from = getActor(state, fromId);
   const to = getActor(state, toId);
   if (!from || !to) return state;

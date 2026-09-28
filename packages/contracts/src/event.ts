@@ -441,6 +441,12 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
       const verified = parseBoolean(input.verified, "verified");
       if (!verified.ok) return verified;
+      if (verified.value !== (linkedEventIdRaw.value !== undefined)) {
+        return fail(
+          "verified",
+          "verified must equal whether linkedEventId is present",
+        );
+      }
       return ok({
         ...envelope,
         kind: "legend-recorded",

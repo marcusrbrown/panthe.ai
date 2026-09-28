@@ -85,6 +85,35 @@ test("with nothing else eligible, a gatherer falls back to gathering its own res
   expect(result.observation.source).toBe("routine");
 });
 
+test("a routine never proposes a trade the counterparty's own acceptance rule would decline", () => {
+  let state = createInitialWorldState(pack());
+  state = withActor(state, {
+    id: toEntityId("woodcutter"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["wood", 4]]),
+    gathers: "wood",
+    revision: 0,
+    drives: { thrift: 0, appetite: 0, greed: 0.9, piety: 0 },
+  });
+  state = withActor(state, {
+    id: toEntityId("thrifty-buyer"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 100]]),
+    revision: 0,
+    drives: { thrift: 0.9, appetite: 0, greed: 0, piety: 0 },
+  });
+  const result = decideRoutineProposal(state, toEntityId("woodcutter"));
+  if (!result) throw new Error("expected a routine result");
+  // The only other actor present would decline this exact trade (its
+  // demand exceeds the offered value), so the routine falls back to
+  // gathering instead of proposing a trade that would just be rejected.
+  expect(result.proposal.kind).toBe("gather");
+});
+
 test("two inhabitants with different dominant drives choose different actions from the same state", () => {
   const base = () => {
     let state = createInitialWorldState(pack());
@@ -217,6 +246,44 @@ test("an actor holding recipe inputs proposes to produce over gathering", () => 
     kind: "produce",
     output: "planks",
     quantity: 1,
+  });
+});
+
+test("an actor holding a recipe's output sells the surplus to a co-located buyer", () => {
+  let state = createInitialWorldState(
+    pack({
+      rules: rules({ value_planks: 2 }),
+      recipes: {
+        planks: {
+          inputs: [{ resource: "wood", amount: 2 }],
+          outputs: [{ resource: "planks", amount: 1 }],
+        },
+      },
+    }),
+  );
+  state = withActor(state, {
+    id: toEntityId("carpenter"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["planks", 2]]),
+    revision: 0,
+    drives: { thrift: 0.6, appetite: 0, greed: 0, piety: 0 },
+  });
+  state = withActor(state, {
+    id: toEntityId("buyer"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 10]]),
+    revision: 0,
+  });
+  const result = decideRoutineProposal(state, toEntityId("carpenter"));
+  expect(result?.proposal).toMatchObject({
+    kind: "trade",
+    counterparty: "buyer",
+    give: [{ resource: "planks", amount: 1 }],
+    receive: [{ resource: "currency", amount: 2 }],
   });
 });
 

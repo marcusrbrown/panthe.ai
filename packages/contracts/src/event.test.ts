@@ -302,6 +302,33 @@ test("a valid income-earned event parses", () => {
   }
 });
 
+test("a legend-recorded event claiming verified without a linkedEventId is rejected", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "bard",
+      legendId: "legend-1",
+      assertion: "Zeus struck down the old oak",
+      verified: true,
+    }),
+  );
+  expect(result.ok).toBe(false);
+});
+
+test("a legend-recorded event with a linkedEventId claiming unverified is rejected", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "bard",
+      legendId: "legend-1",
+      assertion: "Zeus struck down the old oak",
+      linkedEventId: "evt-9",
+      verified: false,
+    }),
+  );
+  expect(result.ok).toBe(false);
+});
+
 test("a valid legend-recorded event parses, unlinked and unverified", () => {
   const result = parseEvent(
     envelope({

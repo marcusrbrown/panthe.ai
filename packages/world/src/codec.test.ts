@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import type { ContentPack } from "@panthea/contracts";
+import type { ContentPack, EventId } from "@panthea/contracts";
 import { applyEvent, runTick, submitProposal } from "./actions";
 import { decode, encode } from "./codec";
 import {
   createInitialWorldState,
   createPrng,
   toEntityId,
+  toLegendId,
   withActor,
+  withLegend,
 } from "./state";
 
 function minimalRules(): ContentPack["rules"] {
@@ -401,4 +403,73 @@ test("decode rejects a rules object missing a required numeric field", () => {
   const base = encode(createInitialWorldState(economyPack()));
   const { catchUpCapMs: _omit, ...incompleteRules } = base.rules;
   expect(() => decode({ ...base, rules: incompleteRules })).toThrow();
+});
+
+test("decode rejects a legend claiming verified without a linkedEventId", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({
+      ...base,
+      legends: [
+        [
+          "legend-1",
+          {
+            id: "legend-1",
+            narrator: "farmer",
+            assertion: "Zeus struck down the old oak",
+            verified: true,
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a legend with a linkedEventId claiming unverified", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({
+      ...base,
+      legends: [
+        [
+          "legend-1",
+          {
+            id: "legend-1",
+            narrator: "farmer",
+            assertion: "Zeus struck down the old oak",
+            linkedEventId: "evt-9",
+            verified: false,
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
+});
+
+test("encode -> JSON round-trip -> decode reproduces both an unlinked rumor and a linked verified legend", () => {
+  let original = createInitialWorldState(economyPack());
+  original = withLegend(original, {
+    id: toLegendId("legend-rumor"),
+    narrator: toEntityId("farmer"),
+    assertion: "Zeus struck down the old oak",
+    verified: false,
+  });
+  original = withLegend(original, {
+    id: toLegendId("legend-verified"),
+    narrator: toEntityId("farmer"),
+    assertion: "Zeus struck down the old oak",
+    linkedEventId: "evt-9" as EventId,
+    verified: true,
+  });
+  const roundTripped = decode(JSON.parse(JSON.stringify(encode(original))));
+  expect(roundTripped).toEqual(original);
+  expect(roundTripped.legends.get(toLegendId("legend-rumor"))).toMatchObject({
+    verified: false,
+  });
+  expect(roundTripped.legends.get(toLegendId("legend-verified"))).toMatchObject(
+    {
+      linkedEventId: "evt-9",
+      verified: true,
+    },
+  );
 });

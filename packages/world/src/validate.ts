@@ -191,16 +191,24 @@ function handleClaim(
   );
 }
 
-/** Gathering has no precondition beyond the shared actor-alive check; it always commits. An actor holding an active gather favor yields the requested amount plus the favor's bonus. */
+/** Commits only when the proposal names the actor's own authored gather resource; an actor with no authored gather resource, or naming a different one, is rejected. An actor holding an active gather favor yields the requested amount plus the favor's bonus. */
 function handleGather(
   state: WorldState,
   proposal: GatherProposal,
 ): RuleOutcome {
   const actor = getActor(state, proposal.actor);
-  const bonus =
-    actor && hasActiveGatherFavor(actor, state.tick)
-      ? favorGatherBonusOf(state)
-      : 0;
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  if (actor.gathers !== proposal.resource) {
+    return reject(
+      "malformed",
+      `actor is not authored to gather ${proposal.resource}`,
+    );
+  }
+  const bonus = hasActiveGatherFavor(actor, state.tick)
+    ? favorGatherBonusOf(state)
+    : 0;
   return commit([
     {
       kind: "resource-gathered",
@@ -274,6 +282,9 @@ function handleConsume(
  * proposal-declared value.
  */
 function handleTrade(state: WorldState, proposal: TradeProposal): RuleOutcome {
+  if (proposal.actor === proposal.counterparty) {
+    return reject("malformed", "an actor cannot trade with itself");
+  }
   const actor = getActor(state, proposal.actor);
   if (!actor) {
     return reject("malformed", "actor has no known inventory");

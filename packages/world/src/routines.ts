@@ -12,8 +12,14 @@ import {
   type EntityId,
   type ObservationRecord,
   type Proposal,
+  type ProposalBase,
 } from "@panthea/contracts";
-import { getResourceAmount, resourceValue } from "./economy";
+import {
+  evaluateTradeAcceptance,
+  getResourceAmount,
+  NEUTRAL_DRIVES,
+  resourceValue,
+} from "./economy";
 import { actorHoldsEnoughToRepair, findRepairableBuilding } from "./repair";
 import { type ActorState, getActor, type WorldState } from "./state";
 
@@ -60,16 +66,30 @@ function firstSatisfiedRecipe(
   return undefined;
 }
 
+/** `Omit<T, K>`, applied separately to each member of a union `T`. */
+type DistributiveOmit<T, K extends keyof T> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
 /** The proposal-kind-specific fields a candidate contributes; the shared envelope fields are filled in once the winning candidate is chosen. */
-type ProposalDetails = { readonly kind: Proposal["kind"] } & Record<
-  string,
-  unknown
->;
+type ProposalDetails = DistributiveOmit<Proposal, keyof ProposalBase>;
 
 interface Candidate {
   readonly utility: number;
   readonly factsRead: readonly string[];
   build(): ProposalDetails;
+}
+
+/** The entities a candidate's proposal targets, for `Proposal.targets`. */
+function deriveTargets(built: ProposalDetails): readonly EntityId[] {
+  switch (built.kind) {
+    case "trade":
+      return [built.counterparty];
+    case "repair":
+      return [built.structure];
+    default:
+      return [];
+  }
 }
 
 /**
@@ -107,12 +127,20 @@ export function decideRoutineProposal(
     const askPrice = consumeAmount * resourceValue(state.rules, "food");
     const heldCurrency = getResourceAmount(actor.inventory, "currency");
     if (heldCurrency >= askPrice) {
+      const give = [{ resource: "currency", amount: askPrice }];
+      const receive = [{ resource: "food", amount: consumeAmount }];
       const seller = findCounterparty(
         state,
         actorId,
         actor,
         (candidate) =>
-          getResourceAmount(candidate.inventory, "food") >= consumeAmount,
+          getResourceAmount(candidate.inventory, "food") >= consumeAmount &&
+          evaluateTradeAcceptance(
+            state.rules,
+            candidate.drives ?? NEUTRAL_DRIVES,
+            give,
+            receive,
+          ),
       );
       if (seller) {
         candidates.push({
@@ -124,8 +152,8 @@ export function decideRoutineProposal(
           build: () => ({
             kind: "trade",
             counterparty: seller,
-            give: [{ resource: "currency", amount: askPrice }],
-            receive: [{ resource: "food", amount: consumeAmount }],
+            give,
+            receive,
           }),
         });
       }
@@ -138,23 +166,26 @@ export function decideRoutineProposal(
   ) {
     const resource = actor.gathers;
     const askPrice = gatherAmount * resourceValue(state.rules, resource);
+    const give = [{ resource, amount: gatherAmount }];
+    const receive = [{ resource: "currency", amount: askPrice }];
     const buyer = findCounterparty(
       state,
       actorId,
       actor,
       (candidate) =>
-        getResourceAmount(candidate.inventory, "currency") >= askPrice,
+        getResourceAmount(candidate.inventory, "currency") >= askPrice &&
+        evaluateTradeAcceptance(
+          state.rules,
+          candidate.drives ?? NEUTRAL_DRIVES,
+          give,
+          receive,
+        ),
     );
     if (buyer) {
       candidates.push({
         utility: drives.greed * 0.6 + drives.thrift * 0.4,
         factsRead: [`actor:${actorId}.inventory`, `actor:${buyer}.inventory`],
-        build: () => ({
-          kind: "trade",
-          counterparty: buyer,
-          give: [{ resource, amount: gatherAmount }],
-          receive: [{ resource: "currency", amount: askPrice }],
-        }),
+        build: () => ({ kind: "trade", counterparty: buyer, give, receive }),
       });
     }
   }
@@ -167,23 +198,26 @@ export function decideRoutineProposal(
       const held = getResourceAmount(actor.inventory, output.resource);
       if (held < 1) continue;
       const askPrice = resourceValue(state.rules, output.resource);
+      const give = [{ resource: output.resource, amount: 1 }];
+      const receive = [{ resource: "currency", amount: askPrice }];
       const buyer = findCounterparty(
         state,
         actorId,
         actor,
         (candidate) =>
-          getResourceAmount(candidate.inventory, "currency") >= askPrice,
+          getResourceAmount(candidate.inventory, "currency") >= askPrice &&
+          evaluateTradeAcceptance(
+            state.rules,
+            candidate.drives ?? NEUTRAL_DRIVES,
+            give,
+            receive,
+          ),
       );
       if (buyer) {
         candidates.push({
           utility: drives.thrift * 0.5,
           factsRead: [`actor:${actorId}.inventory`, `actor:${buyer}.inventory`],
-          build: () => ({
-            kind: "trade",
-            counterparty: buyer,
-            give: [{ resource: output.resource, amount: 1 }],
-            receive: [{ resource: "currency", amount: askPrice }],
-          }),
+          build: () => ({ kind: "trade", counterparty: buyer, give, receive }),
         });
       }
     }
@@ -194,11 +228,20 @@ export function decideRoutineProposal(
     const wanted = actor.wants;
     const askPrice = resourceValue(state.rules, wanted);
     if (getResourceAmount(actor.inventory, "currency") >= askPrice) {
+      const give = [{ resource: "currency", amount: askPrice }];
+      const receive = [{ resource: wanted, amount: 1 }];
       const seller = findCounterparty(
         state,
         actorId,
         actor,
-        (candidate) => getResourceAmount(candidate.inventory, wanted) >= 1,
+        (candidate) =>
+          getResourceAmount(candidate.inventory, wanted) >= 1 &&
+          evaluateTradeAcceptance(
+            state.rules,
+            candidate.drives ?? NEUTRAL_DRIVES,
+            give,
+            receive,
+          ),
       );
       if (seller) {
         candidates.push({
@@ -207,12 +250,7 @@ export function decideRoutineProposal(
             `actor:${actorId}.inventory`,
             `actor:${seller}.inventory`,
           ],
-          build: () => ({
-            kind: "trade",
-            counterparty: seller,
-            give: [{ resource: "currency", amount: askPrice }],
-            receive: [{ resource: wanted, amount: 1 }],
-          }),
+          build: () => ({ kind: "trade", counterparty: seller, give, receive }),
         });
       }
     }
@@ -268,23 +306,15 @@ export function decideRoutineProposal(
   };
 
   const built = chosen.build();
-  const targets: readonly EntityId[] =
-    "counterparty" in built
-      ? [built.counterparty as EntityId]
-      : "structure" in built
-        ? [built.structure as EntityId]
-        : [];
-
-  return {
-    observation,
-    proposal: {
-      schemaVersion: 1,
-      actor: actorId,
-      targets,
-      expectedRevisions: [],
-      source: "routine",
-      observationId: observation.id,
-      ...built,
-    } as unknown as Proposal,
+  const proposal: Proposal = {
+    schemaVersion: 1,
+    actor: actorId,
+    targets: deriveTargets(built),
+    expectedRevisions: [],
+    source: "routine",
+    observationId: observation.id,
+    ...built,
   };
+
+  return { observation, proposal };
 }

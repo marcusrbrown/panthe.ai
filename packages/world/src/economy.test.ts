@@ -93,6 +93,19 @@ test("debitActorInventory removes from the named resource and deletes it at zero
   expect(mustGetActor(next, "a").inventory.has("wood")).toBe(false);
 });
 
+test("transferBetweenActors throws when the giver and receiver are the same actor", () => {
+  const state = stateWithTwoActors();
+  expect(() =>
+    transferBetweenActors(
+      state,
+      toEntityId("a"),
+      toEntityId("a"),
+      [{ resource: "wood", amount: 4 }],
+      [{ resource: "currency", amount: 2 }],
+    ),
+  ).toThrow();
+});
+
 test("transferBetweenActors moves give and receive lines in opposite directions, conserving the total", () => {
   const state = stateWithTwoActors();
   const next = transferBetweenActors(

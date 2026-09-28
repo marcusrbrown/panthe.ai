@@ -156,33 +156,31 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 
 - **State model: append-only event log is the source of truth; projection tables are updated in the same transaction and are rebuildable from the log; snapshots are a restore/speed artifact, never authority.** Unifies replay, restore, and causal inspection; a rebuild-equals-live test catches projection drift.
 - **One tick = one `IMMEDIATE` SQLite transaction** that revalidates and commits queued actions sequentially, appends events, updates projections, and advances the clock cursor. Sequential in-transaction validation makes same-tick double-spend impossible and makes crash recovery a rollback to the last committed tick.
-- **Execution-time validation with expected revisions.** Every proposal names actor, targets, preconditions, required capabilities, costs, and the entity revisions it expects; a mismatch at execution is a recorded rejection with a reason code, and the actor may replan. Claims never mutate state.
-- **Time:** 1 wall second = 1 sim second, 1 Hz live tick. Catch-up caps at one hour of missed wall time, runs coarse steps through the same validator, commits in cancellable chunks with the cursor advanced inside each chunk's transaction, marks every catch-up event as approximate, and produces a summary (applied, skipped, major outcomes). Pause is persisted; paused wall time never becomes catch-up. Backward clock jumps apply zero and never move the cursor back. All numbers live in documented configuration, not code.
+- **Execution-time validation with expected revisions.** Every proposal names actor, targets, and the entity revisions it expects; a mismatch at execution is a recorded rejection with a reason code, and the actor may replan. Rules derive required capabilities and costs from world and content state, not from proposal-declared fields. Claims never mutate state.
+  Superseded 2026-09-27: replaces proposal-declared `preconditions`/`requiredCapabilities`/`costs` fields that execution only ever treated as "not yet evaluated -- reject if present." Greenfield M1 has no producer that needs to declare them independently of world/content state; revisit if a future producer (e.g. an M2 model) needs to assert capabilities or costs the world can't otherwise derive.
+- **Time:** 1 wall second = 1 sim second, 1 Hz live tick. Catch-up caps at one hour of missed wall time, runs coarse steps through the same validator, commits in cancellable chunks with the cursor advanced inside each chunk's transaction, marks every catch-up event as approximate, and produces a summary (applied, skipped, major outcomes). Pause is persisted; paused wall time never becomes catch-up. Backward clock jumps apply zero and never move the cursor back. All numbers live in documented configuration, not code. Tick and simulation time are stored in the clock row and committed in the same transaction as the tick's events; reopen and rebuild restore time from the clock, while each event carries its sim time for replay.
 - **Determinism boundary:** only persisted world state, persisted PRNG state, versioned content, and recorded operator events influence outcomes. Wall-clock time (beyond the cursor's elapsed interval), filesystem metadata, host ordering, and transport timing are never inputs to world logic. A seeded PRNG persisted in the world store drives every random rule, so replays and restored snapshots continue identically. M2 model outputs stay proposals until stored and revalidated.
 - **Scheduling:** routines run against the last committed state only. Each tick drains the previous tick's queue, revalidates and commits eligible proposals, then routines enqueue proposals for the next tick. Nothing observes uncommitted same-tick effects; M2 model proposals join the same queue.
-- **Versioning has two independent axes:** `user_version` governs only the SQLite schema; proposals, events, snapshots, and archive payloads carry their own schema versions. `packages/contracts` owns upcasters so live execution, rebuild, replay, and import all decode through one compatibility pipeline, and `packages/world` consumes only latest-form events.
+- **Schema and versioning: one schema initializer stamps the current schema number.** A store file or archive carrying any other number is rejected, never reset. Event, proposal, snapshot, and archive payloads must be their exact current version.
+  Superseded 2026-09-27: replaces the two-independent-axes model (SQLite `user_version` vs. payload schema versions, with `packages/contracts` upcasters owning compatibility) and the forward-migration-in-place upgrade path (ordered `user_version` migrations after a pre-migration snapshot). No migration ladder, pre-migration backup, or upcasters until a format has actually shipped. Greenfield, single local user, no shipped data to protect -- revisit once a format ships and an existing slot must survive a schema change.
 - **Projection ownership:** `packages/world` owns event reducers and projection definitions and never depends on SQLite; `packages/persistence` owns transactions, storage, snapshot/export/import, and projection application/rebuild by calling world reducers.
 - **Contracts are hand-written parse-don't-validate parsers** in `packages/contracts`, following `tools/probes/shared/src/schema.ts`. No new runtime dependency; revisit only if the parser surface grows past maintainability in M2.
-- **Persistence layout:** one SQLite database per world slot under the app-data directory (`0700` dir, `0600` files), WAL with macOS persistent-WAL disabled, STRICT tables, `user_version` migrations, checkpoint at most every 60 s plus clean shutdown. `synchronous=NORMAL` is acceptable because effects and the cursor commit atomically: a power loss can drop the last ticks together with their cursor advance (re-applied once), never apply an interval twice. Slot IDs are service-generated; no path component ever comes from an archive or request.
-- **Upgrades:** existing slots migrate forward in place through ordered `user_version` migrations taken after a pre-migration snapshot; a slot that cannot migrate is left untouched and reported.
+- **Persistence layout:** one SQLite database per world slot under the app-data directory (`0700` dir, `0600` files), WAL with macOS persistent-WAL disabled, STRICT tables, a schema initializer stamping `user_version`, checkpoint at most every 60 s plus clean shutdown. `synchronous=NORMAL` is acceptable because effects and the cursor commit atomically: a power loss can drop the last ticks together with their cursor advance (re-applied once), never apply an interval twice. Slot IDs are service-generated; no path component ever comes from an archive or request.
 - **Export archive = a single self-describing SQLite file** captured at a committed tick boundary (one read transaction pinned to a recorded event sequence), carrying a manifest table: format version, SQLite and payload schema versions, world ID, event sequence, and a content hash. The hash covers a canonical dump: fixed table order, rows ordered by primary key, explicit UTF-8/NULL encoding, normalized numbers, and no page layout or rowid artifacts.
-- **Import treats archives as hostile bytes.** The archive is opened read-only in a temporary location, `integrity_check` runs, the schema must match an explicit allowlist (no triggers, views, virtual tables, or attachments), the manifest parses, versions are compatible or upcastable, and the hash recomputes. Validated rows are then copied into a fresh slot database created by our own migrations in a staging directory, fsynced, and atomically renamed into place. The attacker file is never adopted as a database. Restore of a snapshot follows the same staging path into a new branch slot. Nothing overwrites an existing world, which removes the import-while-running race and satisfies "invalid imports preserve existing worlds"; any failure, including disk-full, removes the staging artifact.
-- **Causal trace:** every event carries event ID, sequence, correlation ID, and causation ID; proposals (accepted and rejected) are first-class trace records; presentation receipts from the client are appended to a trace-only table that cannot mutate world state. Causal links live with world history (retained with the world); detailed diagnostic payloads use the seven-day retention default, and pruning drops payload bodies only — causal edges and tombstones stay, so follow-event queries return an explicit "payload expired" marker rather than a broken chain. Exports and trace-query responses pass through the shared redaction harness.
-- **Transport: the webview never holds the sidecar token.** The sidecar binds only to `127.0.0.1` and serves authenticated HTTP + WebSocket; the Rust shell, which already owns the token, subscribes with a header and forwards snapshot + sequenced deltas to the webview over a Tauri Channel. The sidecar rejects any request or upgrade lacking the token, carrying an `Origin` or `Sec-Fetch-*` header (browser-originated, covering DNS-rebinding and CSRF), or with a `Host` other than its own loopback address. Every sidecar spawn mints a fresh token and increments a session generation; the shell closes prior subscriptions and the client drops any frame from an older generation. `connect-src` stays IPC-only.
-- **Proposal intake is bounded now, before M2 makes it a model path:** every proposal carries source, schema version, and (reserved) model-request ID; oversized payloads, unknown sources, and per-tick counts above a configured cap are rejected; trace stores bounded metadata, not raw bodies beyond retention.
+- **Import treats archives as files the owner exported.** Import runs one integrity check, requires the exact current archive format version, verifies the checksum (which covers the manifest), checks the manifest against the tables it describes (event sequence, world ID), parses events and clock/world-state rows, copies the data into a fresh staged slot database created by our own schema, and renames it into place atomically. Restore of a snapshot follows the same staging path into a new branch slot. Nothing overwrites an existing world; any failure removes the staging artifact.
+  Superseded 2026-09-27: replaces the hostile-bytes path (private read-only pre-validation copy in a temporary location, an explicit schema allowlist rejecting triggers/views/virtual tables/attachments, a duplicate integrity scan, and an explicit directory-fsync-then-rename framework) and the separately configured byte/row/time import budgets. The archive is never opened as a live database and its own schema objects are never executed -- the copy step only ever runs fixed, named `SELECT`s into our freshly created tables -- so the allowlist scan checked for a risk the copy mechanism doesn't have. Greenfield, single local user, archives are the owner's own exports, not attacker-controlled uploads -- revisit if archives start moving between users or through any less-trusted producer.
+- **Causal trace:** every event carries event ID, sequence, correlation ID, and causation ID; proposals (accepted and rejected) are first-class trace records, stored as typed domain records as they are. Presentation receipts record event ID, session ID, and presentation time only, appended to a trace-only table that cannot mutate world state; a receipt for an unknown event is rejected. M1 keeps every causal record for the life of the world; retention pruning belongs to the requirement that owns it (O05).
+  Superseded 2026-09-27: replaces the redaction harness on trace/export payloads, orphan-receipt storage, and seven-day pruning of payload bodies. M1 has no credential-bearing inputs -- credentials and transport headers never enter trace construction, so there is nothing to redact -- and no shipped retention requirement yet (departs from `docs/product/defaults.md`'s Trace-retention default of seven days, noted here rather than in that file). Revisit redaction if a producer starts passing credential-bearing data into trace records; revisit pruning under O05.
+- **Transport: the webview never holds the sidecar token.** The sidecar binds only to `127.0.0.1` and serves authenticated HTTP + WebSocket; the Rust shell, which already owns the token, subscribes with a header and forwards state to the webview over a Tauri Channel. The sidecar rejects any request or upgrade lacking the token, carrying an `Origin` or `Sec-Fetch-*` header (browser-originated, covering DNS-rebinding and CSRF), or with a `Host` other than its own loopback address. Every sidecar spawn mints a fresh token; the shell closes prior subscriptions. `connect-src` stays IPC-only.
+- **Sync: one committed-state frame** (sequence, world ID, session ID, status including degraded, optional catch-up summary, state). A reconnect requests a fresh frame; there is no incremental delta protocol until measuring full-frame transport cost shows one is needed. One session identity, with no separate generation counter or session-change marker.
+  Superseded 2026-09-27: replaces the snapshot-plus-sequenced-deltas model (resync markers on a subscriber falling behind, a session generation counter, and a session-change marker on sidecar restart). Greenfield M1 has one subscriber and no measured evidence that sending full state is too costly -- revisit (add deltas) once frame transport cost is measured against the 1 Hz budget and found wanting.
+- **Proposal intake:** every proposal carries source and schema version; unknown sources and per-tick counts above a configured cap are rejected.
+  Superseded 2026-09-27: replaces the reserved model-request ID and the per-proposal byte limit ("bounded now, before M2 makes it a model path"). Greenfield M1 has no model producer yet -- the model-request ID arrives in M2 with the real producer; a request-body byte limit, if HTTP ingress ever needs one, belongs at Unit 6's ingress, not the contracts parser.
 - **Desktop CSP adds `script-src 'unsafe-eval'`** (owner-approved 2026-09-27) for three-flatland/koota, per ADR-0002. Blast radius is bounded: the webview holds no credentials, has no network reach beyond Tauri IPC, holds one dedicated capability for the Channel command, and treats every Channel payload as untrusted data parsed through contracts — no `eval`, `new Function`, or `innerHTML` on received content.
 - **Operator controls** (pause, resume, stop background) are tray-menu actions in the shell, recorded as operator events distinct from character actions (D11). The client view has no input authority; observer selection is client-local state.
 - **Observation records:** before proposing, a routine or fixture records what it observed (the committed state revision and the facts it read) as a trace record; the proposal cites it as its cause. This is the first hop of the O04 chain and the seam M2 perception fills.
-- **Endpoint access matrix:**
-
-  | Caller | Allowed |
-  |---|---|
-  | Shell (operator) | pause/resume/stop, snapshot, export, import, restore, trace query, stream subscription |
-  | Webview via shell | presentation receipts only |
-  | Routines, fixtures, scenario harness | proposals (with their observation records) |
-
-  Callers are distinguished by source on an authenticated request; every other combination is rejected and tested.
-- **Import limits:** maximum archive bytes, row count, and wall-time budget come from configuration; an over-limit archive is rejected before staging with a clear error.
+- **Authentication is one shared token; there is no per-caller role matrix.** Every HTTP/WebSocket request needs the token (plus the `Host`/`Origin`/`Sec-Fetch-*` checks in the Transport decision); a valid request is authorized to use the endpoint it calls. The stream subscription carries one identity, used to route a reconnect's fresh-frame request and to attribute presentation receipts -- not to gate which endpoints a caller may reach.
+  Superseded 2026-09-27: replaces the per-endpoint caller-role access matrix (shell vs. webview-via-shell vs. routines/fixtures/scenario harness, each restricted to a listed set of endpoints). Every caller already holds the same one shared token, so the matrix added a self-reported "source" label as a second gate on top of a single real credential -- role machinery with nothing behind it. Revisit if a second, weaker credential (e.g. a scoped token for a future remote or multi-user caller) is ever introduced.
 - **Operator surfaces (placeholder contracts; visual design by @designer during implementation):** the observer picks from an actor/location list grouped by realm; when the followed target dies, leaves existence, or becomes unreachable, the view holds the last location and says why. The catch-up summary is a dismissible panel in the view listing applied time, skipped time, and major outcomes. Degraded status is a persistent banner plus tray label; ticking is suspended while pause and export stay available. The tray shows running / paused / background / stopped with the current state marked.
 - **Sidecar source moves to `apps/simulation`.** The desktop build compiles it via a product build script (reusing the probe's compile and binary-scan approach); the probe tree stays untouched as M0 evidence.
 
@@ -220,7 +218,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
+> *This illustrates the intended approach and is directional guidance, not implementation specification -- treat it as context, not code to reproduce.*
 
 ```mermaid
 flowchart LR
@@ -228,7 +226,7 @@ flowchart LR
     R[Routines / fixture proposals] --> Q[Action queue]
     Q --> T["Tick txn: revalidate → commit/reject → events → projections → cursor"]
     T --> DB[(World SQLite: events, projections, trace, clock, rng)]
-    DB --> S[Snapshot + sequenced deltas]
+    DB --> S[Committed-state frame]
   end
   subgraph Shell["apps/desktop (Rust)"]
     Tray[Tray: pause/resume/stop] -->|token| API
@@ -265,7 +263,7 @@ flowchart TB
 
 - [x] **Unit 1: Versioned contracts**
 
-**Goal:** Define and parse every M1 wire and storage shape: entity/world IDs, observation records, proposals, events (with correlation/causation), rejection reasons, snapshots and deltas with sequence numbers, archive manifest, and content data.
+**Goal:** Define and parse every M1 wire and storage shape: entity/world IDs, observation records, proposals, events (with correlation/causation), rejection reasons, the committed-state sync frame, archive manifest, and content data.
 
 **Requirements:** W05, O01, O04, P03
 
@@ -278,8 +276,7 @@ flowchart TB
 
 **Approach:**
 - Discriminated unions for proposal and event kinds; each carries a schema version; parsers return a typed result or a structured error, never throw on untrusted input.
-- Proposal shape includes actor, targets, preconditions, capabilities, costs, and expected entity revisions; a `source` field distinguishes routine, fixture, operator, and (reserved for M2) model, with a reserved model-request ID. Parsers enforce a byte limit.
-- Upcasters decode every prior payload version to the latest form.
+- Proposal shape includes actor, targets, and expected entity revisions; a `source` field distinguishes routine, fixture, and operator (model arrives in M2 with the real producer).
 - Content schema covers locations/edges/realms, buildings, inhabitants, resource graph, and numeric rules.
 
 **Execution note:** Implement test-first.
@@ -288,18 +285,17 @@ flowchart TB
 
 **Test scenarios:**
 - Happy path: a valid move/gather/trade/strike/repair/worship proposal parses to its typed variant.
-- Error path: missing actor, unknown kind, non-numeric cost, extra authority fields (e.g., a claim that asserts an inventory grant) → structured rejection naming the field.
-- Edge case: unsupported schema version → incompatible-version error distinct from malformed-payload error.
+- Error path: missing actor, unknown kind, or extra authority fields (e.g., a claim that asserts an inventory grant) → structured rejection naming the field.
+- Edge case: a payload with any schema version other than current → wrong-version error distinct from malformed-payload error.
 - Edge case: delta with non-integer or negative sequence rejected.
 - Happy path: archive manifest round-trips; a manifest missing the content hash fails.
-- Happy path: an event written in a previous payload version upcasts to the latest form.
-- Error path: proposal over the byte limit or with an unknown source is rejected.
+- Error path: proposal with an unknown source is rejected.
 
 **Verification:** All M1 shapes have a parser with tests; `bun run check` green.
 
 - [x] **Unit 2: Persistence and causal trace store**
 
-**Goal:** A per-world SQLite store with migrations, atomic tick commits, event log + projections, persisted clock cursor and PRNG state, checkpointing, snapshots, archive export/import into a new slot, and a trace store with a "follow this event" query.
+**Goal:** A per-world SQLite store with a schema initializer, atomic tick commits, event log + projections, persisted clock cursor and PRNG state, checkpointing, snapshots, archive export/import into a new slot, and a trace store with a "follow this event" query.
 
 **Requirements:** O01, O03, O04, W03
 
@@ -312,12 +308,10 @@ flowchart TB
 
 **Approach:**
 - Lift `clock.ts` semantics (at-most-once elapsed application; backward jumps apply zero) and extend with pause state and the catch-up cap.
-- Store opens with WAL, persistent-WAL disabled on macOS, enforced `0700`/`0600` modes, STRICT tables, `user_version` migrations applied in a transaction.
+- Store opens with WAL, persistent-WAL disabled on macOS, enforced `0700`/`0600` modes, STRICT tables, one schema initializer stamping the current schema number; any other number is rejected, never reset.
 - Projections are written in the same transaction as their events by applying `packages/world` reducers; a rebuild routine replays the log into fresh projections.
-- Snapshot = consistent read pinned to an event sequence; export adds the manifest and canonical content hash; import follows the hostile-archive path in Key Technical Decisions (allowlist, row copy into a staged fresh DB, atomic rename).
-- Migrations take a pre-migration snapshot and run in one transaction.
-- Retention pruning removes payload bodies and keeps causal edges and tombstones.
-- Trace: observation records, proposals, rejections, events, and presentation receipts linked by correlation/causation IDs; the query walks causes and effects from any event ID; presentation receipts are append-only and have no path to world tables.
+- Snapshot = consistent read pinned to an event sequence; export adds the manifest and canonical content hash; import follows the archive-import decision in Key Technical Decisions (one integrity check, exact-version check, checksum, manifest-vs-tables check, row copy into a staged fresh DB, atomic rename).
+- Trace: observation records, proposals (accepted and rejected), and events are stored as typed domain records, linked by correlation/causation IDs; the query walks causes and effects from any event ID. Presentation receipts record event ID, session ID, and presentation time, are append-only, rejected for an unknown event, and have no path to world tables.
 
 **Execution note:** Characterize lifted clock/lock behavior with the probe's existing tests before extending.
 
@@ -329,17 +323,15 @@ flowchart TB
 - Edge case: cursor applies an elapsed interval exactly once across simulated crash/reopen; backward wall clock applies zero and keeps the cursor.
 - Edge case: paused interval produces no catch-up after reopen; pause flag survives reopen.
 - Happy path: export → import creates a new slot with identical IDs, event sequence, projections, and PRNG state; the source slot is untouched.
-- Error path: truncated file, flipped byte in payload, wrong schema version, missing manifest → each rejected with a distinct clear error; no slot created; existing slots unchanged.
+- Error path: truncated file, flipped byte in payload, wrong format version, or missing manifest → each rejected with a distinct clear error; no slot created; existing slots unchanged.
 - Happy path: follow-event query returns proposal → validation → event → projection change → presentation receipt in order; a rejected proposal returns its reason.
-- Error path: presentation receipt referencing an unknown event is stored as orphaned trace, never mutates world tables.
+- Error path: presentation receipt referencing an unknown event is rejected, never mutates world tables.
 - Edge case: export while ticking always reflects one committed sequence; the manifest sequence matches the archive contents.
 - Happy path: the same world exported twice, or copied across machines, yields the same content hash.
-- Error path: archive containing a trigger, view, virtual table, or an unexpected table is rejected before any slot is created.
-- Error path: archive over the configured byte, row, or time limit is rejected before staging.
+- Error path: an archive with a mismatched checksum, or whose manifest disagrees with its own tables (event sequence, world ID), is rejected before any slot is created.
 - Happy path: export contains event log and causal IDs but no observation records, rejection details, or presentation receipts.
 - Happy path: follow-event from the strike returns observation → proposal → validation → event → projection change → presentation receipt.
-- Happy path: a slot and an archive written by the previous schema version both migrate forward without loss; an unsupported older format is rejected and its source is untouched.
-- Edge case: after retention pruning, follow-event still walks the full chain and marks expired payloads.
+- Error path: a store file or archive stamped with any schema number other than current is rejected, never migrated or reset; its source is untouched.
 
 **Verification:** Store, snapshot, archive, and trace behaviors covered; file modes asserted in tests.
 
@@ -393,14 +385,15 @@ flowchart TB
 **Approach:**
 - Every economic change is a validated action producing events; routines only propose, and each proposal cites the observation record it was made from.
 - Drives are data (e.g., thrift vs. appetite vs. greed weights) that change routine choices deterministically under the seeded PRNG.
-- Offscreen reduced detail aggregates routine cycles but must still emit the consequential resource changes and mark them approximate.
+- The same routines run on- and offscreen; there is no second, reduced-detail offscreen economy engine. Catch-up runs those same routines at the same granularity by default, and aggregates cycles only if measured catch-up cost exceeds the cap -- still emitting the consequential resource changes and marking them approximate when it does.
+  Departs from `docs/product/defaults.md`'s Catch-up execution default ("bounded coarse steps"): M1 runs full-granularity routines through catch-up by default and only coarsens when measurement shows the cap is at risk, rather than coarsening unconditionally.
 
 **Test scenarios:**
 - Happy path: woodcutter gathers materials, sells to a buyer, buys food; balances and inventories change through events.
 - Invariant: over a long run, currency and goods are conserved except at declared sources/sinks; the test enumerates them.
 - Happy path: two inhabitants with different drives choose different actions from the same state.
 - Error path: purchase with insufficient currency or from an out-of-stock building → rejected.
-- Integration: coarse offscreen step produces the same resource totals as the equivalent fine steps within the documented tolerance, and events are marked approximate.
+- Integration: if catch-up cost forces aggregation, the aggregated step produces the same resource totals as the equivalent fine steps within the documented tolerance, and events are marked approximate.
 
 **Verification:** Economy runs unattended in tests without degenerate stalls; conservation holds.
 
@@ -418,6 +411,7 @@ flowchart TB
 - Test: `packages/world/src/{fire,repair,worship}.test.ts`
 
 **Approach:**
+- Fire spread is one authored rule, not a pluggable effect system; favor is one authored rule with a source and a duration/removal, not a generalized effect framework other systems build on.
 - The strike is a fixture proposal from a divine actor with a power cost; insufficient power rejects it.
 - Fire state lives in projections (intensity, ticks burning), never timers; spread checks are bounded per tick and use the persisted PRNG.
 - A burning or destroyed building exposes no services and loses inventory per explicit disposition rules; income stops.
@@ -452,14 +446,13 @@ flowchart TB
 
 **Approach:**
 - Lift lock, stdin token, stdin-EOF and parent-PID orphan guards from the probe; token never logged or persisted.
-- HTTP endpoints for proposals (routine/fixture/operator sources), pause/resume, snapshot, export/import/restore, trace query, and presentation receipts; WebSocket stream sends a snapshot then sequenced deltas and honors `send` backpressure (slow subscriber gets a resync marker rather than unbounded buffering).
+- HTTP endpoints for pause/resume, a fresh committed-state frame, export/import/restore, trace query, and presentation receipts. Internal routines call the world engine directly, in-process; there is no HTTP proposal intake for them. Fixture proposal ingress stays over HTTP only because the M1 scenario harness needs to drive proposals from outside the process. WebSocket stream sends a committed-state frame and honors `send` backpressure; a reconnecting subscriber requests a fresh frame.
 - Catch-up runs on start and on resume-from-sleep, chunked and cancellable, checking pause between chunks, and emits a summary event (applied, skipped, major outcomes) that the shell and view render.
-- Endpoints enforce the access matrix in Key Technical Decisions; import applies configured limits before staging.
 - Disk-full or store errors suspend ticking and expose degraded status; nothing partially commits.
 - Import and restore run through the staging-then-atomic-rename path; the slot index lists only fully materialized slots.
 - Request guards: loopback bind, token, `Host` check, and rejection of browser-originated requests (`Origin`/`Sec-Fetch-*`); presentation receipts are idempotent per event and session, rate-limited, and duplicates dropped.
 - Build script compiles the sidecar and runs the binary host-leak scan.
-- Projection storage: Phase A persists world projections as one JSON document rewritten every tick (per-tick cost scales with world size). Unit 6 replaces it with per-entity rows or dirty-subtree writes once real projections from Units 4–5 exist, and measures commit cost against the 1 Hz budget.
+- Projection storage: measure the JSON-document-per-tick commit against the 1 Hz budget first; convert to per-entity rows or dirty-subtree writes only if the measurement fails it.
 
 **Patterns to follow:** `tools/probes/backend-lifecycle/src/{lock,sidecar}.ts`, `tools/probes/backend-lifecycle/scripts/{build-sidecar,scan-binary}.sh`.
 
@@ -468,8 +461,7 @@ flowchart TB
 - Integration: kill during a catch-up chunk; restart resumes from the last committed chunk; total applied time never exceeds the cap; no interval applied twice.
 - Edge case: pause during catch-up stops at the chunk boundary and records the remainder as skipped; pause persists across restart.
 - Edge case: missed time above the cap → exactly one hour applied, excess reported as skipped.
-- Happy path: stream subscriber receives a snapshot then gapless deltas; a subscriber that falls behind receives a resync marker.
-- Error path: each caller attempting an endpoint outside its access-matrix row is rejected (e.g., a proposal-source caller requesting export, a receipt caller submitting a proposal).
+- Happy path: a reconnecting stream subscriber receives a fresh committed-state frame.
 - Happy path: import of a valid archive while running creates a new slot and does not disturb the active world.
 - Error path: simulated store write failure suspends ticking and reports degraded status.
 - Error path: simulated disk-full during import or restore leaves the active world unchanged and no partial slot behind.
@@ -480,7 +472,7 @@ flowchart TB
 
 - [ ] **Unit 7: Shell proxy and operator controls**
 
-**Goal:** The Rust shell subscribes to the sidecar stream with the token, forwards it to the webview over a Tauri Channel, relays presentation receipts, handles sidecar restarts with a resync, and exposes pause/resume/stop-background in the tray as recorded operator events.
+**Goal:** The Rust shell subscribes to the sidecar stream with the token, forwards it to the webview over a Tauri Channel, relays presentation receipts, handles sidecar restarts by requesting a fresh committed-state frame, and exposes pause/resume/stop-background in the tray as recorded operator events.
 
 **Requirements:** W03, O03, O04
 
@@ -492,14 +484,13 @@ flowchart TB
 
 **Approach:**
 - A dedicated capability grants the main window only the Channel command; no shell, filesystem, network, or other plugin permission is added to the renderer.
-- On sidecar restart the proxy re-subscribes and emits a session-change marker so the client drops local state and takes the new snapshot.
+- On sidecar restart the proxy re-subscribes and requests a fresh committed-state frame; the client replaces its state with it.
 - Window close keeps ticking (background mode); the tray shows running / paused / background / stopped with the current state marked, plus a degraded label when the sidecar reports it; stop-background and quit remain explicit.
 
 **Test scenarios:**
 - Happy path: frames from the sidecar reach the Channel in order.
-- Integration: sidecar killed and restarted by the supervisor → client receives a session-change marker then a fresh snapshot.
+- Integration: sidecar killed and restarted by the supervisor → client receives a fresh committed-state frame.
 - Error path: webview-originated message other than a presentation receipt is refused.
-- Error path: after a sidecar restart, frames and receipts tagged with the old session generation are dropped.
 - Error path: the renderer cannot invoke any Tauri command other than the Channel command.
 - Happy path: tray pause/resume produce operator events visible in the trace, and the tray's marked state follows the sidecar's reported state.
 
@@ -513,7 +504,7 @@ flowchart TB
 
 **Requirements:** W02 (observer switching), O04 (presentation receipts), P02 carried constraints
 
-**Dependencies:** Unit 1 (builds against recorded snapshot/delta fixtures); Unit 7 for packaged integration only
+**Dependencies:** Unit 1 (builds against recorded committed-state-frame fixtures); Unit 7 for packaged integration only
 
 **Files:**
 - Modify: `apps/client/src/{App.tsx,main.tsx}`, `apps/client/package.json`
@@ -521,21 +512,20 @@ flowchart TB
 - Test: `apps/client/src/{store,observer}.test.ts`
 
 **Approach:**
-- The store applies snapshot + deltas; on a gap or session change it discards state and requests a snapshot.
+- The store applies each committed-state frame directly, replacing prior state; on reconnect it requests a fresh frame.
 - Placeholder layouts are generated from location graphs; the town gets the fuller placeholder scene.
 - Observer follows an actor across realm transitions by switching the rendered graph; following never sends anything that could affect world state.
 - Operator surfaces follow the placeholder contracts in Key Technical Decisions: realm-grouped target picker, lost-target hold with reason, catch-up summary panel, degraded banner. @designer owns their visual treatment.
 - The store and receipt emitter run without a renderer so the scenario can drive them headlessly.
 - Device loss follows the documented recovery path (dispose, fresh canvas, new renderer, rebuild from the store); packaged proof stays with the deferred renderer probe.
-- Presentation receipts are sent once per rendered event and session generation.
+- Presentation receipts are sent once per rendered event and session.
 - All Channel payloads are parsed through contracts before use; received content never reaches an eval-capable sink or `innerHTML`.
 
 **Patterns to follow:** `apps/probe-renderer/src/{Scene.tsx,metrics.ts}`.
 
 **Test scenarios:**
-- Happy path: snapshot then deltas produce the expected view model.
-- Edge case: delta with a skipped sequence triggers resync; stale deltas after resync are ignored.
-- Edge case: session-change marker clears state before the new snapshot applies.
+- Happy path: a committed-state frame produces the expected view model.
+- Edge case: a fresh frame on reconnect replaces prior state entirely.
 - Happy path: following an actor through the Underworld transition switches the rendered realm; the actor's world location comes only from events.
 - Edge case: the followed actor dies or is removed → view holds the last location and shows the reason; picking a new target resumes following.
 - Happy path: a catch-up summary event opens the summary panel; a degraded status shows the banner until cleared.
@@ -559,9 +549,9 @@ flowchart TB
 **Approach:**
 - Spawn the compiled sidecar with a stdin token (no Tauri) and run: seed world → unattended routines → strike → fire → lost service → repair → worship/legend/favor → fixture malformed/false/stale proposals → pause, restart, verify pause held → kill mid-catch-up, restart, verify single application → export, corrupt copy, import both, restore snapshot into a branch → drive the client store headlessly to emit presentation receipts → trace query from the strike's observation record through presentation.
 - The scenario is the headless causal proof; the packaged view check in Unit 8 is a separate gate, and both are required before the roadmap marks M1 complete.
-- Report uses the shared redaction/report harness; evidence records positive controls for negative claims.
+- Report uses the shared report harness (no redaction needed: M1 has no credential-bearing inputs); evidence records positive controls for negative claims. Each negative claim gets one focused fault injection (e.g. one kill-mid-catch-up, one corrupted-archive import), not an exhaustive matrix of synthetic failure permutations.
 
-**Patterns to follow:** `tools/probes/backend-lifecycle/scripts/lifecycle.sh`, `tools/probes/shared/src/{report,redact}.ts`.
+**Patterns to follow:** `tools/probes/backend-lifecycle/scripts/lifecycle.sh`, `tools/probes/shared/src/report.ts`.
 
 **Test scenarios:**
 - Integration: every step above asserts its invariant and the run exits zero only when all hold.
@@ -572,9 +562,9 @@ flowchart TB
 ## System-Wide Impact
 
 - **Interaction graph:** sidecar ↔ shell (token, supervision, stream, tray controls) ↔ webview (Channel only). Scenario harness talks to the sidecar directly.
-- **Error propagation:** rule rejections are events, not errors; store failures suspend ticking and surface degraded status; stream failures trigger resync, never partial client state.
+- **Error propagation:** rule rejections are events, not errors; store failures suspend ticking and surface degraded status; stream failures trigger a fresh-frame request, never partial client state.
 - **State lifecycle risks:** crash mid-tick or mid-catch-up rolls back to the last commit; import/restore never overwrite; projection drift caught by rebuild tests.
-- **API surface parity:** the proposal endpoint is the same path M2 model proposals will use; the trace schema reserves model-request links.
+- **API surface parity:** the fixture proposal endpoint is the same path M2 model proposals will use; model-request links are added to the trace schema in M2, not reserved now.
 - **Security boundaries:** principals are the shell and the sidecar only; the webview is an untrusted data consumer with one capability; browsers and other local processes are untrusted callers of the loopback API; imported archives are untrusted bytes.
 - **Unchanged invariants:** the renderer decides nothing; generated code does not exist yet; offline-only operation with no network beyond loopback; token never leaves Rust and the sidecar.
 
@@ -586,12 +576,12 @@ flowchart TB
 | Coarse catch-up diverges from live results | Same validator in both paths; tolerance test in Unit 4; approximation always marked |
 | `'unsafe-eval'` in the main app | Owner-approved; webview has no credentials and IPC-only `connect-src`; revisit if koota drops `new Function()` |
 | Rust WebSocket client needs a new crate | Ask before adding; fallback is SSE/HTTP streaming over the existing HTTP stack |
-| Scope pull toward M2 (models, memory) | Scope Boundaries are explicit; proposal `source` reserves the model path without implementing it |
+| Scope pull toward M2 (models, memory) | Scope Boundaries are explicit; the model source and its request-ID link are added in M2 with the real producer, not reserved now |
 | Placeholder view mistaken for M5 presentation | View is labeled read-only placeholder in docs and roadmap |
 | Local web page or process drives the loopback API | Token + `Host` check + browser-origin rejection; abuse tests in Unit 6 |
-| Malicious archive executes SQL or escapes the slot root | Allowlisted schema, row copy into our own DB, service-generated slot paths |
-| App upgrade strands existing worlds | Forward migrations with pre-migration snapshot; unmigratable slots left untouched and reported |
-| Half-written slot after crash or disk-full | Staging directory + fsync + atomic rename; staging cleanup on failure |
+| Malicious archive executes SQL or escapes the slot root | Row copy into our own freshly initialized DB via fixed, named `SELECT`s; the archive's own schema objects are never executed; service-generated slot paths |
+| Old-schema store or archive after a format change | Rejected outright, never migrated or reset, until a shipped format needs a migration path |
+| Half-written slot after crash or disk-full | Staging directory + atomic rename; staging cleanup on failure |
 
 ## Phased Delivery
 
@@ -604,7 +594,7 @@ Each phase is independently reviewable and updates `docs/product/traceability.md
 
 ## Documentation / Operational Notes
 
-- New ADR-0008 records the event-log state model, new-slot import/restore semantics, and the Rust-proxied Channel transport.
+- New ADR-0008 records the event-log state model, new-slot import/restore semantics, and the Rust-proxied Channel transport (one committed-state frame, not snapshot + deltas).
 - ADR-0002 gains the desktop CSP consequence; ADR-0006 moves its local-store portion to accepted.
 - Tunable numbers (catch-up cap, chunk size, checkpoint interval, fire and economy balance) are documented in content/config, not code.
 - The plan's docs PR also cites mrdoob/three.js#34682 in `docs/solutions/2026-09-27-three-webgpurenderer-device-loss-latch.md`, `docs/decisions/0002-renderer-backend.md`, and `tools/probes/renderer-webgl2/README.md`.

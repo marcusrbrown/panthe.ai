@@ -455,7 +455,7 @@ Each evidence lane (Units 3–7) flips its own ADR in its own PR. Unit 8 informs
 
 **Files:**
 - Modify: `docs/decisions/0003-simulation-service.md`, `0004-generated-behavior-runtime.md`, `0005-model-providers.md`, `0007-local-image-generation.md`, `docs/decisions/README.md`, `docs/product/open-decisions.md`, `docs/product/traceability.md`, `docs/product/mvp-roadmap.md` (M0 exit note)
-- Create: `docs/solutions/2026-*-<lesson>.md` per reusable lesson (via `ce:compound`)
+- Create: `docs/solutions/<category>/<lesson>-<date>.md` per reusable lesson (via `ce:compound`)
 
 **Approach:**
 - Each evidence unit flips its own ADR in its own PR (status → accepted with an Evidence line naming the probe README, or → revised with the measured conflict and the concrete alternative — never silent scope reduction). This unit turns Unit 8's measured recommendation into the final heavy-work policy wording across 0003/0005/0007, reconciles the index, and updates any ADR whose evidence arrived after its flip.

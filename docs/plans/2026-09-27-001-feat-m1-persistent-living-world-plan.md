@@ -62,11 +62,11 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 
 ### Institutional Learnings
 
-- `docs/solutions/2026-09-27-koota-new-function-tauri-csp.md` — any packaged surface importing `three-flatland` needs `script-src 'unsafe-eval'`; `tauri dev` and browser previews hide the failure.
-- `docs/solutions/2026-09-26-wkwebview-webgpu-unavailable-macos-15.md` — WebGL2 is the baseline in packaged WKWebView on macOS 15.
-- `docs/solutions/2026-09-27-three-webgpurenderer-device-loss-latch.md` — renderer instances latch after context loss; recovery is dispose → fresh canvas → new renderer → rebuild (upstream: mrdoob/three.js#34682).
-- `docs/solutions/2026-09-27-ollama-runner-pid-rss-sampling.md` — supervise and sample the real child process, not a wrapper PID.
-- `docs/solutions/2026-09-27-tcpdump-sudo-pid-resolution-offline-proof.md` — negative claims ("no double-apply") need owned, falsifiable evidence with a positive control.
+- `docs/solutions/integration-issues/koota-new-function-tauri-csp-2026-09-27.md` — any packaged surface importing `three-flatland` needs `script-src 'unsafe-eval'`; `tauri dev` and browser previews hide the failure.
+- `docs/solutions/integration-issues/wkwebview-webgpu-unavailable-macos-15-2026-09-26.md` — WebGL2 is the baseline in packaged WKWebView on macOS 15.
+- `docs/solutions/integration-issues/three-webgpurenderer-device-loss-latch-2026-09-27.md` — renderer instances latch after context loss; recovery is dispose → fresh canvas → new renderer → rebuild (upstream: mrdoob/three.js#34682).
+- `docs/solutions/performance-issues/ollama-runner-pid-rss-sampling-2026-09-27.md` — supervise and sample the real child process, not a wrapper PID.
+- `docs/solutions/test-failures/tcpdump-sudo-pid-resolution-offline-proof-2026-09-27.md` — negative claims ("no double-apply") need owned, falsifiable evidence with a positive control.
 - `tools/probes/sandbox/README.md` — a Bun `Worker` is not an isolation boundary; the sidecar stays a subprocess.
 - `tools/probes/backend-lifecycle/README.md` — launch token is per-launch, stdin-only, never on disk, in logs, or in artifacts.
 
@@ -597,7 +597,7 @@ Each phase is independently reviewable and updates `docs/product/traceability.md
 - New ADR-0008 records the event-log state model, new-slot import/restore semantics, and the Rust-proxied Channel transport (one committed-state frame, not snapshot + deltas).
 - ADR-0002 gains the desktop CSP consequence; ADR-0006 moves its local-store portion to accepted.
 - Tunable numbers (catch-up cap, chunk size, checkpoint interval, fire and economy balance) are documented in content/config, not code.
-- The plan's docs PR also cites mrdoob/three.js#34682 in `docs/solutions/2026-09-27-three-webgpurenderer-device-loss-latch.md`, `docs/decisions/0002-renderer-backend.md`, and `tools/probes/renderer-webgl2/README.md`.
+- The plan's docs PR also cites mrdoob/three.js#34682 in `docs/solutions/integration-issues/three-webgpurenderer-device-loss-latch-2026-09-27.md`, `docs/decisions/0002-renderer-backend.md`, and `tools/probes/renderer-webgl2/README.md`.
 
 ## Sources & References
 

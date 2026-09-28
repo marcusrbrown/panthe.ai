@@ -63,8 +63,8 @@ env:
       inference, local visual creation, persistence, replay, inspection)
       silently depending on a hosted provider; local causal recording
       disabled or made opt-out.
-    - Security: secrets appearing in content, saves, prompts, telemetry, or
-      logs instead of platform credential storage; CSP or Tauri capability
+    - Security: credential-bearing data passed into content, saves, prompts,
+      telemetry, or logs instead of platform credential storage; CSP or Tauri capability
       broadening; generated-runtime host access beyond validated game APIs
       (packages/behaviors/); hosted-provider fallback presented as offline
       behavior.
@@ -181,8 +181,8 @@ env:
        dedicated remediation PR. Never bundle unrelated upgrades. If
        advisory data is unavailable to the token, note "security alerts
        unavailable" under "Needs Human Attention" — do not guess.
-       Special attention: secrets must never appear in content, saves,
-       prompts, telemetry, or logs (platform credential storage only).
+       Special attention: credential-bearing data must never be passed into
+       content, saves, prompts, telemetry, or logs (platform credential storage only).
        Flag any weakening of the generated-runtime sandbox boundary
        (packages/behaviors/), CSP, or Tauri capability scope, and any
        hosted-provider fallback that could fire when offline mode is

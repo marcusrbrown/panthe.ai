@@ -421,7 +421,7 @@ flowchart TB
 
 **Verification:** Economy runs unattended in tests without degenerate stalls; conservation holds.
 
-- [ ] **Unit 5: Strike, fire, recovery, worship, legends, and favor**
+- [x] **Unit 5: Strike, fire, recovery, worship, legends, and favor**
 
 **Goal:** A strike damages a tree and ignites a building; fire spreads by material/adjacency within bounds; services, inventory, and income respond; a motivated actor repairs with resources; worship events, attributed legends (rumor vs. verified), and a favor effect with source and duration exist.
 

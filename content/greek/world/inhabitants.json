@@ -16,6 +16,12 @@
       "gathers": "food",
       "wants": "planks",
       "startingInventory": [{ "resource": "currency", "amount": 10 }]
+    },
+    {
+      "id": "zeus",
+      "name": "Zeus",
+      "locationId": "great-hall",
+      "startingInventory": [{ "resource": "divinity", "amount": 10 }]
     }
   ]
 }

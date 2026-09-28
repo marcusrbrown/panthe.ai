@@ -5,9 +5,29 @@
       "locationId": "shop",
       "name": "The Agora Shop",
       "material": "stone",
+      "combustible": false,
       "services": ["trade"],
       "inventory": [{ "resource": "food", "amount": 5 }],
       "owner": "farmer"
+    },
+    {
+      "id": "the-tavern",
+      "locationId": "tavern",
+      "name": "The Tavern",
+      "material": "wood",
+      "combustible": true,
+      "services": ["drink"],
+      "inventory": [{ "resource": "wine", "amount": 4 }],
+      "owner": "farmer"
+    },
+    {
+      "id": "old-oak",
+      "locationId": "town-square",
+      "name": "The Old Oak",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": []
     }
   ]
 }

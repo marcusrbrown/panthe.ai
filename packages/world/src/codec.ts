@@ -15,9 +15,11 @@
 
 import {
   type EntityId,
+  type EventId,
   fail,
   type InhabitantDrives,
   isRecord,
+  type LegendId,
   type LocationEdge,
   ok,
   type ParseResult,
@@ -25,6 +27,7 @@ import {
   parseBoolean,
   parseEntityId,
   parseEnum,
+  parseLegendId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalString,
@@ -34,11 +37,14 @@ import {
   type RejectionReasonCode,
   TRANSPORT_KINDS,
 } from "@panthea/contracts";
-import type {
-  ActorState,
-  BuildingState,
-  LocationState,
-  WorldState,
+import {
+  type ActorState,
+  BUILDING_STATUSES,
+  type BuildingState,
+  type FavorState,
+  type LegendRecord,
+  type LocationState,
+  type WorldState,
 } from "./state";
 
 /**
@@ -53,6 +59,7 @@ export interface EncodedWorldState {
   readonly locations: readonly (readonly [EntityId, EncodedLocationState])[];
   readonly actors: readonly (readonly [EntityId, EncodedActorState])[];
   readonly buildings: readonly (readonly [EntityId, EncodedBuildingState])[];
+  readonly legends: readonly (readonly [LegendId, LegendRecord])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -94,6 +101,7 @@ export function encode(state: WorldState): EncodedWorldState {
           { ...building, inventory: encodeInventory(building.inventory) },
         ] as const,
     ),
+    legends: [...state.legends.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -218,6 +226,32 @@ function parseInventory(
   return ok(new Map(entries.value));
 }
 
+function parseFavor(value: unknown, path: string): ParseResult<FavorState> {
+  if (!isRecord(value)) return fail(path, "expected a favor entry");
+  const source = parseEntityId(value.source, `${path}.source`);
+  if (!source.ok) return source;
+  const effect = parseString(value.effect, `${path}.effect`);
+  if (!effect.ok) return effect;
+  const expiresAtTick = parseNonNegativeInteger(
+    value.expiresAtTick,
+    `${path}.expiresAtTick`,
+  );
+  if (!expiresAtTick.ok) return expiresAtTick;
+  return ok({
+    source: source.value,
+    effect: effect.value,
+    expiresAtTick: expiresAtTick.value,
+  });
+}
+
+function parseFavors(
+  value: unknown,
+  path: string,
+): ParseResult<readonly FavorState[] | undefined> {
+  if (value === undefined) return ok(undefined);
+  return parseArray(value, path, parseFavor);
+}
+
 function parseDrives(
   value: unknown,
   path: string,
@@ -272,6 +306,8 @@ function parseActorState(
   if (!gathers.ok) return gathers;
   const wants = parseOptionalString(value.wants, `${path}.wants`);
   if (!wants.ok) return wants;
+  const favors = parseFavors(value.favors, `${path}.favors`);
+  if (!favors.ok) return favors;
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
   return ok({
@@ -283,6 +319,7 @@ function parseActorState(
     ...(drives.value === undefined ? {} : { drives: drives.value }),
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
+    ...(favors.value === undefined ? {} : { favors: favors.value }),
     revision: revision.value,
   });
 }
@@ -329,6 +366,8 @@ function parseBuildingState(
   if (!name.ok) return name;
   const material = parseString(value.material, `${path}.material`);
   if (!material.ok) return material;
+  const combustible = parseBoolean(value.combustible, `${path}.combustible`);
+  if (!combustible.ok) return combustible;
   const services = parseArray(value.services, `${path}.services`, parseString);
   if (!services.ok) return services;
   const inventory = parseInventory(value.inventory, `${path}.inventory`);
@@ -345,6 +384,23 @@ function parseBuildingState(
       );
     }
   }
+  const status = parseEnum(value.status, `${path}.status`, BUILDING_STATUSES);
+  if (!status.ok) return status;
+  const fireIntensity = parseOptionalNonNegativeNumber(
+    value.fireIntensity,
+    `${path}.fireIntensity`,
+  );
+  if (!fireIntensity.ok) return fireIntensity;
+  const ticksBurning = parseOptionalNonNegativeInteger(
+    value.ticksBurning,
+    `${path}.ticksBurning`,
+  );
+  if (!ticksBurning.ok) return ticksBurning;
+  const repairProgress = parseOptionalNonNegativeNumber(
+    value.repairProgress,
+    `${path}.repairProgress`,
+  );
+  if (!repairProgress.ok) return repairProgress;
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
   return ok({
@@ -352,13 +408,40 @@ function parseBuildingState(
     locationId: locationId.value,
     name: name.value,
     material: material.value,
+    combustible: combustible.value,
     services: services.value,
     inventory: inventory.value,
     ...(ownerRaw.value === undefined
       ? {}
       : { owner: ownerRaw.value as EntityId }),
+    status: status.value,
+    ...(fireIntensity.value === undefined
+      ? {}
+      : { fireIntensity: fireIntensity.value }),
+    ...(ticksBurning.value === undefined
+      ? {}
+      : { ticksBurning: ticksBurning.value }),
+    ...(repairProgress.value === undefined
+      ? {}
+      : { repairProgress: repairProgress.value }),
     revision: revision.value,
   });
+}
+
+function parseOptionalNonNegativeNumber(
+  value: unknown,
+  path: string,
+): ParseResult<number | undefined> {
+  if (value === undefined) return ok(undefined);
+  return parseNonNegativeNumber(value, path);
+}
+
+function parseOptionalNonNegativeInteger(
+  value: unknown,
+  path: string,
+): ParseResult<number | undefined> {
+  if (value === undefined) return ok(undefined);
+  return parseNonNegativeInteger(value, path);
 }
 
 function parseBuildingEntry(
@@ -389,10 +472,10 @@ function parseBuildingEntry(
 }
 
 /** Fails if `entries` contains the same key twice -- `new Map` would otherwise silently keep only the last one. */
-function findDuplicateKey<T>(
-  entries: readonly (readonly [EntityId, T])[],
-): EntityId | undefined {
-  const seen = new Set<EntityId>();
+function findDuplicateKey<K, T>(
+  entries: readonly (readonly [K, T])[],
+): K | undefined {
+  const seen = new Set<K>();
   for (const [key] of entries) {
     if (seen.has(key)) {
       return key;
@@ -439,6 +522,55 @@ function parseWorldRules(
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
   });
+}
+
+function parseLegendRecord(
+  value: unknown,
+  path: string,
+): ParseResult<LegendRecord> {
+  if (!isRecord(value)) return fail(path, "expected a legend record object");
+  const id = parseLegendId(value.id, `${path}.id`);
+  if (!id.ok) return id;
+  const narrator = parseEntityId(value.narrator, `${path}.narrator`);
+  if (!narrator.ok) return narrator;
+  const assertion = parseString(value.assertion, `${path}.assertion`);
+  if (!assertion.ok) return assertion;
+  const linkedEventIdRaw = parseOptionalString(
+    value.linkedEventId,
+    `${path}.linkedEventId`,
+  );
+  if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
+  const verified = parseBoolean(value.verified, `${path}.verified`);
+  if (!verified.ok) return verified;
+  return ok({
+    id: id.value,
+    narrator: narrator.value,
+    assertion: assertion.value,
+    ...(linkedEventIdRaw.value === undefined
+      ? {}
+      : { linkedEventId: linkedEventIdRaw.value as EventId }),
+    verified: verified.value,
+  });
+}
+
+function parseLegendEntry(
+  value: unknown,
+  path: string,
+): ParseResult<readonly [LegendId, LegendRecord]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected a [id, legend] entry");
+  }
+  const id = parseLegendId(value[0], `${path}[0]`);
+  if (!id.ok) return id;
+  const record = parseLegendRecord(value[1], `${path}[1]`);
+  if (!record.ok) return record;
+  if (id.value !== record.value.id) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${id.value}" does not match its own id field "${record.value.id}"`,
+    );
+  }
+  return ok([id.value, record.value] as const);
 }
 
 function parseNumberRecord(
@@ -518,6 +650,14 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const buildings = new Map(buildingEntries.value);
 
+  const legendEntries = parseArray(value.legends, "legends", parseLegendEntry);
+  if (!legendEntries.ok) return legendEntries;
+  const duplicateLegendKey = findDuplicateKey(legendEntries.value);
+  if (duplicateLegendKey !== undefined) {
+    return fail("legends", `duplicate legend id: ${duplicateLegendKey}`);
+  }
+  const legends = new Map(legendEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -531,6 +671,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     locations,
     actors,
     buildings,
+    legends,
     rules: rules.value,
     recipes: recipes.value,
   });

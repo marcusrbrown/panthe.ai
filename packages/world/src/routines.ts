@@ -1,8 +1,8 @@
 // Scripted inhabitant routines: given the last committed state and one
 // living, drive-bearing actor, decide the single proposal (if any) that
 // actor submits this tick, and the observation it made to justify it. Pure
-// over `WorldState`; no SQLite, no telemetry, no wall clock. The service
-// layer persists the returned observation (Unit 6's concern).
+// over `WorldState`; no SQLite, no telemetry, no wall clock. The caller
+// persists the returned observation.
 //
 // The same decision runs whether the world is on screen or not: there is
 // no separate, reduced-detail offscreen path.
@@ -14,6 +14,7 @@ import {
   type Proposal,
 } from "@panthea/contracts";
 import { getResourceAmount, resourceValue } from "./economy";
+import { actorHoldsEnoughToRepair, findRepairableBuilding } from "./repair";
 import { type ActorState, getActor, type WorldState } from "./state";
 
 export interface RoutineResult {
@@ -226,6 +227,22 @@ export function decideRoutineProposal(
     });
   }
 
+  // Repair a destroyed or mid-repair building this actor owns, once it
+  // holds enough materials -- urgent enough to outrank any ordinary trade
+  // or production choice below.
+  const repairable = findRepairableBuilding(state, actorId);
+  if (repairable && actorHoldsEnoughToRepair(state, actorId)) {
+    const structureId = repairable.id;
+    candidates.push({
+      utility: 1 + drives.thrift,
+      factsRead: [
+        `actor:${actorId}.inventory`,
+        `building:${structureId}.status`,
+      ],
+      build: () => ({ kind: "repair", structure: structureId }),
+    });
+  }
+
   if (actor.gathers) {
     const resource = actor.gathers;
     candidates.push({
@@ -252,7 +269,11 @@ export function decideRoutineProposal(
 
   const built = chosen.build();
   const targets: readonly EntityId[] =
-    "counterparty" in built ? [built.counterparty as EntityId] : [];
+    "counterparty" in built
+      ? [built.counterparty as EntityId]
+      : "structure" in built
+        ? [built.structure as EntityId]
+        : [];
 
   return {
     observation,

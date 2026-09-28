@@ -6,6 +6,7 @@ import {
   toEntityId,
   type WorldState,
   withActor,
+  withBuilding,
 } from "./state";
 import { validateProposal } from "./validate";
 
@@ -379,6 +380,79 @@ function economyFixtureState(): WorldState {
   return state;
 }
 
+test("a gather proposal from an actor holding an active favor yields the base amount plus the favor bonus", () => {
+  let state = economyFixtureState();
+  const woodcutter = state.actors.get(toEntityId("woodcutter"));
+  if (!woodcutter) throw new Error("expected the woodcutter fixture actor");
+  state = {
+    ...state,
+    rules: {
+      ...state.rules,
+      economyBalance: { ...state.rules.economyBalance, favorGatherBonus: 3 },
+    },
+  };
+  state = withActor(state, {
+    ...woodcutter,
+    favors: [
+      { source: toEntityId("zeus"), effect: "divine-favor", expiresAtTick: 10 },
+    ],
+  });
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "gather",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events[0]).toMatchObject({
+      kind: "resource-gathered",
+      resource: "wood",
+      amount: 5,
+    });
+  }
+});
+
+test("a gather proposal after the favor expires yields only the base amount", () => {
+  let state = economyFixtureState();
+  const woodcutter = state.actors.get(toEntityId("woodcutter"));
+  if (!woodcutter) throw new Error("expected the woodcutter fixture actor");
+  state = {
+    ...state,
+    tick: 10,
+    rules: {
+      ...state.rules,
+      economyBalance: { ...state.rules.economyBalance, favorGatherBonus: 3 },
+    },
+  };
+  state = withActor(state, {
+    ...woodcutter,
+    favors: [
+      { source: toEntityId("zeus"), effect: "divine-favor", expiresAtTick: 10 },
+    ],
+  });
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "gather",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events[0]).toMatchObject({
+      kind: "resource-gathered",
+      resource: "wood",
+      amount: 2,
+    });
+  }
+});
+
 test("a gather proposal always commits for a living actor", () => {
   const state = economyFixtureState();
   const outcome = validateProposal(
@@ -572,6 +646,272 @@ test("a fair trade a neutral-drives counterparty accepts commits as one atomic t
     });
   }
 });
+
+test("a strike with enough divine power ignites a combustible target", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toEqual([
+      expect.objectContaining({
+        kind: "resource-consumed",
+        entityId: "zeus",
+        resource: "divinity",
+        amount: 3,
+      }),
+      expect.objectContaining({
+        kind: "building-ignited",
+        entityId: "the-tavern",
+      }),
+    ]);
+  }
+});
+
+test("a strike below the ignite threshold damages a combustible target without igniting it", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "zeus", kind: "strike", target: "the-tavern", power: 1 }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toEqual([
+      expect.objectContaining({ kind: "resource-consumed" }),
+      expect.objectContaining({
+        kind: "building-damaged",
+        entityId: "the-tavern",
+        amount: 1,
+      }),
+    ]);
+  }
+});
+
+test("a strike with full power against a non-combustible target only damages it", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "zeus", kind: "strike", target: "agora-shop", power: 5 }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events[1]).toMatchObject({ kind: "building-damaged" });
+  }
+});
+
+test("a strike with insufficient divine power is rejected and deals no damage", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "zeus",
+      kind: "strike",
+      target: "the-tavern",
+      power: 99,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-power");
+  expect(state).toEqual(fireFixtureState());
+});
+
+test("a repair proposal against a destroyed building with enough planks progresses, and completing it restores operation", () => {
+  let state = fireFixtureState();
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  state = withBuilding(state, { ...tavern, status: "destroyed" });
+
+  const first = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
+  );
+  expect(first.ok).toBe(true);
+  if (first.ok) {
+    expect(first.events).toEqual([
+      expect.objectContaining({
+        kind: "repair-progressed",
+        entityId: "farmer",
+        structureId: "the-tavern",
+        resource: "planks",
+        amount: 1,
+      }),
+    ]);
+  }
+
+  state = withBuilding(state, {
+    ...tavern,
+    status: "repairing",
+    repairProgress: 1,
+  });
+  const second = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
+  );
+  expect(second.ok).toBe(true);
+  if (second.ok) {
+    expect(second.events.map((event) => event.kind)).toEqual([
+      "repair-progressed",
+      "building-repaired",
+    ]);
+  }
+});
+
+test("a repair proposal without enough materials is rejected as insufficient-resources", () => {
+  let state = fireFixtureState();
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  const farmer = state.actors.get(toEntityId("farmer"));
+  if (!farmer) throw new Error("expected the farmer fixture actor");
+  state = withActor(state, { ...farmer, inventory: new Map() });
+
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a repair proposal against an operational building is rejected", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
+  );
+  expect(outcome.ok).toBe(false);
+});
+
+test("a worship proposal commits a capacity gain and a favor expiring at the configured duration", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "worship", deity: "zeus" }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]).toMatchObject({
+      kind: "worship-performed",
+      entityId: "farmer",
+      deity: "zeus",
+    });
+  }
+});
+
+test("a worship proposal with an offering the actor lacks is rejected as insufficient-resources", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "wine", amount: 100 },
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("an unlinked legend proposal commits as an unverified rumor", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "legend",
+      assertion: "Zeus struck down the old oak",
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]).toMatchObject({
+      kind: "legend-recorded",
+      entityId: "farmer",
+      assertion: "Zeus struck down the old oak",
+      verified: false,
+    });
+  }
+});
+
+test("a legend proposal linking a committed event commits as verified", () => {
+  const state = fireFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "legend",
+      assertion: "Zeus struck down the old oak",
+      linkedEventId: "evt-9",
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events[0]).toMatchObject({ verified: true });
+  }
+});
+
+function fireFixtureState(): WorldState {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal", "olympus"],
+    resources: [],
+    locations: [
+      { id: "town-square", realm: "mortal", name: "Town Square", edges: [] },
+      { id: "great-hall", realm: "olympus", name: "Great Hall", edges: [] },
+    ],
+    buildings: [
+      {
+        id: "the-tavern",
+        locationId: "town-square",
+        name: "The Tavern",
+        material: "wood",
+        combustible: true,
+        services: ["drink"],
+        inventory: [{ resource: "wine", amount: 3 }],
+        owner: "farmer",
+      },
+      {
+        id: "agora-shop",
+        locationId: "town-square",
+        name: "The Agora Shop",
+        material: "stone",
+        combustible: false,
+        services: ["trade"],
+        inventory: [],
+        owner: "farmer",
+      },
+    ],
+    inhabitants: [
+      {
+        id: "farmer",
+        name: "The Farmer",
+        locationId: "town-square",
+        drives: { thrift: 0.5, appetite: 0, greed: 0, piety: 0 },
+        startingInventory: [{ resource: "planks", amount: 5 }],
+      },
+      {
+        id: "zeus",
+        name: "Zeus",
+        locationId: "great-hall",
+        startingInventory: [{ resource: "divinity", amount: 5 }],
+      },
+    ],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      fireBalance: { igniteThreshold: 3 },
+      economyBalance: { repairCostPlanks: 2, repairAmountPerTick: 1 },
+    },
+    recipes: {},
+  };
+  return createInitialWorldState(pack);
+}
 
 test("a counterparty declines a trade outside its own acceptance rule", () => {
   let state = economyFixtureState();

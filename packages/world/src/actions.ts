@@ -34,8 +34,22 @@ import {
   debitActorInventory,
   transferBetweenActors,
 } from "./economy";
-import type { PrngState, WorldEventDraft, WorldState } from "./state";
+import {
+  applyBuildingBurnTicked,
+  applyBuildingDamaged,
+  applyBuildingDestroyed,
+  applyBuildingIgnited,
+  planFireStep,
+} from "./fire";
+import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
+import {
+  type PrngState,
+  type WorldEventDraft,
+  type WorldState,
+  withLegend,
+} from "./state";
 import { validateProposal } from "./validate";
+import { applyWorshipPerformed } from "./worship";
 
 /** Moves an actor to `to`, bumping the actor's and both locations' revisions. */
 function moveActor(
@@ -114,6 +128,62 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
         event.amount,
       );
       break;
+    case "building-damaged":
+      next = applyBuildingDamaged(state, event.entityId);
+      break;
+    case "building-ignited":
+      next = applyBuildingIgnited(state, event.entityId);
+      break;
+    case "building-burn-ticked":
+      next = applyBuildingBurnTicked(
+        state,
+        event.entityId,
+        event.fireIntensity,
+        event.ticksBurning,
+      );
+      break;
+    case "building-destroyed":
+      next = applyBuildingDestroyed(state, event.entityId);
+      break;
+    case "repair-progressed":
+      next = applyRepairProgressed(
+        state,
+        event.entityId,
+        event.structureId,
+        event.resource,
+        event.amount,
+      );
+      break;
+    case "building-repaired":
+      next = applyBuildingRepaired(state, event.entityId);
+      break;
+    case "worship-performed":
+      next = applyWorshipPerformed(
+        state,
+        event.entityId,
+        event.deity,
+        event.offering,
+        event.favorEffect,
+        event.favorExpiresAtTick,
+      );
+      break;
+    case "income-earned":
+      next = creditActorInventory(
+        state,
+        event.entityId,
+        "currency",
+        event.amount,
+      );
+      break;
+    case "legend-recorded":
+      next = withLegend(state, {
+        id: event.legendId,
+        narrator: event.entityId,
+        assertion: event.assertion,
+        ...(event.linkedEventId ? { linkedEventId: event.linkedEventId } : {}),
+        verified: event.verified,
+      });
+      break;
     default: {
       const exhaustiveCheck: never = event;
       throw new Error(
@@ -190,6 +260,10 @@ export interface TickResult {
   readonly prng: PrngState;
   readonly committed: readonly CommittedRecord[];
   readonly rejected: readonly RejectedRecord[];
+  /** Events from this tick's automatic income and fire steps -- caused by no proposal, so they never appear in `committed`. */
+  readonly environmentEvents: readonly WorldEvent[];
+  /** Every event this tick produced, proposal-caused and environmental, in commit order -- what a caller persists (e.g. `commitTick`'s `events`). */
+  readonly events: readonly WorldEvent[];
 }
 
 export interface TickOptions {
@@ -239,11 +313,40 @@ function completeEvent(
   } as WorldEvent;
 }
 
+/** A building's per-tick service revenue while operational, from `rules.economyBalance.incomePerTick`; 0 when unset, in which case no income event is drafted at all. */
+function incomePerTickOf(state: WorldState): number {
+  return state.rules.economyBalance.incomePerTick ?? 0;
+}
+
+/** Every operational, owned building earns its owner one income-earned draft this tick -- a declared currency source, distinct from a trade. */
+function planIncomeStep(state: WorldState): readonly WorldEventDraft[] {
+  const amount = incomePerTickOf(state);
+  if (amount <= 0) return [];
+  const drafts: WorldEventDraft[] = [];
+  for (const building of state.buildings.values()) {
+    if (building.status !== "operational" || building.owner === undefined) {
+      continue;
+    }
+    drafts.push({
+      kind: "income-earned",
+      entityId: building.owner,
+      buildingId: building.id,
+      amount,
+    });
+  }
+  return drafts;
+}
+
 /**
  * Runs one tick: advances the clock, then revalidates and commits `queue`
  * sequentially against the state as committed so far within this tick, so
  * a later proposal observes an earlier one's effects. A rejection never
- * touches `state`; only a successful commit's events are applied.
+ * touches `state`; only a successful commit's events are applied. After
+ * the queue drains, two automatic environmental steps run once each --
+ * income (every operational, owned building earns its owner revenue) and
+ * fire (every burning building advances, and may spread to a combustible
+ * neighbor via the persisted PRNG) -- neither proposed by anything, both
+ * fully deterministic and replayable through the same event log.
  *
  * An actor that already committed a non-claim proposal earlier in this
  * same tick is rejected as `busy-actor` for any further non-claim proposal
@@ -315,5 +418,42 @@ export function runTick(
     }
   }
 
-  return { state: working, prng, committed, rejected };
+  const environmentCause = `tick-${working.tick}`;
+
+  const incomeEvents = planIncomeStep(working).map((draft) => {
+    sequence += 1;
+    return completeEvent(draft, {
+      tick: working.tick,
+      sequence,
+      simTime: working.simTime,
+      observationId: environmentCause,
+      approximate,
+    });
+  });
+  working = applyEvents(working, incomeEvents);
+
+  const fireStep = planFireStep(working, prng);
+  const fireEvents = fireStep.events.map((draft) => {
+    sequence += 1;
+    return completeEvent(draft, {
+      tick: working.tick,
+      sequence,
+      simTime: working.simTime,
+      observationId: environmentCause,
+      approximate,
+    });
+  });
+  working = applyEvents(working, fireEvents);
+
+  const proposalEvents = committed.flatMap((record) => record.events);
+  const environmentEvents = [...incomeEvents, ...fireEvents];
+
+  return {
+    state: working,
+    prng: fireStep.prng,
+    committed,
+    rejected,
+    environmentEvents,
+    events: [...proposalEvents, ...environmentEvents],
+  };
 }

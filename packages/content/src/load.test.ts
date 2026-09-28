@@ -77,6 +77,7 @@ test("optional buildings.json and inhabitants.json are picked up when present", 
             locationId: "tavern",
             name: "The Tavern",
             material: "wood",
+            combustible: true,
             services: ["lodging"],
             inventory: [],
           },
@@ -217,16 +218,27 @@ test("the authored Greek world content loads with the expected geography and rul
     priceCeiling: 100,
   });
 
-  // The authored economy: a woodcutter and a farmer, and the shop building
-  // the farmer owns.
+  // The authored economy: a woodcutter, a farmer, and a deity, plus the
+  // buildings the farmer owns.
   const inhabitantIds = pack.inhabitants.map((i) => i.id).sort();
-  expect(inhabitantIds).toEqual(["farmer", "woodcutter"]);
+  expect(inhabitantIds).toEqual(["farmer", "woodcutter", "zeus"]);
 
-  const buildingIds = pack.buildings.map((b) => b.id);
-  expect(buildingIds).toEqual(["agora-shop"]);
-  expect(pack.buildings[0]).toMatchObject({
+  const zeus = pack.inhabitants.find((i) => i.id === "zeus");
+  expect(zeus?.drives).toBeUndefined();
+
+  const buildingIds = pack.buildings.map((b) => b.id).sort();
+  expect(buildingIds).toEqual(["agora-shop", "old-oak", "the-tavern"]);
+  const shop = pack.buildings.find((b) => b.id === "agora-shop");
+  expect(shop).toMatchObject({
     owner: "farmer",
     locationId: "shop",
+    combustible: false,
+  });
+  const tavern = pack.buildings.find((b) => b.id === "the-tavern");
+  expect(tavern).toMatchObject({
+    owner: "farmer",
+    locationId: "tavern",
+    combustible: true,
   });
 
   // The woodcutter's recipe: wood converts into planks.

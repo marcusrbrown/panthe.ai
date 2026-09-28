@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import type { ContentPack } from "@panthea/contracts";
 import { decideRoutineProposal } from "./routines";
-import { createInitialWorldState, toEntityId, withActor } from "./state";
+import {
+  createInitialWorldState,
+  toEntityId,
+  withActor,
+  withBuilding,
+} from "./state";
 
 function rules(
   economyBalance: Record<string, number> = {},
@@ -212,6 +217,43 @@ test("an actor holding recipe inputs proposes to produce over gathering", () => 
     kind: "produce",
     output: "planks",
     quantity: 1,
+  });
+});
+
+test("an owner holding enough materials proposes to repair its destroyed building over any ordinary choice", () => {
+  let state = createInitialWorldState(
+    pack({
+      rules: rules({ repairCostPlanks: 2, repairAmountPerTick: 1 }),
+      buildings: [
+        {
+          id: "the-tavern",
+          locationId: "square",
+          name: "The Tavern",
+          material: "wood",
+          combustible: true,
+          services: ["drink"],
+          inventory: [],
+          owner: "farmer",
+        },
+      ],
+    }),
+  );
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withActor(state, {
+    id: toEntityId("farmer"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["planks", 3]]),
+    revision: 0,
+    drives: { thrift: 0.1, appetite: 0, greed: 0, piety: 0 },
+  });
+  const result = decideRoutineProposal(state, toEntityId("farmer"));
+  expect(result?.proposal).toMatchObject({
+    kind: "repair",
+    structure: "the-tavern",
   });
 });
 

@@ -257,6 +257,7 @@ function economyPack(): ContentPack {
         locationId: "shop",
         name: "The Agora Shop",
         material: "stone",
+        combustible: false,
         services: ["trade"],
         inventory: [{ resource: "food", amount: 5 }],
         owner: "farmer",

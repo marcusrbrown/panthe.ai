@@ -15,26 +15,41 @@ import type {
   ConsumeProposal,
   EntityId,
   GatherProposal,
+  LegendProposal,
   MoveProposal,
   ProduceProposal,
   Proposal,
   RealmTransitionProposal,
   RejectionReasonCode,
+  RepairProposal,
+  StrikeProposal,
   TradeProposal,
+  WorshipProposal,
 } from "@panthea/contracts";
 import {
   evaluateTradeAcceptance,
   getResourceAmount,
   NEUTRAL_DRIVES,
 } from "./economy";
+import { igniteThresholdOf } from "./fire";
 import { crossesRealm, findEdge, isAdjacent } from "./geography";
+import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
+  getBuilding,
   getEntityRevision,
   getLocation,
+  toLegendId,
   type WorldEventDraft,
   type WorldState,
 } from "./state";
+import {
+  DIVINE_CAPACITY_RESOURCE,
+  FAVOR_EFFECT,
+  favorDurationTicksOf,
+  favorGatherBonusOf,
+  hasActiveGatherFavor,
+} from "./worship";
 
 export interface RuleRejection {
   readonly ok: false;
@@ -176,17 +191,22 @@ function handleClaim(
   );
 }
 
-/** Gathering has no precondition beyond the shared actor-alive check; it always commits. */
+/** Gathering has no precondition beyond the shared actor-alive check; it always commits. An actor holding an active gather favor yields the requested amount plus the favor's bonus. */
 function handleGather(
-  _state: WorldState,
+  state: WorldState,
   proposal: GatherProposal,
 ): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  const bonus =
+    actor && hasActiveGatherFavor(actor, state.tick)
+      ? favorGatherBonusOf(state)
+      : 0;
   return commit([
     {
       kind: "resource-gathered",
       entityId: proposal.actor,
       resource: proposal.resource,
-      amount: proposal.amount,
+      amount: proposal.amount + bonus,
     },
   ]);
 }
@@ -313,6 +333,147 @@ function handleTrade(state: WorldState, proposal: TradeProposal): RuleOutcome {
   ]);
 }
 
+function handleStrike(
+  state: WorldState,
+  proposal: StrikeProposal,
+): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  const available = getResourceAmount(
+    actor.inventory,
+    DIVINE_CAPACITY_RESOURCE,
+  );
+  if (available < proposal.power) {
+    return reject(
+      "insufficient-power",
+      `actor lacks ${proposal.power} divine power to strike`,
+    );
+  }
+  const target = getBuilding(state, proposal.target);
+  if (!target) {
+    return reject("malformed", `unknown strike target: ${proposal.target}`);
+  }
+  const events: WorldEventDraft[] = [
+    {
+      kind: "resource-consumed",
+      entityId: proposal.actor,
+      resource: DIVINE_CAPACITY_RESOURCE,
+      amount: proposal.power,
+    },
+  ];
+  if (target.combustible && proposal.power >= igniteThresholdOf(state)) {
+    events.push({ kind: "building-ignited", entityId: target.id });
+  } else {
+    events.push({
+      kind: "building-damaged",
+      entityId: target.id,
+      amount: proposal.power,
+    });
+  }
+  return commit(events);
+}
+
+function handleRepair(
+  state: WorldState,
+  proposal: RepairProposal,
+): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  const building = getBuilding(state, proposal.structure);
+  if (!building) {
+    return reject("malformed", `unknown repair target: ${proposal.structure}`);
+  }
+  if (building.status !== "destroyed" && building.status !== "repairing") {
+    return reject(
+      "malformed",
+      `${proposal.structure} is not in need of repair`,
+    );
+  }
+  const amount = repairAmountPerTickOf(state);
+  if (getResourceAmount(actor.inventory, REPAIR_RESOURCE) < amount) {
+    return reject(
+      "insufficient-resources",
+      `actor lacks ${amount} ${REPAIR_RESOURCE} to repair`,
+    );
+  }
+  const events: WorldEventDraft[] = [
+    {
+      kind: "repair-progressed",
+      entityId: proposal.actor,
+      structureId: proposal.structure,
+      resource: REPAIR_RESOURCE,
+      amount,
+    },
+  ];
+  const projectedProgress = (building.repairProgress ?? 0) + amount;
+  if (projectedProgress >= repairCostOf(state)) {
+    events.push({ kind: "building-repaired", entityId: proposal.structure });
+  }
+  return commit(events);
+}
+
+function handleWorship(
+  state: WorldState,
+  proposal: WorshipProposal,
+): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  if (!getActor(state, proposal.deity)) {
+    return reject("malformed", `unknown deity: ${proposal.deity}`);
+  }
+  if (
+    proposal.offering &&
+    getResourceAmount(actor.inventory, proposal.offering.resource) <
+      proposal.offering.amount
+  ) {
+    return reject(
+      "insufficient-resources",
+      `actor lacks the offered ${proposal.offering.resource}`,
+    );
+  }
+  return commit([
+    {
+      kind: "worship-performed",
+      entityId: proposal.actor,
+      deity: proposal.deity,
+      ...(proposal.offering ? { offering: proposal.offering } : {}),
+      favorEffect: FAVOR_EFFECT,
+      favorExpiresAtTick: state.tick + favorDurationTicksOf(state),
+    },
+  ]);
+}
+
+/**
+ * A legend commits regardless of whether its assertion is true -- it
+ * records that someone told the story, never that the story is fact.
+ * `legendId` is derived from the proposal's own `observationId`, so the
+ * same proposal always yields the same legend id.
+ */
+function handleLegend(
+  _state: WorldState,
+  proposal: LegendProposal,
+): RuleOutcome {
+  const legendId = toLegendId(`legend-${proposal.observationId}`);
+  return commit([
+    {
+      kind: "legend-recorded",
+      entityId: proposal.actor,
+      legendId,
+      assertion: proposal.assertion,
+      ...(proposal.linkedEventId
+        ? { linkedEventId: proposal.linkedEventId }
+        : {}),
+      verified: proposal.linkedEventId !== undefined,
+    },
+  ]);
+}
+
 /**
  * Runs the shared pre-checks (actor alive, expected revisions) and then
  * the kind-specific handler.
@@ -354,7 +515,20 @@ export function validateProposal(
       return handleTrade(state, proposal);
     case "consume":
       return handleConsume(state, proposal);
-    default:
-      return reject("malformed", `no rule for proposal kind: ${proposal.kind}`);
+    case "strike":
+      return handleStrike(state, proposal);
+    case "repair":
+      return handleRepair(state, proposal);
+    case "worship":
+      return handleWorship(state, proposal);
+    case "legend":
+      return handleLegend(state, proposal);
+    default: {
+      const exhaustiveCheck: never = proposal;
+      return reject(
+        "malformed",
+        `no rule for proposal kind: ${(exhaustiveCheck as Proposal).kind}`,
+      );
+    }
   }
 }

@@ -139,6 +139,214 @@ test("a valid resource-consumed event parses", () => {
   }
 });
 
+test("a valid building-damaged event parses", () => {
+  const result = parseEvent(
+    envelope({ kind: "building-damaged", entityId: "old-oak", amount: 1 }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "building-damaged",
+      entityId: "old-oak",
+      amount: 1,
+    });
+  }
+});
+
+test("a valid building-ignited event parses", () => {
+  const result = parseEvent(
+    envelope({ kind: "building-ignited", entityId: "the-tavern" }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "building-ignited",
+      entityId: "the-tavern",
+    });
+  }
+});
+
+test("a valid building-burn-ticked event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "building-burn-ticked",
+      entityId: "the-tavern",
+      fireIntensity: 2,
+      ticksBurning: 1,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "building-burn-ticked",
+      entityId: "the-tavern",
+      fireIntensity: 2,
+      ticksBurning: 1,
+    });
+  }
+});
+
+test("a valid building-destroyed event parses with its disposed inventory", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "building-destroyed",
+      entityId: "the-tavern",
+      disposedInventory: [{ resource: "wine", amount: 3 }],
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "building-destroyed",
+      entityId: "the-tavern",
+      disposedInventory: [{ resource: "wine", amount: 3 }],
+    });
+  }
+});
+
+test("a valid repair-progressed event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "repair-progressed",
+      entityId: "farmer",
+      structureId: "the-tavern",
+      resource: "planks",
+      amount: 1,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "repair-progressed",
+      entityId: "farmer",
+      structureId: "the-tavern",
+      resource: "planks",
+      amount: 1,
+    });
+  }
+});
+
+test("a valid building-repaired event parses", () => {
+  const result = parseEvent(
+    envelope({ kind: "building-repaired", entityId: "the-tavern" }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "building-repaired",
+      entityId: "the-tavern",
+    });
+  }
+});
+
+test("a valid worship-performed event parses with an offering and a favor", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "worship-performed",
+      entityId: "farmer",
+      deity: "zeus",
+      offering: { resource: "wine", amount: 1 },
+      favorEffect: "trade-favor",
+      favorExpiresAtTick: 20,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "worship-performed",
+      entityId: "farmer",
+      deity: "zeus",
+      offering: { resource: "wine", amount: 1 },
+      favorEffect: "trade-favor",
+      favorExpiresAtTick: 20,
+    });
+  }
+});
+
+test("a valid worship-performed event parses without an offering", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "worship-performed",
+      entityId: "farmer",
+      deity: "zeus",
+      favorEffect: "trade-favor",
+      favorExpiresAtTick: 20,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({ kind: "worship-performed" });
+    if (result.value.kind === "worship-performed") {
+      expect(result.value.offering).toBeUndefined();
+    }
+  }
+});
+
+test("a valid income-earned event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "income-earned",
+      entityId: "farmer",
+      buildingId: "agora-shop",
+      amount: 2,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "income-earned",
+      entityId: "farmer",
+      buildingId: "agora-shop",
+      amount: 2,
+    });
+  }
+});
+
+test("a valid legend-recorded event parses, unlinked and unverified", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "bard",
+      legendId: "legend-1",
+      assertion: "Zeus struck down the old oak",
+      verified: false,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "legend-recorded",
+      entityId: "bard",
+      legendId: "legend-1",
+      assertion: "Zeus struck down the old oak",
+      verified: false,
+    });
+    if (result.value.kind === "legend-recorded") {
+      expect(result.value.linkedEventId).toBeUndefined();
+    }
+  }
+});
+
+test("a valid legend-recorded event parses, linked and verified", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "bard",
+      legendId: "legend-1",
+      assertion: "Zeus struck down the old oak",
+      linkedEventId: "evt-9",
+      verified: true,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({ verified: true });
+    if (result.value.kind === "legend-recorded") {
+      expect(String(result.value.linkedEventId)).toBe("evt-9");
+    }
+  }
+});
+
 test("an unknown event kind is rejected with reason unknown-kind", () => {
   const result = parseEvent(
     envelope({ kind: "teleported", entityId: "npc-1" }),

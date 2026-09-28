@@ -18,7 +18,10 @@
     "checkpointIntervalMs": 60000,
     "fireBalance": {
       "spreadChancePerTick": 0.1,
-      "maxSpreadPerTick": 2
+      "maxSpreadPerTick": 2,
+      "igniteThreshold": 3,
+      "intensityGrowthPerTick": 1,
+      "destroyIntensity": 3
     },
     "economyBalance": {
       "priceFloor": 1,
@@ -28,7 +31,13 @@
       "value_currency": 1,
       "value_wood": 1,
       "value_food": 3,
-      "value_planks": 2
+      "value_planks": 2,
+      "repairCostPlanks": 3,
+      "repairAmountPerTick": 1,
+      "worshipCapacityGain": 1,
+      "favorDurationTicks": 10,
+      "favorGatherBonus": 1,
+      "incomePerTick": 1
     }
   }
 }

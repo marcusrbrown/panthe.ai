@@ -17,7 +17,9 @@ import type {
   ContentPack,
   EntityId,
   EventEnvelope,
+  EventId,
   InhabitantDrives,
+  LegendId,
   LocationEdge,
   Realm,
   Recipe,
@@ -41,6 +43,13 @@ export interface LocationState {
   readonly revision: number;
 }
 
+/** An active worship effect: a source, a code-defined effect label, and the tick it expires at -- never wired into another system's rules directly. */
+export interface FavorState {
+  readonly source: EntityId;
+  readonly effect: string;
+  readonly expiresAtTick: number;
+}
+
 /** An actor's live state: an entity capable of proposing and being targeted. */
 export interface ActorState {
   readonly id: EntityId;
@@ -54,7 +63,7 @@ export interface ActorState {
    * itself passage by merely claiming a capability.
    */
   readonly capabilities: readonly string[];
-  /** Resources this actor holds, keyed by resource name. A resource absent from the map means zero. */
+  /** Resources this actor holds, keyed by resource name. A resource absent from the map means zero. A deity's divine capacity is the "divinity" resource, spent and replenished through the same inventory mechanism as any other good. */
   readonly inventory: ReadonlyMap<string, number>;
   /**
    * Drive weights that make this actor's routine choices deterministic
@@ -67,20 +76,55 @@ export interface ActorState {
   readonly gathers?: string;
   /** A resource this actor seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
   readonly wants?: string;
+  /** Worship effects currently in force, each checked against the current tick at read time -- an expired entry is never pruned by a mutation or an event, only ignored by `isFavorActive`. */
+  readonly favors?: readonly FavorState[];
   /** Bumped whenever this actor's location, realm, or inventory changes. */
   readonly revision: number;
 }
 
-/** A building's live state: the authored structure plus its current inventory and ownership. */
+export const BUILDING_STATUSES = [
+  "operational",
+  "damaged",
+  "burning",
+  "destroyed",
+  "repairing",
+] as const;
+export type BuildingStatus = (typeof BUILDING_STATUSES)[number];
+
+/** A building's live state: the authored structure plus its current inventory, ownership, and fire/repair lifecycle. */
 export interface BuildingState {
   readonly id: EntityId;
   readonly locationId: EntityId;
   readonly name: string;
   readonly material: string;
+  /** Whether fire can spread to and ignite this building; a non-combustible building never catches fire. */
+  readonly combustible: boolean;
   readonly services: readonly string[];
   readonly inventory: ReadonlyMap<string, number>;
   readonly owner?: EntityId;
+  /** operational -> damaged/burning -> destroyed -> repairing -> operational. Services and income are exposed only while operational. */
+  readonly status: BuildingStatus;
+  /** Severity while burning; grows each tick and drives destruction once it crosses the content-authored threshold. Absent outside "burning". */
+  readonly fireIntensity?: number;
+  /** Ticks spent burning so far, for observation. Absent outside "burning". */
+  readonly ticksBurning?: number;
+  /** Materials committed toward repair so far. Absent outside "repairing". */
+  readonly repairProgress?: number;
   readonly revision: number;
+}
+
+/**
+ * An attributed narrative record: `verified` is exactly whether
+ * `linkedEventId` is present. A disputed second telling of the same
+ * happening is simply another `LegendRecord`, never a replacement for the
+ * first. Never mutates any other part of `WorldState`.
+ */
+export interface LegendRecord {
+  readonly id: LegendId;
+  readonly narrator: EntityId;
+  readonly assertion: string;
+  readonly linkedEventId?: EventId;
+  readonly verified: boolean;
 }
 
 export interface WorldState {
@@ -101,6 +145,7 @@ export interface WorldState {
   readonly locations: ReadonlyMap<EntityId, LocationState>;
   readonly actors: ReadonlyMap<EntityId, ActorState>;
   readonly buildings: ReadonlyMap<EntityId, BuildingState>;
+  readonly legends: ReadonlyMap<LegendId, LegendRecord>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -130,6 +175,11 @@ export type WorldEventDraft<E = WorldEvent> = E extends EventEnvelope
  */
 export function toEntityId(raw: string): EntityId {
   return raw as EntityId;
+}
+
+/** Same trusted-cast rationale as `toEntityId`, for deterministically-derived legend ids (see `validate.ts`'s `handleLegend`). */
+export function toLegendId(raw: string): LegendId {
+  return raw as LegendId;
 }
 
 function toInventoryMap(
@@ -175,7 +225,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       alive: true,
       capabilities: [],
       inventory: toInventoryMap(inhabitant.startingInventory),
-      drives: inhabitant.drives,
+      ...(inhabitant.drives === undefined ? {} : { drives: inhabitant.drives }),
       ...(inhabitant.gathers === undefined
         ? {}
         : { gathers: inhabitant.gathers }),
@@ -192,8 +242,10 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       locationId: toEntityId(building.locationId),
       name: building.name,
       material: building.material,
+      combustible: building.combustible,
       services: building.services,
       inventory: toInventoryMap(building.inventory),
+      status: "operational",
       revision: 0,
       ...(building.owner === undefined
         ? {}
@@ -208,9 +260,25 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     locations,
     actors,
     buildings,
+    legends: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };
+}
+
+/** Whether `favor` is still in force at `currentTick` -- the sole place expiry is checked; expired favors are never pruned from state or reported by an event. */
+export function isFavorActive(favor: FavorState, currentTick: number): boolean {
+  return currentTick < favor.expiresAtTick;
+}
+
+/** The subset of `actor.favors` still in force at `currentTick`. */
+export function activeFavors(
+  actor: ActorState,
+  currentTick: number,
+): readonly FavorState[] {
+  return (actor.favors ?? []).filter((favor) =>
+    isFavorActive(favor, currentTick),
+  );
 }
 
 /** Adds or replaces an actor. Pure: returns a new `WorldState`. */
@@ -228,6 +296,16 @@ export function withBuilding(
   const buildings = new Map(state.buildings);
   buildings.set(building.id, building);
   return { ...state, buildings };
+}
+
+/** Adds a legend record. Never mutates any other part of `WorldState` (a legend is never a replacement for an existing one, even about the same happening). */
+export function withLegend(
+  state: WorldState,
+  record: LegendRecord,
+): WorldState {
+  const legends = new Map(state.legends);
+  legends.set(record.id, record);
+  return { ...state, legends };
 }
 
 export function getActor(
@@ -249,6 +327,11 @@ export function getBuilding(
   id: EntityId,
 ): BuildingState | undefined {
   return state.buildings.get(id);
+}
+
+/** The services a building actually offers right now: its authored list while operational, none otherwise -- a burning, damaged, destroyed, or repairing building exposes no services. */
+export function effectiveServices(building: BuildingState): readonly string[] {
+  return building.status === "operational" ? building.services : [];
 }
 
 /**

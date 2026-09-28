@@ -226,6 +226,10 @@ export type SessionId = Brand<string, "SessionId">;
 export const parseSessionId = idParser<"SessionId">();
 export const createSessionId = idFactory<"SessionId">("session");
 
+export type LegendId = Brand<string, "LegendId">;
+export const parseLegendId = idParser<"LegendId">();
+export const createLegendId = idFactory<"LegendId">("legend");
+
 // --- Shared value shapes -----------------------------------------------------
 
 export interface EntityRevision {

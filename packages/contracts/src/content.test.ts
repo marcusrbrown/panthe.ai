@@ -36,6 +36,7 @@ function validPack(): Record<string, unknown> {
         locationId: "agora",
         name: "The Tavern",
         material: "wood",
+        combustible: true,
         services: ["lodging"],
         inventory: [{ resource: "wine", amount: 10 }],
         owner: "npc-1",
@@ -94,6 +95,31 @@ test("a location with a non-string required capability is rejected", () => {
   (pack.locations as Record<string, unknown>[])[0].requiredCapability = 42;
   const result = parseContentPack(pack);
   expect(result.ok).toBe(false);
+});
+
+test("a building declares whether it can catch fire", () => {
+  const result = parseContentPack(validPack());
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.buildings[0]).toMatchObject({ combustible: true });
+  }
+});
+
+test("a building with a non-boolean combustible field is rejected", () => {
+  const pack = validPack();
+  (pack.buildings as Record<string, unknown>[])[0].combustible = "yes";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+});
+
+test("an inhabitant without drives parses with them absent -- a fixture-only actor never runs a routine", () => {
+  const pack = validPack();
+  delete (pack.inhabitants as Record<string, unknown>[])[0].drives;
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0].drives).toBeUndefined();
+  }
 });
 
 test("a building with a negative inventory amount is rejected", () => {

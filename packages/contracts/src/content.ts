@@ -57,6 +57,8 @@ export interface Building {
   readonly locationId: string;
   readonly name: string;
   readonly material: string;
+  /** Whether fire can spread to and ignite this building; a non-combustible building (e.g. stone) never catches fire. */
+  readonly combustible: boolean;
   readonly services: readonly string[];
   readonly inventory: readonly ResourceAmount[];
   readonly owner?: string;
@@ -73,7 +75,8 @@ export interface Inhabitant {
   readonly id: string;
   readonly name: string;
   readonly locationId: string;
-  readonly drives: InhabitantDrives;
+  /** Drive weights that make this inhabitant's routine choices deterministic. Absent means it never runs a routine -- a fixture-only actor (e.g. a deity), never `packages/world/src/routines.ts`. */
+  readonly drives?: InhabitantDrives;
   /** The resource this inhabitant gathers when no more pressing action is eligible. Absent means it never gathers. */
   readonly gathers?: string;
   /** A resource this inhabitant seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
@@ -167,6 +170,8 @@ function parseBuilding(value: unknown, path: string): ParseResult<Building> {
   if (!name.ok) return name;
   const material = parseString(value.material, `${path}.material`);
   if (!material.ok) return material;
+  const combustible = parseBoolean(value.combustible, `${path}.combustible`);
+  if (!combustible.ok) return combustible;
   const services = parseArray(value.services, `${path}.services`, parseString);
   if (!services.ok) return services;
   const inventory = parseArray(
@@ -182,10 +187,19 @@ function parseBuilding(value: unknown, path: string): ParseResult<Building> {
     locationId: locationId.value,
     name: name.value,
     material: material.value,
+    combustible: combustible.value,
     services: services.value,
     inventory: inventory.value,
     ...(owner.value === undefined ? {} : { owner: owner.value }),
   });
+}
+
+function parseOptionalInhabitantDrives(
+  value: unknown,
+  path: string,
+): ParseResult<InhabitantDrives | undefined> {
+  if (value === undefined) return ok(undefined);
+  return parseInhabitantDrives(value, path);
 }
 
 function parseInhabitantDrives(
@@ -220,7 +234,7 @@ function parseInhabitant(
   if (!name.ok) return name;
   const locationId = parseString(value.locationId, `${path}.locationId`);
   if (!locationId.ok) return locationId;
-  const drives = parseInhabitantDrives(value.drives, `${path}.drives`);
+  const drives = parseOptionalInhabitantDrives(value.drives, `${path}.drives`);
   if (!drives.ok) return drives;
   const gathers = parseOptionalString(value.gathers, `${path}.gathers`);
   if (!gathers.ok) return gathers;
@@ -239,7 +253,7 @@ function parseInhabitant(
     id: id.value,
     name: name.value,
     locationId: locationId.value,
-    drives: drives.value,
+    ...(drives.value === undefined ? {} : { drives: drives.value }),
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
     ...(startingInventory.value === undefined

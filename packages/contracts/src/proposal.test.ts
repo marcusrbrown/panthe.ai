@@ -173,6 +173,36 @@ test("a valid worship proposal parses to its typed variant", () => {
   }
 });
 
+test("a valid legend proposal parses to its typed variant, unlinked", () => {
+  const result = parseProposal(
+    base({ kind: "legend", assertion: "Zeus struck down the old oak" }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "legend",
+      assertion: "Zeus struck down the old oak",
+    });
+    if (result.value.kind === "legend") {
+      expect(result.value.linkedEventId).toBeUndefined();
+    }
+  }
+});
+
+test("a valid legend proposal may link a committed event", () => {
+  const result = parseProposal(
+    base({
+      kind: "legend",
+      assertion: "Zeus struck down the old oak",
+      linkedEventId: "evt-9",
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "legend") {
+    expect(String(result.value.linkedEventId)).toBe("evt-9");
+  }
+});
+
 test("a valid claim proposal parses to its typed variant", () => {
   const result = parseProposal(
     base({ kind: "claim", assertion: "I own the tavern" }),

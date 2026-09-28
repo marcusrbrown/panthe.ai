@@ -114,6 +114,7 @@ test("every building status has a path back to operational", () => {
 ## Related
 
 - [Build the direct version first in a greenfield, single-user codebase](greenfield-anti-over-engineering-2026-09-27.md)
+- [One lock over lifecycle state, transitions as pure functions](lifecycle-state-one-lock-transitions-2026-09-28.md)
 - [World and persistence composed incorrectly despite green package tests](../integration-issues/world-persistence-composition-broken-after-reopen-2026-09-27.md)
 - `docs/plans/2026-09-27-001-feat-m1-persistent-living-world-plan.md`: Key Technical Decisions (execution-time validation) and Unit 6 (checking legend links at intake)
 - `docs/product/requirements.md`: W05, W06, W07, W08

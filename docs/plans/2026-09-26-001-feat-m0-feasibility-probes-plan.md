@@ -57,7 +57,7 @@ Two constraints shape every unit: the 16 GB unified memory pool is shared by the
 
 ### Institutional Learnings
 
-- `docs/solutions/2026-09-26-wkwebview-webgpu-unavailable-macos-15.md` — WebGL2 is the baseline, not a temporary fallback.
+- `docs/solutions/integration-issues/wkwebview-webgpu-unavailable-macos-15-2026-09-26.md` — WebGL2 is the baseline, not a temporary fallback.
 - Mothership `docs/solutions/documentation-gaps/mothership-phase1-tracer-deviations-2026-07-04.md` — re-verify live server and Tauri lifecycle behavior; research snapshots drift.
 - Mothership `docs/solutions/best-practices/pty-portable-pty-xterm6-decision-2026-07-04.md` — keep a fragile backend behind one narrow seam so swaps stay reversible.
 - Mothership `docs/solutions/integration-issues/tauri-dragdrop-swallows-dockview-dnd-2026-07-04.md` — Tauri window config can silently intercept DOM input; validate input in the packaged app.

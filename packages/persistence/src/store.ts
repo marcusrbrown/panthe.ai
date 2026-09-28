@@ -398,6 +398,15 @@ export interface TickInput {
   readonly simTimeMs: number;
   /** Opaque seeded-PRNG state, serialized by the caller. */
   readonly prngState: string;
+  /**
+   * Runs inside the same transaction as the tick's own writes, after
+   * events/projections/clock/PRNG are written but before the transaction
+   * commits. A caller in another package (e.g. writing causal-trace rows
+   * to the same physical database) can throw here to roll the whole tick
+   * back atomically; this module stays free of any dependency on what the
+   * callback actually writes.
+   */
+  readonly onCommitted?: (db: Database) => void;
 }
 
 export interface TickCommitResult<TProjections> {
@@ -439,6 +448,7 @@ export function commitTick<TProjections>(
       simTimeMs: input.simTimeMs,
     });
     writePrngState(store.db, input.prngState);
+    input.onCommitted?.(store.db);
 
     return { sequence, projections };
   });

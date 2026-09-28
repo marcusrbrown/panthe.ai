@@ -58,6 +58,40 @@ test("a world that is currently paused runs no catch-up at all: paused wall time
   }
 });
 
+test("a trace write failure rolls back the whole chunk: the clock is unchanged and catch-up reports degraded without throwing", () => {
+  const storeDir = tempDir("panthea-sim-catchup-trace-fail-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    // Deliberately not calling ensureTraceSchema: the trace tables don't
+    // exist, so the first chunk's own trace write genuinely fails.
+
+    const beforeClock = readClock(store.db);
+    const nowWallMs = beforeClock.cursorWallMs + 5 * 60 * 1000;
+
+    let result: ReturnType<typeof runCatchUp> | undefined;
+    expect(() => {
+      result = runCatchUp(
+        seeded,
+        createPrng(1),
+        { store, reducers, traceDb: store.db },
+        {
+          nowWallMs,
+        },
+      );
+    }).not.toThrow();
+
+    expect(result?.degraded).toBeDefined();
+    expect(readClock(store.db)).toEqual(beforeClock);
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
 test("missed time above the cap: exactly one hour is applied and the excess is reported as skipped", () => {
   const storeDir = tempDir("panthea-sim-catchup-cap-");
   try {

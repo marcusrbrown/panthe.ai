@@ -10,6 +10,8 @@ import {
 } from "@panthea/contracts";
 import {
   closeStore,
+  getCurrentSequence,
+  listEvents,
   openStore,
   readClock,
   readLiveProjections,
@@ -83,6 +85,18 @@ test("buildRoutineQueue produces one proposal per drive-bearing living actor, no
   );
   expect(queue.length).toBe(driveBearing.length);
   expect(queue.length).toBeGreaterThan(0);
+
+  const queuedActorIds = queue.map((queued) => queued.proposal.actor).sort();
+  const driveBearingIds = driveBearing.map((actor) => actor.id).sort();
+  expect(queuedActorIds).toEqual(driveBearingIds);
+
+  const noDrivesIds = [...state.actors.values()]
+    .filter((actor) => actor.drives === undefined)
+    .map((actor) => actor.id);
+  expect(noDrivesIds.length).toBeGreaterThan(0);
+  for (const id of noDrivesIds) {
+    expect(queuedActorIds).not.toContain(id);
+  }
 });
 
 test("stepWorldTick admits up to the cap from the world's own authored rules and reports the rest as overflow, in order", () => {
@@ -201,6 +215,48 @@ test("a store write failure reports store-error and commits nothing (no trace ro
         getProposalOutcomeByProposalId(store.db, queued.id),
       ).toBeUndefined();
     }
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+test("a trace write failure rolls back the whole tick: clock, sequence, and events are unchanged, and the call does not throw", () => {
+  const storeDir = tempDir("panthea-sim-tick-trace-fail-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    // Deliberately not calling ensureTraceSchema: the trace tables don't
+    // exist, so a real trace write genuinely fails against this store.
+
+    const beforeClock = readClock(store.db);
+    const beforeSequence = getCurrentSequence(store.db);
+
+    const queue = buildRoutineQueue(seeded);
+    expect(queue.length).toBeGreaterThan(0);
+
+    let step: ReturnType<typeof applyOneTick> | undefined;
+    expect(() => {
+      step = applyOneTick(
+        seeded,
+        createPrng(1),
+        queue,
+        { store, reducers, traceDb: store.db },
+        {
+          cursorWallMs: 1_000,
+          paused: false,
+        },
+      );
+    }).not.toThrow();
+
+    expect(step?.kind).toBe("store-error");
+
+    expect(readClock(store.db)).toEqual(beforeClock);
+    expect(getCurrentSequence(store.db)).toBe(beforeSequence);
+    expect(listEvents(store.db)).toEqual([]);
 
     closeStore(store);
   } finally {

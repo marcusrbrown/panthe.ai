@@ -275,6 +275,65 @@ describe("commitTick", () => {
     closeStore(store);
   });
 
+  test("happy path: onCommitted runs inside the same transaction, after events/projections/clock/PRNG are written", () => {
+    const store = openStore(dbPath, countReducer);
+    let sawEventCountInsideHook: number | undefined;
+
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+      onCommitted: (db) => {
+        db.run(
+          "CREATE TABLE IF NOT EXISTS side_effect (id INTEGER PRIMARY KEY)",
+        );
+        db.run("INSERT INTO side_effect (id) VALUES (1)");
+        sawEventCountInsideHook = getCurrentSequence(db);
+      },
+    });
+
+    expect(sawEventCountInsideHook).toBe(1);
+    const sideEffectRow = store.db
+      .query("SELECT id FROM side_effect WHERE id = 1")
+      .get();
+    expect(sideEffectRow).toEqual({ id: 1 });
+    closeStore(store);
+  });
+
+  test("integration: a throwing onCommitted rolls back the whole tick, including events/projections/clock/PRNG already written in the same call", () => {
+    const store = openStore(dbPath, countReducer);
+    const before = {
+      sequence: getCurrentSequence(store.db),
+      clock: readClock(store.db),
+      projections: readLiveProjections(store, countReducer),
+    };
+
+    expect(() =>
+      commitTick(store, countReducer, {
+        events: [makeMoveEvent(1)],
+        cursorWallMs: 5000,
+        paused: false,
+        tick: 1,
+        simTimeMs: 5000,
+        prngState: "seed-should-not-persist",
+        onCommitted: () => {
+          throw new Error("simulated trace write failure");
+        },
+      }),
+    ).toThrow("simulated trace write failure");
+
+    expect(getCurrentSequence(store.db)).toBe(before.sequence);
+    expect(readClock(store.db)).toEqual(before.clock);
+    expect(readLiveProjections(store, countReducer)).toEqual(
+      before.projections,
+    );
+    expect(listEvents(store.db)).toHaveLength(0);
+    closeStore(store);
+  });
+
   test("happy path: rebuild-equals-live — replaying the log from scratch matches the stored projections", () => {
     const store = openStore(dbPath, countReducer);
     for (let i = 1; i <= 5; i++) {

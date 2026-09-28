@@ -1,11 +1,11 @@
 // Chunked, cancellable catch-up: applied on start and on resume-from-sleep
 // to advance a world whose persisted wall-clock cursor is behind now,
-// capped at one hour of missed wall time (Key Technical Decisions,
-// "Time"). Every simulated second still runs a full tick through the same
-// routines as live play -- no aggregation into a coarse step -- but many
-// ticks are computed in memory and committed together as one chunk
-// transaction, so the cursor only ever advances at a chunk boundary. Every
-// event a catch-up tick produces is marked approximate.
+// capped at one hour of missed wall time. Every simulated second still
+// runs a full tick through the same routines as live play -- no
+// aggregation into a coarse step -- but many ticks are computed in memory
+// and committed together as one chunk transaction, so the cursor only
+// ever advances at a chunk boundary. Every event a catch-up tick produces
+// is marked approximate.
 
 import type {
   CatchUpSummary,
@@ -23,7 +23,6 @@ import {
   commitWorldTick,
   stepWorldTick,
   type TickDeps,
-  traceWorldTick,
   type WorldTickOutcome,
 } from "./tick";
 import { serializePrngState } from "./world-store";
@@ -143,13 +142,18 @@ export function runCatchUp(
     }
 
     const newCursorWallMs = cursorWallMs + ticksThisChunk * tickMs;
-    const commit = commitWorldTick(deps, chunkEvents, {
-      tick: workingState.tick,
-      simTimeMs: workingState.simTime,
-      prngState: serializePrngState(workingPrng),
-      cursorWallMs: newCursorWallMs,
-      paused: false,
-    });
+    const commit = commitWorldTick(
+      deps,
+      chunkEvents,
+      {
+        tick: workingState.tick,
+        simTimeMs: workingState.simTime,
+        prngState: serializePrngState(workingPrng),
+        cursorWallMs: newCursorWallMs,
+        paused: false,
+      },
+      chunkOutcomes,
+    );
 
     if (!commit.ok) {
       return {
@@ -165,7 +169,6 @@ export function runCatchUp(
     }
 
     for (const outcome of chunkOutcomes) {
-      traceWorldTick(deps.traceDb, outcome);
       for (const record of outcome.result.committed) {
         for (const event of record.events) {
           if (MAJOR_EVENT_KINDS.has(event.kind)) {

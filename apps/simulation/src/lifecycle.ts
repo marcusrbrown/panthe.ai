@@ -1,59 +1,29 @@
-// Ownership lock, launch token, and orphan guards, lifted from
-// tools/probes/backend-lifecycle/src/{lock,sidecar}.ts (ADR-0003); the
-// probe tree stays untouched as M0 evidence.
+// Ownership lock and orphan guards.
 //
-// Two decisions the lock makes, both driven by liveness of a PID, never by
-// the mere existence of a file:
+// The lock is an OS-held exclusive lock on a SQLite database at
+// `<appDataDir>/lifecycle.lock`: `PRAGMA locking_mode = EXCLUSIVE` plus a
+// write (`BEGIN EXCLUSIVE; COMMIT;`) makes this connection acquire and
+// hold an exclusive file lock for its entire lifetime. The operating
+// system releases that lock the instant the process exits, however it
+// exits -- clean shutdown, crash, or SIGKILL -- so there is no lock state
+// that can ever outlive the process that held it, and nothing to reclaim
+// on the next launch. A concurrent launch's own attempt to take the same
+// lock fails with `SQLITE_BUSY` while it is held, which is refused the
+// same way any other acquire failure is.
 //
-// 1. On start: a lock file whose recorded PID is dead is stale -- reclaim
-//    it. A lock file whose recorded PID is alive means another sidecar
-//    already owns this app data dir -- refuse to start.
-// 2. At runtime: a sidecar whose recorded parent PID has died should
-//    self-terminate rather than orphan.
-//
-// The launch token is read once from stdin's first line -- never argv or
-// env -- and is never logged or persisted; only its SHA-256 hash goes into
-// the lock file. stdin closing (EOF) and the parent-PID poll are two
-// independent orphan guards: either one firing is sufficient cause to shut
-// down, since the pipe surviving an ancestor's crash is possible.
+// The parent-death guard is unrelated to the lock: it polls this
+// process's own parent PID and self-terminates if the parent has died,
+// independent of how the lock itself works.
 
-import { createHash } from "node:crypto";
-import {
-  chmodSync,
-  existsSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { Database } from "bun:sqlite";
 import { createInterface } from "node:readline";
-
-export interface LockInfo {
-  readonly pid: number;
-  readonly parentPid: number;
-  readonly tokenHash: string;
-  readonly startedAt: string;
-}
-
-export type LockDecision =
-  | { readonly kind: "acquired"; readonly info: LockInfo }
-  | {
-      readonly kind: "reclaimed";
-      readonly info: LockInfo;
-      readonly staleInfo: LockInfo;
-    }
-  | { readonly kind: "refused"; readonly holder: LockInfo };
-
-/** Hashes a launch token for storage in the lock file -- never the raw token. */
-export function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 /**
  * True if `pid` identifies a live process. `EPERM` (process exists, but we
  * lack permission to signal it) still counts as alive; `ESRCH` (no such
  * process) is the only "dead" outcome. Any other error is treated
  * conservatively as "alive" so a transient failure never causes a false
- * reclaim of a live owner's lock.
+ * self-termination.
  */
 export function isProcessAlive(pid: number): boolean {
   try {
@@ -65,89 +35,44 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-export function readLock(path: string): LockInfo | undefined {
-  if (!existsSync(path)) {
-    return undefined;
-  }
+export type LockDecision =
+  | { readonly kind: "acquired"; readonly db: Database }
+  | { readonly kind: "refused" };
+
+function isBusyError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as NodeJS.ErrnoException & { code?: string }).code === "SQLITE_BUSY"
+  );
+}
+
+/**
+ * Attempts to acquire the ownership lock at `path`: opens (creating if
+ * needed) a SQLite database there, switches it to `locking_mode =
+ * EXCLUSIVE`, and takes the exclusive file lock with a write. A busy lock
+ * (another live process already holds it) is a refusal, never a throw;
+ * any other error still throws. The caller must keep the returned `db`
+ * connection open for the life of the process and close it on shutdown
+ * to release the lock.
+ */
+export function acquireLock(path: string): LockDecision {
+  const db = new Database(path, { create: true });
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<LockInfo>;
-    if (
-      typeof parsed.pid === "number" &&
-      typeof parsed.parentPid === "number" &&
-      typeof parsed.tokenHash === "string" &&
-      typeof parsed.startedAt === "string"
-    ) {
-      return {
-        pid: parsed.pid,
-        parentPid: parsed.parentPid,
-        tokenHash: parsed.tokenHash,
-        startedAt: parsed.startedAt,
-      };
+    db.exec("PRAGMA locking_mode = EXCLUSIVE");
+    db.exec("BEGIN EXCLUSIVE");
+    db.exec("COMMIT");
+    return { kind: "acquired", db };
+  } catch (error) {
+    try {
+      db.close();
+    } catch {
+      // Best-effort; the acquire already failed.
     }
-    return undefined;
-  } catch {
-    // Malformed lock file (truncated write, foreign process) -- treat as
-    // absent rather than throwing; the caller will overwrite it.
-    return undefined;
+    if (isBusyError(error)) {
+      return { kind: "refused" };
+    }
+    throw error;
   }
-}
-
-/**
- * Writes the lock file and enforces 0600 regardless of umask --
- * `writeFileSync`'s `mode` option is still subject to the process umask, so
- * a fresh acquire *and* a reclaim of an existing (differently-moded) lock
- * file both need an explicit `chmodSync` afterward, asserted by re-reading
- * the mode rather than trusted blindly.
- */
-export function writeLock(path: string, info: LockInfo): void {
-  writeFileSync(path, JSON.stringify(info), "utf8");
-  chmodSync(path, 0o600);
-  const actual = statSync(path).mode & 0o777;
-  if (actual !== 0o600) {
-    throw new Error(
-      `lifecycle: failed to enforce file mode 0600 on ${path} (got ${actual.toString(8)})`,
-    );
-  }
-}
-
-export interface AcquireLockDeps {
-  readonly readLock: (path: string) => LockInfo | undefined;
-  readonly writeLock: (path: string, info: LockInfo) => void;
-  readonly isProcessAlive: (pid: number) => boolean;
-}
-
-const defaultDeps: AcquireLockDeps = { readLock, writeLock, isProcessAlive };
-
-/**
- * Attempts to acquire the ownership lock at `path` for `info`. A held lock
- * whose PID is alive refuses; a held lock whose PID is dead (or unreadable)
- * is reclaimed; no lock file acquires cleanly.
- */
-export function acquireLock(
-  path: string,
-  info: LockInfo,
-  deps: AcquireLockDeps = defaultDeps,
-): LockDecision {
-  const existing = deps.readLock(path);
-  if (existing && deps.isProcessAlive(existing.pid)) {
-    return { kind: "refused", holder: existing };
-  }
-  deps.writeLock(path, info);
-  return existing
-    ? { kind: "reclaimed", info, staleInfo: existing }
-    : { kind: "acquired", info };
-}
-
-/**
- * True when the lock's recorded parent process has died -- the sidecar
- * should self-terminate rather than orphan, even though stdin is still
- * open and its own poll of `process.ppid` hasn't yet caught up.
- */
-export function shouldSelfTerminate(
-  info: LockInfo,
-  isAlive: (pid: number) => boolean = isProcessAlive,
-): boolean {
-  return !isAlive(info.parentPid);
 }
 
 // --- Launch token (stdin) and orphan guards ---------------------------------
@@ -205,14 +130,26 @@ export interface ParentGuardHandle {
 }
 
 /**
- * Polls `info.parentPid` every `intervalMs` and calls `onOrphan` once, the
+ * True when `parentPid` has died -- the sidecar should self-terminate
+ * rather than orphan, even though stdin is still open and its own poll
+ * hasn't yet caught up.
+ */
+export function shouldSelfTerminate(
+  parentPid: number,
+  isAlive: (pid: number) => boolean = isProcessAlive,
+): boolean {
+  return !isAlive(parentPid);
+}
+
+/**
+ * Polls `parentPid` every `intervalMs` and calls `onOrphan` once, the
  * first time the parent is found dead. This is the backstop for a scenario
  * where the stdin pipe itself survives an ancestor's crash (e.g. an
  * intermediate process holding the descriptor) -- `onClose` above is the
  * faster path in the common case.
  */
 export function startParentGuard(
-  info: LockInfo,
+  parentPid: number,
   onOrphan: () => void,
   intervalMs = 2000,
   isAlive: (pid: number) => boolean = isProcessAlive,
@@ -222,7 +159,7 @@ export function startParentGuard(
     if (fired) {
       return;
     }
-    if (shouldSelfTerminate(info, isAlive)) {
+    if (shouldSelfTerminate(parentPid, isAlive)) {
       fired = true;
       onOrphan();
     }

@@ -261,6 +261,10 @@ export function createSimulationServer(
     options;
   const eventSource = createEventSource(store);
   const receiptLimited = createReceiptLimiter();
+  // One session identity for this launch's whole lifetime -- reused by
+  // every broadcast, `/frame` response, and WS connection until restart,
+  // never re-minted per request or per connection.
+  const sessionId = createSessionId();
   let host = "";
 
   const tickDeps: TickDeps = {
@@ -285,7 +289,6 @@ export function createSimulationServer(
       const url = new URL(request.url);
 
       if (url.pathname === "/stream") {
-        const sessionId = createSessionId();
         const upgraded = srv.upgrade(request, { data: { sessionId } });
         if (upgraded) {
           return undefined;
@@ -320,7 +323,6 @@ export function createSimulationServer(
   host = `127.0.0.1:${server.port}`;
 
   function publishFrame(): void {
-    const sessionId = createSessionId();
     const frame = buildFrame(store.worldId, sessionId, statusRef);
     const sent = server.publish(FRAME_TOPIC, JSON.stringify(frame));
     if (sent < 0) {
@@ -334,7 +336,6 @@ export function createSimulationServer(
     }
 
     if (url.pathname === "/frame" && request.method === "GET") {
-      const sessionId = createSessionId();
       return jsonResponse(buildFrame(store.worldId, sessionId, statusRef));
     }
 

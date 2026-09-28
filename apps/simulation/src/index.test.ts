@@ -7,7 +7,23 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveAppDataDir } from "./index";
+import {
+  closeStore,
+  openStore,
+  commitTick as persistCommitTick,
+  readClock,
+} from "@panthea/persistence";
+import { ensureTraceSchema } from "@panthea/telemetry";
+import { createPrng } from "@panthea/world";
+import { runCatchUp } from "./catchup";
+import { refreshStatusAfterCatchUp, resolveAppDataDir } from "./index";
+import { createServiceStatusRef } from "./server";
+import type { TickDeps } from "./tick";
+import {
+  createWorldProjectionReducers,
+  loadGreekWorldState,
+  worldProjectionCodec,
+} from "./world-store";
 
 const INDEX_ENTRY = join(import.meta.dir, "index.ts");
 const STARTUP_TIMEOUT_MS = 10_000;
@@ -28,6 +44,63 @@ describe("resolveAppDataDir", () => {
     expect(linux.length).toBeGreaterThan(0);
     expect(darwin).not.toBe(linux);
     expect(darwin).toContain("ai.panthe.desktop");
+  });
+});
+
+describe("refreshStatusAfterCatchUp", () => {
+  test("a degraded catch-up result still refreshes the status ref's sequence and state from the chunks that did commit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-status-"));
+    try {
+      const storePath = join(dir, "world.sqlite");
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(storePath, reducers);
+      ensureTraceSchema(store.db);
+
+      const statusRef = createServiceStatusRef(seeded);
+      expect(statusRef.sequence).toBe(0);
+
+      const startCursor = readClock(store.db).cursorWallMs;
+      const nowWallMs = startCursor + 5 * 60 * 1000; // several chunks worth
+
+      let chunkAttempt = 0;
+      const flakyCommitTick: TickDeps["commitTick"] = (
+        storeArg,
+        reducersArg,
+        input,
+      ) => {
+        chunkAttempt += 1;
+        if (chunkAttempt === 2) {
+          throw new Error("simulated store write failure");
+        }
+        return persistCommitTick(storeArg, reducersArg, input);
+      };
+
+      const result = runCatchUp(
+        seeded,
+        createPrng(1),
+        { store, reducers, traceDb: store.db, commitTick: flakyCommitTick },
+        { nowWallMs },
+      );
+      expect(result.degraded).toBeDefined();
+      expect(result.state.lastSequence).toBeGreaterThan(0);
+
+      refreshStatusAfterCatchUp(statusRef, result);
+
+      expect(statusRef.status).toBe("degraded");
+      expect(statusRef.degradedReason).toBe(result.degraded?.reason);
+      // The bug: these must reflect the chunks that DID commit, not the
+      // pre-catch-up seed state -- a stale /frame would still show
+      // sequence 0 here.
+      expect(statusRef.sequence).toBe(result.state.lastSequence);
+      expect(statusRef.encodedState).toEqual(
+        worldProjectionCodec.encode(result.state),
+      );
+
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

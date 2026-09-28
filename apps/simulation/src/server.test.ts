@@ -7,10 +7,11 @@ import {
   createSessionId,
   type EventId,
 } from "@panthea/contracts";
-import { closeStore, openStore } from "@panthea/persistence";
+import { closeStore, openStore, readClock } from "@panthea/persistence";
 import {
   ensureTraceSchema,
   getProposalOutcomeByProposalId,
+  listReceiptsByEvent,
 } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import {
@@ -18,7 +19,7 @@ import {
   createServiceStatusRef,
   createSimulationServer,
 } from "./server";
-import { applyOneTick, buildRoutineQueue } from "./tick";
+import { applyOneTick, buildRoutineQueue, type TickDeps } from "./tick";
 import {
   createWorldProjectionReducers,
   loadGreekWorldState,
@@ -32,10 +33,13 @@ interface Harness {
   readonly baseUrl: string;
   readonly token: string;
   readonly committedEventId: EventId;
+  readonly db: import("bun:sqlite").Database;
   stop(): void;
 }
 
-function startHarness(): Harness {
+function startHarness(
+  options: { readonly commitTick?: TickDeps["commitTick"] } = {},
+): Harness {
   const storeDir = tempDir("panthea-sim-server-");
   const slotsDir = tempDir("panthea-sim-server-slots-");
   const storePath = join(storeDir, "world.sqlite");
@@ -86,12 +90,14 @@ function startHarness(): Harness {
     statusRef,
     externalQueue,
     port: 0,
+    ...(options.commitTick ? { commitTick: options.commitTick } : {}),
   });
 
   return {
     baseUrl: `http://127.0.0.1:${handle.port}`,
     token,
     committedEventId,
+    db: store.db,
     stop() {
       handle.stop(true);
       closeStore(store);
@@ -246,6 +252,57 @@ test("a reconnecting WebSocket subscriber gets a fresh frame immediately on open
   }
 });
 
+test("one sessionId per sidecar launch: every broadcast, /frame response, and WS connection carries the same id until restart", async () => {
+  const harness = startHarness();
+  try {
+    const first = (await (await authed(harness, "/frame")).json()) as {
+      sessionId: string;
+    };
+    const second = (await (await authed(harness, "/frame")).json()) as {
+      sessionId: string;
+    };
+    expect(second.sessionId).toBe(first.sessionId);
+
+    const wsUrl = `${harness.baseUrl.replace("http://", "ws://")}/stream`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const ws = new WebSocket(wsUrl, {
+        headers: { Authorization: `Bearer ${harness.token}` },
+      } as never);
+      const frame = await new Promise<{ sessionId: string }>(
+        (resolve, reject) => {
+          ws.onmessage = (event) => resolve(JSON.parse(event.data as string));
+          ws.onerror = (event) => reject(event);
+          setTimeout(
+            () => reject(new Error("timed out waiting for a frame")),
+            5_000,
+          );
+        },
+      );
+      expect(frame.sessionId).toBe(first.sessionId);
+      ws.close();
+    }
+  } finally {
+    harness.stop();
+  }
+});
+
+test("a restarted server (a fresh createSimulationServer call) mints a new sessionId", async () => {
+  const harnessA = startHarness();
+  const harnessB = startHarness();
+  try {
+    const frameA = (await (await authed(harnessA, "/frame")).json()) as {
+      sessionId: string;
+    };
+    const frameB = (await (await authed(harnessB, "/frame")).json()) as {
+      sessionId: string;
+    };
+    expect(frameB.sessionId).not.toBe(frameA.sessionId);
+  } finally {
+    harnessA.stop();
+    harnessB.stop();
+  }
+});
+
 test("POST /receipts: idempotent per (event, session), duplicates are not persisted, unknown events are rejected, and a flood is capped", async () => {
   const harness = startHarness();
   try {
@@ -271,6 +328,10 @@ test("POST /receipts: idempotent per (event, session), duplicates are not persis
       body: JSON.stringify({ eventId: harness.committedEventId, sessionId }),
     });
     expect(duplicate.status).toBe(200);
+
+    const rows = listReceiptsByEvent(harness.db, harness.committedEventId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sessionId).toBe(sessionId);
 
     let sawRateLimited = false;
     for (let i = 0; i < 60; i += 1) {
@@ -301,6 +362,69 @@ test("POST /pause then POST /resume persist the clock's paused flag and record o
     expect(resume.status).toBe(200);
   } finally {
     harness.stop();
+  }
+});
+
+test("a store failure during POST /pause returns 500, sets degraded status with a reason, and leaves the persisted paused flag unchanged", async () => {
+  const harness = startHarness({
+    commitTick: () => {
+      throw new Error("disk I/O error: SQLITE_FULL");
+    },
+  });
+  try {
+    const before = readClock(harness.db);
+    expect(before.paused).toBe(false);
+
+    const pause = await authed(harness, "/pause", { method: "POST" });
+    expect(pause.status).toBe(500);
+
+    expect(readClock(harness.db).paused).toBe(false);
+
+    const frame = (await (await authed(harness, "/frame")).json()) as {
+      status: string;
+      degradedReason: string;
+    };
+    expect(frame.status).toBe("degraded");
+    expect(frame.degradedReason).toBe("disk-full");
+  } finally {
+    harness.stop();
+  }
+});
+
+test("a store failure during POST /resume returns 500, sets degraded status with a reason, and leaves the persisted paused flag unchanged", async () => {
+  const harness = startHarness();
+  try {
+    const pause = await authed(harness, "/pause", { method: "POST" });
+    expect(pause.status).toBe(200);
+    expect(readClock(harness.db).paused).toBe(true);
+  } finally {
+    harness.stop();
+  }
+
+  const failingHarness = startHarness({
+    commitTick: () => {
+      throw new Error("disk I/O error: SQLITE_FULL");
+    },
+  });
+  try {
+    // Seed a paused clock directly (bypassing the failing commitTick),
+    // mirroring an operator having paused before the store started
+    // failing.
+    failingHarness.db.run("UPDATE clock SET paused = 1 WHERE id = 1");
+
+    const resume = await authed(failingHarness, "/resume", { method: "POST" });
+    expect(resume.status).toBe(500);
+
+    expect(readClock(failingHarness.db).paused).toBe(true);
+
+    const frame = (await (await authed(failingHarness, "/frame")).json()) as {
+      status: string;
+      degradedReason: string;
+    };
+    expect(frame.status).toBe("degraded");
+    expect(frame.degradedReason).toBe("disk-full");
+  } finally {
+    failingHarness.stop();
   }
 });
 

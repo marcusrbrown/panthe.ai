@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
   acquireLock,
-  hashToken,
   openStdinSession,
-  readLock,
   shouldSelfTerminate,
   startParentGuard,
-  writeLock,
 } from "./lifecycle";
 
 let dir: string;
@@ -25,98 +22,120 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-function makeInfo(overrides: Partial<Parameters<typeof writeLock>[1]> = {}) {
-  return {
-    pid: 12345,
-    parentPid: 999,
-    tokenHash: hashToken("test-token"),
-    startedAt: new Date(0).toISOString(),
-    ...overrides,
-  };
-}
-
 describe("acquireLock", () => {
   test("no existing lock acquires cleanly", () => {
-    const info = makeInfo();
-    const decision = acquireLock(lockPath, info, {
-      readLock,
-      writeLock,
-      isProcessAlive: () => false,
-    });
-    expect(decision).toEqual({ kind: "acquired", info });
-    expect(readLock(lockPath)).toEqual(info);
+    const decision = acquireLock(lockPath);
+    expect(decision.kind).toBe("acquired");
+    if (decision.kind === "acquired") {
+      decision.db.close();
+    }
   });
 
-  test("a lock whose recorded PID is dead is reclaimed", () => {
-    const staleInfo = makeInfo({ pid: 111 });
-    writeLock(lockPath, staleInfo);
+  test("a second acquire attempt against the same path, while the first connection is still open, is refused", () => {
+    const first = acquireLock(lockPath);
+    expect(first.kind).toBe("acquired");
 
-    const info = makeInfo({ pid: 222 });
-    const decision = acquireLock(lockPath, info, {
-      readLock,
-      writeLock,
-      isProcessAlive: (pid) => pid !== 111,
-    });
+    const second = acquireLock(lockPath);
+    expect(second).toEqual({ kind: "refused" });
 
-    expect(decision).toEqual({ kind: "reclaimed", info, staleInfo });
-    expect(readLock(lockPath)).toEqual(info);
+    if (first.kind === "acquired") {
+      first.db.close();
+    }
   });
 
-  test("a lock whose recorded PID is alive refuses to start (duplicate-start refusal)", () => {
-    const holder = makeInfo({ pid: 111 });
-    writeLock(lockPath, holder);
+  test("closing the first connection releases the lock for a subsequent acquire", () => {
+    const first = acquireLock(lockPath);
+    expect(first.kind).toBe("acquired");
+    if (first.kind === "acquired") {
+      first.db.close();
+    }
 
-    const info = makeInfo({ pid: 222 });
-    const decision = acquireLock(lockPath, info, {
-      readLock,
-      writeLock,
-      isProcessAlive: (pid) => pid === 111,
-    });
-
-    expect(decision).toEqual({ kind: "refused", holder });
-    // The refused attempt must not overwrite the live holder's lock.
-    expect(readLock(lockPath)).toEqual(holder);
-  });
-
-  test("a malformed lock file is treated as absent, not thrown", () => {
-    writeLock(lockPath, makeInfo());
-    Bun.write(lockPath, "not json");
-
-    const info = makeInfo({ pid: 333 });
-    const decision = acquireLock(lockPath, info, {
-      readLock,
-      writeLock,
-      isProcessAlive: () => true,
-    });
-    expect(decision).toEqual({ kind: "acquired", info });
-  });
-
-  test("the lock file is written with 0600 permissions", () => {
-    const info = makeInfo();
-    writeLock(lockPath, info);
-    const mode = statSync(lockPath).mode & 0o777;
-    expect(mode).toBe(0o600);
+    const second = acquireLock(lockPath);
+    expect(second.kind).toBe("acquired");
+    if (second.kind === "acquired") {
+      second.db.close();
+    }
   });
 });
+
+describe("acquireLock: real subprocess launches", () => {
+  const HOLDER_SCRIPT = join(import.meta.dir, "_test-lock-holder.ts");
+
+  test("two real subprocess launches against one lock path yield exactly one owner and one refusal", async () => {
+    const first = Bun.spawn(["bun", "run", HOLDER_SCRIPT, lockPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await waitForLine(first.stdout, "ACQUIRED");
+
+    const second = Bun.spawn(["bun", "run", HOLDER_SCRIPT, lockPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const secondExit = await second.exited;
+    expect(secondExit).toBe(3);
+
+    first.kill();
+    await first.exited;
+  }, 15_000);
+
+  test("SIGKILLing the owner releases the lock; a new launch then acquires it", async () => {
+    const first = Bun.spawn(["bun", "run", HOLDER_SCRIPT, lockPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await waitForLine(first.stdout, "ACQUIRED");
+
+    first.kill("SIGKILL");
+    await first.exited;
+
+    const second = Bun.spawn(["bun", "run", HOLDER_SCRIPT, lockPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    await waitForLine(second.stdout, "ACQUIRED");
+
+    second.kill();
+    await second.exited;
+  }, 15_000);
+});
+
+async function waitForLine(
+  stream: ReadableStream<Uint8Array>,
+  expected: string,
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const deadline = Date.now() + 10_000;
+  try {
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) {
+        throw new Error(
+          `stream closed before seeing ${JSON.stringify(expected)}; saw: ${buffer}`,
+        );
+      }
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.includes(expected)) {
+        return;
+      }
+    }
+    throw new Error(
+      `timed out waiting for ${JSON.stringify(expected)}; saw: ${buffer}`,
+    );
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 describe("shouldSelfTerminate", () => {
-  test("a sidecar whose recorded parent has died should self-terminate", () => {
-    const info = makeInfo({ parentPid: 555 });
-    expect(shouldSelfTerminate(info, () => false)).toBe(true);
+  test("a dead parent should self-terminate", () => {
+    expect(shouldSelfTerminate(555, () => false)).toBe(true);
   });
 
-  test("a sidecar whose recorded parent is alive should not self-terminate", () => {
-    const info = makeInfo({ parentPid: 555 });
-    expect(shouldSelfTerminate(info, () => true)).toBe(false);
-  });
-});
-
-describe("hashToken", () => {
-  test("hashes deterministically and never returns the raw token", () => {
-    const hash = hashToken("super-secret-token");
-    expect(hash).not.toContain("super-secret-token");
-    expect(hash).toBe(hashToken("super-secret-token"));
-    expect(hash).toHaveLength(64);
+  test("a live parent should not self-terminate", () => {
+    expect(shouldSelfTerminate(555, () => true)).toBe(false);
   });
 });
 
@@ -164,11 +183,10 @@ describe("openStdinSession", () => {
 
 describe("startParentGuard", () => {
   test("calls onOrphan exactly once, the first time the parent is found dead", async () => {
-    const info = makeInfo({ parentPid: 42 });
     let calls = 0;
     let alive = true;
     const guard = startParentGuard(
-      info,
+      42,
       () => {
         calls += 1;
       },
@@ -189,10 +207,9 @@ describe("startParentGuard", () => {
   });
 
   test("stop() prevents any further poll from firing", async () => {
-    const info = makeInfo({ parentPid: 42 });
     let calls = 0;
     const guard = startParentGuard(
-      info,
+      42,
       () => {
         calls += 1;
       },

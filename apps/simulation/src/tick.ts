@@ -1,12 +1,12 @@
 // The per-tick scheduling step: revalidate and commit a queue of
-// proposals in one store transaction, record every observation and
-// outcome to the causal trace, then decide the routine proposals for the
-// next tick from the newly committed state (Key Technical Decisions'
-// "Scheduling"). `stepWorldTick`/`commitWorldTick`/`traceWorldTick` are
-// exported separately so catchup.ts can run several ticks purely in
-// memory and commit them together as one chunk transaction, while the
-// live 1 Hz loop (wired in the service entrypoint) commits one tick at a
-// time through `applyOneTick`.
+// proposals in one store transaction (writing every observation and
+// outcome to the causal trace inside that same transaction), then decide
+// the routine proposals for the next tick from the newly committed state.
+// `stepWorldTick`/`commitWorldTick`/`traceWorldTick` are exported
+// separately so catchup.ts can run several ticks purely in memory and
+// commit them together as one chunk transaction, while the live 1 Hz
+// loop (wired in the service entrypoint) commits one tick at a time
+// through `applyOneTick`.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -134,7 +134,15 @@ export type CommitOutcome =
       readonly message: string;
     };
 
-/** Commits `events` in one store transaction. A thrown error (a store write failure, including `SQLITE_FULL`) is reported, never thrown -- nothing partially commits either way, since `commitTick` itself is one transaction. */
+/**
+ * Commits `events` in one store transaction; every proposal outcome in
+ * `traceOutcomes` is written inside that same transaction (via
+ * `commitTick`'s `onCommitted` hook), so a trace write failure rolls the
+ * whole tick back exactly like a world-state write failure would. A
+ * thrown error (a store write failure, including `SQLITE_FULL`, or a
+ * trace write failure) is reported, never thrown -- nothing partially
+ * commits either way.
+ */
 export function commitWorldTick(
   deps: TickDeps,
   events: readonly WorldEvent[],
@@ -145,10 +153,19 @@ export function commitWorldTick(
     readonly cursorWallMs: number;
     readonly paused: boolean;
   },
+  traceOutcomes: readonly WorldTickOutcome[] = [],
 ): CommitOutcome {
   const commit = deps.commitTick ?? persistCommitTick;
   try {
-    commit(deps.store, deps.reducers, { events, ...commitOptions });
+    commit(deps.store, deps.reducers, {
+      events,
+      ...commitOptions,
+      onCommitted: (db) => {
+        for (const outcome of traceOutcomes) {
+          traceWorldTick(db, outcome);
+        }
+      },
+    });
     return { ok: true };
   } catch (error) {
     return {
@@ -230,7 +247,7 @@ export type TickStepResult =
       readonly message: string;
     };
 
-/** One live tick: `stepWorldTick` + `commitWorldTick` + `traceWorldTick`, in that order -- trace is only ever written for a tick that actually committed. */
+/** One live tick: `stepWorldTick` then `commitWorldTick`, which writes the tick's trace rows inside the same transaction as its world-state commit. */
 export function applyOneTick(
   state: WorldState,
   prng: PrngState,
@@ -247,13 +264,18 @@ export function applyOneTick(
     elapsedMs: commit.elapsedMs,
     approximate: commit.approximate,
   });
-  const committed = commitWorldTick(deps, outcome.result.events, {
-    tick: outcome.result.state.tick,
-    simTimeMs: outcome.result.state.simTime,
-    prngState: serializePrngState(outcome.result.prng),
-    cursorWallMs: commit.cursorWallMs,
-    paused: commit.paused,
-  });
+  const committed = commitWorldTick(
+    deps,
+    outcome.result.events,
+    {
+      tick: outcome.result.state.tick,
+      simTimeMs: outcome.result.state.simTime,
+      prngState: serializePrngState(outcome.result.prng),
+      cursorWallMs: commit.cursorWallMs,
+      paused: commit.paused,
+    },
+    [outcome],
+  );
   if (!committed.ok) {
     return {
       kind: "store-error",
@@ -261,7 +283,6 @@ export function applyOneTick(
       message: committed.message,
     };
   }
-  traceWorldTick(deps.traceDb, outcome);
   return {
     kind: "committed",
     state: outcome.result.state,

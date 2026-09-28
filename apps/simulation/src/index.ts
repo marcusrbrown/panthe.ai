@@ -16,14 +16,8 @@ import {
 } from "@panthea/persistence";
 import { ensureTraceSchema } from "@panthea/telemetry";
 import type { PrngState, WorldState } from "@panthea/world";
-import { runCatchUp } from "./catchup";
-import {
-  acquireLock,
-  hashToken,
-  type LockInfo,
-  openStdinSession,
-  startParentGuard,
-} from "./lifecycle";
+import { type CatchUpResult, runCatchUp } from "./catchup";
+import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
 import {
   createExternalQueue,
   createServiceStatusRef,
@@ -78,6 +72,29 @@ function ensureDirMode(path: string, mode: number): void {
   chmodSync(path, mode);
 }
 
+/**
+ * Refreshes `statusRef`'s sequence and encoded state from `result.state`
+ * (the last chunk that actually committed) whether or not catch-up
+ * degraded partway through -- a degraded result still advanced the store
+ * by however many chunks succeeded, so `/frame` must reflect that
+ * progress rather than staying pinned to whatever state existed before
+ * catch-up started.
+ */
+export function refreshStatusAfterCatchUp(
+  statusRef: ServiceStatusRef,
+  result: CatchUpResult,
+): void {
+  updateServiceStatus(
+    statusRef,
+    result.state,
+    result.degraded ? {} : { catchUpSummary: result.summary },
+  );
+  if (result.degraded) {
+    statusRef.status = "degraded";
+    statusRef.degradedReason = result.degraded.reason;
+  }
+}
+
 export interface StartOptions {
   readonly token: string;
   readonly appDataDir?: string;
@@ -103,24 +120,14 @@ export function startService(options: StartOptions): ServiceHandle {
 
   ensureDirMode(appDataDir, 0o700);
   const lockPath = join(appDataDir, "lifecycle.lock");
-  const lockInfo: LockInfo = {
-    pid: process.pid,
-    parentPid,
-    tokenHash: hashToken(token),
-    startedAt: new Date().toISOString(),
-  };
-  const decision = acquireLock(lockPath, lockInfo);
+  const decision = acquireLock(lockPath);
   if (decision.kind === "refused") {
     log(
-      `panthea-simulation: refusing to start -- lock held by live pid ${decision.holder.pid}`,
+      "panthea-simulation: refusing to start -- the lock is held by another live process",
     );
     process.exit(3);
   }
-  if (decision.kind === "reclaimed") {
-    log(
-      `panthea-simulation: reclaimed stale lock from dead pid ${decision.staleInfo.pid}`,
-    );
-  }
+  const lockDb = decision.db;
 
   const activeStorePath = join(appDataDir, "active", "world.sqlite");
   const slotsDir = join(appDataDir, "slots");
@@ -146,13 +153,8 @@ export function startService(options: StartOptions): ServiceHandle {
     const result = runCatchUp(state, prng, tickDeps, { nowWallMs });
     state = result.state;
     prng = result.prng;
-    if (result.degraded) {
-      statusRef.status = "degraded";
-      statusRef.degradedReason = result.degraded.reason;
-      return true;
-    }
-    updateServiceStatus(statusRef, state, { catchUpSummary: result.summary });
-    return false;
+    refreshStatusAfterCatchUp(statusRef, result);
+    return Boolean(result.degraded);
   }
 
   // Catch-up on start: the persisted cursor may be far behind now if the
@@ -246,12 +248,18 @@ export function startService(options: StartOptions): ServiceHandle {
     } catch {
       // Best-effort; the process is exiting regardless.
     }
+    try {
+      lockDb.close();
+    } catch {
+      // Best-effort; the process is exiting regardless -- the OS releases
+      // the lock either way.
+    }
     const gracefulReasons = new Set(["SIGTERM", "SIGINT", "stdin-eof"]);
     process.exit(gracefulReasons.has(reason) ? 0 : 1);
   }
 
   const parentGuard = startParentGuard(
-    lockInfo,
+    parentPid,
     () => shutdown("parent-dead"),
     PARENT_POLL_INTERVAL_MS,
   );

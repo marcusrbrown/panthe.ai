@@ -32,6 +32,7 @@ test("the barrel export wires state, geography, validate, and actions together",
       fireBalance: {},
       economyBalance: {},
     },
+    recipes: {},
   };
 
   let state = createInitialWorldState(pack);
@@ -40,6 +41,7 @@ test("the barrel export wires state, geography, validate, and actions together",
     locationId: toEntityId("agora"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
 

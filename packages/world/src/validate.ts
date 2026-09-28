@@ -12,12 +12,21 @@
 
 import type {
   ClaimProposal,
+  ConsumeProposal,
   EntityId,
+  GatherProposal,
   MoveProposal,
+  ProduceProposal,
   Proposal,
   RealmTransitionProposal,
   RejectionReasonCode,
+  TradeProposal,
 } from "@panthea/contracts";
+import {
+  evaluateTradeAcceptance,
+  getResourceAmount,
+  NEUTRAL_DRIVES,
+} from "./economy";
 import { crossesRealm, findEdge, isAdjacent } from "./geography";
 import {
   getActor,
@@ -167,6 +176,143 @@ function handleClaim(
   );
 }
 
+/** Gathering has no precondition beyond the shared actor-alive check; it always commits. */
+function handleGather(
+  _state: WorldState,
+  proposal: GatherProposal,
+): RuleOutcome {
+  return commit([
+    {
+      kind: "resource-gathered",
+      entityId: proposal.actor,
+      resource: proposal.resource,
+      amount: proposal.amount,
+    },
+  ]);
+}
+
+function handleProduce(
+  state: WorldState,
+  proposal: ProduceProposal,
+): RuleOutcome {
+  const recipe = state.recipes[proposal.output];
+  if (!recipe) {
+    return reject("malformed", `no recipe produces ${proposal.output}`);
+  }
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  for (const input of recipe.inputs) {
+    const needed = input.amount * proposal.quantity;
+    if (getResourceAmount(actor.inventory, input.resource) < needed) {
+      return reject(
+        "insufficient-resources",
+        `actor lacks ${needed} ${input.resource} to produce ${proposal.quantity} ${proposal.output}`,
+      );
+    }
+  }
+  return commit([
+    {
+      kind: "resource-produced",
+      entityId: proposal.actor,
+      output: proposal.output,
+      quantity: proposal.quantity,
+    },
+  ]);
+}
+
+function handleConsume(
+  state: WorldState,
+  proposal: ConsumeProposal,
+): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  if (getResourceAmount(actor.inventory, proposal.resource) < proposal.amount) {
+    return reject(
+      "insufficient-resources",
+      `actor lacks ${proposal.amount} ${proposal.resource} to consume`,
+    );
+  }
+  return commit([
+    {
+      kind: "resource-consumed",
+      entityId: proposal.actor,
+      resource: proposal.resource,
+      amount: proposal.amount,
+    },
+  ]);
+}
+
+/**
+ * Pure NPC-to-NPC trade: both parties must be at the same location and
+ * must actually hold what they give. The counterparty's acceptance is a
+ * deterministic rule over its own committed drives and inventory
+ * (`evaluateTradeAcceptance`), evaluated fresh here -- never against a
+ * proposal-declared value.
+ */
+function handleTrade(state: WorldState, proposal: TradeProposal): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!actor) {
+    return reject("malformed", "actor has no known inventory");
+  }
+  const counterparty = getActor(state, proposal.counterparty);
+  if (!counterparty?.alive) {
+    return reject(
+      "dead-actor",
+      `counterparty ${proposal.counterparty} is not a living, known actor`,
+    );
+  }
+  if (actor.locationId !== counterparty.locationId) {
+    return reject(
+      "not-adjacent",
+      "a trade requires both parties to be at the same location",
+    );
+  }
+  for (const item of proposal.give) {
+    if (getResourceAmount(actor.inventory, item.resource) < item.amount) {
+      return reject(
+        "insufficient-resources",
+        `actor lacks ${item.amount} ${item.resource} to give`,
+      );
+    }
+  }
+  for (const item of proposal.receive) {
+    if (
+      getResourceAmount(counterparty.inventory, item.resource) < item.amount
+    ) {
+      return reject(
+        "insufficient-resources",
+        `counterparty lacks ${item.amount} ${item.resource}`,
+      );
+    }
+  }
+  if (
+    !evaluateTradeAcceptance(
+      state.rules,
+      counterparty.drives ?? NEUTRAL_DRIVES,
+      proposal.give,
+      proposal.receive,
+    )
+  ) {
+    return reject(
+      "counterparty-declined",
+      "the counterparty declines this trade under its own acceptance rule",
+    );
+  }
+  return commit([
+    {
+      kind: "resource-traded",
+      entityId: proposal.actor,
+      counterpartyId: proposal.counterparty,
+      give: proposal.give,
+      receive: proposal.receive,
+    },
+  ]);
+}
+
 /**
  * Runs the shared pre-checks (actor alive, expected revisions) and then
  * the kind-specific handler.
@@ -200,6 +346,14 @@ export function validateProposal(
       return handleRealmTransition(state, proposal);
     case "claim":
       return handleClaim(state, proposal);
+    case "gather":
+      return handleGather(state, proposal);
+    case "produce":
+      return handleProduce(state, proposal);
+    case "trade":
+      return handleTrade(state, proposal);
+    case "consume":
+      return handleConsume(state, proposal);
     default:
       return reject("malformed", `no rule for proposal kind: ${proposal.kind}`);
   }

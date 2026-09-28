@@ -25,9 +25,12 @@ import {
 } from "@panthea/persistence";
 import {
   createPrng,
+  decideRoutineProposal,
+  getResourceAmount,
   runTick,
   submitProposal,
   toEntityId,
+  type WorldState,
   withActor,
 } from "@panthea/world";
 import {
@@ -81,6 +84,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
 
@@ -256,6 +260,7 @@ test("rebuild restores the seeded actor even from a freshly constructed composit
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
     const seededReducers = createWorldProjectionReducers(seeded);
@@ -349,6 +354,7 @@ test("an archive whose genesis row contains a malformed actor entry is rejected 
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
     const reducers = createWorldProjectionReducers(seeded);
@@ -411,6 +417,147 @@ test("an archive whose genesis row contains a malformed actor entry is rejected 
     rmSync(storeDir, { recursive: true, force: true });
     rmSync(exportDir, { recursive: true, force: true });
     rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+function totalAcrossActors(state: WorldState, resource: string): number {
+  let total = 0;
+  for (const actor of state.actors.values()) {
+    total += getResourceAmount(actor.inventory, resource);
+  }
+  return total;
+}
+
+test("an economy run of routine-driven inhabitants through a real store conserves currency and survives reopen and rebuild", () => {
+  const storeDir = tempDir("panthea-sim-economy-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seededState = loadGreekWorldState();
+    const projectionReducers = createWorldProjectionReducers(seededState);
+    const store = openStore(storePath, projectionReducers);
+
+    const currencyBefore = totalAcrossActors(seededState, "currency");
+    const woodBefore = totalAcrossActors(seededState, "wood");
+    const foodBefore = totalAcrossActors(seededState, "food");
+
+    let gatheredWood = 0;
+    let gatheredFood = 0;
+    let consumedFood = 0;
+    let tradedCount = 0;
+    let producedEventCount = 0;
+    let woodConsumedByRecipe = 0;
+    const producedByResource: Record<string, number> = {};
+
+    let state = seededState;
+    let prng = createPrng(7);
+    const recipes = seededState.recipes;
+    const routineActorIds = [...state.actors.entries()]
+      .filter(([, actor]) => actor.drives !== undefined)
+      .map(([id]) => id);
+
+    for (let tick = 1; tick <= 15; tick++) {
+      const proposals: Proposal[] = [];
+      for (const actorId of routineActorIds) {
+        const decision = decideRoutineProposal(state, actorId);
+        if (decision) proposals.push(decision.proposal);
+      }
+
+      const result = runTick(state, prng, proposals);
+      for (const record of result.committed) {
+        for (const event of record.events) {
+          if (event.kind === "resource-gathered" && event.resource === "wood") {
+            gatheredWood += event.amount;
+          }
+          if (event.kind === "resource-gathered" && event.resource === "food") {
+            gatheredFood += event.amount;
+          }
+          if (event.kind === "resource-consumed" && event.resource === "food") {
+            consumedFood += event.amount;
+          }
+          if (event.kind === "resource-traded") {
+            tradedCount += 1;
+          }
+          if (event.kind === "resource-produced") {
+            producedEventCount += 1;
+            const recipe = recipes[event.output];
+            if (recipe) {
+              for (const output of recipe.outputs) {
+                producedByResource[output.resource] =
+                  (producedByResource[output.resource] ?? 0) +
+                  output.amount * event.quantity;
+              }
+              for (const input of recipe.inputs) {
+                if (input.resource === "wood") {
+                  woodConsumedByRecipe += input.amount * event.quantity;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      commitTick(store, projectionReducers, {
+        events: result.committed.flatMap((record) => record.events),
+        cursorWallMs: tick * 1_000,
+        paused: false,
+        tick: result.state.tick,
+        simTimeMs: result.state.simTime,
+        prngState: serializePrngState(result.prng),
+      });
+
+      state = result.state;
+      prng = result.prng;
+    }
+
+    // Progress happened: routines did not stall degenerately.
+    expect(gatheredWood).toBeGreaterThan(0);
+    expect(gatheredFood).toBeGreaterThan(0);
+    expect(tradedCount).toBeGreaterThan(0);
+    // The authored woodcutter actually produces during a normal run.
+    expect(producedEventCount).toBeGreaterThan(0);
+
+    // Currency only ever moves between actors in this content pack (no
+    // gather, produce, or consume proposal ever names it); the total is
+    // exactly conserved regardless of how many trades committed.
+    expect(totalAcrossActors(state, "currency")).toBe(currencyBefore);
+    // Wood is conserved except at its declared source (gather) and its
+    // declared conversion into planks (the recipe's input side).
+    expect(totalAcrossActors(state, "wood")).toBe(
+      woodBefore + gatheredWood - woodConsumedByRecipe,
+    );
+    // Food is conserved except at its declared source (gather) and sink
+    // (consume).
+    expect(totalAcrossActors(state, "food")).toBe(
+      foodBefore + gatheredFood - consumedFood,
+    );
+    // Planks exist only through the declared recipe conversion; trading
+    // them between actors never changes the total the world holds.
+    expect(totalAcrossActors(state, "planks")).toBe(
+      producedByResource.planks ?? 0,
+    );
+
+    closeStore(store);
+
+    // Fresh composition root: reopen with reducers built from
+    // `loadGreekWorldState()` again, holding no reference to `state`.
+    const freshReducers = createWorldProjectionReducers(loadGreekWorldState());
+    const reopened = openStore(storePath, freshReducers);
+
+    const live = restoreWorldTime(
+      readLiveProjections(reopened, freshReducers),
+      readClock(reopened.db),
+    );
+    const rebuilt = restoreWorldTime(
+      rebuildProjections(reopened, freshReducers),
+      readClock(reopened.db),
+    );
+    expect(live).toEqual(state);
+    expect(rebuilt).toEqual(state);
+
+    closeStore(reopened);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
   }
 });
 

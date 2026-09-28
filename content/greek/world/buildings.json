@@ -1,0 +1,13 @@
+{
+  "buildings": [
+    {
+      "id": "agora-shop",
+      "locationId": "shop",
+      "name": "The Agora Shop",
+      "material": "stone",
+      "services": ["trade"],
+      "inventory": [{ "resource": "food", "amount": 5 }],
+      "owner": "farmer"
+    }
+  ]
+}

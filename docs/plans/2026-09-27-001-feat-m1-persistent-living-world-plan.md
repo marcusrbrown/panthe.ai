@@ -393,7 +393,7 @@ flowchart TB
 
 ### Phase B — World systems
 
-- [ ] **Unit 4: Economy and inhabitant routines**
+- [x] **Unit 4: Economy and inhabitant routines**
 
 **Goal:** The minimal resource graph (currency, food, materials, trade goods), buildings with ownership/inventory/services, and scripted routines that gather, produce, trade, and consume under differing drives.
 

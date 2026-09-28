@@ -27,6 +27,7 @@ export const REJECTION_REASON_CODES = [
   "restricted-realm",
   "busy-actor",
   "unauthorized-claim",
+  "counterparty-declined",
   "over-limit",
 ] as const;
 

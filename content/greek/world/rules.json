@@ -3,8 +3,15 @@
     { "resource": "currency", "amount": 0 },
     { "resource": "food", "amount": 0 },
     { "resource": "wood", "amount": 0 },
-    { "resource": "wine", "amount": 0 }
+    { "resource": "wine", "amount": 0 },
+    { "resource": "planks", "amount": 0 }
   ],
+  "recipes": {
+    "planks": {
+      "inputs": [{ "resource": "wood", "amount": 2 }],
+      "outputs": [{ "resource": "planks", "amount": 1 }]
+    }
+  },
   "rules": {
     "catchUpCapMs": 3600000,
     "catchUpChunkMs": 60000,
@@ -15,7 +22,13 @@
     },
     "economyBalance": {
       "priceFloor": 1,
-      "priceCeiling": 100
+      "priceCeiling": 100,
+      "gatherAmount": 2,
+      "consumeAmount": 1,
+      "value_currency": 1,
+      "value_wood": 1,
+      "value_food": 3,
+      "value_planks": 2
     }
   }
 }

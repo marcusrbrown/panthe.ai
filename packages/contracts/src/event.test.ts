@@ -57,6 +57,88 @@ test("a valid realm-transitioned event parses", () => {
   }
 });
 
+test("a valid resource-gathered event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "resource-gathered",
+      entityId: "npc-1",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "resource-gathered",
+      entityId: "npc-1",
+      resource: "wood",
+      amount: 2,
+    });
+  }
+});
+
+test("a valid resource-produced event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "resource-produced",
+      entityId: "npc-1",
+      output: "planks",
+      quantity: 3,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "resource-produced",
+      entityId: "npc-1",
+      output: "planks",
+      quantity: 3,
+    });
+  }
+});
+
+test("a valid resource-traded event parses with give and receive lines", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "resource-traded",
+      entityId: "woodcutter",
+      counterpartyId: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "resource-traded",
+      entityId: "woodcutter",
+      counterpartyId: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    });
+  }
+});
+
+test("a valid resource-consumed event parses", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "resource-consumed",
+      entityId: "npc-1",
+      resource: "food",
+      amount: 1,
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      kind: "resource-consumed",
+      entityId: "npc-1",
+      resource: "food",
+      amount: 1,
+    });
+  }
+});
+
 test("an unknown event kind is rejected with reason unknown-kind", () => {
   const result = parseEvent(
     envelope({ kind: "teleported", entityId: "npc-1" }),

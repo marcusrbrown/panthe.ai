@@ -28,6 +28,12 @@ import {
   type RejectionReasonCode,
   type WorldEvent,
 } from "@panthea/contracts";
+import {
+  applyRecipe,
+  creditActorInventory,
+  debitActorInventory,
+  transferBetweenActors,
+} from "./economy";
 import type { PrngState, WorldEventDraft, WorldState } from "./state";
 import { validateProposal } from "./validate";
 
@@ -75,6 +81,38 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "realm-transitioned":
       next = moveActor(state, event.entityId, event.to);
+      break;
+    case "resource-gathered":
+      next = creditActorInventory(
+        state,
+        event.entityId,
+        event.resource,
+        event.amount,
+      );
+      break;
+    case "resource-produced": {
+      const recipe = state.recipes[event.output];
+      next = recipe
+        ? applyRecipe(state, event.entityId, recipe, event.quantity)
+        : state;
+      break;
+    }
+    case "resource-traded":
+      next = transferBetweenActors(
+        state,
+        event.entityId,
+        event.counterpartyId,
+        event.give,
+        event.receive,
+      );
+      break;
+    case "resource-consumed":
+      next = debitActorInventory(
+        state,
+        event.entityId,
+        event.resource,
+        event.amount,
+      );
       break;
     default: {
       const exhaustiveCheck: never = event;

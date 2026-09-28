@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
+import type { ContentPack } from "@panthea/contracts";
 import {
   createInitialWorldState,
   createPrng,
+  getBuilding,
   getEntityRevision,
   nextPrngValue,
   toEntityId,
   withActor,
+  withBuilding,
 } from "./state";
 
 test("the same PRNG seed produces the same sequence of values", () => {
@@ -53,6 +56,7 @@ test("getEntityRevision looks up both actors and locations by id", () => {
       fireBalance: {},
       economyBalance: {},
     },
+    recipes: {},
   };
   let state = createInitialWorldState(pack);
   state = withActor(state, {
@@ -60,9 +64,121 @@ test("getEntityRevision looks up both actors and locations by id", () => {
     locationId: toEntityId("agora"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 3,
   });
   expect(getEntityRevision(state, toEntityId("npc-1"))).toBe(3);
   expect(getEntityRevision(state, toEntityId("agora"))).toBe(0);
   expect(getEntityRevision(state, toEntityId("unknown"))).toBeUndefined();
+});
+
+function minimalRules(
+  economyBalance: Record<string, number> = {},
+): ContentPack["rules"] {
+  return {
+    catchUpCapMs: 0,
+    catchUpChunkMs: 0,
+    checkpointIntervalMs: 0,
+    fireBalance: {},
+    economyBalance,
+  };
+}
+
+test("createInitialWorldState seeds actors from authored inhabitants, with their inventory and drives", () => {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "square", realm: "mortal", name: "Square", edges: [] }],
+    buildings: [],
+    inhabitants: [
+      {
+        id: "woodcutter",
+        name: "The Woodcutter",
+        locationId: "square",
+        drives: { thrift: 0.6, appetite: 0.3, greed: 0.4, piety: 0.1 },
+        gathers: "wood",
+        startingInventory: [{ resource: "currency", amount: 5 }],
+      },
+    ],
+    rules: minimalRules(),
+    recipes: {},
+  };
+  const state = createInitialWorldState(pack);
+  const actor = state.actors.get(toEntityId("woodcutter"));
+  expect(actor).toMatchObject({
+    locationId: "square",
+    alive: true,
+    revision: 0,
+    drives: { thrift: 0.6, appetite: 0.3, greed: 0.4, piety: 0.1 },
+    gathers: "wood",
+  });
+  expect(actor?.inventory.get("currency")).toBe(5);
+});
+
+test("createInitialWorldState seeds buildings from authored content, with their inventory and owner", () => {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "shop", realm: "mortal", name: "Shop", edges: [] }],
+    buildings: [
+      {
+        id: "agora-shop",
+        locationId: "shop",
+        name: "The Agora Shop",
+        material: "stone",
+        services: ["trade"],
+        inventory: [{ resource: "food", amount: 5 }],
+        owner: "farmer",
+      },
+    ],
+    inhabitants: [
+      {
+        id: "farmer",
+        name: "The Farmer",
+        locationId: "shop",
+        drives: { thrift: 0.2, appetite: 0.5, greed: 0.2, piety: 0.1 },
+      },
+    ],
+    rules: minimalRules(),
+    recipes: {},
+  };
+  const state = createInitialWorldState(pack);
+  const building = getBuilding(state, toEntityId("agora-shop"));
+  expect(building).toMatchObject({
+    locationId: "shop",
+    name: "The Agora Shop",
+    material: "stone",
+    services: ["trade"],
+    owner: "farmer",
+    revision: 0,
+  });
+  expect(building?.inventory.get("food")).toBe(5);
+});
+
+test("withBuilding adds or replaces a building without touching others", () => {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "square", realm: "mortal", name: "Square", edges: [] }],
+    buildings: [],
+    inhabitants: [],
+    rules: minimalRules(),
+    recipes: {},
+  };
+  let state = createInitialWorldState(pack);
+  state = withBuilding(state, {
+    id: toEntityId("shed"),
+    locationId: toEntityId("square"),
+    name: "Shed",
+    material: "wood",
+    services: [],
+    inventory: new Map(),
+    revision: 0,
+  });
+  expect(getBuilding(state, toEntityId("shed"))).toMatchObject({
+    name: "Shed",
+  });
 });

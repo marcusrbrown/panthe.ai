@@ -17,9 +17,13 @@ import type {
   ContentPack,
   EntityId,
   EventEnvelope,
+  InhabitantDrives,
   LocationEdge,
   Realm,
+  Recipe,
+  ResourceAmount,
   WorldEvent,
+  WorldRules,
 } from "@panthea/contracts";
 
 /** A location's live state: the authored graph node plus a revision counter. */
@@ -50,7 +54,32 @@ export interface ActorState {
    * itself passage by merely claiming a capability.
    */
   readonly capabilities: readonly string[];
-  /** Bumped whenever this actor's location (and therefore realm) changes. */
+  /** Resources this actor holds, keyed by resource name. A resource absent from the map means zero. */
+  readonly inventory: ReadonlyMap<string, number>;
+  /**
+   * Drive weights that make this actor's routine choices deterministic
+   * (thrift, appetite, greed, piety). Absent means this actor is not
+   * routine-driven -- a fixture or scenario actor a caller controls
+   * directly, never `packages/world/src/routines.ts`.
+   */
+  readonly drives?: InhabitantDrives;
+  /** The resource this actor gathers when no more pressing action is eligible. Absent means it never gathers. */
+  readonly gathers?: string;
+  /** A resource this actor seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
+  readonly wants?: string;
+  /** Bumped whenever this actor's location, realm, or inventory changes. */
+  readonly revision: number;
+}
+
+/** A building's live state: the authored structure plus its current inventory and ownership. */
+export interface BuildingState {
+  readonly id: EntityId;
+  readonly locationId: EntityId;
+  readonly name: string;
+  readonly material: string;
+  readonly services: readonly string[];
+  readonly inventory: ReadonlyMap<string, number>;
+  readonly owner?: EntityId;
   readonly revision: number;
 }
 
@@ -63,14 +92,19 @@ export interface WorldState {
    * The sequence number of the last event committed anywhere in this
    * world's history -- global and contiguous across every tick, matching
    * packages/persistence's `commitTick` contiguity requirement. Bumped by
-   * `ReducerRegistry.apply` (actions.ts) to the applied event's own
-   * `sequence`, never reset per tick, so `runTick` can always number a new
-   * tick's events starting from `state.lastSequence + 1` regardless of how
-   * many prior ticks committed.
+   * `applyEvent` (actions.ts) to the applied event's own `sequence`, never
+   * reset per tick, so `runTick` can always number a new tick's events
+   * starting from `state.lastSequence + 1` regardless of how many prior
+   * ticks committed.
    */
   readonly lastSequence: number;
   readonly locations: ReadonlyMap<EntityId, LocationState>;
   readonly actors: ReadonlyMap<EntityId, ActorState>;
+  readonly buildings: ReadonlyMap<EntityId, BuildingState>;
+  /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
+  readonly rules: WorldRules;
+  /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
+  readonly recipes: Readonly<Record<string, Recipe>>;
 }
 
 /**
@@ -98,11 +132,23 @@ export function toEntityId(raw: string): EntityId {
   return raw as EntityId;
 }
 
+function toInventoryMap(
+  amounts: readonly ResourceAmount[] | undefined,
+): ReadonlyMap<string, number> {
+  const inventory = new Map<string, number>();
+  for (const amount of amounts ?? []) {
+    inventory.set(amount.resource, amount.amount);
+  }
+  return inventory;
+}
+
 /**
  * Builds the initial live world state from a validated content pack: every
- * authored location becomes a `LocationState` at revision 0. No actors are
- * created here; they are seeded separately by `withActor` (fixtures,
- * scenarios) or by content that authors inhabitants.
+ * authored location becomes a `LocationState` at revision 0, every
+ * authored inhabitant becomes an `ActorState` (alive, its own inventory and
+ * drives baked in), and every authored building becomes a `BuildingState`,
+ * all at revision 0. `rules` and `recipes` are copied from the pack
+ * unchanged and never mutated afterward.
  */
 export function createInitialWorldState(pack: ContentPack): WorldState {
   const locations = new Map<EntityId, LocationState>();
@@ -119,12 +165,51 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
         : { requiredCapability: location.requiredCapability }),
     });
   }
+
+  const actors = new Map<EntityId, ActorState>();
+  for (const inhabitant of pack.inhabitants) {
+    const id = toEntityId(inhabitant.id);
+    actors.set(id, {
+      id,
+      locationId: toEntityId(inhabitant.locationId),
+      alive: true,
+      capabilities: [],
+      inventory: toInventoryMap(inhabitant.startingInventory),
+      drives: inhabitant.drives,
+      ...(inhabitant.gathers === undefined
+        ? {}
+        : { gathers: inhabitant.gathers }),
+      ...(inhabitant.wants === undefined ? {} : { wants: inhabitant.wants }),
+      revision: 0,
+    });
+  }
+
+  const buildings = new Map<EntityId, BuildingState>();
+  for (const building of pack.buildings) {
+    const id = toEntityId(building.id);
+    buildings.set(id, {
+      id,
+      locationId: toEntityId(building.locationId),
+      name: building.name,
+      material: building.material,
+      services: building.services,
+      inventory: toInventoryMap(building.inventory),
+      revision: 0,
+      ...(building.owner === undefined
+        ? {}
+        : { owner: toEntityId(building.owner) }),
+    });
+  }
+
   return {
     tick: 0,
     simTime: 0,
     lastSequence: 0,
     locations,
-    actors: new Map(),
+    actors,
+    buildings,
+    rules: pack.rules,
+    recipes: pack.recipes,
   };
 }
 
@@ -133,6 +218,16 @@ export function withActor(state: WorldState, actor: ActorState): WorldState {
   const actors = new Map(state.actors);
   actors.set(actor.id, actor);
   return { ...state, actors };
+}
+
+/** Adds or replaces a building. Pure: returns a new `WorldState`. */
+export function withBuilding(
+  state: WorldState,
+  building: BuildingState,
+): WorldState {
+  const buildings = new Map(state.buildings);
+  buildings.set(building.id, building);
+  return { ...state, buildings };
 }
 
 export function getActor(
@@ -149,17 +244,28 @@ export function getLocation(
   return state.locations.get(id);
 }
 
+export function getBuilding(
+  state: WorldState,
+  id: EntityId,
+): BuildingState | undefined {
+  return state.buildings.get(id);
+}
+
 /**
  * Looks up an entity's current revision across every entity kind the world
  * tracks, so `expectedRevisions` checks (packages/world/src/validate.ts) are
  * a single kind-agnostic pre-check rather than one per proposal kind.
- * Returns `undefined` if no entity with this id exists in either map.
+ * Returns `undefined` if no entity with this id exists in any of them.
  */
 export function getEntityRevision(
   state: WorldState,
   id: EntityId,
 ): number | undefined {
-  return state.actors.get(id)?.revision ?? state.locations.get(id)?.revision;
+  return (
+    state.actors.get(id)?.revision ??
+    state.locations.get(id)?.revision ??
+    state.buildings.get(id)?.revision
+  );
 }
 
 // --- Deterministic PRNG -----------------------------------------------------

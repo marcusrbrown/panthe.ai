@@ -76,6 +76,7 @@ function fixtureState(): WorldState {
     buildings: [],
     inhabitants: [],
     rules: minimalRules(),
+    recipes: {},
   };
   let state = createInitialWorldState(pack);
   state = withActor(state, {
@@ -83,6 +84,7 @@ function fixtureState(): WorldState {
     locationId: toEntityId("grove"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   state = withActor(state, {
@@ -90,6 +92,7 @@ function fixtureState(): WorldState {
     locationId: toEntityId("underworld-shore"),
     alive: true,
     capabilities: ["divine"],
+    inventory: new Map(),
     revision: 0,
   });
   state = withActor(state, {
@@ -97,6 +100,7 @@ function fixtureState(): WorldState {
     locationId: toEntityId("grove"),
     alive: false,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   return state;
@@ -155,6 +159,7 @@ test("a plain move across a realm boundary is rejected as restricted-realm", () 
     locationId: toEntityId("ferry-dock"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   const outcome = validateProposal(
@@ -171,6 +176,7 @@ test("a move into a location requiring an uncarried capability is rejected as re
     locationId: toEntityId("underworld-shore"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   const outcome = validateProposal(
@@ -223,6 +229,7 @@ test("a realm-transition using the authored transport element arrives in the Und
     locationId: toEntityId("ferry-dock"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   const outcome = validateProposal(
@@ -277,6 +284,7 @@ function crossRealmPathFixtureState(): WorldState {
     buildings: [],
     inhabitants: [],
     rules: minimalRules(),
+    recipes: {},
   };
   let state = createInitialWorldState(pack);
   state = withActor(state, {
@@ -284,6 +292,7 @@ function crossRealmPathFixtureState(): WorldState {
     locationId: toEntityId("crossing"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
   return state;
@@ -313,4 +322,275 @@ test("a claim never commits state, even a true-sounding one", () => {
   );
   expect(outcome.ok).toBe(false);
   if (!outcome.ok) expect(outcome.reason).toBe("unauthorized-claim");
+});
+
+function economyFixtureState(): WorldState {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [
+      { id: "square", realm: "mortal", name: "Square", edges: [] },
+      { id: "far-shore", realm: "mortal", name: "Far Shore", edges: [] },
+    ],
+    buildings: [],
+    inhabitants: [],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      fireBalance: {},
+      economyBalance: { value_wood: 1, value_currency: 1 },
+    },
+    recipes: {
+      planks: {
+        inputs: [{ resource: "wood", amount: 2 }],
+        outputs: [{ resource: "planks", amount: 1 }],
+      },
+    },
+  };
+  let state = createInitialWorldState(pack);
+  state = withActor(state, {
+    id: toEntityId("woodcutter"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["wood", 4]]),
+    drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    revision: 0,
+  });
+  state = withActor(state, {
+    id: toEntityId("farmer"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 10]]),
+    drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    revision: 0,
+  });
+  state = withActor(state, {
+    id: toEntityId("stranger"),
+    locationId: toEntityId("far-shore"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 10]]),
+    revision: 0,
+  });
+  return state;
+}
+
+test("a gather proposal always commits for a living actor", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "gather",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]).toMatchObject({
+      kind: "resource-gathered",
+      entityId: "woodcutter",
+      resource: "wood",
+      amount: 2,
+    });
+  }
+});
+
+test("a produce proposal converts inputs to outputs per the content recipe", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "produce",
+      output: "planks",
+      quantity: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]).toMatchObject({
+      kind: "resource-produced",
+      entityId: "woodcutter",
+      output: "planks",
+      quantity: 2,
+    });
+  }
+});
+
+test("a produce proposal naming an unknown recipe is rejected as malformed", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "produce",
+      output: "wine",
+      quantity: 1,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("malformed");
+});
+
+test("a produce proposal without enough recipe inputs is rejected as insufficient-resources", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "produce",
+      output: "planks",
+      quantity: 10,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a consume proposal without enough of the resource is rejected as insufficient-resources", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "consume",
+      resource: "food",
+      amount: 1,
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a consume proposal with enough of the resource commits", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "consume",
+      resource: "wood",
+      amount: 2,
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+});
+
+test("a trade actor lacking what it gives is rejected as insufficient-resources", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "farmer",
+      give: [{ resource: "wood", amount: 100 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a purchase against a counterparty with insufficient stock is rejected as insufficient-resources", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "trade",
+      counterparty: "woodcutter",
+      give: [{ resource: "currency", amount: 2 }],
+      receive: [{ resource: "food", amount: 1 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a purchase with insufficient currency is rejected as insufficient-resources", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "farmer",
+      give: [{ resource: "currency", amount: 1000 }],
+      receive: [{ resource: "currency", amount: 1 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("insufficient-resources");
+});
+
+test("a trade between parties at different locations is rejected as not-adjacent", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "stranger",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("not-adjacent");
+});
+
+test("a fair trade a neutral-drives counterparty accepts commits as one atomic transfer", () => {
+  const state = economyFixtureState();
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toHaveLength(1);
+    expect(outcome.events[0]).toMatchObject({
+      kind: "resource-traded",
+      entityId: "woodcutter",
+      counterpartyId: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    });
+  }
+});
+
+test("a counterparty declines a trade outside its own acceptance rule", () => {
+  let state = economyFixtureState();
+  const farmer = state.actors.get(toEntityId("farmer"));
+  if (!farmer) throw new Error("expected the farmer fixture actor");
+  state = withActor(state, {
+    ...farmer,
+    drives: { thrift: 0.9, appetite: 0, greed: 0, piety: 0 },
+  });
+  const outcome = validateProposal(
+    state,
+    proposal({
+      actor: "woodcutter",
+      kind: "trade",
+      counterparty: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  );
+  expect(outcome.ok).toBe(false);
+  if (!outcome.ok) expect(outcome.reason).toBe("counterparty-declined");
 });

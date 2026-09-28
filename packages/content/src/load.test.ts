@@ -217,8 +217,44 @@ test("the authored Greek world content loads with the expected geography and rul
     priceCeiling: 100,
   });
 
-  // No buildings or inhabitants are authored in this content pack; the
-  // loader must still report them present-but-empty, not absent.
-  expect(pack.buildings).toEqual([]);
-  expect(pack.inhabitants).toEqual([]);
+  // The authored economy: a woodcutter and a farmer, and the shop building
+  // the farmer owns.
+  const inhabitantIds = pack.inhabitants.map((i) => i.id).sort();
+  expect(inhabitantIds).toEqual(["farmer", "woodcutter"]);
+
+  const buildingIds = pack.buildings.map((b) => b.id);
+  expect(buildingIds).toEqual(["agora-shop"]);
+  expect(pack.buildings[0]).toMatchObject({
+    owner: "farmer",
+    locationId: "shop",
+  });
+
+  // The woodcutter's recipe: wood converts into planks.
+  expect(pack.recipes.planks).toMatchObject({
+    inputs: [{ resource: "wood", amount: 2 }],
+    outputs: [{ resource: "planks", amount: 1 }],
+  });
+});
+
+test("a recipes key in rules.json is merged into the parsed content pack", () => {
+  const dir = withTempDir((d) => {
+    writeFileSync(join(d, "locations.json"), JSON.stringify(validLocations()));
+    const rules = validRules();
+    (rules as Record<string, unknown>).recipes = {
+      planks: {
+        inputs: [{ resource: "wood", amount: 2 }],
+        outputs: [{ resource: "planks", amount: 1 }],
+      },
+    };
+    writeFileSync(join(d, "rules.json"), JSON.stringify(rules));
+  });
+  const result = loadContentPack(dir);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.recipes.planks).toMatchObject({
+      inputs: [{ resource: "wood", amount: 2 }],
+      outputs: [{ resource: "planks", amount: 1 }],
+    });
+  }
+  rmSync(dir, { recursive: true, force: true });
 });

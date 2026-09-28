@@ -74,6 +74,17 @@ export interface Inhabitant {
   readonly name: string;
   readonly locationId: string;
   readonly drives: InhabitantDrives;
+  /** The resource this inhabitant gathers when no more pressing action is eligible. Absent means it never gathers. */
+  readonly gathers?: string;
+  /** A resource this inhabitant seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
+  readonly wants?: string;
+  /** Inventory this inhabitant holds at genesis. Absent means it starts with nothing. */
+  readonly startingInventory?: readonly ResourceAmount[];
+}
+
+export interface Recipe {
+  readonly inputs: readonly ResourceAmount[];
+  readonly outputs: readonly ResourceAmount[];
 }
 
 export interface WorldRules {
@@ -92,6 +103,7 @@ export interface ContentPack {
   readonly buildings: readonly Building[];
   readonly inhabitants: readonly Inhabitant[];
   readonly rules: WorldRules;
+  readonly recipes: Readonly<Record<string, Recipe>>;
 }
 
 function parseLocationEdge(
@@ -210,12 +222,61 @@ function parseInhabitant(
   if (!locationId.ok) return locationId;
   const drives = parseInhabitantDrives(value.drives, `${path}.drives`);
   if (!drives.ok) return drives;
+  const gathers = parseOptionalString(value.gathers, `${path}.gathers`);
+  if (!gathers.ok) return gathers;
+  const wants = parseOptionalString(value.wants, `${path}.wants`);
+  if (!wants.ok) return wants;
+  const startingInventory =
+    value.startingInventory === undefined
+      ? ok<readonly ResourceAmount[] | undefined>(undefined)
+      : parseArray(
+          value.startingInventory,
+          `${path}.startingInventory`,
+          parseResourceAmount,
+        );
+  if (!startingInventory.ok) return startingInventory;
   return ok({
     id: id.value,
     name: name.value,
     locationId: locationId.value,
     drives: drives.value,
+    ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
+    ...(wants.value === undefined ? {} : { wants: wants.value }),
+    ...(startingInventory.value === undefined
+      ? {}
+      : { startingInventory: startingInventory.value }),
   });
+}
+
+export function parseRecipe(value: unknown, path: string): ParseResult<Recipe> {
+  if (!isRecord(value)) return fail(path, "expected a recipe entry");
+  const inputs = parseArray(
+    value.inputs,
+    `${path}.inputs`,
+    parseResourceAmount,
+  );
+  if (!inputs.ok) return inputs;
+  const outputs = parseArray(
+    value.outputs,
+    `${path}.outputs`,
+    parseResourceAmount,
+  );
+  if (!outputs.ok) return outputs;
+  return ok({ inputs: inputs.value, outputs: outputs.value });
+}
+
+export function parseRecipes(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, Recipe>>> {
+  if (!isRecord(value)) return fail(path, "expected a recipes object");
+  const recipes: Record<string, Recipe> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const parsed = parseRecipe(entry, `${path}.${key}`);
+    if (!parsed.ok) return parsed;
+    recipes[key] = parsed.value;
+  }
+  return ok(recipes);
 }
 
 function parseBalanceRecord(
@@ -324,11 +385,22 @@ function checkReferentialIntegrity(
     }
   }
 
+  const inhabitantIds = new Set<string>();
   for (const [index, inhabitant] of pack.inhabitants.entries()) {
     if (!locationIds.has(inhabitant.locationId)) {
       return fail(
         `inhabitants[${index}].locationId`,
         `inhabitant "${inhabitant.id}" references unknown location: ${inhabitant.locationId}`,
+      );
+    }
+    inhabitantIds.add(inhabitant.id);
+  }
+
+  for (const [index, building] of pack.buildings.entries()) {
+    if (building.owner !== undefined && !inhabitantIds.has(building.owner)) {
+      return fail(
+        `buildings[${index}].owner`,
+        `building "${building.id}" references unknown inhabitant: ${building.owner}`,
       );
     }
   }
@@ -367,6 +439,11 @@ export function parseContentPack(input: unknown): ParseResult<ContentPack> {
   if (!inhabitants.ok) return inhabitants;
   const rules = parseWorldRules(input.rules, "rules");
   if (!rules.ok) return rules;
+  const recipes =
+    input.recipes === undefined
+      ? ok<Readonly<Record<string, Recipe>>>({})
+      : parseRecipes(input.recipes, "recipes");
+  if (!recipes.ok) return recipes;
   return checkReferentialIntegrity({
     schemaVersion: schemaVersion.value,
     realms: realms.value,
@@ -375,5 +452,6 @@ export function parseContentPack(input: unknown): ParseResult<ContentPack> {
     buildings: buildings.value,
     inhabitants: inhabitants.value,
     rules: rules.value,
+    recipes: recipes.value,
   });
 }

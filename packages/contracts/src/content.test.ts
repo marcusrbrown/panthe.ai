@@ -176,6 +176,91 @@ test("an inhabitant referencing an unknown location fails referential integrity"
   }
 });
 
+test("an inhabitant may declare a gathered resource and a starting inventory", () => {
+  const pack = validPack();
+  (pack.inhabitants as Record<string, unknown>[])[0].gathers = "wine";
+  (pack.inhabitants as Record<string, unknown>[])[0].startingInventory = [
+    { resource: "currency", amount: 5 },
+  ];
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0]).toMatchObject({
+      gathers: "wine",
+      startingInventory: [{ resource: "currency", amount: 5 }],
+    });
+  }
+});
+
+test("an inhabitant without gathers, wants, or startingInventory parses with them absent", () => {
+  const result = parseContentPack(validPack());
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0].gathers).toBeUndefined();
+    expect(result.value.inhabitants[0].wants).toBeUndefined();
+    expect(result.value.inhabitants[0].startingInventory).toBeUndefined();
+  }
+});
+
+test("an inhabitant may declare a wanted resource to buy", () => {
+  const pack = validPack();
+  (pack.inhabitants as Record<string, unknown>[])[0].wants = "planks";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0]).toMatchObject({ wants: "planks" });
+  }
+});
+
+test("a building owner referencing an unknown inhabitant fails referential integrity", () => {
+  const pack = validPack();
+  (pack.buildings as Record<string, unknown>[])[0].owner = "nobody";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("buildings[0].owner");
+  }
+});
+
+test("a valid recipe converting inputs to outputs parses", () => {
+  const pack = validPack();
+  pack.recipes = {
+    planks: {
+      inputs: [{ resource: "wood", amount: 2 }],
+      outputs: [{ resource: "planks", amount: 1 }],
+    },
+  };
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.recipes.planks).toMatchObject({
+      inputs: [{ resource: "wood", amount: 2 }],
+      outputs: [{ resource: "planks", amount: 1 }],
+    });
+  }
+});
+
+test("a pack with no recipes key parses with an empty recipes record", () => {
+  const result = parseContentPack(validPack());
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.recipes).toEqual({});
+  }
+});
+
+test("a recipe with a malformed input is rejected", () => {
+  const pack = validPack();
+  pack.recipes = {
+    planks: {
+      inputs: [{ resource: "wood", amount: -1 }],
+      outputs: [{ resource: "planks", amount: 1 }],
+    },
+  };
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+});
+
 test("duplicate location ids fail referential integrity", () => {
   const pack = validPack();
   (pack.locations as Record<string, unknown>[]).push({

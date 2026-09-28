@@ -11,6 +11,7 @@ import {
   isRecord,
   ok,
   type ParseResult,
+  parseArray,
   parseBoolean,
   parseCausationId,
   parseCorrelationId,
@@ -18,7 +19,11 @@ import {
   parseEventId,
   parseFiniteNumber,
   parseNonNegativeInteger,
+  parseNonNegativeNumber,
+  parseResourceAmount,
   parseSchemaVersion,
+  parseString,
+  type ResourceAmount,
 } from "./ids";
 
 export interface EventEnvelope {
@@ -44,7 +49,42 @@ export interface RealmTransitionedEvent extends EventEnvelope {
   readonly via: EntityId;
 }
 
-export type WorldEvent = EntityMovedEvent | RealmTransitionedEvent;
+export interface ResourceGatheredEvent extends EventEnvelope {
+  readonly kind: "resource-gathered";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+}
+
+export interface ResourceProducedEvent extends EventEnvelope {
+  readonly kind: "resource-produced";
+  readonly entityId: EntityId;
+  readonly output: string;
+  readonly quantity: number;
+}
+
+export interface ResourceTradedEvent extends EventEnvelope {
+  readonly kind: "resource-traded";
+  readonly entityId: EntityId;
+  readonly counterpartyId: EntityId;
+  readonly give: readonly ResourceAmount[];
+  readonly receive: readonly ResourceAmount[];
+}
+
+export interface ResourceConsumedEvent extends EventEnvelope {
+  readonly kind: "resource-consumed";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+}
+
+export type WorldEvent =
+  | EntityMovedEvent
+  | RealmTransitionedEvent
+  | ResourceGatheredEvent
+  | ResourceProducedEvent
+  | ResourceTradedEvent
+  | ResourceConsumedEvent;
 
 export const LATEST_EVENT_SCHEMA_VERSION = 1;
 const EVENT_SCHEMA_VERSIONS = [LATEST_EVENT_SCHEMA_VERSION] as const;
@@ -112,6 +152,72 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         entityId: entityId.value,
         to: to.value,
         via: via.value,
+      });
+    }
+    case "resource-gathered": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "resource-gathered",
+        entityId: entityId.value,
+        resource: resource.value,
+        amount: amount.value,
+      });
+    }
+    case "resource-produced": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const output = parseString(input.output, "output");
+      if (!output.ok) return output;
+      const quantity = parseNonNegativeNumber(input.quantity, "quantity");
+      if (!quantity.ok) return quantity;
+      return ok({
+        ...envelope,
+        kind: "resource-produced",
+        entityId: entityId.value,
+        output: output.value,
+        quantity: quantity.value,
+      });
+    }
+    case "resource-traded": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const counterpartyId = parseEntityId(
+        input.counterpartyId,
+        "counterpartyId",
+      );
+      if (!counterpartyId.ok) return counterpartyId;
+      const give = parseArray(input.give, "give", parseResourceAmount);
+      if (!give.ok) return give;
+      const receive = parseArray(input.receive, "receive", parseResourceAmount);
+      if (!receive.ok) return receive;
+      return ok({
+        ...envelope,
+        kind: "resource-traded",
+        entityId: entityId.value,
+        counterpartyId: counterpartyId.value,
+        give: give.value,
+        receive: receive.value,
+      });
+    }
+    case "resource-consumed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "resource-consumed",
+        entityId: entityId.value,
+        resource: resource.value,
+        amount: amount.value,
       });
     }
     default:

@@ -28,6 +28,7 @@ function pack(locations: ContentPack["locations"]): ContentPack {
     buildings: [],
     inhabitants: [],
     rules: minimalRules(),
+    recipes: {},
   };
 }
 

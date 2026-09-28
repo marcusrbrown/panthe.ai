@@ -17,8 +17,8 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | W03 | M1 | planned (offscreen tick continuity + capped catch-up confirmed by the backend-lifecycle probe, ADR-0003; M1 Phase A: persisted clock with pause and configured catch-up cap) | packages/persistence/src/clock.ts | tools/probes/backend-lifecycle/README.md, docs/decisions/0003-simulation-service.md, packages/persistence/src/clock.test.ts |
 | W04 | M2 | planned | — | — |
 | W05 | M1 | scaffolded (M1 Phase A: execution-time revalidation with typed rejections; claims cannot grant state) | packages/contracts/src/proposal.ts, packages/world/src/validate.ts, packages/world/src/actions.ts | packages/contracts/src/proposal.test.ts, packages/world/src/validate.test.ts, packages/world/src/actions.test.ts |
-| W06 | M1 | planned | — | — |
-| W07 | M1 | planned | — | — |
+| W06 | M1 | scaffolded (M1 Phase B: gather, produce, trade, and consume as validated actions; NPC-to-NPC trade with a deterministic acceptance rule; drive-weighted routines; conservation outside declared sources and sinks; service wiring pending Unit 6) | packages/world/src/economy.ts, packages/world/src/routines.ts, content/greek/world/ | packages/world/src/economy.test.ts, packages/world/src/routines.test.ts, packages/world/src/validate.test.ts, apps/simulation/src/world-store.test.ts |
+| W07 | M1 | scaffolded (M1 Phase B: actor and building balances and inventories in committed state; worship, legends, and favor pending Unit 5) | packages/world/src/state.ts, packages/world/src/economy.ts | packages/world/src/economy.test.ts, apps/simulation/src/world-store.test.ts |
 | W08 | M1 | planned | — | — |
 | W09 | M2 | planned | — | — |
 | W10 | M2 | planned | — | — |

@@ -1,0 +1,21 @@
+{
+  "inhabitants": [
+    {
+      "id": "woodcutter",
+      "name": "The Woodcutter",
+      "locationId": "town-square",
+      "drives": { "thrift": 0.6, "appetite": 0.3, "greed": 0.4, "piety": 0.1 },
+      "gathers": "wood",
+      "startingInventory": [{ "resource": "currency", "amount": 5 }]
+    },
+    {
+      "id": "farmer",
+      "name": "The Farmer",
+      "locationId": "town-square",
+      "drives": { "thrift": 0.2, "appetite": 0.5, "greed": 0.2, "piety": 0.1 },
+      "gathers": "food",
+      "wants": "planks",
+      "startingInventory": [{ "resource": "currency", "amount": 10 }]
+    }
+  ]
+}

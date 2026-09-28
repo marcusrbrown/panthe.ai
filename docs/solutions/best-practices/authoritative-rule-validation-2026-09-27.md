@@ -30,15 +30,15 @@ The world engine validates every proposal at execution time; routines and fixtur
 
 ## Guidance
 
-A proposal carries intent: who acts, what kind of action, and which target. Everything else comes from authored rules and committed state.
+A proposal carries intent: who acts, what kind of action, which target, and how much the actor chooses to spend. The world decides what that choice is allowed to produce.
 
-1. **Magnitudes come from authored rules.** Yield, cost, and bonus values are read from content and state. A proposal's amount is never trusted.
+1. **The world bounds every magnitude.** A proposal may choose an amount the actor pays for: consume and produce quantities, or strike power. Validation checks that choice against committed holdings or capacity. What the world creates is not chosen by the proposal: gather yield, recipe output ratios, income, and bonuses come from authored rules.
 2. **Claimed authority is an authored marker.** The world only accepts an action type or role when it is authored in content, carried in state, and round-tripped by the codec. Examples are the resource an actor gathers, and whether an actor is a deity.
 3. **Check the total effect per resource.** Sum all lines for each resource on each side, then compare the sums with what each side holds.
 4. **Reject identity aliasing.** The validator rejects the same id on both sides of a transfer, and the transfer helper throws on it.
 5. **Guard every transition by the current status.** Write down which actions may act in which status. Test that every status can reach the normal operating state.
-6. **Keep invariants visible at the persistence boundary.** The codec parser rejects impossible values, such as negative balances or inconsistent flags.
-7. **Change the whole path together.** A new proposal kind, status, or authority marker updates the validator, the reducer or helper it relies on, the codec parser, and a real-store test that reopens the world.
+6. **Keep invariants visible at the persistence boundary.** The codec parser rejects values that can't exist, such as negative balances, unknown statuses, and a legend whose verified flag disagrees with its link.
+7. **Change the whole path together.** A new proposal kind updates the validator, the reducer or helper it relies on, and a real-store test that reopens the world. A new persisted field, status, or authority marker also updates the codec parser.
 
 These checks pass the [greenfield rent test](greenfield-anti-over-engineering-2026-09-27.md). Each one closes a concrete violation of W05 (rules are authoritative over intentions), the conservation rule for W06, or the recovery requirement in W08. None of them is speculative hardening.
 
@@ -56,7 +56,7 @@ A rule that trusts a proposal-supplied value lets any producer mint value, claim
 
 | Hole | Rule it broke | Fix | Test |
 |---|---|---|---|
-| Gather amount from the proposal | Magnitudes from authored rules | `gatherAmountOf(state.rules)` plus the active favor bonus | A proposal for 1,000,000 wood commits the authored yield |
+| Gather amount from the proposal | The world bounds every magnitude | `gatherAmountOf(state.rules)` plus the active favor bonus | A proposal for 1,000,000 wood commits the authored yield |
 | Gather of any resource | Authority is authored | Reject unless `proposal.resource === actor.gathers` | A currency gather is rejected |
 | Self-trade | Reject aliasing | `handleTrade` rejects `actor === counterparty`; `transferBetweenActors` throws | Self-trade rejected, inventory unchanged |
 | Repeated trade lines | Total effect per resource | `aggregateByResource` before the holds check | Two 8-currency lines against 10 are rejected; no negative balance after reopen |

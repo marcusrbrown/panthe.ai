@@ -33,7 +33,7 @@ Code review then asked for more hardening. The fix passes removed roughly 2,000â
 
 ## Guidance
 
-- **Every safeguard has to pay rent.** Keep it only if it defends a concrete threat in the real trust model or maps to a requirement ID or an `AGENTS.md` invariant. The real trust model here: one local user, archives the owner exported, and no credential-bearing inputs in M1. Rule checks that stop a proposal from deciding amounts, authority, or lifecycle transitions do pay rent; see [authoritative rule validation](authoritative-rule-validation-2026-09-27.md).
+- **Every safeguard has to pay rent.** Keep it only if it defends a concrete threat in the real trust model or maps to a requirement ID or an `AGENTS.md` invariant. The real trust model here: one local user, archives the owner exported, and no credential-bearing inputs in M1. Rule checks that keep a proposal from creating value, claiming authority, or forcing lifecycle transitions do pay rent; see [authoritative rule validation](authoritative-rule-validation-2026-09-27.md).
 - **Build the direct version first.** No migrations, upcasters, or compatibility shims for formats that have not shipped. A schema-number mismatch is rejected, never silently reset.
 - **No contracts ahead of their consumer.** Add model-request IDs, sync deltas, and proposal constraints when the code that produces or consumes them exists.
 - **Enforce data rules where data enters.** The credential rule is "no credential-bearing data is passed into content, saves, prompts, telemetry, or logs". It is not enforced by pattern-scanning stored strings.

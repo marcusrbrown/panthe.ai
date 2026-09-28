@@ -1,6 +1,6 @@
 // Live world state: entities instantiated from an authored ContentPack, plus
-// the persisted PRNG state that keeps every random rule deterministic across
-// replay and restore (Key Technical Decisions, "Determinism boundary").
+// the persisted PRNG state that keeps every random rule deterministic
+// across replay and restore.
 //
 // Content-authored IDs (plain strings validated by packages/contracts'
 // content parser) are reused directly as the live EntityId for locations:

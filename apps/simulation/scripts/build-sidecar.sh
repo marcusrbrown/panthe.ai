@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Compiles src/index.ts into a standalone Bun binary named for the Tauri
 # `externalBin` target triple convention, e.g. `panthea-sim-aarch64-apple-darwin`.
-# Run from anywhere; paths are resolved relative to this script. Mirrors
-# tools/probes/backend-lifecycle/scripts/build-sidecar.sh's approach; the
-# probe tree stays untouched as M0 evidence.
+# Run from anywhere; paths are resolved relative to this script.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,7 +15,7 @@ detect_host_triple() {
   os="$(uname -s)"
   arch="$(uname -m)"
   if [[ "$os" != "Darwin" ]]; then
-    echo "build-sidecar: unsupported OS '$os' -- this script only auto-derives a target for macOS (M0/M1 scope); set PANTHEA_SIDECAR_TRIPLE and PANTHEA_SIDECAR_TARGET explicitly for other platforms" >&2
+    echo "build-sidecar: unsupported OS '$os' -- this script only auto-derives a target for macOS; set PANTHEA_SIDECAR_TRIPLE and PANTHEA_SIDECAR_TARGET explicitly for other platforms" >&2
     exit 1
   fi
   case "$arch" in

@@ -1,8 +1,8 @@
 // World clock: at-most-once elapsed wall-clock application, lifted from
-// tools/probes/backend-lifecycle/src/clock.ts (ADR-0003's clock guarantee;
-// the probe copy stays untouched as M0 evidence). This module extends the
-// probe's guarantee with two M1 concerns the probe deliberately left out:
-// persisted pause, and a configured catch-up cap.
+// tools/probes/backend-lifecycle/src/clock.ts (ADR-0003's clock
+// guarantee). This module extends the probe's guarantee with two
+// concerns the probe deliberately left out: persisted pause, and a
+// configured catch-up cap.
 //
 // The at-most-once guarantee is unchanged: `applyElapsed` is a pure function
 // of the last *persisted* cursor. Callers (packages/persistence's `store.ts`

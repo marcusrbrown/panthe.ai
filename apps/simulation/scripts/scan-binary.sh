@@ -3,9 +3,7 @@
 # $HOME, the builder's username, or the value of any live env var whose
 # name matches *_KEY/*_TOKEN/*_SECRET. Fails (non-zero exit) if any are
 # found -- a compiled binary should never embed anything from the machine
-# or environment that built it. Mirrors
-# tools/probes/backend-lifecycle/scripts/scan-binary.sh's approach; the
-# probe tree stays untouched as M0 evidence.
+# or environment that built it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +17,7 @@ detect_host_triple() {
   os="$(uname -s)"
   arch="$(uname -m)"
   if [[ "$os" != "Darwin" ]]; then
-    echo "scan-binary: unsupported OS '$os' -- this script only auto-derives a target for macOS (M0/M1 scope); set PANTHEA_SIDECAR_TRIPLE explicitly, or pass the binary path as \$1" >&2
+    echo "scan-binary: unsupported OS '$os' -- this script only auto-derives a target for macOS; set PANTHEA_SIDECAR_TRIPLE explicitly, or pass the binary path as \$1" >&2
     exit 1
   fi
   case "$arch" in

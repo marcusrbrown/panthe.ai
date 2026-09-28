@@ -1,7 +1,7 @@
-// Shared parse-don't-validate primitives and branded identifiers for every
-// M1 wire and storage shape. Parsers never throw on untrusted input; they
-// return a typed success or a structured failure naming the field path and
-// a reason code, following tools/probes/shared/src/schema.ts.
+// Shared parse-don't-validate primitives and branded identifiers for
+// every wire and storage shape. Parsers never throw on untrusted input;
+// they return a typed success or a structured failure naming the field
+// path and a reason code, following tools/probes/shared/src/schema.ts.
 //
 // The same RejectionReasonCode vocabulary is used both for structural
 // parse failures here and for execution-time proposal validation in

@@ -1,4 +1,4 @@
-// Pack loading, lore manifests, and realm definitions (M2+).
+// Pack loading, lore manifests, and realm definitions.
 //
 // `loadContentPack` reads an authored world directory (locations + rules
 // required; buildings + inhabitants optional) and parses it through

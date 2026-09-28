@@ -1,4 +1,4 @@
-// Rules, actions, time, economy, conflict, and perception (M1+).
+// Rules, actions, time, economy, conflict, and perception.
 //
 // World core, geography, and the action pipeline: entities and the
 // three-realm location graph (state.ts), pure adjacency/realm queries

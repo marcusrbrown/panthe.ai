@@ -58,6 +58,12 @@
     "apps/simulation": {
       "name": "@panthea/simulation",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/content": "workspace:*",
+        "@panthea/contracts": "workspace:*",
+        "@panthea/persistence": "workspace:*",
+        "@panthea/world": "workspace:*",
+      },
     },
     "packages/agents": {
       "name": "@panthea/agents",

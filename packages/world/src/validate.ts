@@ -22,12 +22,14 @@ import type {
   RealmTransitionProposal,
   RejectionReasonCode,
   RepairProposal,
+  ResourceAmount,
   StrikeProposal,
   TradeProposal,
   WorshipProposal,
 } from "@panthea/contracts";
 import {
   evaluateTradeAcceptance,
+  gatherAmountOf,
   getResourceAmount,
   NEUTRAL_DRIVES,
 } from "./economy";
@@ -191,7 +193,13 @@ function handleClaim(
   );
 }
 
-/** Commits only when the proposal names the actor's own authored gather resource; an actor with no authored gather resource, or naming a different one, is rejected. An actor holding an active gather favor yields the requested amount plus the favor's bonus. */
+/**
+ * Commits only when the proposal names the actor's own authored gather
+ * resource; an actor with no authored gather resource, or naming a
+ * different one, is rejected. The committed amount is always the
+ * authoritative rule's yield (`economyBalance.gatherAmount`, plus the
+ * favor bonus when active) -- `proposal.amount` is never read.
+ */
 function handleGather(
   state: WorldState,
   proposal: GatherProposal,
@@ -214,7 +222,7 @@ function handleGather(
       kind: "resource-gathered",
       entityId: proposal.actor,
       resource: proposal.resource,
-      amount: proposal.amount + bonus,
+      amount: gatherAmountOf(state.rules) + bonus,
     },
   ]);
 }
@@ -274,10 +282,22 @@ function handleConsume(
   ]);
 }
 
+/** Sums repeated entries for the same resource into one total per resource. */
+function aggregateByResource(
+  items: readonly ResourceAmount[],
+): ReadonlyMap<string, number> {
+  const totals = new Map<string, number>();
+  for (const item of items) {
+    totals.set(item.resource, (totals.get(item.resource) ?? 0) + item.amount);
+  }
+  return totals;
+}
+
 /**
  * Pure NPC-to-NPC trade: both parties must be at the same location and
- * must actually hold what they give. The counterparty's acceptance is a
- * deterministic rule over its own committed drives and inventory
+ * must actually hold the aggregate they give or receive, once repeated
+ * lines for the same resource are summed. The counterparty's acceptance
+ * is a deterministic rule over its own committed drives and inventory
  * (`evaluateTradeAcceptance`), evaluated fresh here -- never against a
  * proposal-declared value.
  */
@@ -302,21 +322,19 @@ function handleTrade(state: WorldState, proposal: TradeProposal): RuleOutcome {
       "a trade requires both parties to be at the same location",
     );
   }
-  for (const item of proposal.give) {
-    if (getResourceAmount(actor.inventory, item.resource) < item.amount) {
+  for (const [resource, amount] of aggregateByResource(proposal.give)) {
+    if (getResourceAmount(actor.inventory, resource) < amount) {
       return reject(
         "insufficient-resources",
-        `actor lacks ${item.amount} ${item.resource} to give`,
+        `actor lacks ${amount} ${resource} to give`,
       );
     }
   }
-  for (const item of proposal.receive) {
-    if (
-      getResourceAmount(counterparty.inventory, item.resource) < item.amount
-    ) {
+  for (const [resource, amount] of aggregateByResource(proposal.receive)) {
+    if (getResourceAmount(counterparty.inventory, resource) < amount) {
       return reject(
         "insufficient-resources",
-        `counterparty lacks ${item.amount} ${item.resource}`,
+        `counterparty lacks ${amount} ${resource}`,
       );
     }
   }
@@ -352,6 +370,9 @@ function handleStrike(
   if (!actor) {
     return reject("malformed", "actor has no known inventory");
   }
+  if (!actor.isDeity) {
+    return reject("unauthorized-claim", "only a deity may strike");
+  }
   const available = getResourceAmount(
     actor.inventory,
     DIVINE_CAPACITY_RESOURCE,
@@ -365,6 +386,12 @@ function handleStrike(
   const target = getBuilding(state, proposal.target);
   if (!target) {
     return reject("malformed", `unknown strike target: ${proposal.target}`);
+  }
+  if (target.status === "destroyed" || target.status === "repairing") {
+    return reject(
+      "malformed",
+      `${target.id} cannot be struck while ${target.status}`,
+    );
   }
   const events: WorldEventDraft[] = [
     {
@@ -431,12 +458,19 @@ function handleWorship(
   state: WorldState,
   proposal: WorshipProposal,
 ): RuleOutcome {
+  if (proposal.actor === proposal.deity) {
+    return reject("unauthorized-claim", "an actor cannot worship itself");
+  }
   const actor = getActor(state, proposal.actor);
   if (!actor) {
     return reject("malformed", "actor has no known inventory");
   }
-  if (!getActor(state, proposal.deity)) {
-    return reject("malformed", `unknown deity: ${proposal.deity}`);
+  const deity = getActor(state, proposal.deity);
+  if (!deity?.isDeity) {
+    return reject(
+      "unauthorized-claim",
+      `${proposal.deity} is not an authored deity`,
+    );
   }
   if (
     proposal.offering &&

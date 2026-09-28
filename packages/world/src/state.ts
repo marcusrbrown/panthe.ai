@@ -55,6 +55,8 @@ export interface ActorState {
   readonly id: EntityId;
   readonly locationId: EntityId;
   readonly alive: boolean;
+  /** Whether this actor is an authored deity, authorized to be worshipped and to strike. Absent means it is not. */
+  readonly isDeity?: boolean;
   /**
    * Capabilities this actor actually holds, as granted by world state (not
    * self-declared by a proposal). A restricted location's
@@ -223,6 +225,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       id,
       locationId: toEntityId(inhabitant.locationId),
       alive: true,
+      ...(inhabitant.deity ? { isDeity: true } : {}),
       capabilities: [],
       inventory: toInventoryMap(inhabitant.startingInventory),
       ...(inhabitant.drives === undefined ? {} : { drives: inhabitant.drives }),

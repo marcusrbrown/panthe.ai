@@ -274,6 +274,13 @@ function economyPack(): ContentPack {
         wants: "planks",
         startingInventory: [{ resource: "currency", amount: 10 }],
       },
+      {
+        id: "zeus",
+        name: "Zeus",
+        locationId: "shop",
+        deity: true,
+        startingInventory: [{ resource: "divinity", amount: 10 }],
+      },
     ],
     rules: {
       catchUpCapMs: 1,
@@ -298,12 +305,15 @@ test("encode -> JSON round-trip -> decode reproduces buildings, rules, recipes, 
   const farmer = roundTripped.actors.get(toEntityId("farmer"));
   expect(farmer?.inventory.get("currency")).toBe(10);
   expect(farmer?.wants).toBe("planks");
+  expect(farmer?.isDeity).toBeUndefined();
   expect(farmer?.drives).toEqual({
     thrift: 0.2,
     appetite: 0.5,
     greed: 0.2,
     piety: 0.1,
   });
+  const zeus = roundTripped.actors.get(toEntityId("zeus"));
+  expect(zeus?.isDeity).toBe(true);
   const shop = roundTripped.buildings.get(toEntityId("agora-shop"));
   expect(shop?.inventory.get("food")).toBe(5);
   expect(shop?.owner).toBe(toEntityId("farmer"));

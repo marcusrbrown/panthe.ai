@@ -218,14 +218,32 @@ test("an inhabitant may declare a gathered resource and a starting inventory", (
   }
 });
 
-test("an inhabitant without gathers, wants, or startingInventory parses with them absent", () => {
+test("an inhabitant without gathers, wants, deity, or startingInventory parses with them absent", () => {
   const result = parseContentPack(validPack());
   expect(result.ok).toBe(true);
   if (result.ok) {
     expect(result.value.inhabitants[0].gathers).toBeUndefined();
     expect(result.value.inhabitants[0].wants).toBeUndefined();
+    expect(result.value.inhabitants[0].deity).toBeUndefined();
     expect(result.value.inhabitants[0].startingInventory).toBeUndefined();
   }
+});
+
+test("an inhabitant may be authored as a deity", () => {
+  const pack = validPack();
+  (pack.inhabitants as Record<string, unknown>[])[0].deity = true;
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0]).toMatchObject({ deity: true });
+  }
+});
+
+test("an inhabitant with a non-boolean deity field is rejected", () => {
+  const pack = validPack();
+  (pack.inhabitants as Record<string, unknown>[])[0].deity = "yes";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
 });
 
 test("an inhabitant may declare a wanted resource to buy", () => {

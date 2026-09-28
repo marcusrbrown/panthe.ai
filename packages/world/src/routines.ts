@@ -15,7 +15,9 @@ import {
   type ProposalBase,
 } from "@panthea/contracts";
 import {
+  consumeAmountOf,
   evaluateTradeAcceptance,
+  gatherAmountOf,
   getResourceAmount,
   NEUTRAL_DRIVES,
   resourceValue,
@@ -26,14 +28,6 @@ import { type ActorState, getActor, type WorldState } from "./state";
 export interface RoutineResult {
   readonly observation: ObservationRecord;
   readonly proposal: Proposal;
-}
-
-function gatherAmountOf(state: WorldState): number {
-  return state.rules.economyBalance.gatherAmount ?? 1;
-}
-
-function consumeAmountOf(state: WorldState): number {
-  return state.rules.economyBalance.consumeAmount ?? 1;
 }
 
 /** The first other living actor at `actorId`'s location satisfying `predicate`, in `state.actors`' deterministic iteration order. */
@@ -106,8 +100,8 @@ export function decideRoutineProposal(
   if (!actor?.alive || !actor.drives) return undefined;
 
   const drives = actor.drives;
-  const gatherAmount = gatherAmountOf(state);
-  const consumeAmount = consumeAmountOf(state);
+  const gatherAmount = gatherAmountOf(state.rules);
+  const consumeAmount = consumeAmountOf(state.rules);
   const candidates: Candidate[] = [];
 
   const heldFood = getResourceAmount(actor.inventory, "food");

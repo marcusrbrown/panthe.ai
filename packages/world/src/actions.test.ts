@@ -274,7 +274,7 @@ function economyWalkPack(): ContentPack {
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
       fireBalance: {},
-      economyBalance: { value_wood: 1, value_currency: 1 },
+      economyBalance: { value_wood: 1, value_currency: 1, gatherAmount: 4 },
     },
     recipes: {
       planks: {

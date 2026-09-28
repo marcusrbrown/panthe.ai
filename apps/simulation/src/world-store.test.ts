@@ -569,6 +569,14 @@ test("an economy run of routine-driven inhabitants through a real store conserve
     expect(live).toEqual(state);
     expect(rebuilt).toEqual(state);
 
+    // No trade this run ever left an actor holding a negative balance of
+    // anything, in the state reopened and decoded from the real store.
+    for (const actor of live.actors.values()) {
+      for (const amount of actor.inventory.values()) {
+        expect(amount).toBeGreaterThanOrEqual(0);
+      }
+    }
+
     closeStore(reopened);
   } finally {
     rmSync(storeDir, { recursive: true, force: true });

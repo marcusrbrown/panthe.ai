@@ -202,6 +202,16 @@ export function resourceValue(rules: WorldRules, resource: string): number {
   return rules.economyBalance[`value_${resource}`] ?? 1;
 }
 
+/** The amount one gather commits, from `rules.economyBalance.gatherAmount`; defaults to 1. */
+export function gatherAmountOf(rules: WorldRules): number {
+  return rules.economyBalance.gatherAmount ?? 1;
+}
+
+/** The amount one consume commits, from `rules.economyBalance.consumeAmount`; defaults to 1. */
+export function consumeAmountOf(rules: WorldRules): number {
+  return rules.economyBalance.consumeAmount ?? 1;
+}
+
 function totalValue(
   rules: WorldRules,
   items: readonly ResourceAmount[],

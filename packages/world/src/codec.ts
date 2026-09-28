@@ -30,6 +30,7 @@ import {
   parseLegendId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
+  parseOptionalBoolean,
   parseOptionalString,
   parseRecipes,
   parseString,
@@ -292,6 +293,8 @@ function parseActorState(
   }
   const alive = parseBoolean(value.alive, `${path}.alive`);
   if (!alive.ok) return alive;
+  const isDeity = parseOptionalBoolean(value.isDeity, `${path}.isDeity`);
+  if (!isDeity.ok) return isDeity;
   const capabilities = parseArray(
     value.capabilities,
     `${path}.capabilities`,
@@ -314,6 +317,7 @@ function parseActorState(
     id: id.value,
     locationId: locationId.value,
     alive: alive.value,
+    ...(isDeity.value === undefined ? {} : { isDeity: isDeity.value }),
     capabilities: capabilities.value,
     inventory: inventory.value,
     ...(drives.value === undefined ? {} : { drives: drives.value }),

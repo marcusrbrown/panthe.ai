@@ -16,6 +16,7 @@ import {
   parseFiniteNumber,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
+  parseOptionalBoolean,
   parseOptionalString,
   parseResourceAmount,
   parseSchemaVersion,
@@ -81,6 +82,8 @@ export interface Inhabitant {
   readonly gathers?: string;
   /** A resource this inhabitant seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
   readonly wants?: string;
+  /** Whether this inhabitant is a deity, authorized to be worshipped and to strike. Absent means it is not. */
+  readonly deity?: boolean;
   /** Inventory this inhabitant holds at genesis. Absent means it starts with nothing. */
   readonly startingInventory?: readonly ResourceAmount[];
 }
@@ -240,6 +243,8 @@ function parseInhabitant(
   if (!gathers.ok) return gathers;
   const wants = parseOptionalString(value.wants, `${path}.wants`);
   if (!wants.ok) return wants;
+  const deity = parseOptionalBoolean(value.deity, `${path}.deity`);
+  if (!deity.ok) return deity;
   const startingInventory =
     value.startingInventory === undefined
       ? ok<readonly ResourceAmount[] | undefined>(undefined)
@@ -256,6 +261,7 @@ function parseInhabitant(
     ...(drives.value === undefined ? {} : { drives: drives.value }),
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
+    ...(deity.value === undefined ? {} : { deity: deity.value }),
     ...(startingInventory.value === undefined
       ? {}
       : { startingInventory: startingInventory.value }),

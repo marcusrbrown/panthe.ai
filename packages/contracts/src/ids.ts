@@ -124,6 +124,16 @@ export function parseBoolean(
   return ok(value);
 }
 
+export function parseOptionalBoolean(
+  value: unknown,
+  path: string,
+): ParseResult<boolean | undefined> {
+  if (value === undefined) {
+    return ok(undefined);
+  }
+  return parseBoolean(value, path);
+}
+
 export function parseEnum<T extends string>(
   value: unknown,
   path: string,

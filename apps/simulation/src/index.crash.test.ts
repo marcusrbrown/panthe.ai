@@ -120,22 +120,27 @@ test("kill during a startup catch-up chunk: restart resumes from the last commit
         for (;;) {
           const { value, done } = await reader.read();
           if (done)
-            throw new Error("service exited before printing PANTHEA_PORT");
+            throw new Error("service exited before completing catch-up");
           buffer += decoder.decode(value, { stream: true });
-          if (/PANTHEA_PORT=\d+/.test(buffer)) return;
+          // The server starts (and prints PANTHEA_PORT) before catch-up
+          // runs, so it can serve requests while catch-up chunks through
+          // the backlog; wait for the distinct completion line instead so
+          // this run's own catch-up has actually fully applied (or been
+          // capped) before we kill it.
+          if (/startup catch-up complete/.test(buffer)) return;
         }
       })(),
       new Promise((_, reject) =>
         setTimeout(
-          () => reject(new Error("timed out waiting for PANTHEA_PORT")),
+          () =>
+            reject(
+              new Error("timed out waiting for startup catch-up to complete"),
+            ),
           10_000,
         ),
       ),
     ]);
     reader.releaseLock();
-    // The service prints PANTHEA_PORT only after its own startup
-    // catch-up call returns, so by this point the second run's catch-up
-    // has already fully applied (or been capped).
     secondProc.kill("SIGTERM");
     await secondProc.exited;
 

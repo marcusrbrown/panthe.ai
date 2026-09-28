@@ -6,6 +6,10 @@
 // and committed together as one chunk transaction, so the cursor only
 // ever advances at a chunk boundary. Every event a catch-up tick produces
 // is marked approximate.
+//
+// Between chunks, control yields back to the event loop so a concurrent
+// HTTP request (e.g. `/pause`) is actually served while a long catch-up
+// run is in progress, rather than only after it finishes.
 
 import type {
   CatchUpSummary,
@@ -40,10 +44,11 @@ export type CatchUpDeps = TickDeps;
 export interface CatchUpOptions {
   readonly nowWallMs: number;
   /**
-   * Called after each chunk commits, before the next one starts; returning
-   * `true` stops catch-up at this boundary (an operator pause request
-   * arriving mid-catch-up) and persists `paused: true`. Defaults to never
-   * stopping early.
+   * Called after each chunk commits and after yielding to the event loop,
+   * before the next chunk starts; returning `true` stops catch-up at this
+   * boundary (an operator pause request arriving mid-catch-up, checked
+   * via a live flag `/pause`'s HTTP handler sets) and persists
+   * `paused: true`. Defaults to never stopping early.
    */
   readonly onChunkCommitted?: (progress: {
     readonly appliedMs: number;
@@ -62,6 +67,13 @@ export interface CatchUpResult {
   };
 }
 
+/** Yields control to the event loop, giving any pending I/O (an incoming HTTP request in particular) a chance to run before the next chunk starts. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
 /**
  * Runs catch-up against `deps.store`'s persisted clock: does nothing if
  * the world is currently paused (paused wall time never becomes
@@ -71,12 +83,12 @@ export interface CatchUpResult {
  * chunk whose own commit fails (a store write failure) stops catch-up and
  * reports degraded, leaving every prior chunk's commit intact.
  */
-export function runCatchUp(
+export async function runCatchUp(
   initialState: WorldState,
   initialPrng: PrngState,
   deps: CatchUpDeps,
   options: CatchUpOptions,
-): CatchUpResult {
+): Promise<CatchUpResult> {
   const clock = readClock(deps.store.db);
   if (clock.paused) {
     return {
@@ -88,11 +100,11 @@ export function runCatchUp(
 
   const rules = initialState.rules;
   const clockConfig: ClockConfig = { catchUpCapMs: rules.catchUpCapMs };
-  const { appliedMs: totalAppliedMs, skippedMs: capSkippedMs } = computeTick(
-    clock,
-    options.nowWallMs,
-    clockConfig,
-  );
+  const {
+    appliedMs: totalAppliedMs,
+    skippedMs: capSkippedMs,
+    newCursor: sampledNowCursor,
+  } = computeTick(clock, options.nowWallMs, clockConfig);
 
   const tickMs = DEFAULT_TICK_ELAPSED_MS;
   const totalTicks = Math.floor(totalAppliedMs / tickMs);
@@ -116,6 +128,7 @@ export function runCatchUp(
   let committedPrng = initialPrng;
   let cursorWallMs = clock.cursorWallMs;
   let ticksDone = 0;
+  let pausedMidCatchUp = false;
   const majorOutcomes: string[] = [];
 
   const remainingSkippedMs = (): number =>
@@ -183,6 +196,10 @@ export function runCatchUp(
     cursorWallMs = newCursorWallMs;
     ticksDone += ticksThisChunk;
 
+    if (ticksDone < totalTicks) {
+      await yieldToEventLoop();
+    }
+
     if (
       ticksDone < totalTicks &&
       options.onChunkCommitted?.({
@@ -201,7 +218,36 @@ export function runCatchUp(
         cursorWallMs,
         paused: true,
       });
+      pausedMidCatchUp = true;
       break;
+    }
+  }
+
+  if (!pausedMidCatchUp) {
+    // Every tick this call could apply is now committed. Jump the
+    // persisted cursor the rest of the way to the sampled wall time
+    // (matching what `computeTick` itself would have persisted for an
+    // ordinary, uncapped tick) so the portion beyond the cap -- reported
+    // as skipped above -- is actually discarded rather than looking like
+    // still-missed time to whatever calls catch-up next.
+    const adjust = commitWorldTick(deps, [], {
+      tick: committedState.tick,
+      simTimeMs: committedState.simTime,
+      prngState: serializePrngState(committedPrng),
+      cursorWallMs: sampledNowCursor,
+      paused: false,
+    });
+    if (!adjust.ok) {
+      return {
+        summary: {
+          appliedMs: ticksDone * tickMs,
+          skippedMs: remainingSkippedMs(),
+          majorOutcomes,
+        },
+        state: committedState,
+        prng: committedPrng,
+        degraded: { reason: adjust.reason, message: adjust.message },
+      };
     }
   }
 

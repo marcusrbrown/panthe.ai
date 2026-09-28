@@ -48,7 +48,7 @@ describe("resolveAppDataDir", () => {
 });
 
 describe("refreshStatusAfterCatchUp", () => {
-  test("a degraded catch-up result still refreshes the status ref's sequence and state from the chunks that did commit", () => {
+  test("a degraded catch-up result still refreshes the status ref's sequence and state from the chunks that did commit", async () => {
     const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-status-"));
     try {
       const storePath = join(dir, "world.sqlite");
@@ -76,7 +76,7 @@ describe("refreshStatusAfterCatchUp", () => {
         return persistCommitTick(storeArg, reducersArg, input);
       };
 
-      const result = runCatchUp(
+      const result = await runCatchUp(
         seeded,
         createPrng(1),
         { store, reducers, traceDb: store.db, commitTick: flakyCommitTick },

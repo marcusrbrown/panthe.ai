@@ -43,12 +43,14 @@ import {
   recordReceipt,
   UnknownEventError,
 } from "@panthea/telemetry";
-import { toEntityId, type WorldState } from "@panthea/world";
+import { type PrngState, toEntityId, type WorldState } from "@panthea/world";
 import {
+  applyOneTick,
   commitWorldTick,
   intakeProposal,
   type QueuedProposal,
   type TickDeps,
+  type TickStepResult,
 } from "./tick";
 import { createEventSource, worldProjectionCodec } from "./world-store";
 import { importWorldArchive, listWorldSlots, type WorldSlot } from "./worlds";
@@ -122,6 +124,8 @@ export function checkRequestGuards(
 export interface ExternalQueue {
   enqueue(proposal: QueuedProposal): void;
   drain(): QueuedProposal[];
+  /** Puts `proposals` back at the front of the queue, ahead of anything enqueued since `drain()` returned them -- undoes a `drain()` whose consumer failed to commit them, so they're retried rather than lost. */
+  requeue(proposals: readonly QueuedProposal[]): void;
 }
 
 export function createExternalQueue(): ExternalQueue {
@@ -135,7 +139,39 @@ export function createExternalQueue(): ExternalQueue {
       pending = [];
       return drained;
     },
+    requeue(proposals) {
+      pending = [...proposals, ...pending];
+    },
   };
+}
+
+/**
+ * Drains `externalQueue` and runs one live tick against the routine queue
+ * plus whatever fixture proposals `/proposals` enqueued since the last
+ * tick. A tick that fails to commit puts the drained fixture proposals
+ * back at the front of `externalQueue` rather than losing them, so the
+ * next successful tick processes them.
+ */
+export function applyLiveTick(
+  externalQueue: ExternalQueue,
+  routineQueue: readonly QueuedProposal[],
+  state: WorldState,
+  prng: PrngState,
+  deps: TickDeps,
+  commit: { readonly cursorWallMs: number; readonly paused: boolean },
+): TickStepResult {
+  const drained = externalQueue.drain();
+  const step = applyOneTick(
+    state,
+    prng,
+    [...routineQueue, ...drained],
+    deps,
+    commit,
+  );
+  if (step.kind === "store-error") {
+    externalQueue.requeue(drained);
+  }
+  return step;
 }
 
 // --- Shared status, read by /frame and the WebSocket stream ------------------
@@ -192,16 +228,28 @@ function buildFrame(
 
 const OPERATOR_ENTITY_ID = toEntityId("operator");
 
-/** Records a pause/resume as an operator event, distinct from any character action: it never goes through `runTick`/`validateProposal` and produces no `WorldEvent`. */
-function recordOperatorEvent(traceDb: Database, kind: string): void {
-  recordObservation(traceDb, {
-    schemaVersion: 1,
-    id: createObservationId(),
-    observer: OPERATOR_ENTITY_ID,
-    stateRevision: 0,
-    factsRead: [`operator:${kind}`],
-    source: "operator",
-  });
+/**
+ * Records a pause/resume as an operator event, distinct from any
+ * character action: it never goes through `runTick`/`validateProposal`
+ * and produces no `WorldEvent`. Returned as a callback rather than called
+ * directly, so `handlePause`/`handleResume` can pass it to
+ * `commitWorldTick`'s `onCommitted` hook and have it write inside the
+ * same transaction as the clock transition -- a trace failure then rolls
+ * the transition back exactly like a world-state write failure would,
+ * instead of leaving the clock changed under a response that reports
+ * failure.
+ */
+function operatorEventWriter(kind: string): (db: Database) => void {
+  return (db) => {
+    recordObservation(db, {
+      schemaVersion: 1,
+      id: createObservationId(),
+      observer: OPERATOR_ENTITY_ID,
+      stateRevision: 0,
+      factsRead: [`operator:${kind}`],
+      source: "operator",
+    });
+  };
 }
 
 // --- Receipt rate limiting ----------------------------------------------
@@ -224,6 +272,21 @@ function createReceiptLimiter(): (now: number) => boolean {
 
 // --- Server --------------------------------------------------------------
 
+/** Lets `/pause` cooperate with an in-progress catch-up run instead of racing its own commit against catch-up's chunk commits on the same store. */
+export interface CatchUpControl {
+  /** True while a catch-up run (startup or sleep-wake) is actively executing. */
+  isRunning(): boolean;
+  /** Requests that the in-progress catch-up stop at its next chunk boundary and persist paused. No-op if catch-up isn't currently running. */
+  requestPause(): void;
+}
+
+const NOOP_CATCH_UP_CONTROL: CatchUpControl = {
+  isRunning: () => false,
+  requestPause: () => {
+    // No catch-up run to cancel.
+  },
+};
+
 export interface SimulationServerOptions {
   readonly token: string;
   readonly store: Store;
@@ -234,6 +297,7 @@ export interface SimulationServerOptions {
   readonly externalQueue: ExternalQueue;
   readonly port?: number;
   readonly commitTick?: TickDeps["commitTick"];
+  readonly catchUpControl?: CatchUpControl;
 }
 
 export interface SimulationServerHandle {
@@ -259,6 +323,7 @@ export function createSimulationServer(
 ): SimulationServerHandle {
   const { store, reducers, traceDb, slotsDir, statusRef, externalQueue } =
     options;
+  const catchUpControl = options.catchUpControl ?? NOOP_CATCH_UP_CONTROL;
   const eventSource = createEventSource(store);
   const receiptLimited = createReceiptLimiter();
   // One session identity for this launch's whole lifetime -- reused by
@@ -384,24 +449,37 @@ export function createSimulationServer(
   }
 
   function handlePause(): Response {
+    if (catchUpControl.isRunning()) {
+      // A catch-up run is actively committing chunks against this same
+      // store; requesting our own commit here would race it. Ask
+      // catch-up itself to stop at its next chunk boundary and persist
+      // paused -- it owns that commit.
+      catchUpControl.requestPause();
+      return jsonResponse({ ok: true, pausingAtNextChunk: true });
+    }
     const clock = readClock(store.db);
     if (clock.paused) {
       return jsonResponse({ ok: true, alreadyPaused: true });
     }
-    const commit = commitWorldTick(tickDeps, [], {
-      tick: clock.tick,
-      simTimeMs: clock.simTimeMs,
-      prngState: readPrngState(store.db),
-      cursorWallMs: clock.cursorWallMs,
-      paused: true,
-    });
+    const commit = commitWorldTick(
+      tickDeps,
+      [],
+      {
+        tick: clock.tick,
+        simTimeMs: clock.simTimeMs,
+        prngState: readPrngState(store.db),
+        cursorWallMs: clock.cursorWallMs,
+        paused: true,
+      },
+      [],
+      operatorEventWriter("pause"),
+    );
     if (!commit.ok) {
       statusRef.status = "degraded";
       statusRef.degradedReason = commit.reason;
       publishFrame();
       return jsonResponse({ ok: false, error: commit.message }, 500);
     }
-    recordOperatorEvent(traceDb, "pause");
     statusRef.status = "paused";
     statusRef.degradedReason = undefined;
     publishFrame();
@@ -414,20 +492,25 @@ export function createSimulationServer(
       return jsonResponse({ ok: true, alreadyRunning: true });
     }
     const now = Date.now();
-    const commit = commitWorldTick(tickDeps, [], {
-      tick: clock.tick,
-      simTimeMs: clock.simTimeMs,
-      prngState: readPrngState(store.db),
-      cursorWallMs: Math.max(clock.cursorWallMs, now),
-      paused: false,
-    });
+    const commit = commitWorldTick(
+      tickDeps,
+      [],
+      {
+        tick: clock.tick,
+        simTimeMs: clock.simTimeMs,
+        prngState: readPrngState(store.db),
+        cursorWallMs: Math.max(clock.cursorWallMs, now),
+        paused: false,
+      },
+      [],
+      operatorEventWriter("resume"),
+    );
     if (!commit.ok) {
       statusRef.status = "degraded";
       statusRef.degradedReason = commit.reason;
       publishFrame();
       return jsonResponse({ ok: false, error: commit.message }, 500);
     }
-    recordOperatorEvent(traceDb, "resume");
     statusRef.status = "running";
     statusRef.degradedReason = undefined;
     publishFrame();

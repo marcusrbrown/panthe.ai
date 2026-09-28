@@ -154,6 +154,8 @@ export function commitWorldTick(
     readonly paused: boolean;
   },
   traceOutcomes: readonly WorldTickOutcome[] = [],
+  /** An additional write to run inside the same transaction, after `traceOutcomes` -- e.g. a pause/resume operator observation, so a failure there rolls back the clock transition exactly like any other trace write failure would. */
+  onCommitted?: (db: Database) => void,
 ): CommitOutcome {
   const commit = deps.commitTick ?? persistCommitTick;
   try {
@@ -164,6 +166,7 @@ export function commitWorldTick(
         for (const outcome of traceOutcomes) {
           traceWorldTick(db, outcome);
         }
+        onCommitted?.(db);
       },
     });
     return { ok: true };

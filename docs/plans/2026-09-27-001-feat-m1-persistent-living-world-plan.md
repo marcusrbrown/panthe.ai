@@ -512,7 +512,7 @@ flowchart TB
 - A dedicated capability grants the main window only the Channel command; no shell, filesystem, network, or other plugin permission is added to the renderer.
 - On sidecar restart the proxy re-subscribes and requests a fresh committed-state frame; the client replaces its state with it.
 - Window close keeps ticking (background mode); the tray shows running / paused / background / stopped with the current state marked, plus a degraded label when the sidecar reports it; stop-background and quit remain explicit.
-- The compiled sidecar cannot find authored content through its own module path, so the app bundles `content/greek/world` as a Tauri resource and the shell sets `PANTHEA_CONTENT_DIR` to it when spawning the sidecar.
+- The sidecar embeds the authored Greek pack (statically imported JSON, inlined at `bun build --compile` time), so it needs no filesystem path to its content and the shell passes none when spawning it.
 
 **Test scenarios:**
 - Happy path: frames from the sidecar reach the Channel in order.

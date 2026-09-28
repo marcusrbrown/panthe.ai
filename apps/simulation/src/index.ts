@@ -19,6 +19,8 @@ import type { PrngState, WorldState } from "@panthea/world";
 import { type CatchUpResult, runCatchUp } from "./catchup";
 import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
 import {
+  applyLiveTick,
+  type CatchUpControl,
   createExternalQueue,
   createServiceStatusRef,
   createSimulationServer,
@@ -26,12 +28,7 @@ import {
   type SimulationServerHandle,
   updateServiceStatus,
 } from "./server";
-import {
-  applyOneTick,
-  buildRoutineQueue,
-  type QueuedProposal,
-  type TickDeps,
-} from "./tick";
+import { buildRoutineQueue, type QueuedProposal, type TickDeps } from "./tick";
 import {
   createWorldProjectionReducers,
   deserializePrngState,
@@ -149,19 +146,41 @@ export function startService(options: StartOptions): ServiceHandle {
   const statusRef: ServiceStatusRef = createServiceStatusRef(state);
   const externalQueue = createExternalQueue();
 
-  function runCatchUpNow(nowWallMs: number): boolean {
-    const result = runCatchUp(state, prng, tickDeps, { nowWallMs });
-    state = result.state;
-    prng = result.prng;
-    refreshStatusAfterCatchUp(statusRef, result);
-    return Boolean(result.degraded);
+  // Set synchronously at the start of every `runCatchUpNow` call, before
+  // that call's first `await` -- so by the time any other code in this
+  // process runs, a catch-up run already in flight is visible. This lets
+  // the live tick loop skip a cycle rather than racing catch-up's own
+  // chunk commits against the same store, and lets `/pause` (via
+  // `catchUpControl`) cooperate instead of committing its own pause
+  // transition concurrently.
+  let catchUpInProgress = false;
+  let pauseRequestedDuringCatchUp = false;
+
+  const catchUpControl: CatchUpControl = {
+    isRunning: () => catchUpInProgress,
+    requestPause: () => {
+      pauseRequestedDuringCatchUp = true;
+    },
+  };
+
+  async function runCatchUpNow(nowWallMs: number): Promise<boolean> {
+    catchUpInProgress = true;
+    pauseRequestedDuringCatchUp = false;
+    try {
+      const result = await runCatchUp(state, prng, tickDeps, {
+        nowWallMs,
+        onChunkCommitted: () => pauseRequestedDuringCatchUp,
+      });
+      state = result.state;
+      prng = result.prng;
+      refreshStatusAfterCatchUp(statusRef, result);
+      return Boolean(result.degraded);
+    } finally {
+      catchUpInProgress = false;
+    }
   }
 
-  // Catch-up on start: the persisted cursor may be far behind now if the
-  // process was not running (killed, machine restarted).
-  runCatchUpNow(Date.now());
-
-  let queue: QueuedProposal[] = [...buildRoutineQueue(state)];
+  let queue: QueuedProposal[] = [];
 
   const serverHandle: SimulationServerHandle = createSimulationServer({
     token,
@@ -171,6 +190,7 @@ export function startService(options: StartOptions): ServiceHandle {
     slotsDir,
     statusRef,
     externalQueue,
+    catchUpControl,
     ...(options.port !== undefined ? { port: options.port } : {}),
   });
   // Printed for the parent process (the Tauri shell, or a developer) to
@@ -180,14 +200,21 @@ export function startService(options: StartOptions): ServiceHandle {
   let tickTimer: ReturnType<typeof setInterval> | undefined;
 
   /**
-   * One 1 Hz cycle: paused skips entirely; a wall-clock gap beyond
-   * ordinary timer jitter (a sleep/wake cycle) runs catch-up instead of a
-   * single tick, since routines still need to act at the same
-   * one-simulated-second granularity as live play. Otherwise drains the
-   * queue (routine proposals decided from the last committed state, plus
-   * anything `/proposals` enqueued since) through one ordinary tick.
+   * One 1 Hz cycle: skips entirely while a catch-up run (startup or
+   * sleep-wake) is already advancing the store in the background, and
+   * while paused. A wall-clock gap beyond ordinary timer jitter (a
+   * sleep/wake cycle) runs catch-up instead of a single tick, since
+   * routines still need to act at the same one-simulated-second
+   * granularity as live play; that catch-up run itself now executes in
+   * the background (chunked, yielding to the event loop) rather than
+   * blocking this cycle. Otherwise drains the queue (routine proposals
+   * decided from the last committed state, plus anything `/proposals`
+   * enqueued since) through one ordinary tick.
    */
   function runOneLiveTick(): void {
+    if (catchUpInProgress) {
+      return;
+    }
     if (statusRef.status === "degraded") {
       return;
     }
@@ -199,17 +226,17 @@ export function startService(options: StartOptions): ServiceHandle {
     const now = Date.now();
     const gap = now - currentClock.cursorWallMs;
     if (gap > SLEEP_GAP_THRESHOLD_MS) {
-      const degraded = runCatchUpNow(now);
-      queue = [...buildRoutineQueue(state)];
-      if (degraded && tickTimer) {
-        clearInterval(tickTimer);
-      }
-      serverHandle.broadcastFrame();
+      void runCatchUpNow(now).then((degraded) => {
+        queue = [...buildRoutineQueue(state)];
+        if (degraded && tickTimer) {
+          clearInterval(tickTimer);
+        }
+        serverHandle.broadcastFrame();
+      });
       return;
     }
 
-    const combinedQueue = [...queue, ...externalQueue.drain()];
-    const step = applyOneTick(state, prng, combinedQueue, tickDeps, {
+    const step = applyLiveTick(externalQueue, queue, state, prng, tickDeps, {
       cursorWallMs: currentClock.cursorWallMs + TICK_INTERVAL_MS,
       paused: false,
     });
@@ -230,6 +257,17 @@ export function startService(options: StartOptions): ServiceHandle {
   }
 
   tickTimer = setInterval(runOneLiveTick, TICK_INTERVAL_MS);
+
+  // Catch-up on start: the persisted cursor may be far behind now if the
+  // process was not running (killed, machine restarted). Runs in the
+  // background -- the server above is already listening and the tick
+  // loop above already skips cycles while `catchUpInProgress`, so
+  // `/pause` and every other request are served while this chunks
+  // through the backlog.
+  void runCatchUpNow(Date.now()).then(() => {
+    log("panthea-simulation: startup catch-up complete");
+    queue = [...buildRoutineQueue(state)];
+  });
 
   let shuttingDown = false;
   function shutdown(reason: string): void {

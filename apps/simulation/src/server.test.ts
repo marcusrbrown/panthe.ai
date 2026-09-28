@@ -14,7 +14,10 @@ import {
   listReceiptsByEvent,
 } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
+import { runCatchUp } from "./catchup";
 import {
+  applyLiveTick,
+  type CatchUpControl,
   createExternalQueue,
   createServiceStatusRef,
   createSimulationServer,
@@ -211,6 +214,72 @@ function authed(harness: Harness, path: string, init: RequestInit = {}) {
     },
   });
 }
+
+describe("applyLiveTick", () => {
+  test("fixture proposals drained for a tick that fails to commit are put back, not lost -- the next successful tick processes them", () => {
+    const storeDir = tempDir("panthea-sim-server-live-tick-requeue-");
+    try {
+      const storePath = join(storeDir, "world.sqlite");
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(storePath, reducers);
+      ensureTraceSchema(store.db);
+
+      const externalQueue = createExternalQueue();
+      const [fixtureProposal] = buildRoutineQueue(seeded);
+      if (!fixtureProposal) {
+        throw new Error(
+          "expected at least one routine-driven fixture proposal",
+        );
+      }
+      externalQueue.enqueue(fixtureProposal);
+
+      const failingDeps: TickDeps = {
+        store,
+        reducers,
+        traceDb: store.db,
+        commitTick: () => {
+          throw new Error("disk I/O error: SQLITE_FULL");
+        },
+      };
+
+      const failedStep = applyLiveTick(
+        externalQueue,
+        [],
+        seeded,
+        createPrng(1),
+        failingDeps,
+        { cursorWallMs: 1_000, paused: false },
+      );
+      expect(failedStep.kind).toBe("store-error");
+
+      // Lost if requeue-on-failure is missing: drain() already removed it
+      // from the queue before the commit was even attempted.
+      const workingDeps: TickDeps = { store, reducers, traceDb: store.db };
+      const successStep = applyLiveTick(
+        externalQueue,
+        [],
+        seeded,
+        createPrng(1),
+        workingDeps,
+        { cursorWallMs: 2_000, paused: false },
+      );
+      if (successStep.kind !== "committed") {
+        throw new Error(`expected a committed step, got ${successStep.kind}`);
+      }
+      expect(successStep.events).toBeGreaterThan(0);
+      const outcome = getProposalOutcomeByProposalId(
+        store.db,
+        fixtureProposal.id,
+      );
+      expect(outcome?.outcome).toBe("committed");
+
+      closeStore(store);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+});
 
 test("GET /frame returns a running-status SyncFrame carrying the world's committed state", async () => {
   const harness = startHarness();
@@ -425,6 +494,221 @@ test("a store failure during POST /resume returns 500, sets degraded status with
     expect(frame.degradedReason).toBe("disk-full");
   } finally {
     failingHarness.stop();
+  }
+});
+
+test("a real POST /pause request during an in-progress catch-up stops it at a chunk boundary, persists paused, and reports skipped time -- without the server blocking on catch-up", async () => {
+  const storeDir = tempDir("panthea-sim-server-pause-catchup-");
+  const slotsDir = tempDir("panthea-sim-server-pause-catchup-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    // Tiny chunks so the run spans many real chunk commits and yields --
+    // enough real wall-clock time for a concurrent HTTP request to land
+    // mid-run.
+    const seededWithTinyChunks = {
+      ...seeded,
+      rules: { ...seeded.rules, catchUpChunkMs: 1_000 },
+    };
+    const reducers = createWorldProjectionReducers(seededWithTinyChunks);
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+
+    const startCursor = readClock(store.db).cursorWallMs;
+    const totalMs = 20 * 60 * 1000; // 20 chunks of 1 minute each
+    const nowWallMs = startCursor + totalMs;
+
+    const token = "the-launch-token";
+    const statusRef = createServiceStatusRef(seededWithTinyChunks);
+    const externalQueue = createExternalQueue();
+
+    let catchUpInProgress = true;
+    let pauseRequestedDuringCatchUp = false;
+    let chunksCommitted = 0;
+    const catchUpControl: CatchUpControl = {
+      isRunning: () => catchUpInProgress,
+      requestPause: () => {
+        pauseRequestedDuringCatchUp = true;
+      },
+    };
+
+    const handle = createSimulationServer({
+      token,
+      store,
+      reducers,
+      traceDb: store.db,
+      slotsDir,
+      statusRef,
+      externalQueue,
+      catchUpControl,
+      port: 0,
+    });
+
+    try {
+      const catchUpPromise = runCatchUp(
+        seededWithTinyChunks,
+        createPrng(1),
+        { store, reducers, traceDb: store.db },
+        {
+          nowWallMs,
+          onChunkCommitted: () => {
+            chunksCommitted += 1;
+            return pauseRequestedDuringCatchUp;
+          },
+        },
+      ).finally(() => {
+        catchUpInProgress = false;
+      });
+
+      // Wait for a few real chunks to commit before pausing, so the
+      // request genuinely lands mid-run rather than before it starts or
+      // after it finishes.
+      const deadline = Date.now() + 10_000;
+      while (chunksCommitted < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(chunksCommitted).toBeGreaterThanOrEqual(3);
+
+      const pauseResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/pause`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      expect(pauseResponse.status).toBe(200);
+
+      const result = await catchUpPromise;
+
+      expect(result.degraded).toBeUndefined();
+      expect(result.summary.skippedMs).toBeGreaterThan(0);
+      expect(result.summary.appliedMs).toBeLessThan(totalMs);
+
+      const clock = readClock(store.db);
+      expect(clock.paused).toBe(true);
+    } finally {
+      handle.stop(true);
+      closeStore(store);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("a trace failure during POST /pause rolls back the whole transition: 500, degraded status, and the persisted paused flag is unchanged", async () => {
+  const storeDir = tempDir("panthea-sim-server-pause-trace-fail-");
+  const slotsDir = tempDir("panthea-sim-server-pause-trace-fail-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    // Deliberately not calling ensureTraceSchema: the pause transition's
+    // own operator-observation trace write genuinely fails.
+
+    const token = "the-launch-token";
+    const statusRef = createServiceStatusRef(seeded);
+    const externalQueue = createExternalQueue();
+
+    const handle = createSimulationServer({
+      token,
+      store,
+      reducers,
+      traceDb: store.db,
+      slotsDir,
+      statusRef,
+      externalQueue,
+      port: 0,
+    });
+
+    try {
+      const before = readClock(store.db);
+      expect(before.paused).toBe(false);
+
+      const response = await fetch(`http://127.0.0.1:${handle.port}/pause`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(500);
+
+      // The clock transition must roll back with the trace write --
+      // never left half-applied.
+      expect(readClock(store.db).paused).toBe(false);
+
+      const frameResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/frame`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const frame = (await frameResponse.json()) as {
+        status: string;
+        degradedReason?: string;
+      };
+      expect(frame.status).toBe("degraded");
+    } finally {
+      handle.stop(true);
+      closeStore(store);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+test("a trace failure during POST /resume rolls back the whole transition: 500, degraded status, and the persisted paused flag is unchanged", async () => {
+  const storeDir = tempDir("panthea-sim-server-resume-trace-fail-");
+  const slotsDir = tempDir("panthea-sim-server-resume-trace-fail-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+    // Pause first (this commit and its trace write both succeed), then
+    // drop the trace schema so resume's own trace write fails.
+    store.db.run("UPDATE clock SET paused = 1 WHERE id = 1");
+    store.db.run("DROP TABLE trace_observations");
+
+    const token = "the-launch-token";
+    const statusRef = createServiceStatusRef(seeded);
+    const externalQueue = createExternalQueue();
+
+    const handle = createSimulationServer({
+      token,
+      store,
+      reducers,
+      traceDb: store.db,
+      slotsDir,
+      statusRef,
+      externalQueue,
+      port: 0,
+    });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/resume`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(500);
+
+      expect(readClock(store.db).paused).toBe(true);
+
+      const frameResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/frame`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const frame = (await frameResponse.json()) as {
+        status: string;
+        degradedReason?: string;
+      };
+      expect(frame.status).toBe("degraded");
+    } finally {
+      handle.stop(true);
+      closeStore(store);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
   }
 });
 

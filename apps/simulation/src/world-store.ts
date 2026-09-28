@@ -7,8 +7,6 @@
 // packages/persistence never imports packages/world; this file is the
 // only place both are imported together.
 
-import { join } from "node:path";
-import { loadContentPack } from "@panthea/content";
 import type {
   ClockRow,
   ProjectionCodec,
@@ -25,28 +23,20 @@ import {
   type PrngState,
   type WorldState,
 } from "@panthea/world";
+import { loadEmbeddedGreekWorldPack } from "./greek-world-pack";
 
 /**
- * The authored Greek world content directory. Resolved relative to this
- * file when running from source (`bun run`/`bun test`), where
- * `import.meta.dir` is a real filesystem path. A `bun build --compile`
- * binary has no such path -- `import.meta.dir` resolves to a virtual
- * bundled root -- so `PANTHEA_CONTENT_DIR` overrides it for a packaged
- * caller that bundles the content directory as its own resource and
- * points this at it.
+ * Loads the embedded authored Greek content pack (see
+ * greek-world-pack.ts) and builds its initial `WorldState` (no actors --
+ * see packages/world/src/state.ts). Needs no filesystem access, so it
+ * works identically whether running from source or inside a compiled
+ * `bun build --compile` sidecar binary.
  */
-export const GREEK_WORLD_CONTENT_DIR =
-  process.env.PANTHEA_CONTENT_DIR ??
-  join(import.meta.dir, "..", "..", "..", "content", "greek", "world");
-
-/** Loads the authored Greek content pack and builds its initial `WorldState` (no actors -- see packages/world/src/state.ts). */
-export function loadGreekWorldState(
-  baseDir: string = GREEK_WORLD_CONTENT_DIR,
-): WorldState {
-  const result = loadContentPack(baseDir);
+export function loadGreekWorldState(): WorldState {
+  const result = loadEmbeddedGreekWorldPack();
   if (!result.ok) {
     throw new Error(
-      `world-store: failed to load content pack at ${baseDir} (${result.path}): ${result.message}`,
+      `world-store: failed to parse the embedded Greek content pack (${result.path}): ${result.message}`,
     );
   }
   return createInitialWorldState(result.value);

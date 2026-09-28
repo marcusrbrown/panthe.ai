@@ -24,7 +24,7 @@ function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-test("a world that is currently paused runs no catch-up at all: paused wall time never becomes catch-up", () => {
+test("a world that is currently paused runs no catch-up at all: paused wall time never becomes catch-up", async () => {
   const storeDir = tempDir("panthea-sim-catchup-paused-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -35,7 +35,7 @@ test("a world that is currently paused runs no catch-up at all: paused wall time
     store.db.run("UPDATE clock SET paused = 1 WHERE id = 1");
 
     const nowWallMs = readClock(store.db).cursorWallMs + 5 * 60 * 60 * 1000;
-    const result = runCatchUp(
+    const result = await runCatchUp(
       seeded,
       createPrng(1),
       { store, reducers, traceDb: store.db },
@@ -58,7 +58,7 @@ test("a world that is currently paused runs no catch-up at all: paused wall time
   }
 });
 
-test("a trace write failure rolls back the whole chunk: the clock is unchanged and catch-up reports degraded without throwing", () => {
+test("a trace write failure rolls back the whole chunk: the clock is unchanged and catch-up reports degraded without throwing", async () => {
   const storeDir = tempDir("panthea-sim-catchup-trace-fail-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -71,19 +71,16 @@ test("a trace write failure rolls back the whole chunk: the clock is unchanged a
     const beforeClock = readClock(store.db);
     const nowWallMs = beforeClock.cursorWallMs + 5 * 60 * 1000;
 
-    let result: ReturnType<typeof runCatchUp> | undefined;
-    expect(() => {
-      result = runCatchUp(
-        seeded,
-        createPrng(1),
-        { store, reducers, traceDb: store.db },
-        {
-          nowWallMs,
-        },
-      );
-    }).not.toThrow();
+    const result = await runCatchUp(
+      seeded,
+      createPrng(1),
+      { store, reducers, traceDb: store.db },
+      {
+        nowWallMs,
+      },
+    );
 
-    expect(result?.degraded).toBeDefined();
+    expect(result.degraded).toBeDefined();
     expect(readClock(store.db)).toEqual(beforeClock);
 
     closeStore(store);
@@ -92,7 +89,7 @@ test("a trace write failure rolls back the whole chunk: the clock is unchanged a
   }
 });
 
-test("missed time above the cap: exactly one hour is applied and the excess is reported as skipped", () => {
+test("missed time above the cap: exactly one hour is applied and the excess is reported as skipped", async () => {
   const storeDir = tempDir("panthea-sim-catchup-cap-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -104,7 +101,7 @@ test("missed time above the cap: exactly one hour is applied and the excess is r
     const startCursor = readClock(store.db).cursorWallMs;
     const nowWallMs = startCursor + 5 * 60 * 60 * 1000;
 
-    const result = runCatchUp(
+    const result = await runCatchUp(
       seeded,
       createPrng(1),
       { store, reducers, traceDb: store.db },
@@ -119,7 +116,11 @@ test("missed time above the cap: exactly one hour is applied and the excess is r
     expect(result.state.tick).toBe(3600);
 
     const clock = readClock(store.db);
-    expect(clock.cursorWallMs).toBe(startCursor + 60 * 60 * 1000);
+    // The persisted cursor jumps to the sampled "now", not merely
+    // startCursor + appliedMs: otherwise the 4 discarded hours would
+    // still look like missed time to a later catch-up call and get
+    // applied a second time.
+    expect(clock.cursorWallMs).toBe(nowWallMs);
     expect(clock.tick).toBe(3600);
     expect(clock.paused).toBe(false);
 
@@ -132,7 +133,53 @@ test("missed time above the cap: exactly one hour is applied and the excess is r
   }
 }, 20_000);
 
-test("pause during catch-up stops at the chunk boundary, persists paused, and reports the remainder as skipped", () => {
+test("a capped catch-up run's discarded excess is never replayed by a later catch-up call", async () => {
+  const storeDir = tempDir("panthea-sim-catchup-no-replay-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+
+    const startCursor = readClock(store.db).cursorWallMs;
+    const firstNow = startCursor + 5 * 60 * 60 * 1000;
+
+    const firstRun = await runCatchUp(
+      seeded,
+      createPrng(1),
+      { store, reducers, traceDb: store.db },
+      { nowWallMs: firstNow },
+    );
+    expect(firstRun.degraded).toBeUndefined();
+    expect(firstRun.summary.appliedMs).toBe(60 * 60 * 1000);
+    expect(firstRun.state.tick).toBe(3600);
+
+    // A live-loop-style second call, moments later: the cursor already
+    // sits at (approximately) now, so this applies essentially nothing --
+    // never another hour of ticks for the same already-discarded gap.
+    const secondNow = firstNow + 500;
+    const secondRun = await runCatchUp(
+      firstRun.state,
+      firstRun.prng,
+      { store, reducers, traceDb: store.db },
+      { nowWallMs: secondNow },
+    );
+
+    expect(secondRun.summary.appliedMs).toBe(0);
+    expect(secondRun.state.tick).toBe(3600);
+    // Total simulated advance across both calls stays exactly one hour.
+    expect(firstRun.summary.appliedMs + secondRun.summary.appliedMs).toBe(
+      60 * 60 * 1000,
+    );
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("pause during catch-up stops at the chunk boundary, persists paused, and reports the remainder as skipped", async () => {
   const storeDir = tempDir("panthea-sim-catchup-pause-mid-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -145,7 +192,7 @@ test("pause during catch-up stops at the chunk boundary, persists paused, and re
     const nowWallMs = startCursor + 5 * 60 * 1000; // 5 chunks of 60s each
 
     let chunksCommitted = 0;
-    const result = runCatchUp(
+    const result = await runCatchUp(
       seeded,
       createPrng(1),
       { store, reducers, traceDb: store.db },
@@ -173,7 +220,7 @@ test("pause during catch-up stops at the chunk boundary, persists paused, and re
   }
 });
 
-test("kill during a catch-up chunk: restart resumes from the last committed chunk, the cap is never exceeded, and no interval is applied twice", () => {
+test("kill during a catch-up chunk: restart resumes from the last committed chunk, the cap is never exceeded, and no interval is applied twice", async () => {
   const storeDir = tempDir("panthea-sim-catchup-crash-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -196,7 +243,7 @@ test("kill during a catch-up chunk: restart resumes from the last committed chun
       return persistCommitTick(...args);
     }
 
-    const firstRun = runCatchUp(
+    const firstRun = await runCatchUp(
       seeded,
       createPrng(1),
       { store, reducers, traceDb: store.db, commitTick: flakyCommitTick },
@@ -227,7 +274,7 @@ test("kill during a catch-up chunk: restart resumes from the last committed chun
     const restoredPrng =
       deserializePrngState(readPrngState(store.db)) ?? createPrng(1);
 
-    const secondRun = runCatchUp(
+    const secondRun = await runCatchUp(
       restoredState,
       restoredPrng,
       { store, reducers: freshReducers, traceDb: store.db },

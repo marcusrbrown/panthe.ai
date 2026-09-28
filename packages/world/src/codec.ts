@@ -243,6 +243,16 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   const locations = new Map(locationEntries.value);
 
   const knownLocationIds = new Set(locations.keys());
+  for (const [index, [, location]] of locationEntries.value.entries()) {
+    for (const [edgeIndex, edge] of location.edges.entries()) {
+      if (!knownLocationIds.has(edge.to as EntityId)) {
+        return fail(
+          `locations[${index}].edges[${edgeIndex}].to`,
+          `edge targets unknown location: ${edge.to}`,
+        );
+      }
+    }
+  }
   const actorEntries = parseArray(value.actors, "actors", (item, path) =>
     parseActorEntry(item, path, knownLocationIds),
   );

@@ -766,6 +766,53 @@ describe("importArchive: history consistency", () => {
     );
     closeStore(store);
   });
+
+  test("error path: a rehashed projections row whose revision column disagrees with the manifest's event sequence is rejected as inconsistent-manifest; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    // The projections row's `revision` column (not its `data` payload,
+    // which carries no lastSequence field for this generic
+    // CountProjection fixture) disagrees with the archive's own event log.
+    const db = new Database(archivePath);
+    db.run("UPDATE projections SET revision = ? WHERE id = 1", [999]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: an event row whose id, kind, correlation_id, or causation_id column disagrees with its parsed payload is rejected as corrupt; no slot is created, and staged columns always come from the parsed event", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    // The payload stays internally consistent; only the row's own `id`
+    // column is changed to disagree with what the payload actually says.
+    db.run("UPDATE events SET id = ? WHERE sequence = 2", [
+      "event-does-not-match-payload",
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
 });
 
 describe("importArchive: interrupted staging leaves no slot, and existing slots stay untouched", () => {

@@ -135,6 +135,29 @@ test("decode rejects a location whose realm is not a known realm", () => {
   ).toThrow();
 });
 
+test("decode rejects a location whose edge points to an unknown location id", () => {
+  const base = encode(seededState());
+  const [id, grove] = base.locations[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      locations: [
+        [
+          id,
+          {
+            ...grove,
+            edges: [{ to: "nowhere", transport: "path", bidirectional: true }],
+          },
+        ],
+        base.locations[1],
+      ],
+    }),
+  ).toThrow();
+});
+
 test("decode rejects a duplicate key among the location entries", () => {
   const base = encode(seededState());
   const [id, location] = base.locations[0] as unknown as [

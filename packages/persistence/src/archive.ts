@@ -578,6 +578,12 @@ export function importArchive(
     if (!projectionsRow) {
       throw new ImportError("corrupt", "archive projections row is missing");
     }
+    if (projectionsRow.revision !== manifest.eventSequence) {
+      throw new ImportError(
+        "inconsistent-manifest",
+        `archive's projections row revision is ${projectionsRow.revision}, but its manifest declares event sequence ${manifest.eventSequence}`,
+      );
+    }
     const liveProjections = readOrCorrupt(
       () => projectionsCodec.decode(JSON.parse(projectionsRow.data)),
       "archive projections row is not valid JSON or failed to decode",
@@ -636,18 +642,22 @@ export function importArchive(
             // validated here, in the same pass that writes it into
             // staging: the stored sequence/id/kind/correlation/causation
             // columns come from the parsed event, never copied from the
-            // archive's own denormalized columns. `row.sequence` (the
-            // archive's own column) is read only to cross-check it against
-            // the parsed payload's own `sequence` field -- an archive whose
-            // row and payload disagree about a event's own identity, or
-            // whose payload sequences skip a number, is corrupt even when
-            // its manifest and content hash are internally self-consistent.
+            // archive's own denormalized columns. The archive's own
+            // columns are read only to cross-check them against the
+            // parsed payload's own fields -- an archive whose row and
+            // payload disagree about an event's own identity, or whose
+            // payload sequences skip a number, is corrupt even when its
+            // manifest and content hash are internally self-consistent.
             const eventRows = db
               .query(
-                "SELECT sequence, payload FROM events ORDER BY sequence ASC",
+                "SELECT sequence, id, correlation_id, causation_id, kind, payload FROM events ORDER BY sequence ASC",
               )
               .iterate() as IterableIterator<{
               sequence: number;
+              id: string;
+              correlation_id: string;
+              causation_id: string;
+              kind: string;
               payload: string;
             }>;
             let expectedSequence = 1;
@@ -681,6 +691,30 @@ export function importArchive(
                 throw new ImportError(
                   "corrupt",
                   `event payload's sequence (${event.sequence}) does not match its own row's sequence column (${row.sequence})`,
+                );
+              }
+              if (event.id !== row.id) {
+                throw new ImportError(
+                  "corrupt",
+                  `event payload's id (${event.id}) does not match its own row's id column (${row.id})`,
+                );
+              }
+              if (event.kind !== row.kind) {
+                throw new ImportError(
+                  "corrupt",
+                  `event payload's kind (${event.kind}) does not match its own row's kind column (${row.kind})`,
+                );
+              }
+              if (event.correlationId !== row.correlation_id) {
+                throw new ImportError(
+                  "corrupt",
+                  `event payload's correlationId (${event.correlationId}) does not match its own row's correlation_id column (${row.correlation_id})`,
+                );
+              }
+              if (event.causationId !== row.causation_id) {
+                throw new ImportError(
+                  "corrupt",
+                  `event payload's causationId (${event.causationId}) does not match its own row's causation_id column (${row.causation_id})`,
                 );
               }
               if (event.sequence !== expectedSequence) {

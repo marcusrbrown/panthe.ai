@@ -11,7 +11,7 @@ Authority: [decisions.md](docs/product/decisions.md) (D01–D25) for owner choic
 - Generated code executes only through validated game APIs; it has no filesystem, shell, credential, or network access.
 - Core play, lore, local inference, local visual creation, persistence, replay, and inspection work fully offline after first-run setup.
 - Offline mode never silently falls back to a hosted provider.
-- Secrets never appear in content, saves, prompts, telemetry, or logs; use platform credential storage.
+- No credential-bearing data is passed into content, saves, prompts, telemetry, or logs; credentials live only in platform credential storage.
 - Use stable requirement IDs (P/W/M/U/X/O prefixes) in plans, PRs, and evidence.
 - Update [traceability.md](docs/product/traceability.md) in every PR that touches a requirement.
 - Record superseded decisions; do not erase their context.

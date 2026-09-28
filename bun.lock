@@ -58,6 +58,12 @@
     "apps/simulation": {
       "name": "@panthea/simulation",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/content": "workspace:*",
+        "@panthea/contracts": "workspace:*",
+        "@panthea/persistence": "workspace:*",
+        "@panthea/world": "workspace:*",
+      },
     },
     "packages/agents": {
       "name": "@panthea/agents",
@@ -74,22 +80,34 @@
     "packages/content": {
       "name": "@panthea/content",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/contracts": "workspace:*",
+      },
     },
     "packages/contracts": {
       "name": "@panthea/contracts",
-      "version": "0.1.0",
+      "version": "0.2.0",
     },
     "packages/persistence": {
       "name": "@panthea/persistence",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/contracts": "workspace:*",
+      },
     },
     "packages/telemetry": {
       "name": "@panthea/telemetry",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/contracts": "workspace:*",
+      },
     },
     "packages/world": {
       "name": "@panthea/world",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/contracts": "workspace:*",
+      },
     },
     "tools/content": {
       "name": "@panthea/tools-content",

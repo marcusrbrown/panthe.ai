@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { status } from "./index";
+import { loadContentPack } from "./index";
 
-test("exports a placeholder status", () => {
-  expect(status).toEqual({ package: "content", ready: false });
+test("the barrel export re-exports loadContentPack", () => {
+  expect(typeof loadContentPack).toBe("function");
 });

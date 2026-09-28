@@ -8,5 +8,11 @@
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@panthea/content": "workspace:*",
+    "@panthea/contracts": "workspace:*",
+    "@panthea/persistence": "workspace:*",
+    "@panthea/world": "workspace:*"
   }
 }

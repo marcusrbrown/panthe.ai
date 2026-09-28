@@ -1,12 +1,11 @@
-// Versioned commands, events, content, and save schemas live here (M1+).
-// Placeholder until the first contract types land.
+// Versioned wire and storage contracts for M1: branded identifiers, parse-
+// don't-validate parsers, and the shared vocabulary every other package
+// (world, persistence, telemetry, simulation, client) decodes untrusted
+// input through.
 
-export interface PackageStatus {
-  readonly package: "contracts";
-  readonly ready: false;
-}
-
-export const status: PackageStatus = {
-  package: "contracts",
-  ready: false,
-};
+export * from "./archive";
+export * from "./content";
+export * from "./event";
+export * from "./ids";
+export * from "./proposal";
+export * from "./snapshot";

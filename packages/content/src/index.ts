@@ -1,12 +1,8 @@
-// Pack loading, lore manifests, and realm definitions live here (M2+).
-// Placeholder until the first content-pack loader lands.
+// Pack loading, lore manifests, and realm definitions (M2+).
+//
+// `loadContentPack` reads an authored world directory (locations + rules
+// required; buildings + inhabitants optional) and parses it through
+// packages/contracts' `parseContentPack`, so invalid content fails loudly
+// at load time with a clear, structured message.
 
-export interface PackageStatus {
-  readonly package: "content";
-  readonly ready: false;
-}
-
-export const status: PackageStatus = {
-  package: "content",
-  ready: false,
-};
+export * from "./load";

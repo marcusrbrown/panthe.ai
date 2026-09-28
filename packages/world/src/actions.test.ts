@@ -1,0 +1,259 @@
+import { expect, test } from "bun:test";
+import type { ContentPack, Proposal } from "@panthea/contracts";
+import { applyEvents, runTick, submitProposal } from "./actions";
+import { decode, encode } from "./codec";
+import {
+  createInitialWorldState,
+  createPrng,
+  toEntityId,
+  type WorldState,
+  withActor,
+} from "./state";
+
+function minimalRules(): ContentPack["rules"] {
+  return {
+    catchUpCapMs: 3_600_000,
+    catchUpChunkMs: 60_000,
+    checkpointIntervalMs: 60_000,
+    fireBalance: {},
+    economyBalance: {},
+  };
+}
+
+function walkPack(): ContentPack {
+  return {
+    schemaVersion: 1,
+    realms: ["mortal", "olympus", "underworld"],
+    resources: [],
+    locations: [
+      {
+        id: "wilderness",
+        realm: "mortal",
+        name: "Wilderness",
+        edges: [{ to: "path", transport: "path", bidirectional: true }],
+      },
+      {
+        id: "path",
+        realm: "mortal",
+        name: "Wilderness Path",
+        edges: [{ to: "town", transport: "path", bidirectional: true }],
+      },
+      { id: "town", realm: "mortal", name: "Town Square", edges: [] },
+      {
+        id: "ferry-dock",
+        realm: "mortal",
+        name: "Ferry Dock",
+        edges: [
+          {
+            to: "underworld-shore",
+            transport: "divine-transport",
+            bidirectional: true,
+          },
+        ],
+      },
+      {
+        id: "underworld-shore",
+        realm: "underworld",
+        name: "Underworld Shore",
+        edges: [],
+      },
+    ],
+    buildings: [],
+    inhabitants: [],
+    rules: minimalRules(),
+  };
+}
+
+function walkState(): WorldState {
+  const state = createInitialWorldState(walkPack());
+  return withActor(state, {
+    id: toEntityId("wanderer"),
+    locationId: toEntityId("wilderness"),
+    alive: true,
+    capabilities: [],
+    revision: 0,
+  });
+}
+
+/** Parses a raw fixture payload the way a real fixture/routine would submit it. */
+function proposal(raw: Record<string, unknown>): Proposal {
+  const base = {
+    schemaVersion: 1,
+    actor: "wanderer",
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-1",
+    ...raw,
+  };
+  const result = submitProposal(base);
+  if (!result.ok) {
+    throw new Error(
+      `test fixture proposal failed to parse: ${result.rejection.message}`,
+    );
+  }
+  return result.proposal;
+}
+
+function moveTo(to: string, overrides: Record<string, unknown> = {}): Proposal {
+  return proposal({ kind: "move", to, ...overrides });
+}
+
+test("a wilderness-to-town walk commits one entity-moved event per step across ticks", () => {
+  let state = walkState();
+
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
+  expect(hop1.rejected).toEqual([]);
+  expect(hop1.committed).toHaveLength(1);
+  expect(hop1.committed[0]?.events).toEqual([
+    expect.objectContaining({
+      kind: "entity-moved",
+      entityId: "wanderer",
+      to: "path",
+    }),
+  ]);
+  state = hop1.state;
+  expect(state.actors.get(toEntityId("wanderer"))).toMatchObject({
+    locationId: "path",
+  });
+
+  const hop2 = runTick(state, hop1.prng, [moveTo("town")]);
+  expect(hop2.rejected).toEqual([]);
+  expect(hop2.committed[0]?.events).toEqual([
+    expect.objectContaining({
+      kind: "entity-moved",
+      entityId: "wanderer",
+      to: "town",
+    }),
+  ]);
+  state = hop2.state;
+  expect(state.actors.get(toEntityId("wanderer"))).toMatchObject({
+    locationId: "town",
+  });
+});
+
+test("a realm-transition proposal changes realm and location in one event", () => {
+  const state = withActor(walkState(), {
+    id: toEntityId("ferryman"),
+    locationId: toEntityId("ferry-dock"),
+    alive: true,
+    capabilities: [],
+    revision: 0,
+  });
+
+  const result = runTick(state, createPrng(1), [
+    proposal({
+      actor: "ferryman",
+      observationId: "obs-2",
+      kind: "realm-transition",
+      to: "underworld-shore",
+      via: "ferry-dock",
+    }),
+  ]);
+
+  expect(result.rejected).toEqual([]);
+  expect(result.committed[0]?.events).toHaveLength(1);
+  expect(result.committed[0]?.events[0]).toMatchObject({
+    kind: "realm-transitioned",
+    entityId: "ferryman",
+    to: "underworld-shore",
+    via: "ferry-dock",
+  });
+  const ferryman = result.state.actors.get(toEntityId("ferryman"));
+  expect(ferryman?.locationId).toBe(toEntityId("underworld-shore"));
+  expect(
+    result.state.locations.get(toEntityId("underworld-shore"))?.realm,
+  ).toBe("underworld");
+});
+
+test("two same-tick proposals from one actor: the first commits, the second is rejected busy-actor", () => {
+  const state = walkState();
+
+  const result = runTick(state, createPrng(1), [
+    moveTo("path"),
+    moveTo("path", { observationId: "obs-2" }),
+  ]);
+
+  expect(result.committed).toHaveLength(1);
+  expect(result.rejected).toHaveLength(1);
+  expect(result.rejected[0]?.reason).toBe("busy-actor");
+  // Only the first move's effect landed.
+  expect(result.state.actors.get(toEntityId("wanderer"))?.revision).toBe(1);
+});
+
+test("a rejected proposal leaves state unchanged", () => {
+  const state = walkState();
+
+  const result = runTick(state, createPrng(1), [moveTo("town")]);
+  expect(result.rejected).toHaveLength(1);
+  expect(result.rejected[0]?.reason).toBe("not-adjacent");
+  expect(result.state.actors).toEqual(state.actors);
+  expect(result.state.locations).toEqual(state.locations);
+});
+
+test("a malformed fixture proposal is rejected before it ever reaches the queue", () => {
+  const submitted = submitProposal({ kind: "move" }); // missing actor, to, etc.
+  expect(submitted.ok).toBe(false);
+  if (!submitted.ok) {
+    expect(submitted.rejection.reason).toBe("malformed");
+  }
+});
+
+test("applyEvents applied to the recorded event stream reproduces the live committed state", () => {
+  const initial = walkState();
+
+  const hop1 = runTick(initial, createPrng(1), [moveTo("path")]);
+  const hop2 = runTick(hop1.state, hop1.prng, [
+    moveTo("town", { observationId: "obs-2" }),
+  ]);
+
+  const allEvents = [
+    ...hop1.committed.flatMap((record) => record.events),
+    ...hop2.committed.flatMap((record) => record.events),
+  ];
+
+  // Rebuild from the initial state through only the recorded event log,
+  // ignoring the tick/simTime bookkeeping runTick also advances.
+  const rebuilt = applyEvents(initial, allEvents);
+  expect(rebuilt.actors).toEqual(hop2.state.actors);
+  expect(rebuilt.locations).toEqual(hop2.state.locations);
+});
+
+test("event sequence numbers are contiguous across ticks, not reset each tick", () => {
+  const state = walkState();
+
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
+  expect(hop1.committed[0]?.events[0]?.sequence).toBe(1);
+  expect(hop1.state.lastSequence).toBe(1);
+
+  const hop2 = runTick(hop1.state, hop1.prng, [moveTo("town")]);
+  expect(hop2.committed[0]?.events[0]?.sequence).toBe(2);
+  expect(hop2.state.lastSequence).toBe(2);
+});
+
+test("resuming from a restored state (via the codec) continues the sequence rather than restarting it", () => {
+  const state = walkState();
+
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
+  expect(hop1.state.lastSequence).toBe(1);
+
+  const restored = decode(JSON.parse(JSON.stringify(encode(hop1.state))));
+  expect(restored.lastSequence).toBe(1);
+
+  const hop2 = runTick(restored, hop1.prng, [moveTo("town")]);
+  expect(hop2.committed[0]?.events[0]?.sequence).toBe(2);
+  expect(hop2.state.lastSequence).toBe(2);
+});
+
+test("same state, PRNG-irrelevant proposals, and queue produce identical output on repeated runs", () => {
+  const state = walkState();
+  const queue = [moveTo("path")];
+
+  const runA = runTick(state, createPrng(1), queue);
+  const runB = runTick(state, createPrng(1), queue);
+
+  expect(runA.state).toEqual(runB.state);
+  expect(runA.prng).toEqual(runB.prng);
+  expect(runA.committed).toEqual(runB.committed);
+  expect(runA.rejected).toEqual(runB.rejected);
+});

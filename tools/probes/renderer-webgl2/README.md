@@ -592,7 +592,8 @@ above is required at the pinned version forever.
   trace, the frozen-latency evidence, the recovery-pattern sketch for
   ADR-0002, and the three.js [PR #29767](https://github.com/mrdoob/three.js/pull/29767)
   citation (its "call `init()` again" guidance doesn't hold at this pinned
-  version).
+  version). Reported upstream as
+  [mrdoob/three.js#34682](https://github.com/mrdoob/three.js/issues/34682).
 - The production build emits one 1.2MB (342KB gzip) JS chunk with a Vite
   size warning; not investigated further here (out of scope for a D25
   feasibility probe) but worth a manual-chunking pass before this pattern

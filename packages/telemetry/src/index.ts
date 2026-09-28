@@ -1,14 +1,7 @@
-// Correlation, local inspection, and export adapters live here (M1+).
-// Local causal recording and inspection are always on; external telemetry
-// export is opt-in and requires explicit operator configuration. Placeholder
-// until the first local event/trace store lands.
+// Local causal trace store and "follow this event" query. Local causal
+// recording and inspection are always on; external telemetry export is a
+// separate, opt-in concern not implemented by this package yet (see
+// docs/README.md invariants and ADR-0006).
 
-export interface PackageStatus {
-  readonly package: "telemetry";
-  readonly ready: false;
-}
-
-export const status: PackageStatus = {
-  package: "telemetry",
-  ready: false,
-};
+export * from "./query";
+export * from "./trace";

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
-import { status } from "./index";
+import * as telemetry from "./index";
 
-test("exports a placeholder status", () => {
-  expect(status).toEqual({ package: "telemetry", ready: false });
+test("barrel exports the public telemetry API", () => {
+  expect(typeof telemetry.ensureTraceSchema).toBe("function");
+  expect(typeof telemetry.recordObservation).toBe("function");
+  expect(typeof telemetry.recordProposalOutcome).toBe("function");
+  expect(typeof telemetry.recordReceipt).toBe("function");
+  expect(typeof telemetry.followEvent).toBe("function");
+  expect(typeof telemetry.followProposal).toBe("function");
 });

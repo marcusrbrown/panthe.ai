@@ -1,12 +1,9 @@
-// Transactions, snapshots, migrations, and replay live here (M1+).
-// Placeholder until the first persistence systems land.
+// Transactions, snapshots, and archive export/import for a per-world
+// SQLite store. `packages/world` (owns event reducers and projection
+// definitions) is never imported here -- see `store.ts`'s
+// `ProjectionReducers` for the injection seam.
 
-export interface PackageStatus {
-  readonly package: "persistence";
-  readonly ready: false;
-}
-
-export const status: PackageStatus = {
-  package: "persistence",
-  ready: false,
-};
+export * from "./archive";
+export * from "./clock";
+export * from "./snapshot";
+export * from "./store";

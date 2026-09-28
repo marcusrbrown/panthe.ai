@@ -45,7 +45,7 @@ Update this table in every PR that touches a requirement. Milestone is the stage
 | X04 | M5 | planned | — | — |
 | X05 | M5 | planned | — | — |
 | X06 | M5 | planned | — | — |
-| O01 | M1 | scaffolded (M1 Phase A: per-world store, snapshots, export with canonical hash, hostile-archive import into a new slot; service wiring pending Unit 6) | packages/persistence/src/ | packages/persistence/src/archive.test.ts, packages/persistence/src/snapshot.test.ts, packages/persistence/src/migrations.test.ts |
+| O01 | M1 | scaffolded (M1 Phase A: per-world store, snapshots, export with a checksum, checked import into a new slot; service wiring pending Unit 6) | packages/persistence/src/ | packages/persistence/src/archive.test.ts, packages/persistence/src/snapshot.test.ts, packages/persistence/src/store.test.ts, apps/simulation/src/world-store.test.ts |
 | O02 | M6 | planned | — | — |
 | O03 | M1 | planned (5/5 lifecycle transitions pass; sleep/resume interval applied exactly once, ADR-0003; M1 Phase A: persisted pause, catch-up cap, at-most-once cursor in the product store) | packages/persistence/src/clock.ts, packages/persistence/src/store.ts | tools/probes/backend-lifecycle/README.md, docs/decisions/0003-simulation-service.md, packages/persistence/src/clock.test.ts, packages/persistence/src/store.test.ts |
 | O04 | M1 | scaffolded, partial (M1 Phase A: observation, proposal, event, and receipt trace with follow-event query; model-request and relationship links are M2's remainder) | packages/telemetry/src/ | packages/telemetry/src/query.test.ts, packages/telemetry/src/trace.test.ts |

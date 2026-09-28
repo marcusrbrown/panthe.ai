@@ -157,6 +157,29 @@ describe("openStore", () => {
     expect(JSON.parse(genesisRow.data)).toEqual(countReducer.initial);
     closeStore(store);
   });
+
+  test("under umask 022, the db file and its WAL/SHM siblings are all created 0600, not 0644", () => {
+    const previousUmask = process.umask(0o022);
+    try {
+      const store = openStore(dbPath, countReducer);
+      commitTick(store, countReducer, {
+        events: [makeMoveEvent(1)],
+        cursorWallMs: 1000,
+        paused: false,
+        tick: 1,
+        simTimeMs: 1000,
+        prngState: "seed",
+      });
+
+      expect((statSync(dbPath).mode & 0o777).toString(8)).toBe("600");
+      expect((statSync(`${dbPath}-wal`).mode & 0o777).toString(8)).toBe("600");
+      expect((statSync(`${dbPath}-shm`).mode & 0o777).toString(8)).toBe("600");
+
+      closeStore(store);
+    } finally {
+      process.umask(previousUmask);
+    }
+  });
 });
 
 describe("commitTick", () => {

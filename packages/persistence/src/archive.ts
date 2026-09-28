@@ -365,6 +365,19 @@ function validClockRow(row: ClockRowData): boolean {
 }
 
 /**
+ * A decoded projection may or may not carry a `lastSequence` field --
+ * generic `TProjections` shapes (persistence's own test fixtures) don't.
+ * When one is present and numeric, import cross-checks it against the
+ * archive's actual event-log length; when absent, there is nothing to
+ * check, so import doesn't require every projection shape to have one.
+ */
+function extractLastSequence(value: unknown): number | undefined {
+  return isRecord(value) && typeof value.lastSequence === "number"
+    ? value.lastSequence
+    : undefined;
+}
+
+/**
  * Imports `archivePath` into a brand-new slot under `slotsDir`. The
  * archive is opened read-only and every row is validated -- decoded
  * through `projectionsCodec`, event payloads through contracts' event
@@ -540,10 +553,17 @@ export function importArchive(
     if (!genesisRow) {
       throw new ImportError("corrupt", "archive genesis row is missing");
     }
-    readOrCorrupt(
+    const genesisProjections = readOrCorrupt(
       () => projectionsCodec.decode(JSON.parse(genesisRow.data)),
       "archive genesis row is not valid JSON or failed to decode",
     );
+    const genesisLastSequence = extractLastSequence(genesisProjections);
+    if (genesisLastSequence !== undefined && genesisLastSequence !== 0) {
+      throw new ImportError(
+        "inconsistent-manifest",
+        `archive genesis projection's lastSequence is ${genesisLastSequence}, expected 0`,
+      );
+    }
 
     const projectionsRow = readOrCorrupt(
       () =>
@@ -558,10 +578,20 @@ export function importArchive(
     if (!projectionsRow) {
       throw new ImportError("corrupt", "archive projections row is missing");
     }
-    readOrCorrupt(
+    const liveProjections = readOrCorrupt(
       () => projectionsCodec.decode(JSON.parse(projectionsRow.data)),
       "archive projections row is not valid JSON or failed to decode",
     );
+    const liveLastSequence = extractLastSequence(liveProjections);
+    if (
+      liveLastSequence !== undefined &&
+      liveLastSequence !== manifest.eventSequence
+    ) {
+      throw new ImportError(
+        "inconsistent-manifest",
+        `archive's live projection lastSequence is ${liveLastSequence}, but its manifest declares event sequence ${manifest.eventSequence}`,
+      );
+    }
 
     // --- Staging: only validated values ever reach here -------------------
     if (!existsSync(slotsDir)) {
@@ -606,10 +636,22 @@ export function importArchive(
             // validated here, in the same pass that writes it into
             // staging: the stored sequence/id/kind/correlation/causation
             // columns come from the parsed event, never copied from the
-            // archive's own denormalized columns (only `payload` is read).
+            // archive's own denormalized columns. `row.sequence` (the
+            // archive's own column) is read only to cross-check it against
+            // the parsed payload's own `sequence` field -- an archive whose
+            // row and payload disagree about a event's own identity, or
+            // whose payload sequences skip a number, is corrupt even when
+            // its manifest and content hash are internally self-consistent.
             const eventRows = db
-              .query("SELECT payload FROM events ORDER BY sequence ASC")
-              .iterate() as IterableIterator<{ payload: string }>;
+              .query(
+                "SELECT sequence, payload FROM events ORDER BY sequence ASC",
+              )
+              .iterate() as IterableIterator<{
+              sequence: number;
+              payload: string;
+            }>;
+            let expectedSequence = 1;
+            let lastWrittenSequence = 0;
             for (const row of eventRows) {
               const raw = readOrCorrupt(
                 () => JSON.parse(row.payload) as unknown,
@@ -635,6 +677,20 @@ export function importArchive(
                 );
               }
               const event: WorldEvent = parsed.value;
+              if (event.sequence !== row.sequence) {
+                throw new ImportError(
+                  "corrupt",
+                  `event payload's sequence (${event.sequence}) does not match its own row's sequence column (${row.sequence})`,
+                );
+              }
+              if (event.sequence !== expectedSequence) {
+                throw new ImportError(
+                  "inconsistent-manifest",
+                  `archive event log is not contiguous: expected sequence ${expectedSequence}, found ${event.sequence}`,
+                );
+              }
+              expectedSequence += 1;
+              lastWrittenSequence = event.sequence;
               stagingDb.run(
                 `INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload)
                  VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -647,6 +703,12 @@ export function importArchive(
                   event.approximate ? 1 : 0,
                   JSON.stringify(event),
                 ],
+              );
+            }
+            if (lastWrittenSequence !== manifest.eventSequence) {
+              throw new ImportError(
+                "inconsistent-manifest",
+                `archive's event log ends at sequence ${lastWrittenSequence}, but its manifest declares ${manifest.eventSequence}`,
               );
             }
           })

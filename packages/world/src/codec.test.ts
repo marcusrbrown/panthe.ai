@@ -135,6 +135,66 @@ test("decode rejects a location whose realm is not a known realm", () => {
   ).toThrow();
 });
 
+test("decode rejects a duplicate key among the location entries", () => {
+  const base = encode(seededState());
+  const [id, location] = base.locations[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      locations: [...base.locations, [id, { ...location }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a duplicate key among the actor entries", () => {
+  const base = encode(seededState());
+  const [id, actor] = base.actors[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      actors: [...base.actors, [id, { ...actor }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a location entry whose array key does not equal its own id field", () => {
+  const base = encode(seededState());
+  // "square" (locations[1]) is not the actor's own location and nothing
+  // else references it by id, so this isolates the key-vs-id check from
+  // the unrelated "unknown location" referential check that a mismatched
+  // "grove" key would otherwise trip instead.
+  const [, square] = base.locations[1] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      locations: [base.locations[0], ["mismatched-key", square]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects an actor entry whose array key does not equal its own id field", () => {
+  const base = encode(seededState());
+  const [, actor] = base.actors[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      actors: [["mismatched-key", actor]],
+    }),
+  ).toThrow();
+});
+
 test("applying events to a decoded state equals applying them to the original", () => {
   const original = seededState();
   const submitted = submitProposal({

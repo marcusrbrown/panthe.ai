@@ -137,6 +137,12 @@ function parseLocationEntry(
   if (!id.ok) return id;
   const state = parseLocationState(value[1], `${path}[1]`);
   if (!state.ok) return state;
+  if (id.value !== state.value.id) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${id.value}" does not match its own id field "${state.value.id}"`,
+    );
+  }
   return ok([id.value, state.value] as const);
 }
 
@@ -187,7 +193,27 @@ function parseActorEntry(
   if (!id.ok) return id;
   const state = parseActorState(value[1], `${path}[1]`, knownLocationIds);
   if (!state.ok) return state;
+  if (id.value !== state.value.id) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${id.value}" does not match its own id field "${state.value.id}"`,
+    );
+  }
   return ok([id.value, state.value] as const);
+}
+
+/** Fails if `entries` contains the same key twice -- `new Map` would otherwise silently keep only the last one. */
+function findDuplicateKey<T>(
+  entries: readonly (readonly [EntityId, T])[],
+): EntityId | undefined {
+  const seen = new Set<EntityId>();
+  for (const [key] of entries) {
+    if (seen.has(key)) {
+      return key;
+    }
+    seen.add(key);
+  }
+  return undefined;
 }
 
 function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
@@ -210,6 +236,10 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     parseLocationEntry,
   );
   if (!locationEntries.ok) return locationEntries;
+  const duplicateLocationKey = findDuplicateKey(locationEntries.value);
+  if (duplicateLocationKey !== undefined) {
+    return fail("locations", `duplicate location id: ${duplicateLocationKey}`);
+  }
   const locations = new Map(locationEntries.value);
 
   const knownLocationIds = new Set(locations.keys());
@@ -217,6 +247,10 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     parseActorEntry(item, path, knownLocationIds),
   );
   if (!actorEntries.ok) return actorEntries;
+  const duplicateActorKey = findDuplicateKey(actorEntries.value);
+  if (duplicateActorKey !== undefined) {
+    return fail("actors", `duplicate actor id: ${duplicateActorKey}`);
+  }
   const actors = new Map(actorEntries.value);
 
   return ok({

@@ -635,6 +635,139 @@ describe("importArchive: manifest inconsistency", () => {
   });
 });
 
+describe("importArchive: history consistency", () => {
+  test("error path: a payload renumbered out of sequence (rows 1,2 with payload sequences 1,3) is rejected; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = openStore(dbPath, reducer);
+    commitTick(store, reducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+    });
+    commitTick(store, reducer, {
+      events: [makeMoveEvent(2)],
+      cursorWallMs: 2000,
+      paused: false,
+      tick: 2,
+      simTimeMs: 2000,
+      prngState: "seed-2",
+    });
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    // Row stays at sequence=2 (so the raw MAX(sequence) column check still
+    // matches manifest.eventSequence), but its payload's own internal
+    // `sequence` field is renumbered to 3 -- skipping 2 entirely. A plain
+    // MAX(sequence)-column check cannot see this; only cross-checking the
+    // parsed payload against its own row does.
+    const db = new Database(archivePath);
+    const row = db
+      .query("SELECT payload FROM events WHERE sequence = 2")
+      .get() as { payload: string };
+    const renumbered = { ...JSON.parse(row.payload), sequence: 3 };
+    db.run("UPDATE events SET payload = ? WHERE sequence = 2", [
+      JSON.stringify(renumbered),
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, projectionCodec);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect(["inconsistent-manifest", "corrupt"]).toContain(
+      (caught as ImportError).kind,
+    );
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  interface HistoryProjection {
+    readonly total: number;
+    readonly lastSequence: number;
+  }
+
+  const historyCodec: ProjectionCodec<HistoryProjection> = {
+    encode: (projections) => projections,
+    decode: (value) => value as HistoryProjection,
+  };
+
+  const historyReducer: ProjectionReducers<HistoryProjection> = {
+    initial: { total: 0, lastSequence: 0 },
+    applyEvent(projections, event) {
+      return { total: projections.total + 1, lastSequence: event.sequence };
+    },
+    codec: historyCodec,
+  };
+
+  test("error path: a rehashed live projection whose lastSequence disagrees with the archive's event log is rejected as inconsistent-manifest; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = openStore(dbPath, historyReducer);
+    commitTick(store, historyReducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+    });
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE projections SET data = ? WHERE id = 1", [
+      JSON.stringify({ total: 1, lastSequence: 99 }),
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, historyCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed genesis projection with a nonzero lastSequence is rejected as inconsistent-manifest; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = openStore(dbPath, historyReducer);
+    commitTick(store, historyReducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+    });
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE genesis SET data = ? WHERE id = 1", [
+      JSON.stringify({ total: 0, lastSequence: 7 }),
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, historyCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+});
+
 describe("importArchive: interrupted staging leaves no slot, and existing slots stay untouched", () => {
   test("error path: a staging-time failure (duplicate event ID smuggled past per-row validation) leaves no slot behind", () => {
     const dbPath = join(dir, "world.sqlite");

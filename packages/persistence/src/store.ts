@@ -154,6 +154,14 @@ export function openStore<TProjections>(
   const db = new Database(path, { create: true });
 
   try {
+    // Set the db file's mode before WAL mode is enabled: SQLite creates the
+    // -wal and -shm sibling files with the main file's current mode, so
+    // chmod-ing the main file first (rather than after, once its siblings
+    // already exist) is what actually gets them created 0600 under a
+    // permissive umask, with no separate chmod of the siblings needed.
+    if (!existedBefore) {
+      chmodSync(path, 0o600);
+    }
     try {
       db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
     } catch {
@@ -193,10 +201,6 @@ export function openStore<TProjections>(
           [genesisData],
         );
       }).immediate();
-    }
-
-    if (!existedBefore) {
-      chmodSync(path, 0o600);
     }
 
     return { db, path, worldId };

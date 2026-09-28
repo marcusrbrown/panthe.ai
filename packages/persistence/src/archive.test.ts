@@ -17,14 +17,18 @@ import {
   createEntityId,
   createEventId,
   type EntityMovedEvent,
+  LATEST_EVENT_SCHEMA_VERSION,
 } from "@panthea/contracts";
 import {
   canonicalDump,
   computeContentHash,
   exportArchive,
+  fsyncDirectoryBestEffort,
+  fsyncFile,
   ImportError,
   type ImportLimits,
   importArchive,
+  isTolerableFsyncError,
 } from "./archive";
 import { LATEST_SCHEMA_VERSION } from "./migrations";
 import {
@@ -511,35 +515,225 @@ describe("importArchive", () => {
   });
 });
 
-describe("computeContentHash / canonicalDump", () => {
-  test("identical data yields an identical hash regardless of insertion order (fixed table order, rows ordered by primary key)", () => {
-    const dbPath1 = join(dir, "a.sqlite");
-    const dbPath2 = join(dir, "b.sqlite");
-    const db1 = new Database(dbPath1, { create: true });
-    const db2 = new Database(dbPath2, { create: true });
-    for (const db of [db1, db2]) {
-      db.exec(
-        "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
-      );
-      db.exec(
-        "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL) STRICT",
-      );
-      db.exec(
-        "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
-      );
-      db.exec(
-        "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
-      );
-      db.exec(
-        "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
-      );
-      db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
-      db.run("INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, 0, 0)");
-      db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
-      db.run(
-        "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
-      );
+describe("importArchive manifest integrity", () => {
+  function exportFreshArchive(): { store: Store; archivePath: string } {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    return { store, archivePath };
+  }
+
+  test("error path: a manifest-only tamper of eventSequence (hash left alone) is rejected as a manifest mismatch, distinct from a hash mismatch; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.run("UPDATE manifest SET event_sequence = ?", [999]);
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
     }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("manifest-mismatch");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a manifest-only tamper of worldId (hash left alone) is rejected as a manifest mismatch; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    archiveDb.run("UPDATE manifest SET world_id = ?", [
+      "world-not-the-real-one",
+    ]);
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("manifest-mismatch");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("error path: a manifest-only tamper of a version field (hash left alone) is rejected as a hash mismatch, since no other table can cross-check a version claim; no slot is created", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const archiveDb = new Database(archivePath);
+    // 0 is a valid non-negative integer and still <= LATEST_SCHEMA_VERSION,
+    // so this does not trip the explicit "newer than we understand" gate --
+    // only hash binding can catch it.
+    archiveDb.run("UPDATE manifest SET sqlite_schema_version = 0");
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("hash-mismatch");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+
+  test("happy path: a clean archive still round-trips with an identical hash when exported twice (no false positives from the manifest binding)", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath1 = join(dir, "clean1.sqlite");
+    const archivePath2 = join(dir, "clean2.sqlite");
+    const manifest1 = exportArchive(store, archivePath1);
+    const manifest2 = exportArchive(store, archivePath2);
+    expect(manifest1.contentHash).toBe(manifest2.contentHash);
+
+    const slotsDir = join(dir, "slots");
+    const result = importArchive(archivePath1, slotsDir, generousLimits);
+    expect(existsSync(result.slotPath)).toBe(true);
+    closeStore(store);
+  });
+
+  test("happy path: all events are copied unconditionally (not filtered by the manifest's eventSequence) once the manifest is verified to match", () => {
+    const { store, archivePath } = exportFreshArchive();
+    const slotsDir = join(dir, "slots");
+    const result = importArchive(archivePath, slotsDir, generousLimits);
+    const importedDb = new Database(join(result.slotPath, "world.sqlite"));
+    const count = (
+      importedDb.query("SELECT COUNT(*) as c FROM events").get() as {
+        c: number;
+      }
+    ).c;
+    expect(count).toBe(3);
+    importedDb.close();
+    closeStore(store);
+  });
+});
+
+describe("importArchive future payload version", () => {
+  test("error path: a manifest reporting an unsupported (future) payload schema version is rejected distinctly from the SQLite schema version gate; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const archiveDb = new Database(archivePath);
+    archiveDb.run("UPDATE manifest SET payload_schema_version = ?", [
+      LATEST_EVENT_SCHEMA_VERSION + 100,
+    ]);
+    archiveDb.close();
+
+    const slotsDir = join(dir, "slots");
+    let caught: unknown;
+    try {
+      importArchive(archivePath, slotsDir, generousLimits);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("unsupported-version");
+    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    closeStore(store);
+  });
+});
+
+describe("fsync durability helpers", () => {
+  test("isTolerableFsyncError recognizes the well-known directory-fsync refusal codes and nothing else", () => {
+    expect(isTolerableFsyncError({ code: "EISDIR" })).toBe(true);
+    expect(isTolerableFsyncError({ code: "EINVAL" })).toBe(true);
+    expect(isTolerableFsyncError({ code: "EPERM" })).toBe(true);
+    expect(isTolerableFsyncError({ code: "ENOENT" })).toBe(false);
+    expect(isTolerableFsyncError(new Error("no code"))).toBe(false);
+    expect(isTolerableFsyncError(undefined)).toBe(false);
+  });
+
+  test("fsyncFile succeeds on a real file", () => {
+    const filePath = join(dir, "fsync-target.txt");
+    writeFileSync(filePath, "hello");
+    expect(() => fsyncFile(filePath)).not.toThrow();
+  });
+
+  test("fsyncFile propagates a genuine error (missing file)", () => {
+    expect(() => fsyncFile(join(dir, "does-not-exist.txt"))).toThrow();
+  });
+
+  test("fsyncDirectoryBestEffort succeeds on a real directory", () => {
+    expect(() => fsyncDirectoryBestEffort(dir)).not.toThrow();
+  });
+
+  test("fsyncDirectoryBestEffort propagates a genuine (non-tolerable) error for a missing directory", () => {
+    expect(() =>
+      fsyncDirectoryBestEffort(join(dir, "does-not-exist-dir")),
+    ).toThrow();
+  });
+
+  test("exportArchive still succeeds end-to-end with fsync calls exercised on the happy path", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "durable.sqlite");
+    const manifest = exportArchive(store, archivePath);
+    expect(existsSync(archivePath)).toBe(true);
+    expect(manifest.eventSequence).toBe(3);
+    closeStore(store);
+  });
+
+  test("importArchive still succeeds end-to-end with fsync calls exercised during staging", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "durable-import.sqlite");
+    exportArchive(store, archivePath);
+    const slotsDir = join(dir, "slots");
+    const result = importArchive(archivePath, slotsDir, generousLimits);
+    expect(existsSync(join(result.slotPath, "world.sqlite"))).toBe(true);
+    closeStore(store);
+  });
+});
+
+describe("computeContentHash / canonicalDump", () => {
+  const manifestFields = {
+    formatVersion: 1,
+    sqliteSchemaVersion: LATEST_SCHEMA_VERSION,
+    payloadSchemaVersion: 1,
+    worldId: "world-fixture" as never,
+    eventSequence: 2,
+  };
+
+  function makeFixtureDb(path: string): Database {
+    const db = new Database(path, { create: true });
+    db.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
+    );
+    db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
+    db.run("INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, 0, 0)");
+    db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+    db.run(
+      "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
+    );
+    return db;
+  }
+
+  test("identical data yields an identical hash regardless of insertion order (fixed table order, rows ordered by primary key)", () => {
+    const db1 = makeFixtureDb(join(dir, "a.sqlite"));
+    const db2 = makeFixtureDb(join(dir, "b.sqlite"));
     // Insert events in reverse order between the two DBs — the canonical
     // dump orders by primary key, so insertion order must not matter.
     db1.run(
@@ -555,9 +749,32 @@ describe("computeContentHash / canonicalDump", () => {
       "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (1, 'e1', 'c1', 'k1', 'kind', 0, '{}')",
     );
 
-    expect(computeContentHash(db1)).toBe(computeContentHash(db2));
-    expect(canonicalDump(db1)).toBe(canonicalDump(db2));
+    expect(computeContentHash(db1, manifestFields)).toBe(
+      computeContentHash(db2, manifestFields),
+    );
+    expect(canonicalDump(db1, manifestFields)).toBe(
+      canonicalDump(db2, manifestFields),
+    );
     db1.close();
     db2.close();
+  });
+
+  test("the manifest fields are bound into the hash: changing any one of them changes the hash even though the tables are identical", () => {
+    const db = makeFixtureDb(join(dir, "c.sqlite"));
+    const baseline = computeContentHash(db, manifestFields);
+
+    expect(
+      computeContentHash(db, { ...manifestFields, eventSequence: 3 }),
+    ).not.toBe(baseline);
+    expect(
+      computeContentHash(db, {
+        ...manifestFields,
+        worldId: "world-other" as never,
+      }),
+    ).not.toBe(baseline);
+    expect(
+      computeContentHash(db, { ...manifestFields, sqliteSchemaVersion: 0 }),
+    ).not.toBe(baseline);
+    db.close();
   });
 });

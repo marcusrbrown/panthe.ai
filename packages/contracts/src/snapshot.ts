@@ -38,6 +38,8 @@ export interface CatchUpSummary {
   readonly appliedMs: number;
   readonly skippedMs: number;
   readonly majorOutcomes: readonly string[];
+  /** The committed sequence at which this catch-up finished; with the session id it identifies the summary across every later frame. */
+  readonly atSequence: number;
 }
 
 function parseCatchUpSummary(
@@ -63,10 +65,16 @@ function parseCatchUpSummary(
     parseString,
   );
   if (!majorOutcomes.ok) return majorOutcomes;
+  const atSequence = parseNonNegativeInteger(
+    value.atSequence,
+    `${path}.atSequence`,
+  );
+  if (!atSequence.ok) return atSequence;
   return ok({
     appliedMs: appliedMs.value,
     skippedMs: skippedMs.value,
     majorOutcomes: majorOutcomes.value,
+    atSequence: atSequence.value,
   });
 }
 

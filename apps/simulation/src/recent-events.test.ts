@@ -244,12 +244,12 @@ test("GET /frame carries the strike's events, and the frame parses under the con
     }
   }));
 
-test("a catch-up summary appears only in the frame built right after it; the next ordinary status update drops it", () =>
+test("a catch-up summary stays on every later frame, stamped with the sequence it finished at, until a new catch-up replaces it", () =>
   withStore(async (store, reducers, seeded) => {
-    const chain = commitTicks(store, reducers, seeded, [[]]);
+    const first = commitTicks(store, reducers, seeded, [[]]);
     const token = "the-launch-token";
     const slotsDir = mkdtempSync(join(tmpdir(), "panthea-sim-summary-slots-"));
-    const statusRef = createServiceStatusRef(chain.state);
+    const statusRef = createServiceStatusRef(first.state);
     const handle = createSimulationServer({
       token,
       store,
@@ -260,25 +260,46 @@ test("a catch-up summary appears only in the frame built right after it; the nex
       externalQueue: createExternalQueue(),
       port: 0,
     });
-    const summary = {
+    const outcome = {
       appliedMs: 3_600_000,
       skippedMs: 60_000,
       majorOutcomes: ["tavern fire spread"],
     };
-    const fetchFrame = async () => {
+    const fetchSummary = async () => {
       const response = await fetch(`http://127.0.0.1:${handle.port}/frame`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const parsed = parseSyncFrame(await response.json());
       if (!parsed.ok) throw new Error(parsed.message);
-      return parsed.value;
+      return parsed.value.catchUpSummary;
     };
     try {
-      updateServiceStatus(statusRef, chain.state, { catchUpSummary: summary });
-      expect((await fetchFrame()).catchUpSummary).toEqual(summary);
+      updateServiceStatus(statusRef, first.state, { catchUpSummary: outcome });
+      const stamped = { ...outcome, atSequence: first.state.lastSequence };
+      expect(await fetchSummary()).toEqual(stamped);
 
-      updateServiceStatus(statusRef, chain.state);
-      expect((await fetchFrame()).catchUpSummary).toBeUndefined();
+      let state = first.state;
+      for (let tickIndex = 0; tickIndex < 3; tickIndex += 1) {
+        state = commitTicks(store, reducers, state, [[]]).state;
+        updateServiceStatus(statusRef, state);
+        expect(await fetchSummary()).toEqual(stamped);
+      }
+      expect(state.lastSequence).toBeGreaterThan(first.state.lastSequence);
+
+      const replacement = {
+        appliedMs: 120_000,
+        skippedMs: 0,
+        majorOutcomes: [],
+      };
+      updateServiceStatus(statusRef, state, { catchUpSummary: replacement });
+      expect(await fetchSummary()).toEqual({
+        ...replacement,
+        atSequence: state.lastSequence,
+      });
+
+      state = commitTicks(store, reducers, state, [[]]).state;
+      updateServiceStatus(statusRef, state);
+      expect((await fetchSummary())?.appliedMs).toBe(120_000);
     } finally {
       handle.stop(true);
       rmSync(slotsDir, { recursive: true, force: true });

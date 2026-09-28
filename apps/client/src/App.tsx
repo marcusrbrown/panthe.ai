@@ -22,6 +22,7 @@ import { rebuildAfterDeviceLoss } from "./renderer/recovery";
 import { SceneHost } from "./renderer/SceneHost";
 import type { RendererFactory } from "./renderer/scene";
 import { createWorldStore, type WorldViewModel } from "./store";
+import { isSummaryDismissed, summaryKey } from "./summary";
 import { ClientSurface } from "./ui/surface";
 
 export interface ClientDependencies {
@@ -139,11 +140,8 @@ export function App({
     [observer, view],
   );
 
-  const summaryKey = view?.catchUpSummary
-    ? `${view.sessionId}:${view.sequence}`
-    : undefined;
-  const dismissedSummary =
-    summaryKey !== undefined && summaryKey === dismissedSummaryKey;
+  const currentSummaryKey = summaryKey(view);
+  const dismissedSummary = isSummaryDismissed(view, dismissedSummaryKey);
   const realm: Realm =
     observation.kind === "following"
       ? observation.realm
@@ -179,7 +177,7 @@ export function App({
       observation={observation}
       onPick={onPick}
       onDismissCatchUp={() => {
-        if (summaryKey) setDismissedSummaryKey(summaryKey);
+        if (currentSummaryKey) setDismissedSummaryKey(currentSummaryKey);
       }}
       dismissedSummary={dismissedSummary}
       receiptErrors={receiptErrors}

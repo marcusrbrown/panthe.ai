@@ -17,7 +17,7 @@ import { ensureTraceSchema } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
 import { refreshStatusAfterCatchUp, resolveAppDataDir } from "./index";
-import { createServiceStatusRef } from "./server";
+import { createServiceStatusRef, updateServiceStatus } from "./server";
 import type { TickDeps } from "./tick";
 import {
   createWorldProjectionReducers,
@@ -97,6 +97,68 @@ describe("refreshStatusAfterCatchUp", () => {
         worldProjectionCodec.encode(result.state),
       );
 
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a catch-up that applied and skipped nothing leaves the earlier summary in place", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-empty-summary-"));
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const statusRef = createServiceStatusRef(seeded);
+      const earlier = {
+        appliedMs: 3_600_000,
+        skippedMs: 60_000,
+        majorOutcomes: ["tavern fire spread"],
+      };
+      updateServiceStatus(statusRef, seeded, { catchUpSummary: earlier });
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: { appliedMs: 0, skippedMs: 0, majorOutcomes: [] },
+          state: seeded,
+          prng: createPrng(1),
+        },
+        store,
+      );
+
+      expect(statusRef.catchUpSummary).toEqual({
+        ...earlier,
+        atSequence: seeded.lastSequence,
+      });
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a catch-up that applied or skipped time replaces the earlier summary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-new-summary-"));
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const statusRef = createServiceStatusRef(seeded);
+      updateServiceStatus(statusRef, seeded, {
+        catchUpSummary: { appliedMs: 1000, skippedMs: 0, majorOutcomes: [] },
+      });
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: { appliedMs: 0, skippedMs: 90_000, majorOutcomes: [] },
+          state: seeded,
+          prng: createPrng(1),
+        },
+        store,
+      );
+
+      expect(statusRef.catchUpSummary?.skippedMs).toBe(90_000);
       closeStore(store);
     } finally {
       rmSync(dir, { recursive: true, force: true });

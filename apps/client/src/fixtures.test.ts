@@ -17,6 +17,7 @@ test("the preview world keeps the actors, buildings, statuses, and summary the p
       "The tavern fire spread",
       "A route through the agora reopened",
     ],
+    atSequence: 17,
   });
 
   expect(view.realms.mortal.map((location) => location.id)).toEqual([

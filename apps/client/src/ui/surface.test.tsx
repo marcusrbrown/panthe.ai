@@ -64,6 +64,8 @@ test("target picker renders actor and locations grouped by realm", () => {
   expect(html.indexOf("Olympus")).toBeLessThan(html.indexOf("Underworld"));
   expect(html).toContain("Wanderer");
   expect(html).toContain("Town Square");
+  expect(html).toContain("Event 1");
+  expect(html).not.toContain("Frame 1");
 });
 
 test("the displayed realm follows the actor into the Underworld", () => {
@@ -81,6 +83,66 @@ test("the displayed realm follows the actor into the Underworld", () => {
 
   expect(html).toContain('data-realm="underworld"');
   expect(html).toContain("Underworld");
+});
+
+test("recent activity changes with the viewed realm and includes non-scene event kinds", () => {
+  const realmEvents = view({
+    recentEvents: [
+      {
+        id: "move",
+        sequence: 1,
+        tick: 1,
+        kind: "entity-moved",
+        subjects: ["wanderer"],
+      },
+      {
+        id: "worship",
+        sequence: 2,
+        tick: 2,
+        kind: "worship-performed",
+        subjects: ["hall"],
+      },
+      {
+        id: "weather",
+        sequence: 3,
+        tick: 3,
+        kind: "weather-changed",
+        subjects: ["gate"],
+      },
+    ] as never,
+  });
+  const mortalHtml = renderToStaticMarkup(
+    <ClientSurface view={realmEvents} observation={{ kind: "idle" }} />,
+  );
+  const olympusHtml = renderToStaticMarkup(
+    <ClientSurface
+      view={realmEvents}
+      observation={{
+        kind: "following",
+        target: { kind: "location", id: "hall" },
+        locationId: "hall",
+        realm: "olympus",
+      }}
+    />,
+  );
+  const underworldHtml = renderToStaticMarkup(
+    <ClientSurface
+      view={realmEvents}
+      observation={{
+        kind: "following",
+        target: { kind: "location", id: "gate" },
+        locationId: "gate",
+        realm: "underworld",
+      }}
+    />,
+  );
+
+  expect(mortalHtml).toContain("Entity Moved");
+  expect(mortalHtml).not.toContain("Worship Performed");
+  expect(olympusHtml).toContain("Worship Performed");
+  expect(olympusHtml).not.toContain("Entity Moved");
+  expect(underworldHtml).toContain("Weather Changed");
+  expect(underworldHtml).not.toContain("Worship Performed");
 });
 
 test("a lost target shows its held location and reason", () => {
@@ -106,6 +168,7 @@ test("catch-up summary is presented as a dismissible panel", () => {
       appliedMs: 7_200_000,
       skippedMs: 10_800_000,
       majorOutcomes: ["tavern fire spread"],
+      atSequence: 9,
     },
   });
   const html = renderToStaticMarkup(

@@ -57,8 +57,11 @@ export interface CatchUpOptions {
   }) => boolean;
 }
 
+/** What a catch-up run applied, skipped, and found notable; the service stamps it with the sequence it finished at when it publishes it. */
+export type CatchUpOutcome = Omit<CatchUpSummary, "atSequence">;
+
 export interface CatchUpResult {
-  readonly summary: CatchUpSummary;
+  readonly summary: CatchUpOutcome;
   readonly state: WorldState;
   readonly prng: PrngState;
   /** Present only when a chunk's own store commit failed; `state`/`prng` reflect the last chunk that *did* commit. */

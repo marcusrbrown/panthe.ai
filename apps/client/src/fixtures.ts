@@ -204,6 +204,7 @@ export interface FrameOptions {
     readonly appliedMs: number;
     readonly skippedMs: number;
     readonly majorOutcomes: readonly string[];
+    readonly atSequence: number;
   };
   readonly recentEvents?: readonly FixtureEvent[];
 }
@@ -273,6 +274,7 @@ export function previewView(): WorldViewModel {
           "The tavern fire spread",
           "A route through the agora reopened",
         ],
+        atSequence: 17,
       },
       recentEvents: [
         {

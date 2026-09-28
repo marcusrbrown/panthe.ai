@@ -49,6 +49,7 @@ import {
   type PrngState,
   type WorldState,
 } from "@panthea/world";
+import type { CatchUpOutcome } from "./catchup";
 import {
   applyOneTick,
   commitWorldTick,
@@ -208,12 +209,16 @@ export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
  * catch-up run (or any other operation that can leave the world paused)
  * must pass the persisted clock's actual `paused` flag, or a mid-run
  * pause would be silently reported as running.
+ *
+ * A catch-up summary, stamped with the sequence `state` finished at, stays
+ * on every later frame until another catch-up's summary replaces it; an
+ * ordinary update never clears it.
  */
 export function updateServiceStatus(
   ref: ServiceStatusRef,
   state: WorldState,
   options: {
-    readonly catchUpSummary?: CatchUpSummary;
+    readonly catchUpSummary?: CatchUpOutcome;
     readonly paused?: boolean;
   } = {},
 ): void {
@@ -222,7 +227,12 @@ export function updateServiceStatus(
   ref.sequence = state.lastSequence;
   ref.tick = state.tick;
   ref.encodedState = worldProjectionCodec.encode(state);
-  ref.catchUpSummary = options.catchUpSummary;
+  if (options.catchUpSummary) {
+    ref.catchUpSummary = {
+      ...options.catchUpSummary,
+      atSequence: state.lastSequence,
+    };
+  }
 }
 
 /** How many ticks back from the frame's tick the recent-event window reaches. */

@@ -165,16 +165,50 @@ test("a frame with a catch-up summary parses", () => {
         appliedMs: 3_600_000,
         skippedMs: 120_000,
         majorOutcomes: ["tavern fire spread"],
+        atSequence: 10,
       },
     }),
   );
   expect(result.ok).toBe(true);
   if (result.ok) {
-    expect(result.value.catchUpSummary).toMatchObject({
+    expect(result.value.catchUpSummary).toEqual({
       appliedMs: 3_600_000,
       skippedMs: 120_000,
       majorOutcomes: ["tavern fire spread"],
+      atSequence: 10,
     });
+  }
+});
+
+test("a catch-up summary without atSequence is rejected", () => {
+  const result = parseSyncFrame(
+    frame({
+      catchUpSummary: {
+        appliedMs: 3_600_000,
+        skippedMs: 120_000,
+        majorOutcomes: [],
+      },
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("catchUpSummary.atSequence");
+  }
+});
+
+test("a catch-up summary atSequence that is not a non-negative integer is rejected", () => {
+  for (const atSequence of [-1, 1.5, "10"]) {
+    const result = parseSyncFrame(
+      frame({
+        catchUpSummary: {
+          appliedMs: 0,
+          skippedMs: 0,
+          majorOutcomes: [],
+          atSequence,
+        },
+      }),
+    );
+    expect(result.ok).toBe(false);
   }
 });
 

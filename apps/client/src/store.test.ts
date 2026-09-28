@@ -121,6 +121,7 @@ test("status, degraded reason, and catch-up summary are exposed in the view mode
       appliedMs: 3_600_000,
       skippedMs: 120_000,
       majorOutcomes: ["tavern fire spread"],
+      atSequence: 9,
     },
   });
 
@@ -132,6 +133,7 @@ test("status, degraded reason, and catch-up summary are exposed in the view mode
     appliedMs: 3_600_000,
     skippedMs: 120_000,
     majorOutcomes: ["tavern fire spread"],
+    atSequence: 9,
   });
 });
 
@@ -169,6 +171,7 @@ test("a fresh frame on reconnect replaces prior state entirely", () => {
       appliedMs: 1000,
       skippedMs: 0,
       majorOutcomes: ["old outcome"],
+      atSequence: 9,
     },
     recentEvents: [
       {

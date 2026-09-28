@@ -1,13 +1,18 @@
 // The sidecar's streaming protocol: one committed-state frame. A reconnect
 // requests a fresh frame; there is no incremental delta protocol.
 
+import { WORLD_EVENT_KINDS, type WorldEvent } from "./event";
 import {
+  type EntityId,
+  type EventId,
   fail,
   isRecord,
   ok,
   type ParseResult,
   parseArray,
+  parseEntityId,
   parseEnum,
+  parseEventId,
   parseNonNegativeInteger,
   parseSchemaVersion,
   parseSessionId,
@@ -33,6 +38,8 @@ export interface CatchUpSummary {
   readonly appliedMs: number;
   readonly skippedMs: number;
   readonly majorOutcomes: readonly string[];
+  /** The committed sequence at which this catch-up finished; with the session id it identifies the summary across every later frame. */
+  readonly atSequence: number;
 }
 
 function parseCatchUpSummary(
@@ -58,10 +65,60 @@ function parseCatchUpSummary(
     parseString,
   );
   if (!majorOutcomes.ok) return majorOutcomes;
+  const atSequence = parseNonNegativeInteger(
+    value.atSequence,
+    `${path}.atSequence`,
+  );
+  if (!atSequence.ok) return atSequence;
   return ok({
     appliedMs: appliedMs.value,
     skippedMs: skippedMs.value,
     majorOutcomes: majorOutcomes.value,
+    atSequence: atSequence.value,
+  });
+}
+
+/**
+ * A committed event the frame's window still carries: enough for a client
+ * to decide which events concern what it renders and to receipt the ones
+ * it drew. `subjects` are the actor, building, location, and deity ids the
+ * event touches.
+ */
+export interface RecentEvent {
+  readonly id: EventId;
+  readonly sequence: number;
+  readonly tick: number;
+  readonly kind: WorldEvent["kind"];
+  readonly subjects: readonly EntityId[];
+}
+
+function parseRecentEvent(
+  value: unknown,
+  path: string,
+): ParseResult<RecentEvent> {
+  if (!isRecord(value)) {
+    return fail(path, "expected a recent event object");
+  }
+  const id = parseEventId(value.id, `${path}.id`);
+  if (!id.ok) return id;
+  const sequence = parseNonNegativeInteger(value.sequence, `${path}.sequence`);
+  if (!sequence.ok) return sequence;
+  const tick = parseNonNegativeInteger(value.tick, `${path}.tick`);
+  if (!tick.ok) return tick;
+  const kind = parseEnum(value.kind, `${path}.kind`, WORLD_EVENT_KINDS);
+  if (!kind.ok) return kind;
+  const subjects = parseArray(
+    value.subjects,
+    `${path}.subjects`,
+    parseEntityId,
+  );
+  if (!subjects.ok) return subjects;
+  return ok({
+    id: id.value,
+    sequence: sequence.value,
+    tick: tick.value,
+    kind: kind.value,
+    subjects: subjects.value,
   });
 }
 
@@ -73,6 +130,8 @@ export interface SyncFrame {
   readonly status: WorldStatus;
   readonly degradedReason?: DegradedReason;
   readonly catchUpSummary?: CatchUpSummary;
+  /** Committed events inside the sidecar's recent window, ascending by sequence. */
+  readonly recentEvents: readonly RecentEvent[];
   /** Opaque projection payload; its shape is owned by packages/world. */
   readonly state: unknown;
 }
@@ -118,6 +177,13 @@ export function parseSyncFrame(input: unknown): ParseResult<SyncFrame> {
     catchUpSummary = summary.value;
   }
 
+  const recentEvents = parseArray(
+    input.recentEvents,
+    "recentEvents",
+    parseRecentEvent,
+  );
+  if (!recentEvents.ok) return recentEvents;
+
   if (input.state === undefined) {
     return fail("state", "expected a state payload");
   }
@@ -130,6 +196,7 @@ export function parseSyncFrame(input: unknown): ParseResult<SyncFrame> {
     status: status.value,
     ...(degradedReason === undefined ? {} : { degradedReason }),
     ...(catchUpSummary === undefined ? {} : { catchUpSummary }),
+    recentEvents: recentEvents.value,
     state: input.state,
   });
 }

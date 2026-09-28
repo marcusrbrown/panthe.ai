@@ -106,7 +106,91 @@ stale file is removed. After running the probe, delete
 
 ## Not covered
 
-- The client view — `apps/client` is still a placeholder, so no in-app
-  content was exercised.
+- The client view — a placeholder when the shell smoke ran; covered by the
+  View gate below.
 - A real OS sleep/wake cycle (`pmset sleepnow` / lid close).
+- Code signing and notarization.
+
+## View gate
+
+Does the packaged `.app` show live state through the read-only client view,
+switch the observer across all three realms, keep drawing, and record
+presentation receipts?
+
+**Build:** `bun run --cwd apps/desktop tauri build` at 20ddd58 (release),
+45 s, `panthea-desktop.app` 73.59 MiB, macOS 15.7.9 arm64, 2026-09-28.
+
+**Method additions** (same launch, store reads, and tray driving as above):
+
+- The picker is driven with `cliclick c:<x>,<y>` at element coordinates
+  (window origin + screenshot pixel × 1.25); AppleScript clicks don't reach
+  the WKWebView. The picker rail scrolls internally, so a scroll-wheel event
+  over it brings Olympus and Underworld into reach.
+- The view's text (header, realm heading, banners, scene errors) is read
+  from the window's accessibility text via System Events, not OCR.
+- Receipts are read read-only from `trace_receipts` (defined in
+  `packages/telemetry/src/trace.ts`), joined to `events` for the kind:
+
+  ```sh
+  sqlite3 -readonly <appDataDir>/active/world.sqlite \
+    "select count(*), datetime(min(presented_at_ms)/1000,'unixepoch','localtime'),
+            datetime(max(presented_at_ms)/1000,'unixepoch','localtime'), max(e.sequence)
+     from trace_receipts r join events e on e.id=r.event_id
+     where r.session_id like 'session-<id>%'"
+  ```
+
+- Device loss is triggered on a debug build (`tauri build --debug`): right-click
+  → Inspect Element opens a docked Web Inspector; in its console,
+  `$1.getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()`
+  on the scene canvas.
+- Screenshots are `screencapture -l <windowid>` only.
+
+### Results
+
+One release session, timed from launch; realm switches from t≥60 s, then
+Mortal for the rest of the session (~6.5 min total, quit from the tray).
+
+| # | Check | Result | Key evidence |
+| --- | --- | --- | --- |
+| 1 | No scene freeze | **PASS** | "Scene unavailable" count 0 in the accessibility text at t=32 s, 92 s, and 177 s; scene still drawing at t=200 s |
+| 2 | Late realm switches redraw | **PASS** | Zeus → Hall of Judgment → Farmer → Zeus from t≈62 s: Olympus shows Zeus and its own map, the Underworld its own map, Mortal the full map; no mortal sprite outside Mortal |
+| 3 | Receipts across the session | **PASS** | 143 receipts over 6 min 27 s (16:16:45–16:23:12), all `resource-traded`, up to the last traded event (sequence 26871). 152 traded events in the session; every one viewed in Mortal is receipted. The 9 without: 2 during startup catch-up, before the first frame, and 7 while viewing Olympus/Underworld |
+| 4 | Device-loss recovery (debug build) | **PASS** | Console logged `WebGL Device Lost`, then a new renderer was built; the scene drew again, Olympus/Mortal switches redrew, receipts kept arriving (63 in that session) |
+| 5a | Catch-up panel | **PASS** | Launch after a ~6 min gap: "Caught up: 7m applied, 0s skipped", visible at t≈5 s and t≈16 s, closed by ×, absent from every later frame (~180 s). Reappeared on each relaunch after a real gap |
+| 5b | No page scroll | **PASS** | Wheel events over the scene leave header and footer fixed; no page scrollbar |
+| 5c | Pause / resume | **PASS** | Tick pinned at 6657 with `paused=1`, "World paused" banner, tray Paused ✓; after Resume ticks advance and the banner clears |
+| 5d | Header | **PASS** | "Tick N ▏Event M"; tick advances about once per second, event count about four per second |
+
+Late switches deliver receipts in a batch: events still inside the frame's
+recent-event window are drawn and receipted when the observer returns to
+Mortal (16:17:51 and 16:18:22 in this run); older ones are not.
+
+### CSP
+
+The debug build's Web Inspector showed no errors and no CSP violations
+(`script-src 'self' 'unsafe-eval'`). The only warning was the expected
+`THREE.WebGPURenderer: WebGPU is not available, running under WebGL2
+backend.` This was read on the 927ebd7 build. At 20ddd58 the debug console was
+glanced at once, ~15 s after launch, and showed the same single warning
+before the deliberate device loss; it was not read over a full session. The
+release webview has no inspector (its context menu offers only Reload), so
+its console was not read; a rendering, updating view is the release-side
+evidence.
+
+### Screenshots
+
+![Mortal, following the Farmer](./view-mortal.png)
+
+![Olympus, following Zeus](./view-olympus.png)
+
+![Underworld, following the Hall of Judgment](./view-underworld.png)
+
+Each is window-cropped: only the Panthea window.
+
+### Not covered (view gate)
+
+- A real OS sleep/wake cycle.
+- Strike, fire, destroy, and worship receipts: none occurred in this world.
+  The headless causal scenario covers them.
+- The release-build console.
 - Code signing and notarization.

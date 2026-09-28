@@ -84,9 +84,9 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 {
   "schema_version": 2,
   "verdict": "extend",
-  "scope": "repo root (apps/, packages/, tools/, content/)",
+  "scope": "Unit 8 subtree (apps/client/, apps/probe-renderer/, apps/desktop/src-tauri/, packages/contracts/)",
   "freshness": {
-    "vcs_reference": "f65654852112fae1323245eb5b7119ca5c67b13e"
+    "vcs_reference": "cecd24c9b7a4bbfa634d4faa3c89326e361a793b"
   },
   "budget": {
     "max_search_passes": 3,
@@ -95,65 +95,61 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   },
   "candidates": [
     {
-      "path_or_symbol": "apps/simulation/{src/{index,server,tick,catchup,lifecycle,worlds,world-store,greek-world-pack}.ts,scripts/*.sh}",
-      "description": "Simulation service entrypoint, authenticated HTTP/frame server, tick and catch-up orchestration, lifecycle lock/parent-guard handling, world loading and projection, embedded Greek world pack, and build/scan shell harnesses.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/{src/lib.rs,tauri.conf.json,capabilities/default.json}",
-      "description": "Rust tray shell with token minting, sidecar spawn and restart/backoff, plus packaged sidecar and CSP/capability wiring.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/client/src/App.tsx",
-      "description": "Full-window canvas placeholder and title shell; still no renderer, scene lifecycle, or state subscription.",
+      "path_or_symbol": "apps/client/src/{App.tsx,main.tsx}",
+      "description": "Still just the full-window mount shell: `App` renders a placeholder canvas/title, and `main.tsx` only boots React. No observer model, no `subscribe_world` invoke, and no frame parsing yet.",
       "disposition": "insufficient",
-      "insufficiency_reason": "This remains a placeholder mount point, not the actual client renderer surface the plan needs."
+      "insufficiency_reason": "This is only the placeholder entrypoint for the new client surface; it does not yet own the read-only world view, observer switching, or Channel subscription logic."
     },
     {
-      "path_or_symbol": "packages/persistence/src/{store,archive,snapshot}.ts",
-      "description": "WAL-backed store, archive import/export, and snapshot/replay plumbing with schema creation, event append, and projection rebuild.",
+      "path_or_symbol": "apps/client/package.json",
+      "description": "Already provides the client runtime/build surface (`react`, `react-dom`, `@tauri-apps/api`, Vite) that a read-only Tauri view can extend.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "packages/persistence/src/clock.ts",
-      "description": "Persisted clock policy with elapsed-time application, catch-up cap, pause, and resume semantics.",
+      "path_or_symbol": "apps/probe-renderer/src/Scene.tsx::Scene",
+      "description": "Owns the `WebGPURenderer`/`forceWebGL` bootstrap, deterministic layout, and the concrete device-loss recovery sequence (`ContextLossTracker` attach → dispose sprites → recreate scene contents) that the product client can follow.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "apps/probe-renderer/src/metrics.ts::ContextLossTracker",
+      "description": "Owns the `webglcontextlost`/`webglcontextrestored` event wiring and reset/rebuild seam that the client can reuse for device-loss recovery bookkeeping.",
       "disposition": "reuse"
     },
     {
-      "path_or_symbol": "packages/world/src/{state,actions,validate,codec,geography}.ts",
-      "description": "Core world engine for state assembly, proposal validation, tick application, encode/decode, and adjacency/realm checks.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/world/src/{economy,routines}.ts",
-      "description": "Economy transfer and trade-acceptance helpers plus routine proposal selection for actor drives.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/world/src/{fire,repair,worship}.ts",
-      "description": "Fire spread and building damage/burn/destroy transitions, repair progression/completion, and worship/favor effects.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
-      "description": "Parse-don't-validate schema layer for proposals, events, snapshots, and authored content packs.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/content/src/load.ts",
-      "description": "Content-pack loader that reads authored JSON and hands the merged pack to the parser.",
+      "path_or_symbol": "packages/contracts/src/snapshot.ts::parseSyncFrame",
+      "description": "Owns the `SyncFrame` contract and parser for the exact Channel payload shape the client must decode: `schemaVersion`, `sequence`, `worldId`, `sessionId`, `status`, optional `degradedReason`, optional `catchUpSummary`, and `state`.",
       "disposition": "reuse"
     },
     {
-      "path_or_symbol": "content/greek/world/*.json",
-      "description": "Authored Greek world pack data consumed by the loader.",
+      "path_or_symbol": "apps/desktop/src-tauri/src/commands.rs::{subscribe_world,present_event}",
+      "description": "Owns the renderer-facing Tauri commands: `subscribe_world` installs the `Channel<Value>` stream, and `present_event` relays the observed event receipt for the current sidecar session.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/desktop/src-tauri/src/proxy.rs::{extract_frame_key,apply_frame,apply_subscribe,present_event}",
+      "description": "Owns the forwarded frame shape and replay semantics: `sequence`, `status`, `sessionId`, optional `degradedReason`, and verbatim replay to the Channel when a subscriber attaches.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
-      "description": "Local causal trace tables plus lookup/follow helpers for observations, proposal outcomes, receipts, and event chains.",
+      "path_or_symbol": "apps/desktop/src-tauri/capabilities/proxy.json",
+      "description": "Locks the main-window IPC surface down to `allow-subscribe-world` and `allow-present-event`, which matches the read-only client boundary.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/desktop/src-tauri/tauri.conf.json",
+      "description": "Current packaged CSP still has `script-src` set to `'self'` only; it does not yet include the owner-approved `unsafe-eval` required by the Flatland-based client path.",
+      "disposition": "insufficient",
+      "insufficiency_reason": "The packaged webview policy still blocks the approved client renderer path, so this surface cannot yet host the intended read-only view without a CSP update."
+    },
+    {
+      "path_or_symbol": "apps/desktop/src-tauri/src/lib.rs",
+      "description": "Rust tray shell, token minting, sidecar spawn/restart, and the desktop integration boundary the read-only client will sit behind.",
       "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/contracts/src/index.ts",
+      "description": "Single re-export surface for the contracts vocabulary the client will import from once it starts parsing the committed-state frame.",
+      "disposition": "reuse"
     }
   ]
 }
@@ -182,6 +178,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   Superseded 2026-09-27 (owner): the shell polls `GET /frame` once a second with the token through `reqwest` and forwards a frame over the Channel only when its sequence, status, or session id changes; it holds no WebSocket client. Pause, resume, and receipts are token-bearing POSTs. The sidecar's `/stream` remains for other local subscribers.
 - **Sync: one committed-state frame** (sequence, world ID, session ID, status including degraded, optional catch-up summary, state). A reconnect requests a fresh frame; there is no incremental delta protocol until measuring full-frame transport cost shows one is needed. One session identity, with no separate generation counter or session-change marker.
   Superseded 2026-09-27: replaces the snapshot-plus-sequenced-deltas model (resync markers on a subscriber falling behind, a session generation counter, and a session-change marker on sidecar restart). Greenfield M1 has one subscriber and no measured evidence that sending full state is too costly -- revisit (add deltas) once frame transport cost is measured against the 1 Hz budget and found wanting.
+  Superseded 2026-09-28 (owner): the frame also carries a bounded window of recent committed events (the last 10 ticks, at most 200 events, ascending by sequence; each with its id, sequence, tick, kind, and the actor, building, and location ids it touches) so the client can receipt the events it renders. `recentEvents` is required in the frame with no compatibility shim.
 - **Proposal intake:** every proposal carries source and schema version; unknown sources and per-tick counts above a configured cap are rejected.
   Superseded 2026-09-27: replaces the reserved model-request ID and the per-proposal byte limit ("bounded now, before M2 makes it a model path"). Greenfield M1 has no model producer yet -- the model-request ID arrives in M2 with the real producer; a request-body byte limit, if HTTP ingress ever needs one, belongs at Unit 6's ingress, not the contracts parser.
 - **Desktop CSP adds `script-src 'unsafe-eval'`** (owner-approved 2026-09-27) for three-flatland/koota, per ADR-0002. Blast radius is bounded: the webview holds no credentials, has no network reach beyond Tauri IPC, holds one dedicated capability for the Channel command, and treats every Channel payload as untrusted data parsed through contracts — no `eval`, `new Function`, or `innerHTML` on received content.
@@ -511,7 +508,7 @@ flowchart TB
 
 ### Phase D — View and evidence
 
-- [ ] **Unit 8: Read-only client view with observer switching**
+- [x] **Unit 8: Read-only client view with observer switching**
 
 **Goal:** A Flatland-based view (WebGL2 baseline, WebGPU where available) that renders placeholder town, wilderness, Olympus, and Underworld layouts from live state, shows actors, buildings, fire/damage, and resource changes as they commit, and switches the observer across actors and locations in all three realms without affecting the world.
 

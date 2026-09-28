@@ -18,9 +18,11 @@ import {
   type CatchUpSummary,
   createSessionId,
   type DegradedReason,
+  eventSubjects,
   parseEventId,
   parseObservationRecord,
   parseSessionId,
+  type RecentEvent,
   type SessionId,
   type SyncFrame,
   type WorldId,
@@ -28,6 +30,7 @@ import {
 } from "@panthea/contracts";
 import {
   exportArchive,
+  listEvents,
   type ProjectionReducers,
   readClock,
   readPrngState,
@@ -41,7 +44,12 @@ import {
   recordReceipt,
   UnknownEventError,
 } from "@panthea/telemetry";
-import type { PrngState, WorldState } from "@panthea/world";
+import {
+  DEFAULT_TICK_ELAPSED_MS,
+  type PrngState,
+  type WorldState,
+} from "@panthea/world";
+import type { CatchUpOutcome } from "./catchup";
 import {
   applyOneTick,
   commitWorldTick,
@@ -180,6 +188,8 @@ export interface ServiceStatusRef {
   status: WorldStatus;
   degradedReason?: DegradedReason;
   sequence: number;
+  /** The tick of the state `sequence` and `encodedState` describe; the recent-event window is measured back from it. */
+  tick: number;
   encodedState: unknown;
   catchUpSummary?: CatchUpSummary;
 }
@@ -188,6 +198,7 @@ export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
   return {
     status: "running",
     sequence: state.lastSequence,
+    tick: state.tick,
     encodedState: worldProjectionCodec.encode(state),
   };
 }
@@ -198,28 +209,83 @@ export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
  * catch-up run (or any other operation that can leave the world paused)
  * must pass the persisted clock's actual `paused` flag, or a mid-run
  * pause would be silently reported as running.
+ *
+ * A catch-up summary, stamped with the sequence `state` finished at, stays
+ * on every later frame until another catch-up's summary replaces it; an
+ * ordinary update never clears it.
  */
 export function updateServiceStatus(
   ref: ServiceStatusRef,
   state: WorldState,
   options: {
-    readonly catchUpSummary?: CatchUpSummary;
+    readonly catchUpSummary?: CatchUpOutcome;
     readonly paused?: boolean;
   } = {},
 ): void {
   ref.status = options.paused ? "paused" : "running";
   ref.degradedReason = undefined;
   ref.sequence = state.lastSequence;
+  ref.tick = state.tick;
   ref.encodedState = worldProjectionCodec.encode(state);
   if (options.catchUpSummary) {
-    ref.catchUpSummary = options.catchUpSummary;
+    ref.catchUpSummary = {
+      ...options.catchUpSummary,
+      atSequence: state.lastSequence,
+    };
   }
+}
+
+/** How many ticks back from the frame's tick the recent-event window reaches. */
+export const RECENT_EVENT_WINDOW_TICKS = 10;
+
+/** The most events a frame's recent-event window ever carries; the newest win when a busy window exceeds it. */
+export const RECENT_EVENT_CAP = 200;
+
+/**
+ * The committed events a frame carries so a client can receipt what it
+ * renders: the events of the last `windowTicks` ticks up to and including
+ * `currentTick`, at most `cap` of them (the newest), ascending by sequence.
+ * Events after `throughSequence` are excluded, so the window always
+ * matches the state the same frame reports. An event's tick is its
+ * simulated time divided by the tick length, since every tick advances
+ * simulated time by exactly that length.
+ */
+export function readRecentEvents(
+  db: Database,
+  throughSequence: number,
+  currentTick: number,
+  limits: { readonly windowTicks: number; readonly cap: number } = {
+    windowTicks: RECENT_EVENT_WINDOW_TICKS,
+    cap: RECENT_EVENT_CAP,
+  },
+): readonly RecentEvent[] {
+  const oldestTick = currentTick - limits.windowTicks;
+  // Sequences are contiguous across the whole log, so this range holds
+  // exactly the newest `cap` events at or before `throughSequence`.
+  const candidates = listEvents(db, {
+    fromSequence: Math.max(0, throughSequence - limits.cap),
+    toSequence: throughSequence,
+  });
+  const recent: RecentEvent[] = [];
+  for (const event of candidates) {
+    const tick = Math.round(event.simTime / DEFAULT_TICK_ELAPSED_MS);
+    if (tick <= oldestTick) continue;
+    recent.push({
+      id: event.id,
+      sequence: event.sequence,
+      tick,
+      kind: event.kind,
+      subjects: eventSubjects(event),
+    });
+  }
+  return recent;
 }
 
 function buildFrame(
   worldId: WorldId,
   sessionId: SessionId,
   ref: ServiceStatusRef,
+  db: Database,
 ): SyncFrame {
   return {
     schemaVersion: 1,
@@ -229,6 +295,7 @@ function buildFrame(
     status: ref.status,
     ...(ref.degradedReason ? { degradedReason: ref.degradedReason } : {}),
     ...(ref.catchUpSummary ? { catchUpSummary: ref.catchUpSummary } : {}),
+    recentEvents: readRecentEvents(db, ref.sequence, ref.tick),
     state: ref.encodedState,
   };
 }
@@ -353,7 +420,12 @@ export function createSimulationServer(
     websocket: {
       open(ws) {
         ws.subscribe(FRAME_TOPIC);
-        const frame = buildFrame(store.worldId, ws.data.sessionId, statusRef);
+        const frame = buildFrame(
+          store.worldId,
+          ws.data.sessionId,
+          statusRef,
+          store.db,
+        );
         ws.send(JSON.stringify(frame));
       },
       message() {
@@ -369,7 +441,7 @@ export function createSimulationServer(
   host = `127.0.0.1:${server.port}`;
 
   function publishFrame(): void {
-    const frame = buildFrame(store.worldId, sessionId, statusRef);
+    const frame = buildFrame(store.worldId, sessionId, statusRef, store.db);
     const sent = server.publish(FRAME_TOPIC, JSON.stringify(frame));
     if (sent < 0) {
       console.warn("panthea-simulation: frame broadcast backpressured");
@@ -382,7 +454,9 @@ export function createSimulationServer(
     }
 
     if (url.pathname === "/frame" && request.method === "GET") {
-      return jsonResponse(buildFrame(store.worldId, sessionId, statusRef));
+      return jsonResponse(
+        buildFrame(store.worldId, sessionId, statusRef, store.db),
+      );
     }
 
     if (url.pathname === "/pause" && request.method === "POST") {

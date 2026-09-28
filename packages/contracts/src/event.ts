@@ -166,6 +166,64 @@ export type WorldEvent =
   | IncomeEarnedEvent
   | LegendRecordedEvent;
 
+const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
+  "entity-moved": true,
+  "realm-transitioned": true,
+  "resource-gathered": true,
+  "resource-produced": true,
+  "resource-traded": true,
+  "resource-consumed": true,
+  "building-damaged": true,
+  "building-ignited": true,
+  "building-burn-ticked": true,
+  "building-destroyed": true,
+  "repair-progressed": true,
+  "building-repaired": true,
+  "worship-performed": true,
+  "income-earned": true,
+  "legend-recorded": true,
+};
+
+/** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
+export const WORLD_EVENT_KINDS = Object.keys(
+  EVENT_KIND_SET,
+) as readonly WorldEvent["kind"][];
+
+/**
+ * The actor, building, location, and deity ids an event touches, in the
+ * order its payload names them and without repeats. A client uses these
+ * to decide which committed events concern what it is showing.
+ */
+export function eventSubjects(event: WorldEvent): readonly EntityId[] {
+  const ids: readonly EntityId[] = (() => {
+    switch (event.kind) {
+      case "entity-moved":
+        return [event.entityId, event.to];
+      case "realm-transitioned":
+        return [event.entityId, event.to, event.via];
+      case "resource-traded":
+        return [event.entityId, event.counterpartyId];
+      case "repair-progressed":
+        return [event.entityId, event.structureId];
+      case "worship-performed":
+        return [event.entityId, event.deity];
+      case "income-earned":
+        return [event.entityId, event.buildingId];
+      case "resource-gathered":
+      case "resource-produced":
+      case "resource-consumed":
+      case "building-damaged":
+      case "building-ignited":
+      case "building-burn-ticked":
+      case "building-destroyed":
+      case "building-repaired":
+      case "legend-recorded":
+        return [event.entityId];
+    }
+  })();
+  return [...new Set(ids)];
+}
+
 export const LATEST_EVENT_SCHEMA_VERSION = 1;
 const EVENT_SCHEMA_VERSIONS = [LATEST_EVENT_SCHEMA_VERSION] as const;
 

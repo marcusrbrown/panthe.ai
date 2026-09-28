@@ -78,6 +78,9 @@ function ensureDirMode(path: string, mode: number): void {
  * progress rather than staying pinned to whatever state existed before
  * catch-up started.
  *
+ * A catch-up that applied and skipped nothing (a resume with no missed
+ * time, say) does not replace the summary of an earlier one.
+ *
  * Status comes from the persisted clock, not an assumption: a
  * successful run can still have stopped for a mid-catch-up pause, and
  * `/frame` must show `paused`, not `running`, for that outcome.
@@ -94,8 +97,13 @@ export function refreshStatusAfterCatchUp(
     return;
   }
   const paused = readClock(store.db).paused;
+  const { summary } = result;
+  const somethingHappened =
+    summary.appliedMs > 0 ||
+    summary.skippedMs > 0 ||
+    summary.majorOutcomes.length > 0;
   updateServiceStatus(statusRef, result.state, {
-    catchUpSummary: result.summary,
+    ...(somethingHappened ? { catchUpSummary: summary } : {}),
     paused,
   });
 }

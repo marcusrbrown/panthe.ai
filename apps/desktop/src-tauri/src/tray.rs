@@ -194,26 +194,34 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     builder.build(app)
 }
 
-/// Rebuilds and replaces the tray menu from the current state -- called
-/// whenever the sidecar's reported status, the session, or window
-/// visibility changes.
+/// Rebuilds the tray menu on the main thread from the state current when
+/// the rebuild runs, holding no lock during menu or tray calls.
 pub fn refresh(app: &AppHandle) {
+    let app_for_refresh = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || refresh_on_main_thread(&app_for_refresh)) {
+        eprintln!("panthea-desktop: failed to schedule a tray refresh: {error}");
+    }
+}
+
+/// Reads the current lifecycle and window state and rebuilds the tray
+/// menu from it. Must only ever run on the main thread, via `refresh`.
+fn refresh_on_main_thread(app: &AppHandle) {
     let state = app.state::<SidecarState>();
-    let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
-    let exhausted = *state
-        .exhausted
-        .lock()
-        .expect("sidecar state mutex poisoned");
+    let (stopped, exhausted, world) = {
+        let lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        (
+            lifecycle.stopped,
+            lifecycle.exhausted,
+            lifecycle.world.clone(),
+        )
+    };
     let window_visible = !*state
         .window_hidden
         .lock()
         .expect("sidecar state mutex poisoned");
-    let world = state
-        .frame
-        .lock()
-        .expect("sidecar state mutex poisoned")
-        .world
-        .clone();
 
     let display = map_tray_display(
         stopped,
@@ -223,8 +231,12 @@ pub fn refresh(app: &AppHandle) {
         world.degraded_reason.as_deref(),
     );
 
-    let tray_guard = state.tray.lock().expect("sidecar state mutex poisoned");
-    let Some(tray) = tray_guard.as_ref() else {
+    let tray = state
+        .tray
+        .lock()
+        .expect("sidecar state mutex poisoned")
+        .clone();
+    let Some(tray) = tray else {
         return;
     };
     match build_menu(app, &display) {
@@ -239,9 +251,10 @@ pub fn refresh(app: &AppHandle) {
 
 fn current_session(app: &AppHandle) -> Option<SidecarSession> {
     app.state::<SidecarState>()
-        .session
+        .lifecycle
         .lock()
         .expect("sidecar state mutex poisoned")
+        .session
         .clone()
 }
 
@@ -298,30 +311,24 @@ fn trigger_resume(app: &AppHandle) {
 
 fn trigger_stop_or_restart(app: &AppHandle) {
     let state = app.state::<SidecarState>();
-    let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
-    let exhausted = *state
-        .exhausted
-        .lock()
-        .expect("sidecar state mutex poisoned");
+    let (stopped, exhausted) = {
+        let lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        (lifecycle.stopped, lifecycle.exhausted)
+    };
 
     match stop_or_restart(stopped, exhausted) {
+        // `restart_sidecar` clears stopped/exhausted/restarts under the
+        // lock (state::restart) before spawning, so a retry left
+        // pending from before a Stop stays cancelled and backoff starts
+        // fresh rather than picking up where the supervisor gave up.
         Action::Restart => {
-            // Only this action clears `stopped`/`exhausted` -- spawn_sidecar
-            // itself never does, so a retry left pending from before a
-            // Stop stays cancelled. The restart counter resets too, so
-            // backoff starts fresh rather than picking up where the
-            // supervisor gave up.
-            *state.stopped.lock().expect("sidecar state mutex poisoned") = false;
-            *state
-                .exhausted
-                .lock()
-                .expect("sidecar state mutex poisoned") = false;
-            *state.restarts.lock().expect("sidecar state mutex poisoned") = 0;
-            crate::sidecar::spawn_sidecar(app.clone());
+            crate::sidecar::restart_sidecar(app.clone());
         }
         Action::Stop => {
-            *state.stopped.lock().expect("sidecar state mutex poisoned") = true;
-            crate::sidecar::kill_sidecar(app);
+            crate::sidecar::stop_sidecar(app);
             show_window(app);
         }
     }
@@ -443,5 +450,32 @@ mod tests {
     fn the_unavailable_display_action_is_restart() {
         let display = map_tray_display(false, true, true, None, None);
         assert_eq!(display.action, Action::Restart);
+    }
+
+    #[test]
+    fn a_stop_makes_the_display_stopped_regardless_of_a_running_status_from_before_it() {
+        use crate::state::{begin_spawn, on_port, stop, Lifecycle};
+
+        let mut lifecycle = Lifecycle::default();
+        let id = begin_spawn(&mut lifecycle).expect("spawn allowed");
+        on_port(&mut lifecycle, id, 4100, "tok".to_string());
+        lifecycle.world.status = Some("running".to_string()); // a frame arrived
+
+        // Captured as if a stale read could still see the pre-stop
+        // status -- `refresh_on_main_thread` never actually does this
+        // (it reads current state), but the display computation itself
+        // must stay correct even if fed this value directly.
+        let status_from_before_stop = lifecycle.world.status.clone();
+
+        stop(&mut lifecycle);
+
+        let display = map_tray_display(
+            lifecycle.stopped,
+            lifecycle.exhausted,
+            true,
+            status_from_before_stop.as_deref(),
+            None,
+        );
+        assert_eq!(display.state, TrayState::Stopped);
     }
 }

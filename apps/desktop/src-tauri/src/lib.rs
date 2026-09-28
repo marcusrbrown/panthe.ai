@@ -81,7 +81,7 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
-            sidecar::kill_sidecar(app_handle);
+            sidecar::stop_sidecar(app_handle);
         }
         _ => {}
     });

@@ -12,7 +12,7 @@ use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
-use crate::state::{should_forward, FrameKey, FrameState, SidecarState};
+use crate::state::{should_forward, FrameKey, Lifecycle, SidecarState};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -117,11 +117,11 @@ pub async fn fetch_frame(port: u16, token: &str) -> Result<Value, String> {
 }
 
 /// Spawns the poll task for one sidecar launch, tagged with
-/// `launch_id` (the id `spawn_sidecar` minted for this launch) so every
-/// frame it hands to `handle_frame` can be checked against whatever
-/// launch is current by the time it arrives. Runs until aborted (on
-/// restart or explicit stop) -- an HTTP failure or non-success status
-/// logs and waits for the next tick rather than stopping the loop.
+/// `launch_id` (the id the launch was minted with) so every frame it
+/// hands to `handle_frame` can be checked against whatever launch is
+/// current by the time it arrives. Runs until aborted (on restart,
+/// termination, or explicit stop) -- an HTTP failure or non-success
+/// status logs and waits for the next tick rather than stopping the loop.
 pub fn start_polling(
     app: AppHandle,
     port: u16,
@@ -142,22 +142,18 @@ pub fn start_polling(
     })
 }
 
-/// Applies one polled frame to `frame_state`: the generation check, the
+/// Applies one polled frame to `lifecycle`: the launch-id check, the
 /// forward/refresh decision, the world-status and cached-body update,
 /// the channel send, and the last-forwarded mark, all under the
-/// caller's single lock on `frame_state` -- so nothing else can observe
+/// caller's single lock on `lifecycle` -- so nothing else can observe
 /// or land a change in the middle of handling one frame. Returns
 /// whether the tray should be refreshed; the caller does that after
 /// releasing the lock, since `tray::refresh` takes its own locks.
 ///
 /// A stale-launch frame (`frame_launch_id` no longer matches
-/// `frame_state.launch_id`) leaves every field of `frame_state`
-/// untouched and returns `false`.
-pub(crate) fn apply_frame(
-    frame_state: &mut FrameState,
-    frame: Value,
-    frame_launch_id: u64,
-) -> bool {
+/// `lifecycle.launch_id`) leaves every field of `lifecycle` untouched
+/// and returns `false`.
+pub(crate) fn apply_frame(lifecycle: &mut Lifecycle, frame_launch_id: u64, frame: Value) -> bool {
     let Some(key) = extract_frame_key(&frame) else {
         eprintln!("panthea-desktop: /frame response missing sequence/status/sessionId");
         return false;
@@ -168,27 +164,27 @@ pub(crate) fn apply_frame(
         .map(str::to_string);
 
     let decision = decide_frame_handling(
-        frame_state.launch_id,
+        lifecycle.launch_id,
         frame_launch_id,
-        frame_state.last_frame.as_ref(),
+        lifecycle.last_frame.as_ref(),
         &key,
-        frame_state.world.status.as_deref(),
-        frame_state.world.degraded_reason.as_deref(),
+        lifecycle.world.status.as_deref(),
+        lifecycle.world.degraded_reason.as_deref(),
         new_degraded_reason.as_deref(),
     );
     let Some(decision) = decision else {
         return false;
     };
 
-    frame_state.world.status = Some(key.status.clone());
-    frame_state.world.degraded_reason = new_degraded_reason;
-    frame_state.last_frame_body = Some(frame.clone());
+    lifecycle.world.status = Some(key.status.clone());
+    lifecycle.world.degraded_reason = new_degraded_reason;
+    lifecycle.last_frame_body = Some(frame.clone());
 
     if decision.forward {
-        if let Some(channel) = frame_state.channel.as_ref() {
+        if let Some(channel) = lifecycle.channel.as_ref() {
             match channel.send(forwarded_payload(frame)) {
                 Ok(()) => {
-                    frame_state.last_frame = Some(key);
+                    lifecycle.last_frame = Some(key);
                 }
                 Err(error) => {
                     eprintln!("panthea-desktop: failed to forward frame to the webview: {error}");
@@ -202,13 +198,13 @@ pub(crate) fn apply_frame(
 
 /// Installs `frames` as the subscribed channel and, if a frame has ever
 /// been cached, replays it immediately -- all under the caller's single
-/// lock on `frame_state`, so a poll landing between the replay and the
+/// lock on `lifecycle`, so a poll landing between the replay and the
 /// channel install can never be missed or delivered twice.
-pub(crate) fn apply_subscribe(frame_state: &mut FrameState, frames: Channel<Value>) {
-    if let Some((body, key)) = replay_target(frame_state.last_frame_body.as_ref()) {
+pub(crate) fn apply_subscribe(lifecycle: &mut Lifecycle, frames: Channel<Value>) {
+    if let Some((body, key)) = replay_target(lifecycle.last_frame_body.as_ref()) {
         match frames.send(body) {
             Ok(()) => {
-                frame_state.last_frame = Some(key);
+                lifecycle.last_frame = Some(key);
             }
             Err(error) => {
                 eprintln!(
@@ -217,14 +213,17 @@ pub(crate) fn apply_subscribe(frame_state: &mut FrameState, frames: Channel<Valu
             }
         }
     }
-    frame_state.channel = Some(frames);
+    lifecycle.channel = Some(frames);
 }
 
 fn handle_frame(app: &AppHandle, frame: Value, frame_launch_id: u64) {
     let state = app.state::<SidecarState>();
     let refresh_tray = {
-        let mut frame_state = state.frame.lock().expect("sidecar state mutex poisoned");
-        apply_frame(&mut frame_state, frame, frame_launch_id)
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        apply_frame(&mut lifecycle, frame_launch_id, frame)
     };
 
     if refresh_tray {
@@ -284,7 +283,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::state::{begin_launch, end_launch};
+    use crate::state::begin_spawn;
 
     fn sample_frame() -> Value {
         serde_json::json!({
@@ -440,32 +439,31 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_launch_id_leaves_frame_state_untouched_and_a_subscribe_then_handle_sequence_delivers_in_order_with_no_stale_replay(
+    fn a_stale_launch_id_leaves_lifecycle_untouched_and_a_subscribe_then_handle_sequence_delivers_in_order_with_no_stale_replay(
     ) {
-        let mut state = FrameState {
+        let mut lifecycle = Lifecycle {
             launch_id: 2,
             ..Default::default()
         };
 
         // A frame tagged with a superseded launch id is dropped
-        // entirely -- every field of FrameState stays exactly as it was.
+        // entirely -- every field of Lifecycle stays exactly as it was.
         let stale = serde_json::json!({ "sequence": 99, "status": "running", "sessionId": "old" });
-        let refreshed = apply_frame(&mut state, stale, 1);
+        let refreshed = apply_frame(&mut lifecycle, 1, stale);
         assert!(!refreshed);
-        assert_eq!(state.launch_id, 2);
-        assert_eq!(state.last_frame, None);
-        assert_eq!(state.last_frame_body, None);
-        assert_eq!(state.world, Default::default());
+        assert_eq!(lifecycle.launch_id, 2);
+        assert_eq!(lifecycle.last_frame, None);
+        assert_eq!(lifecycle.last_frame_body, None);
+        assert_eq!(lifecycle.world, Default::default());
 
-        // A frame for the current generation lands before any
-        // subscriber exists: cached, but nothing to deliver yet.
+        // A frame for the current launch lands before any subscriber
+        // exists: cached, but nothing to deliver yet.
         let frame1 = serde_json::json!({ "sequence": 1, "status": "running", "sessionId": "s2" });
-        apply_frame(&mut state, frame1.clone(), 2);
-        assert_eq!(state.last_frame_body, Some(frame1.clone()));
+        apply_frame(&mut lifecycle, 2, frame1.clone());
+        assert_eq!(lifecycle.last_frame_body, Some(frame1.clone()));
 
         // A subscriber now arrives: it receives exactly that cached
-        // frame immediately, not anything from before the generation
-        // bump.
+        // frame immediately, not anything from before the launch bump.
         let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
         let sink = delivered.clone();
         let channel = Channel::new(move |body| {
@@ -476,13 +474,13 @@ mod tests {
             }
             Ok(())
         });
-        apply_subscribe(&mut state, channel);
+        apply_subscribe(&mut lifecycle, channel);
 
         // The next two polled frames are forwarded in sequence order.
         let frame2 = serde_json::json!({ "sequence": 2, "status": "running", "sessionId": "s2" });
         let frame3 = serde_json::json!({ "sequence": 3, "status": "paused", "sessionId": "s2" });
-        apply_frame(&mut state, frame2.clone(), 2);
-        apply_frame(&mut state, frame3.clone(), 2);
+        apply_frame(&mut lifecycle, 2, frame2.clone());
+        apply_frame(&mut lifecycle, 2, frame3.clone());
 
         let received = delivered.lock().expect("delivered mutex poisoned");
         assert_eq!(*received, vec![frame1, frame2, frame3]);
@@ -490,26 +488,26 @@ mod tests {
 
     #[test]
     fn a_frame_that_finishes_after_its_launch_ends_does_not_repopulate_state() {
-        let mut state = FrameState::default();
-        let launch_id = begin_launch(&mut state);
+        let mut lifecycle = Lifecycle::default();
+        let launch_id = begin_spawn(&mut lifecycle).expect("spawn allowed");
 
         // The launch ends (termination or an explicit stop) while the
         // poll that produced this frame was still in flight.
-        end_launch(&mut state);
+        lifecycle.launch_id += 1;
 
-        let before_id = state.launch_id;
-        let before_last_frame = state.last_frame.clone();
-        let before_body = state.last_frame_body.clone();
-        let before_world = state.world.clone();
+        let before_id = lifecycle.launch_id;
+        let before_last_frame = lifecycle.last_frame.clone();
+        let before_body = lifecycle.last_frame_body.clone();
+        let before_world = lifecycle.world.clone();
 
         let late_frame =
             serde_json::json!({ "sequence": 5, "status": "running", "sessionId": "old" });
-        let refreshed = apply_frame(&mut state, late_frame, launch_id);
+        let refreshed = apply_frame(&mut lifecycle, launch_id, late_frame);
 
         assert!(!refreshed);
-        assert_eq!(state.launch_id, before_id);
-        assert_eq!(state.last_frame, before_last_frame);
-        assert_eq!(state.last_frame_body, before_body);
-        assert_eq!(state.world, before_world);
+        assert_eq!(lifecycle.launch_id, before_id);
+        assert_eq!(lifecycle.last_frame, before_last_frame);
+        assert_eq!(lifecycle.last_frame_body, before_body);
+        assert_eq!(lifecycle.world, before_world);
     }
 }

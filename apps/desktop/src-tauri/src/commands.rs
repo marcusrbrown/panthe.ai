@@ -17,29 +17,33 @@ use crate::state::SidecarState;
 /// next poll.
 #[tauri::command]
 pub fn subscribe_world(state: State<SidecarState>, frames: Channel<Value>) {
-    let mut frame_state = state.frame.lock().expect("sidecar state mutex poisoned");
-    crate::proxy::apply_subscribe(&mut frame_state, frames);
+    let mut lifecycle = state
+        .lifecycle
+        .lock()
+        .expect("sidecar state mutex poisoned");
+    crate::proxy::apply_subscribe(&mut lifecycle, frames);
 }
 
 /// Relays a presentation receipt for `event_id`, attributed to the
 /// current sidecar session. Fails if no sidecar session is active yet.
 #[tauri::command]
 pub async fn present_event(app: AppHandle, event_id: String) -> Result<(), String> {
-    let session = app
-        .state::<SidecarState>()
-        .session
-        .lock()
-        .expect("sidecar state mutex poisoned")
-        .clone()
-        .ok_or_else(|| "no active sidecar session".to_string())?;
-    let session_id = app
-        .state::<SidecarState>()
-        .frame
-        .lock()
-        .expect("sidecar state mutex poisoned")
-        .last_frame
-        .as_ref()
-        .map(|frame| frame.session_id.clone())
-        .ok_or_else(|| "no frame received yet".to_string())?;
+    let (session, session_id) = {
+        let state = app.state::<SidecarState>();
+        let lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        let session = lifecycle
+            .session
+            .clone()
+            .ok_or_else(|| "no active sidecar session".to_string())?;
+        let session_id = lifecycle
+            .last_frame
+            .as_ref()
+            .map(|frame| frame.session_id.clone())
+            .ok_or_else(|| "no frame received yet".to_string())?;
+        (session, session_id)
+    };
     crate::proxy::present_event(session.port, &session.token, &session_id, &event_id).await
 }

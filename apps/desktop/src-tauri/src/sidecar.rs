@@ -2,23 +2,28 @@
 // its per-launch auth token to stdin, watches its stdout for the
 // `PANTHEA_PORT` line to discover the session it just started, and
 // restarts it with backoff on unexpected exit.
+//
+// Every check against shared lifecycle state and the mutation it
+// authorizes happen under the same `Lifecycle` lock (see state.rs) --
+// spawning the child process and writing its token happen outside that
+// lock, since they are blocking OS calls; `attach_child` then installs
+// the child under the lock afterward, refusing and killing it if the
+// launch went stale while the spawn was in flight.
 
 use std::io::Read;
-use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 use crate::state::{
-    begin_launch, end_launch, is_current, should_retry, transition_session, SessionEvent,
-    SidecarState,
+    attach_child, begin_spawn, on_port, on_retry, on_terminated, restart, stop, AttachOutcome,
+    PortOutcome, SidecarState, StopResult, TerminatedOutcome, MAX_RESTARTS,
 };
 
 /// Matches the `externalBin` entry name in `tauri.conf.json` (the target
 /// triple suffix is stripped by Tauri's sidecar bundling convention).
 const SIDECAR_NAME: &str = "panthea-sim";
-const MAX_RESTARTS: u32 = 3;
 const PANTHEA_PORT_PREFIX: &str = "PANTHEA_PORT=";
 
 /// Extracts the port from a `PANTHEA_PORT=<port>` stdout line, ignoring
@@ -61,175 +66,72 @@ fn generate_token() -> std::io::Result<String> {
     Ok(buf.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// The supervisor's retry decision: retry with the next backoff, or give
-/// up once too many attempts have failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AttemptOutcome {
-    Retry { attempt: u32, backoff: Duration },
-    Exhausted,
-}
-
-/// Given the number of restarts already recorded (before this failure),
-/// decides whether to retry (with the next backoff) or give up. Attempts
-/// 1..=MAX_RESTARTS retry; the attempt after that is exhausted.
-fn next_attempt_outcome(restarts_so_far: u32) -> AttemptOutcome {
-    let attempt = restarts_so_far + 1;
-    if attempt > MAX_RESTARTS {
-        return AttemptOutcome::Exhausted;
-    }
-    // Exponential backoff (500ms, 1s, 2s, ...).
-    let backoff = Duration::from_millis(500 * 2u64.pow(attempt - 1));
-    AttemptOutcome::Retry { attempt, backoff }
-}
-
-/// Updates the tray tooltip to surface a supervisor giveup to the user,
-/// without blocking the renderer or tearing down the app.
-fn mark_sidecar_unavailable(app: &AppHandle) {
-    let state = app.state::<SidecarState>();
-    let tray_guard = state.tray.lock().expect("sidecar state mutex poisoned");
-    if let Some(tray) = tray_guard.as_ref() {
-        let _ = tray.set_tooltip(Some("Panthea — simulation service unavailable (see logs)"));
-    }
-}
-
-/// Cancels the active poll task (if any), clears the tracked session,
-/// and ends the current launch -- so the proxy stops polling a port
-/// that no longer belongs to a live sidecar, and anything still
-/// carrying the ended launch's id (an in-flight frame, a late
-/// Terminated event, a scheduled retry) becomes a no-op from here on.
-fn clear_session(app: &AppHandle) {
-    let state = app.state::<SidecarState>();
-    if let Some(task) = state
-        .poll_task
-        .lock()
-        .expect("sidecar state mutex poisoned")
-        .take()
-    {
-        task.abort();
-    }
-    let mut session = state.session.lock().expect("sidecar state mutex poisoned");
-    *session = transition_session(session.take(), SessionEvent::Terminated);
-    drop(session);
-
-    let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
-    end_launch(&mut frame);
-}
-
-/// Records a failed spawn/token-write/unexpected-exit attempt: a no-op
-/// unless `launch_id` is still current (this attempt belongs to a
-/// launch a later spawn or an explicit stop/clear has already ended).
-/// Otherwise clears the tracked child and session, then either
-/// schedules a backoff retry or marks the supervisor exhausted once
-/// `MAX_RESTARTS` is exceeded. Never restarts once quitting or
-/// explicitly stopped.
-fn record_attempt_failure(app: &AppHandle, reason: &str, launch_id: u64) {
-    let state = app.state::<SidecarState>();
-
-    let current = {
-        let frame = state.frame.lock().expect("sidecar state mutex poisoned");
-        is_current(&frame, launch_id)
-    };
-    if !current {
-        return;
-    }
-
-    *state.child.lock().expect("sidecar state mutex poisoned") = None;
-    clear_session(app);
-
-    let stop_requested = *state.quitting.lock().expect("sidecar state mutex poisoned")
-        || *state.stopped.lock().expect("sidecar state mutex poisoned");
-    if stop_requested {
-        crate::tray::refresh(app);
-        return;
-    }
-
-    let restarts_so_far = {
-        let mut restarts = state.restarts.lock().expect("sidecar state mutex poisoned");
-        let so_far = *restarts;
-        *restarts = so_far + 1;
-        so_far
-    };
-
-    match next_attempt_outcome(restarts_so_far) {
-        AttemptOutcome::Retry { attempt, backoff } => {
-            eprintln!(
-                "panthea-desktop: sidecar attempt failed ({reason}); retrying in {backoff:?} (attempt {attempt}/{MAX_RESTARTS})"
-            );
-            // Captures the id left by `clear_session`'s end-launch above
-            // (not the failed attempt's own id): that's the id a
-            // pending retry must find still current when it fires.
-            let retry_launch_id = state
-                .frame
-                .lock()
-                .expect("sidecar state mutex poisoned")
-                .launch_id;
-            let app_for_retry = app.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(backoff);
-                let state = app_for_retry.state::<SidecarState>();
-                let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
-                let should_spawn = {
-                    let frame = state.frame.lock().expect("sidecar state mutex poisoned");
-                    should_retry(&frame, retry_launch_id, stopped)
-                };
-                if should_spawn {
-                    spawn_sidecar(app_for_retry);
-                }
-            });
-        }
-        AttemptOutcome::Exhausted => {
-            *state
-                .exhausted
-                .lock()
-                .expect("sidecar state mutex poisoned") = true;
-            eprintln!(
-                "panthea-desktop: sidecar exceeded {MAX_RESTARTS} restart attempts (last failure: {reason}); giving up — the app keeps running with no simulation service"
-            );
-            mark_sidecar_unavailable(app);
-        }
-    }
-    crate::tray::refresh(app);
-}
-
-/// Kills the currently tracked sidecar child, if any, and clears its
-/// session. Used by both an explicit quit/stop and the app's final exit.
-pub fn kill_sidecar(app: &AppHandle) {
-    let state = app.state::<SidecarState>();
-    let mut guard = state.child.lock().expect("sidecar state mutex poisoned");
-    if let Some(child) = guard.take() {
-        if let Err(error) = child.kill() {
-            eprintln!("panthea-desktop: failed to kill sidecar on exit: {error}");
-        }
-    }
-    drop(guard);
-    clear_session(app);
-}
-
-/// Spawns the sidecar, writes its per-launch token to stdin, watches
-/// stdout for the `PANTHEA_PORT` line to start the proxy's poll task,
-/// and installs the restart-with-backoff supervisor on unexpected exit.
-/// A `/dev/urandom` failure is fatal (no deterministic token fallback,
-/// ever). A resolve, spawn, or stdin-write failure is routed through the
-/// same bounded-retry path as an unexpected exit. A child that fails its
-/// stdin token write is killed immediately rather than left running
-/// unauthenticated.
-///
-/// Mints a new launch id up front (before anything about the child is
-/// known) and carries it through everything this launch's child event
-/// loop does, so a late event from a since-superseded launch -- this
-/// same call included, if a newer spawn or a stop races it -- becomes a
-/// no-op instead of clearing or overwriting a newer launch's state.
-///
-/// Does not touch `stopped` -- only an explicit Restart Simulation action
-/// clears it before calling this, and a scheduled retry checks it before
-/// calling this at all.
+/// Starts the initial launch (app startup) or an operator-triggered
+/// restart from Stop/Unavailable. Refuses (does nothing) only if the
+/// operator has explicitly stopped the sidecar since.
 pub fn spawn_sidecar(app: AppHandle) {
     let launch_id = {
         let state = app.state::<SidecarState>();
-        let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
-        begin_launch(&mut frame)
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        begin_spawn(&mut lifecycle)
     };
+    let Some(launch_id) = launch_id else {
+        return;
+    };
+    spawn_with_id(app, launch_id);
+}
 
+/// Spawns a scheduled backoff retry: a no-op unless `retry_launch_id` is
+/// still current and the sidecar has not been stopped since it was
+/// scheduled.
+fn spawn_retry(app: AppHandle, retry_launch_id: u64) {
+    let launch_id = {
+        let state = app.state::<SidecarState>();
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        on_retry(&mut lifecycle, retry_launch_id)
+    };
+    let Some(launch_id) = launch_id else {
+        return;
+    };
+    spawn_with_id(app, launch_id);
+}
+
+/// Restarts from a stopped or exhausted state: clears the operator/
+/// supervisor flags and the restart counter, then spawns. Called by the
+/// tray's Restart Simulation action.
+pub fn restart_sidecar(app: AppHandle) {
+    let launch_id = {
+        let state = app.state::<SidecarState>();
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        restart(&mut lifecycle)
+    };
+    let Some(launch_id) = launch_id else {
+        return;
+    };
+    spawn_with_id(app, launch_id);
+}
+
+/// Does the actual OS-level work for `launch_id`, already minted by the
+/// caller (`begin_spawn`, `on_retry`, or `restart`): resolves and spawns
+/// the child, writes its token to stdin, and installs it via
+/// `attach_child` -- all outside the lifecycle lock, since resolving
+/// and spawning a process is a blocking OS call that must never block
+/// frame polling, pause/resume, or the tray. A child that fails its
+/// stdin token write is killed immediately rather than left running
+/// unauthenticated. `attach_child` refuses (and this function kills the
+/// child) if the launch went stale while any of this was in flight. A
+/// `/dev/urandom` failure is fatal -- no deterministic token fallback,
+/// ever.
+fn spawn_with_id(app: AppHandle, launch_id: u64) {
     let token = match generate_token() {
         Ok(token) => token,
         Err(error) => {
@@ -245,7 +147,7 @@ pub fn spawn_sidecar(app: AppHandle) {
         Ok(command) => command,
         Err(error) => {
             eprintln!("panthea-desktop: failed to resolve sidecar \"{SIDECAR_NAME}\": {error}");
-            record_attempt_failure(&app, "resolve", launch_id);
+            handle_termination(&app, "resolve", launch_id);
             return;
         }
     };
@@ -254,7 +156,7 @@ pub fn spawn_sidecar(app: AppHandle) {
         Ok(pair) => pair,
         Err(error) => {
             eprintln!("panthea-desktop: failed to spawn sidecar: {error}");
-            record_attempt_failure(&app, "spawn", launch_id);
+            handle_termination(&app, "spawn", launch_id);
             return;
         }
     };
@@ -267,13 +169,30 @@ pub fn spawn_sidecar(app: AppHandle) {
         if let Err(kill_error) = child.kill() {
             eprintln!("panthea-desktop: failed to kill un-tokened sidecar: {kill_error}");
         }
-        record_attempt_failure(&app, "stdin-write", launch_id);
+        handle_termination(&app, "stdin-write", launch_id);
         return;
     }
 
-    {
-        let state = app.state::<SidecarState>();
-        *state.child.lock().expect("sidecar state mutex poisoned") = Some(child);
+    let state = app.state::<SidecarState>();
+    let attach_outcome = {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        attach_child(&mut lifecycle, launch_id, child)
+    };
+    let stale_child = match attach_outcome {
+        AttachOutcome::Attached => None,
+        AttachOutcome::Refused(child) => Some(child),
+    };
+    if let Some(child) = stale_child {
+        // The launch went stale (a newer spawn or a stop) while this
+        // child was resolving, spawning, or being written to -- it was
+        // never tracked, so nothing else will ever kill it.
+        if let Err(error) = child.kill() {
+            eprintln!("panthea-desktop: failed to kill a superseded sidecar: {error}");
+        }
+        return;
     }
 
     let supervised_app = app.clone();
@@ -286,7 +205,7 @@ pub fn spawn_sidecar(app: AppHandle) {
                     print!("panthea-sim: {}", String::from_utf8_lossy(&bytes));
                     for line in lines.push(&bytes) {
                         if let Some(port) = parse_panthea_port(&line) {
-                            start_session(&supervised_app, port, stdout_token.clone(), launch_id);
+                            install_session(&supervised_app, launch_id, port, stdout_token.clone());
                         }
                     }
                 }
@@ -301,7 +220,7 @@ pub fn spawn_sidecar(app: AppHandle) {
                         "panthea-sim: terminated (code={:?}, signal={:?})",
                         payload.code, payload.signal
                     );
-                    record_attempt_failure(&supervised_app, "terminated", launch_id);
+                    handle_termination(&supervised_app, "terminated", launch_id);
                     break;
                 }
                 _ => {}
@@ -310,53 +229,106 @@ pub fn spawn_sidecar(app: AppHandle) {
     });
 }
 
-/// Installs the session once `PANTHEA_PORT` is parsed and starts the
-/// proxy's poll task against it, tagged with `launch_id` -- but only if
-/// `launch_id` is still current. If a stop or a newer spawn ended this
-/// launch before its `PANTHEA_PORT` line was read, this is a no-op: it
-/// must not install a dead launch's port/token as the tracked session,
-/// and must not start polling it.
-fn start_session(app: &AppHandle, port: u16, token: String, launch_id: u64) {
+/// Installs the session and starts the poll task once `PANTHEA_PORT` is
+/// parsed, both under the one lock `on_port` runs in -- there is no
+/// window between deciding to poll and actually tracking the poll task
+/// where a stop could leave it running untracked. A no-op if
+/// `launch_id` is no longer current.
+fn install_session(app: &AppHandle, launch_id: u64, port: u16, token: String) {
     let state = app.state::<SidecarState>();
-
-    let current = {
-        let frame = state.frame.lock().expect("sidecar state mutex poisoned");
-        is_current(&frame, launch_id)
-    };
-    if !current {
-        return;
-    }
-
-    if let Some(task) = state
-        .poll_task
+    let mut lifecycle = state
+        .lifecycle
         .lock()
-        .expect("sidecar state mutex poisoned")
-        .take()
-    {
+        .expect("sidecar state mutex poisoned");
+    match on_port(&mut lifecycle, launch_id, port, token) {
+        PortOutcome::StartPolling {
+            port,
+            token,
+            launch_id,
+        } => {
+            let task = crate::proxy::start_polling(app.clone(), port, token, launch_id);
+            lifecycle.poll_task = Some(task);
+            drop(lifecycle);
+            crate::tray::refresh(app);
+        }
+        PortOutcome::Refused => {}
+    }
+}
+
+/// Handles a spawn/token-write/unexpected-exit failure for `launch_id`:
+/// a no-op unless it is still current. Otherwise aborts the poll task
+/// (if one was running) after unlock, and either schedules a backoff
+/// retry or marks the supervisor exhausted.
+fn handle_termination(app: &AppHandle, reason: &str, launch_id: u64) {
+    let state = app.state::<SidecarState>();
+    let quitting = *state.quitting.lock().expect("sidecar state mutex poisoned");
+
+    let result = {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        on_terminated(&mut lifecycle, launch_id, quitting)
+    };
+
+    if let Some(task) = result.poll_task {
         task.abort();
     }
 
-    let session = {
-        let mut session = state.session.lock().expect("sidecar state mutex poisoned");
-        *session = transition_session(
-            session.take(),
-            SessionEvent::PortDiscovered {
-                token: token.clone(),
-                port,
-            },
-        );
-        session.clone()
-    };
-    let Some(session) = session else {
-        return;
+    match result.outcome {
+        TerminatedOutcome::Stale => {}
+        TerminatedOutcome::Stopped => {
+            crate::tray::refresh(app);
+        }
+        TerminatedOutcome::Retry {
+            backoff,
+            retry_launch_id,
+            attempt,
+        } => {
+            eprintln!(
+                "panthea-desktop: sidecar attempt failed ({reason}); retrying in {backoff:?} (attempt {attempt}/{MAX_RESTARTS})"
+            );
+            let app_for_retry = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(backoff);
+                spawn_retry(app_for_retry, retry_launch_id);
+            });
+            crate::tray::refresh(app);
+        }
+        TerminatedOutcome::Exhausted => {
+            eprintln!(
+                "panthea-desktop: sidecar exceeded {MAX_RESTARTS} restart attempts (last failure: {reason}); giving up — the app keeps running with no simulation service"
+            );
+            // The tray's Unavailable checkbox item (set by the refresh
+            // below, driven by the same exhausted flag) surfaces this
+            // to the operator -- no separate tooltip write needed.
+            crate::tray::refresh(app);
+        }
+    }
+}
+
+/// Stops the sidecar: marks it stopped, then kills the tracked child
+/// and aborts the poll task (if any) after unlock -- never while
+/// holding the lock. Used by both an explicit Stop Background and the
+/// app's final exit.
+pub fn stop_sidecar(app: &AppHandle) {
+    let state = app.state::<SidecarState>();
+    let StopResult { child, poll_task } = {
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        stop(&mut lifecycle)
     };
 
-    let task = crate::proxy::start_polling(app.clone(), session.port, session.token, launch_id);
-    *state
-        .poll_task
-        .lock()
-        .expect("sidecar state mutex poisoned") = Some(task);
-    crate::tray::refresh(app);
+    if let Some(child) = child {
+        if let Err(error) = child.kill() {
+            eprintln!("panthea-desktop: failed to kill sidecar: {error}");
+        }
+    }
+    if let Some(task) = poll_task {
+        task.abort();
+    }
 }
 
 #[cfg(test)]
@@ -397,52 +369,6 @@ mod tests {
         assert_eq!(
             lines.push(b"tial line more\n"),
             vec!["partial line more".to_string()]
-        );
-    }
-
-    #[test]
-    fn retries_up_to_max_restarts_then_exhausts() {
-        assert_eq!(
-            next_attempt_outcome(0),
-            AttemptOutcome::Retry {
-                attempt: 1,
-                backoff: Duration::from_millis(500)
-            }
-        );
-        assert_eq!(
-            next_attempt_outcome(1),
-            AttemptOutcome::Retry {
-                attempt: 2,
-                backoff: Duration::from_millis(1000)
-            }
-        );
-        assert_eq!(
-            next_attempt_outcome(2),
-            AttemptOutcome::Retry {
-                attempt: 3,
-                backoff: Duration::from_millis(2000)
-            }
-        );
-        assert_eq!(next_attempt_outcome(3), AttemptOutcome::Exhausted);
-        // Once exhausted, further failures stay exhausted (no wraparound
-        // or accidental re-retry from a stale counter).
-        assert_eq!(next_attempt_outcome(10), AttemptOutcome::Exhausted);
-    }
-
-    #[test]
-    fn backoff_matches_max_restarts_boundary() {
-        // MAX_RESTARTS itself is still a retry — only the attempt after it
-        // is exhausted.
-        assert!(matches!(
-            next_attempt_outcome(MAX_RESTARTS - 1),
-            AttemptOutcome::Retry {
-                attempt: MAX_RESTARTS,
-                ..
-            }
-        ));
-        assert_eq!(
-            next_attempt_outcome(MAX_RESTARTS),
-            AttemptOutcome::Exhausted
         );
     }
 }

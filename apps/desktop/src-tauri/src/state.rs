@@ -64,21 +64,25 @@ pub struct WorldStatusSnapshot {
     pub degraded_reason: Option<String>,
 }
 
-/// Everything a polled frame touches, behind one lock: the session
-/// generation, change-detection state, world status, and the subscribed
-/// Channel. Consolidated into one struct (rather than five separate
-/// mutexes) so a frame's generation check, decision, cache update,
+/// Everything a polled frame touches, behind one lock: the current
+/// launch id, change-detection state, world status, and the subscribed
+/// Channel. Consolidated into one struct (rather than several separate
+/// mutexes) so a frame's launch-id check, decision, cache update,
 /// forward, and last-forwarded mark all happen atomically -- and so
 /// installing a Channel and replaying the cached frame to it happen
 /// atomically too, with no gap a concurrent poll or restart can land in.
 #[derive(Default)]
 pub struct FrameState {
-    /// Bumped by every new session (`start_session`) and by session
-    /// termination (`clear_session`); a poll task's frames are tagged
-    /// with the generation it started with, so a frame still in flight
-    /// after a restart or shutdown (a task-cancellation race) is fenced
-    /// out rather than acted on.
-    pub generation: u64,
+    /// Identifies the current sidecar launch attempt. Bumped by every
+    /// spawn (`begin_launch`) and by every launch ending (`end_launch`
+    /// -- termination, Stop Background, or restart-supervisor
+    /// exhaustion). Anything belonging to a launch -- a poll task's
+    /// frames, a child's Terminated/Error handling, a scheduled backoff
+    /// retry -- captures this value when it starts and checks
+    /// `is_current` before acting, so a callback that fires after its
+    /// launch has ended becomes a no-op instead of touching whatever
+    /// launch is current now.
+    pub launch_id: u64,
     /// The last frame forwarded to the webview, for change detection.
     pub last_frame: Option<FrameKey>,
     /// The most recently polled frame's raw body, cached regardless of
@@ -86,8 +90,48 @@ pub struct FrameState {
     /// immediately to a newly (re)subscribing Channel.
     pub last_frame_body: Option<serde_json::Value>,
     pub world: WorldStatusSnapshot,
-    /// The subscribed Channel; a resubscribe replaces it.
+    /// The subscribed Channel; a resubscribe replaces it. Not reset by
+    /// `begin_launch`/`end_launch` -- a subscribed webview stays
+    /// subscribed across a sidecar restart.
     pub channel: Option<Channel<serde_json::Value>>,
+}
+
+/// True while `launch_id` is still the launch currently tracked by
+/// `frame_state` -- false once a later spawn or a clear has bumped it
+/// past that value.
+pub fn is_current(frame_state: &FrameState, launch_id: u64) -> bool {
+    frame_state.launch_id == launch_id
+}
+
+/// Starts a new launch: bumps the id and resets the fields a new launch
+/// should start fresh with (change-detection state and world status).
+/// Returns the new id for the caller to capture and carry through
+/// everything that belongs to this launch.
+pub fn begin_launch(frame_state: &mut FrameState) -> u64 {
+    frame_state.launch_id += 1;
+    frame_state.last_frame = None;
+    frame_state.last_frame_body = None;
+    frame_state.world = Default::default();
+    frame_state.launch_id
+}
+
+/// Ends the current launch: bumps the id (fencing out anything still
+/// captured with the old value) and clears the same fields
+/// `begin_launch` resets, since the ended launch's world status and
+/// cached frame no longer describe anything live.
+pub fn end_launch(frame_state: &mut FrameState) {
+    frame_state.launch_id += 1;
+    frame_state.last_frame = None;
+    frame_state.last_frame_body = None;
+    frame_state.world = Default::default();
+}
+
+/// Whether a scheduled backoff retry should actually spawn: its
+/// captured launch id must still be current (no later spawn or clear
+/// has happened since it was scheduled) and the operator must not have
+/// explicitly stopped the sidecar.
+pub fn should_retry(frame_state: &FrameState, launch_id: u64, stopped: bool) -> bool {
+    is_current(frame_state, launch_id) && !stopped
 }
 
 #[derive(Default)]
@@ -211,5 +255,110 @@ mod tests {
     #[test]
     fn termination_with_no_established_session_is_a_no_op() {
         assert_eq!(transition_session(None, SessionEvent::Terminated), None);
+    }
+
+    #[test]
+    fn a_fresh_frame_state_has_never_begun_a_launch() {
+        let state = FrameState::default();
+        assert!(!is_current(&state, 1));
+    }
+
+    #[test]
+    fn begin_launch_bumps_the_id_and_the_new_id_is_current() {
+        let mut state = FrameState::default();
+        let id = begin_launch(&mut state);
+        assert_eq!(id, 1);
+        assert!(is_current(&state, 1));
+        assert!(!is_current(&state, 0));
+    }
+
+    #[test]
+    fn begin_launch_resets_frame_and_world_fields() {
+        let mut state = FrameState::default();
+        begin_launch(&mut state);
+        state.last_frame = Some(key(1, "running", "s1"));
+        state.last_frame_body = Some(serde_json::json!({"sequence": 1}));
+        state.world.status = Some("running".to_string());
+
+        begin_launch(&mut state);
+
+        assert_eq!(state.last_frame, None);
+        assert_eq!(state.last_frame_body, None);
+        assert_eq!(state.world, Default::default());
+    }
+
+    #[test]
+    fn end_launch_bumps_the_id_so_the_ended_launch_is_no_longer_current() {
+        let mut state = FrameState::default();
+        let id = begin_launch(&mut state);
+        end_launch(&mut state);
+        assert!(!is_current(&state, id));
+    }
+
+    #[test]
+    fn end_launch_resets_frame_and_world_fields() {
+        let mut state = FrameState::default();
+        begin_launch(&mut state);
+        state.last_frame = Some(key(1, "running", "s1"));
+        state.last_frame_body = Some(serde_json::json!({"sequence": 1}));
+        state.world.status = Some("degraded".to_string());
+
+        end_launch(&mut state);
+
+        assert_eq!(state.last_frame, None);
+        assert_eq!(state.last_frame_body, None);
+        assert_eq!(state.world, Default::default());
+    }
+
+    #[test]
+    fn a_retry_is_allowed_when_its_id_is_current_and_not_stopped() {
+        let mut state = FrameState::default();
+        let id = begin_launch(&mut state);
+        assert!(should_retry(&state, id, false));
+    }
+
+    #[test]
+    fn a_retry_is_refused_when_stopped_even_with_a_current_id() {
+        let mut state = FrameState::default();
+        let id = begin_launch(&mut state);
+        assert!(!should_retry(&state, id, true));
+    }
+
+    #[test]
+    fn a_retry_is_refused_when_its_id_is_no_longer_current() {
+        let mut state = FrameState::default();
+        let id = begin_launch(&mut state);
+        end_launch(&mut state);
+        assert!(!should_retry(&state, id, false));
+    }
+
+    #[test]
+    fn a_retry_scheduled_before_stop_does_not_spawn_after_stop_then_restart() {
+        let mut state = FrameState::default();
+        begin_launch(&mut state); // the original spawn
+        end_launch(&mut state); // its termination -- record_attempt_failure
+        let retry_id = state.launch_id; // captures this id for the retry
+
+        // Before the retry fires: Stop Background, then Restart.
+        end_launch(&mut state); // Stop's clear
+        begin_launch(&mut state); // Restart's spawn
+
+        assert!(!should_retry(&state, retry_id, false));
+    }
+
+    #[test]
+    fn a_terminated_event_from_a_superseded_launch_is_not_current() {
+        let mut state = FrameState::default();
+        let launch_a = begin_launch(&mut state); // child A spawned
+
+        end_launch(&mut state); // Stop Background kills A
+        let launch_b = begin_launch(&mut state); // Restart spawns child B
+
+        // Child A's late Terminated event, captured with launch_a's id,
+        // must see itself as superseded -- and the id that IS current
+        // belongs to child B, not to whatever a stale check might assume.
+        assert!(!is_current(&state, launch_a));
+        assert!(is_current(&state, launch_b));
+        assert_ne!(launch_a, launch_b);
     }
 }

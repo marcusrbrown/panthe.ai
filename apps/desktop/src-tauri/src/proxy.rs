@@ -61,26 +61,26 @@ pub(crate) struct FrameDecision {
 
 /// Decides how to handle one polled frame.
 ///
-/// A frame whose `frame_generation` no longer matches the session
-/// currently tracked (`current_generation`) is dropped entirely: a
-/// restart bumps the generation, and a frame still in flight from the
-/// previous session's poll loop (a task-cancellation race) must never
-/// reach the webview or change any state.
+/// A frame whose `frame_launch_id` no longer matches the launch
+/// currently tracked (`current_launch_id`) is dropped entirely: a
+/// restart or a termination ends the launch, and a frame still in
+/// flight from the previous launch's poll loop (a task-cancellation
+/// race) must never reach the webview or change any state.
 ///
-/// For a current-generation frame: `forward` follows the existing
+/// For a current-launch frame: `forward` follows the existing
 /// sequence/status/session-id change check; `refresh_tray` fires on
 /// either a status change or a degraded-reason change, so a reason
 /// changing while the status stays `"degraded"` still updates the label.
 pub(crate) fn decide_frame_handling(
-    current_generation: u64,
-    frame_generation: u64,
+    current_launch_id: u64,
+    frame_launch_id: u64,
     last_frame: Option<&FrameKey>,
     current_key: &FrameKey,
     previous_status: Option<&str>,
     previous_degraded_reason: Option<&str>,
     new_degraded_reason: Option<&str>,
 ) -> Option<FrameDecision> {
-    if current_generation != frame_generation {
+    if current_launch_id != frame_launch_id {
         return None;
     }
     let forward = should_forward(last_frame, current_key);
@@ -116,25 +116,24 @@ pub async fn fetch_frame(port: u16, token: &str) -> Result<Value, String> {
     response.json().await.map_err(|error| error.to_string())
 }
 
-/// Spawns the poll task for one sidecar session, tagged with
-/// `generation` (the value `start_session` minted when this session
-/// started) so every frame it hands to `handle_frame` can be checked
-/// against whatever session is current by the time it arrives. Runs
-/// until aborted (on restart or explicit stop) -- an HTTP failure or
-/// non-success status logs and waits for the next tick rather than
-/// stopping the loop.
+/// Spawns the poll task for one sidecar launch, tagged with
+/// `launch_id` (the id `spawn_sidecar` minted for this launch) so every
+/// frame it hands to `handle_frame` can be checked against whatever
+/// launch is current by the time it arrives. Runs until aborted (on
+/// restart or explicit stop) -- an HTTP failure or non-success status
+/// logs and waits for the next tick rather than stopping the loop.
 pub fn start_polling(
     app: AppHandle,
     port: u16,
     token: String,
-    generation: u64,
+    launch_id: u64,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
 
             match fetch_frame(port, &token).await {
-                Ok(frame) => handle_frame(&app, frame, generation),
+                Ok(frame) => handle_frame(&app, frame, launch_id),
                 Err(error) => {
                     eprintln!("panthea-desktop: /frame poll failed: {error}");
                 }
@@ -151,13 +150,13 @@ pub fn start_polling(
 /// whether the tray should be refreshed; the caller does that after
 /// releasing the lock, since `tray::refresh` takes its own locks.
 ///
-/// A stale-generation frame (`frame_generation` no longer matches
-/// `frame_state.generation`) leaves every field of `frame_state`
+/// A stale-launch frame (`frame_launch_id` no longer matches
+/// `frame_state.launch_id`) leaves every field of `frame_state`
 /// untouched and returns `false`.
 pub(crate) fn apply_frame(
     frame_state: &mut FrameState,
     frame: Value,
-    frame_generation: u64,
+    frame_launch_id: u64,
 ) -> bool {
     let Some(key) = extract_frame_key(&frame) else {
         eprintln!("panthea-desktop: /frame response missing sequence/status/sessionId");
@@ -169,8 +168,8 @@ pub(crate) fn apply_frame(
         .map(str::to_string);
 
     let decision = decide_frame_handling(
-        frame_state.generation,
-        frame_generation,
+        frame_state.launch_id,
+        frame_launch_id,
         frame_state.last_frame.as_ref(),
         &key,
         frame_state.world.status.as_deref(),
@@ -221,11 +220,11 @@ pub(crate) fn apply_subscribe(frame_state: &mut FrameState, frames: Channel<Valu
     frame_state.channel = Some(frames);
 }
 
-fn handle_frame(app: &AppHandle, frame: Value, frame_generation: u64) {
+fn handle_frame(app: &AppHandle, frame: Value, frame_launch_id: u64) {
     let state = app.state::<SidecarState>();
     let refresh_tray = {
         let mut frame_state = state.frame.lock().expect("sidecar state mutex poisoned");
-        apply_frame(&mut frame_state, frame, frame_generation)
+        apply_frame(&mut frame_state, frame, frame_launch_id)
     };
 
     if refresh_tray {
@@ -285,6 +284,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::state::{begin_launch, end_launch};
 
     fn sample_frame() -> Value {
         serde_json::json!({
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_generation_drops_the_frame_entirely() {
+    fn a_stale_launch_id_drops_the_frame_entirely() {
         let previous = key(1, "running", "s1");
         let current = key(2, "running", "s1");
         let decision =
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn a_current_generation_with_no_status_or_reason_change_forwards_without_refreshing_the_tray() {
+    fn a_current_launch_id_with_no_status_or_reason_change_forwards_without_refreshing_the_tray() {
         let previous = key(3, "running", "s1");
         let current = key(4, "running", "s1");
         let decision =
@@ -440,19 +440,19 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_generation_leaves_frame_state_untouched_and_a_subscribe_then_handle_sequence_delivers_in_order_with_no_stale_replay(
+    fn a_stale_launch_id_leaves_frame_state_untouched_and_a_subscribe_then_handle_sequence_delivers_in_order_with_no_stale_replay(
     ) {
         let mut state = FrameState {
-            generation: 2,
+            launch_id: 2,
             ..Default::default()
         };
 
-        // A frame tagged with a superseded generation is dropped
+        // A frame tagged with a superseded launch id is dropped
         // entirely -- every field of FrameState stays exactly as it was.
         let stale = serde_json::json!({ "sequence": 99, "status": "running", "sessionId": "old" });
         let refreshed = apply_frame(&mut state, stale, 1);
         assert!(!refreshed);
-        assert_eq!(state.generation, 2);
+        assert_eq!(state.launch_id, 2);
         assert_eq!(state.last_frame, None);
         assert_eq!(state.last_frame_body, None);
         assert_eq!(state.world, Default::default());
@@ -486,5 +486,30 @@ mod tests {
 
         let received = delivered.lock().expect("delivered mutex poisoned");
         assert_eq!(*received, vec![frame1, frame2, frame3]);
+    }
+
+    #[test]
+    fn a_frame_that_finishes_after_its_launch_ends_does_not_repopulate_state() {
+        let mut state = FrameState::default();
+        let launch_id = begin_launch(&mut state);
+
+        // The launch ends (termination or an explicit stop) while the
+        // poll that produced this frame was still in flight.
+        end_launch(&mut state);
+
+        let before_id = state.launch_id;
+        let before_last_frame = state.last_frame.clone();
+        let before_body = state.last_frame_body.clone();
+        let before_world = state.world.clone();
+
+        let late_frame =
+            serde_json::json!({ "sequence": 5, "status": "running", "sessionId": "old" });
+        let refreshed = apply_frame(&mut state, late_frame, launch_id);
+
+        assert!(!refreshed);
+        assert_eq!(state.launch_id, before_id);
+        assert_eq!(state.last_frame, before_last_frame);
+        assert_eq!(state.last_frame_body, before_body);
+        assert_eq!(state.world, before_world);
     }
 }

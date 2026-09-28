@@ -15,6 +15,7 @@ const ITEM_STATE_RUNNING: &str = "state_running";
 const ITEM_STATE_PAUSED: &str = "state_paused";
 const ITEM_STATE_BACKGROUND: &str = "state_background";
 const ITEM_STATE_STOPPED: &str = "state_stopped";
+const ITEM_STATE_UNAVAILABLE: &str = "state_unavailable";
 const ITEM_DEGRADED: &str = "degraded";
 const ITEM_SHOW: &str = "show";
 const ITEM_PAUSE: &str = "pause";
@@ -28,33 +29,67 @@ pub enum TrayState {
     Paused,
     Background,
     Stopped,
+    Unavailable,
+}
+
+/// What the Stop/Restart tray item does when clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Stop,
+    Restart,
+}
+
+/// Decides the Stop/Restart tray item's action: restart whenever
+/// there's no live sidecar to stop -- an explicit Stop Background, or
+/// the restart supervisor having given up -- and stop otherwise. The
+/// menu label and the click handler both derive from this same
+/// decision, so they can never disagree about what the item does.
+pub fn stop_or_restart(stopped: bool, exhausted: bool) -> Action {
+    if stopped || exhausted {
+        Action::Restart
+    } else {
+        Action::Stop
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrayDisplay {
     pub state: TrayState,
     pub degraded_reason: Option<String>,
+    pub action: Action,
 }
 
 /// Maps the sidecar's reported world status, whether the operator
-/// explicitly stopped it, and window visibility to the tray's checked
-/// state and degraded label.
+/// explicitly stopped it, whether the restart supervisor gave up, and
+/// window visibility to the tray's checked state and degraded label.
 ///
 /// `sidecar_stopped` takes priority over everything else -- a stopped
-/// sidecar has no world status to report. The degraded label only ever
+/// sidecar has no world status to report. `exhausted` takes priority
+/// over the world status next -- a supervisor that gave up has no live
+/// sidecar to report a status for either. The degraded label only ever
 /// carries a reason when `world_status` is actually `"degraded"`; a
 /// reason value with any other status is not surfaced, since it would
 /// describe a state the world isn't currently in.
 pub fn map_tray_display(
     sidecar_stopped: bool,
+    exhausted: bool,
     window_visible: bool,
     world_status: Option<&str>,
     degraded_reason: Option<&str>,
 ) -> TrayDisplay {
+    let action = stop_or_restart(sidecar_stopped, exhausted);
     if sidecar_stopped {
         return TrayDisplay {
             state: TrayState::Stopped,
             degraded_reason: None,
+            action,
+        };
+    }
+    if exhausted {
+        return TrayDisplay {
+            state: TrayState::Unavailable,
+            degraded_reason: None,
+            action,
         };
     }
     let state = match world_status {
@@ -70,6 +105,7 @@ pub fn map_tray_display(
     TrayDisplay {
         state,
         degraded_reason,
+        action,
     }
 }
 
@@ -90,12 +126,17 @@ fn build_menu(app: &AppHandle, display: &TrayDisplay) -> tauri::Result<Menu<taur
         .enabled(false)
         .checked(display.state == TrayState::Stopped)
         .build(app)?;
+    let state_unavailable = CheckMenuItemBuilder::with_id(ITEM_STATE_UNAVAILABLE, "Unavailable")
+        .enabled(false)
+        .checked(display.state == TrayState::Unavailable)
+        .build(app)?;
 
     let mut builder = MenuBuilder::new(app).items(&[
         &state_running,
         &state_paused,
         &state_background,
         &state_stopped,
+        &state_unavailable,
     ]);
 
     let degraded_item;
@@ -113,10 +154,9 @@ fn build_menu(app: &AppHandle, display: &TrayDisplay) -> tauri::Result<Menu<taur
     let resume_item = MenuItemBuilder::with_id(ITEM_RESUME, "Resume")
         .enabled(display.state == TrayState::Paused)
         .build(app)?;
-    let stop_label = if display.state == TrayState::Stopped {
-        "Restart Simulation"
-    } else {
-        "Stop Background"
+    let stop_label = match display.action {
+        Action::Restart => "Restart Simulation",
+        Action::Stop => "Stop Background",
     };
     let stop_item = MenuItemBuilder::with_id(ITEM_STOP_BACKGROUND, stop_label).build(app)?;
     let quit_item = MenuItemBuilder::with_id(ITEM_QUIT, "Quit").build(app)?;
@@ -136,6 +176,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let initial = TrayDisplay {
         state: TrayState::Running,
         degraded_reason: None,
+        action: Action::Stop,
     };
     let menu = build_menu(app, &initial)?;
 
@@ -159,6 +200,10 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
 pub fn refresh(app: &AppHandle) {
     let state = app.state::<SidecarState>();
     let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
+    let exhausted = *state
+        .exhausted
+        .lock()
+        .expect("sidecar state mutex poisoned");
     let window_visible = !*state
         .window_hidden
         .lock()
@@ -172,6 +217,7 @@ pub fn refresh(app: &AppHandle) {
 
     let display = map_tray_display(
         stopped,
+        exhausted,
         window_visible,
         world.status.as_deref(),
         world.degraded_reason.as_deref(),
@@ -252,17 +298,33 @@ fn trigger_resume(app: &AppHandle) {
 
 fn trigger_stop_or_restart(app: &AppHandle) {
     let state = app.state::<SidecarState>();
-    let already_stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
-    if already_stopped {
-        // Only this action clears `stopped` -- spawn_sidecar itself never
-        // does, so a retry left pending from before the stop stays cancelled.
-        *state.stopped.lock().expect("sidecar state mutex poisoned") = false;
-        crate::sidecar::spawn_sidecar(app.clone());
-        return;
+    let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
+    let exhausted = *state
+        .exhausted
+        .lock()
+        .expect("sidecar state mutex poisoned");
+
+    match stop_or_restart(stopped, exhausted) {
+        Action::Restart => {
+            // Only this action clears `stopped`/`exhausted` -- spawn_sidecar
+            // itself never does, so a retry left pending from before a
+            // Stop stays cancelled. The restart counter resets too, so
+            // backoff starts fresh rather than picking up where the
+            // supervisor gave up.
+            *state.stopped.lock().expect("sidecar state mutex poisoned") = false;
+            *state
+                .exhausted
+                .lock()
+                .expect("sidecar state mutex poisoned") = false;
+            *state.restarts.lock().expect("sidecar state mutex poisoned") = 0;
+            crate::sidecar::spawn_sidecar(app.clone());
+        }
+        Action::Stop => {
+            *state.stopped.lock().expect("sidecar state mutex poisoned") = true;
+            crate::sidecar::kill_sidecar(app);
+            show_window(app);
+        }
     }
-    *state.stopped.lock().expect("sidecar state mutex poisoned") = true;
-    crate::sidecar::kill_sidecar(app);
-    show_window(app);
 }
 
 #[cfg(test)]
@@ -271,12 +333,13 @@ mod tests {
 
     #[test]
     fn a_stopped_sidecar_always_maps_to_stopped_with_no_degraded_label() {
-        let display = map_tray_display(true, true, Some("degraded"), Some("disk-full"));
+        let display = map_tray_display(true, false, true, Some("degraded"), Some("disk-full"));
         assert_eq!(
             display,
             TrayDisplay {
                 state: TrayState::Stopped,
-                degraded_reason: None
+                degraded_reason: None,
+                action: Action::Restart,
             }
         );
     }
@@ -284,11 +347,11 @@ mod tests {
     #[test]
     fn a_paused_world_maps_to_paused_regardless_of_window_visibility() {
         assert_eq!(
-            map_tray_display(false, true, Some("paused"), None).state,
+            map_tray_display(false, false, true, Some("paused"), None).state,
             TrayState::Paused
         );
         assert_eq!(
-            map_tray_display(false, false, Some("paused"), None).state,
+            map_tray_display(false, false, false, Some("paused"), None).state,
             TrayState::Paused
         );
     }
@@ -296,7 +359,7 @@ mod tests {
     #[test]
     fn a_running_world_with_a_visible_window_maps_to_running() {
         assert_eq!(
-            map_tray_display(false, true, Some("running"), None).state,
+            map_tray_display(false, false, true, Some("running"), None).state,
             TrayState::Running
         );
     }
@@ -304,37 +367,81 @@ mod tests {
     #[test]
     fn a_running_world_with_a_hidden_window_maps_to_background() {
         assert_eq!(
-            map_tray_display(false, false, Some("running"), None).state,
+            map_tray_display(false, false, false, Some("running"), None).state,
             TrayState::Background
         );
     }
 
     #[test]
     fn a_degraded_world_carries_its_reason_and_still_reflects_window_visibility() {
-        let visible = map_tray_display(false, true, Some("degraded"), Some("disk-full"));
+        let visible = map_tray_display(false, false, true, Some("degraded"), Some("disk-full"));
         assert_eq!(visible.state, TrayState::Running);
         assert_eq!(visible.degraded_reason, Some("disk-full".to_string()));
 
-        let hidden = map_tray_display(false, false, Some("degraded"), Some("store-error"));
+        let hidden = map_tray_display(false, false, false, Some("degraded"), Some("store-error"));
         assert_eq!(hidden.state, TrayState::Background);
         assert_eq!(hidden.degraded_reason, Some("store-error".to_string()));
     }
 
     #[test]
     fn a_reason_present_without_a_degraded_status_is_never_surfaced() {
-        let display = map_tray_display(false, true, Some("running"), Some("stale-reason"));
+        let display = map_tray_display(false, false, true, Some("running"), Some("stale-reason"));
         assert_eq!(display.degraded_reason, None);
     }
 
     #[test]
     fn no_world_status_yet_falls_back_to_window_visibility() {
         assert_eq!(
-            map_tray_display(false, true, None, None).state,
+            map_tray_display(false, false, true, None, None).state,
             TrayState::Running
         );
         assert_eq!(
-            map_tray_display(false, false, None, None).state,
+            map_tray_display(false, false, false, None, None).state,
             TrayState::Background
         );
+    }
+
+    #[test]
+    fn an_exhausted_supervisor_maps_to_unavailable_regardless_of_window_visibility() {
+        assert_eq!(
+            map_tray_display(false, true, true, None, None).state,
+            TrayState::Unavailable
+        );
+        assert_eq!(
+            map_tray_display(false, true, false, None, None).state,
+            TrayState::Unavailable
+        );
+    }
+
+    #[test]
+    fn an_explicit_stop_takes_priority_over_exhausted() {
+        let display = map_tray_display(true, true, true, None, None);
+        assert_eq!(display.state, TrayState::Stopped);
+    }
+
+    #[test]
+    fn stop_or_restart_covers_all_four_combinations() {
+        assert_eq!(stop_or_restart(false, false), Action::Stop);
+        assert_eq!(stop_or_restart(true, false), Action::Restart);
+        assert_eq!(stop_or_restart(false, true), Action::Restart);
+        assert_eq!(stop_or_restart(true, true), Action::Restart);
+    }
+
+    #[test]
+    fn the_running_display_action_is_stop() {
+        let display = map_tray_display(false, false, true, Some("running"), None);
+        assert_eq!(display.action, Action::Stop);
+    }
+
+    #[test]
+    fn the_stopped_display_action_is_restart() {
+        let display = map_tray_display(true, false, true, None, None);
+        assert_eq!(display.action, Action::Restart);
+    }
+
+    #[test]
+    fn the_unavailable_display_action_is_restart() {
+        let display = map_tray_display(false, true, true, None, None);
+        assert_eq!(display.action, Action::Restart);
     }
 }

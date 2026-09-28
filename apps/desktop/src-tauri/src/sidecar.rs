@@ -10,7 +10,10 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::state::{transition_session, SessionEvent, SidecarState};
+use crate::state::{
+    begin_launch, end_launch, is_current, should_retry, transition_session, SessionEvent,
+    SidecarState,
+};
 
 /// Matches the `externalBin` entry name in `tauri.conf.json` (the target
 /// triple suffix is stripped by Tauri's sidecar bundling convention).
@@ -66,13 +69,6 @@ enum AttemptOutcome {
     Exhausted,
 }
 
-/// Whether a scheduled retry should actually respawn the sidecar: an
-/// operator's explicit Stop Background request, arriving while the
-/// retry was pending, cancels it.
-fn should_retry_spawn(stopped: bool) -> bool {
-    !stopped
-}
-
 /// Given the number of restarts already recorded (before this failure),
 /// decides whether to retry (with the next backoff) or give up. Attempts
 /// 1..=MAX_RESTARTS retry; the attempt after that is exhausted.
@@ -96,9 +92,11 @@ fn mark_sidecar_unavailable(app: &AppHandle) {
     }
 }
 
-/// Cancels the active poll task (if any) and clears the tracked session,
-/// so the proxy stops polling a port that no longer belongs to a live
-/// sidecar.
+/// Cancels the active poll task (if any), clears the tracked session,
+/// and ends the current launch -- so the proxy stops polling a port
+/// that no longer belongs to a live sidecar, and anything still
+/// carrying the ended launch's id (an in-flight frame, a late
+/// Terminated event, a scheduled retry) becomes a no-op from here on.
 fn clear_session(app: &AppHandle) {
     let state = app.state::<SidecarState>();
     if let Some(task) = state
@@ -114,17 +112,27 @@ fn clear_session(app: &AppHandle) {
     drop(session);
 
     let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
-    frame.last_frame = None;
-    frame.last_frame_body = None;
-    frame.world = Default::default();
+    end_launch(&mut frame);
 }
 
-/// Records a failed spawn/token-write/unexpected-exit attempt: clears the
-/// tracked child and session, and either schedules a backoff retry or
-/// marks the supervisor exhausted once `MAX_RESTARTS` is exceeded. Never
-/// restarts once quitting or explicitly stopped.
-fn record_attempt_failure(app: &AppHandle, reason: &str) {
+/// Records a failed spawn/token-write/unexpected-exit attempt: a no-op
+/// unless `launch_id` is still current (this attempt belongs to a
+/// launch a later spawn or an explicit stop/clear has already ended).
+/// Otherwise clears the tracked child and session, then either
+/// schedules a backoff retry or marks the supervisor exhausted once
+/// `MAX_RESTARTS` is exceeded. Never restarts once quitting or
+/// explicitly stopped.
+fn record_attempt_failure(app: &AppHandle, reason: &str, launch_id: u64) {
     let state = app.state::<SidecarState>();
+
+    let current = {
+        let frame = state.frame.lock().expect("sidecar state mutex poisoned");
+        is_current(&frame, launch_id)
+    };
+    if !current {
+        return;
+    }
+
     *state.child.lock().expect("sidecar state mutex poisoned") = None;
     clear_session(app);
 
@@ -147,15 +155,24 @@ fn record_attempt_failure(app: &AppHandle, reason: &str) {
             eprintln!(
                 "panthea-desktop: sidecar attempt failed ({reason}); retrying in {backoff:?} (attempt {attempt}/{MAX_RESTARTS})"
             );
+            // Captures the id left by `clear_session`'s end-launch above
+            // (not the failed attempt's own id): that's the id a
+            // pending retry must find still current when it fires.
+            let retry_launch_id = state
+                .frame
+                .lock()
+                .expect("sidecar state mutex poisoned")
+                .launch_id;
             let app_for_retry = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(backoff);
-                let stopped = *app_for_retry
-                    .state::<SidecarState>()
-                    .stopped
-                    .lock()
-                    .expect("sidecar state mutex poisoned");
-                if should_retry_spawn(stopped) {
+                let state = app_for_retry.state::<SidecarState>();
+                let stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
+                let should_spawn = {
+                    let frame = state.frame.lock().expect("sidecar state mutex poisoned");
+                    should_retry(&frame, retry_launch_id, stopped)
+                };
+                if should_spawn {
                     spawn_sidecar(app_for_retry);
                 }
             });
@@ -197,10 +214,22 @@ pub fn kill_sidecar(app: &AppHandle) {
 /// stdin token write is killed immediately rather than left running
 /// unauthenticated.
 ///
+/// Mints a new launch id up front (before anything about the child is
+/// known) and carries it through everything this launch's child event
+/// loop does, so a late event from a since-superseded launch -- this
+/// same call included, if a newer spawn or a stop races it -- becomes a
+/// no-op instead of clearing or overwriting a newer launch's state.
+///
 /// Does not touch `stopped` -- only an explicit Restart Simulation action
 /// clears it before calling this, and a scheduled retry checks it before
 /// calling this at all.
 pub fn spawn_sidecar(app: AppHandle) {
+    let launch_id = {
+        let state = app.state::<SidecarState>();
+        let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
+        begin_launch(&mut frame)
+    };
+
     let token = match generate_token() {
         Ok(token) => token,
         Err(error) => {
@@ -216,7 +245,7 @@ pub fn spawn_sidecar(app: AppHandle) {
         Ok(command) => command,
         Err(error) => {
             eprintln!("panthea-desktop: failed to resolve sidecar \"{SIDECAR_NAME}\": {error}");
-            record_attempt_failure(&app, "resolve");
+            record_attempt_failure(&app, "resolve", launch_id);
             return;
         }
     };
@@ -225,7 +254,7 @@ pub fn spawn_sidecar(app: AppHandle) {
         Ok(pair) => pair,
         Err(error) => {
             eprintln!("panthea-desktop: failed to spawn sidecar: {error}");
-            record_attempt_failure(&app, "spawn");
+            record_attempt_failure(&app, "spawn", launch_id);
             return;
         }
     };
@@ -238,7 +267,7 @@ pub fn spawn_sidecar(app: AppHandle) {
         if let Err(kill_error) = child.kill() {
             eprintln!("panthea-desktop: failed to kill un-tokened sidecar: {kill_error}");
         }
-        record_attempt_failure(&app, "stdin-write");
+        record_attempt_failure(&app, "stdin-write", launch_id);
         return;
     }
 
@@ -257,7 +286,7 @@ pub fn spawn_sidecar(app: AppHandle) {
                     print!("panthea-sim: {}", String::from_utf8_lossy(&bytes));
                     for line in lines.push(&bytes) {
                         if let Some(port) = parse_panthea_port(&line) {
-                            start_session(&supervised_app, port, stdout_token.clone());
+                            start_session(&supervised_app, port, stdout_token.clone(), launch_id);
                         }
                     }
                 }
@@ -272,7 +301,7 @@ pub fn spawn_sidecar(app: AppHandle) {
                         "panthea-sim: terminated (code={:?}, signal={:?})",
                         payload.code, payload.signal
                     );
-                    record_attempt_failure(&supervised_app, "terminated");
+                    record_attempt_failure(&supervised_app, "terminated", launch_id);
                     break;
                 }
                 _ => {}
@@ -281,14 +310,22 @@ pub fn spawn_sidecar(app: AppHandle) {
     });
 }
 
-/// Starts a fresh session once `PANTHEA_PORT` is parsed: replaces
-/// whatever session was tracked before, resets change-detection and
-/// world-status state, bumps the generation counter (fencing out any
-/// frame the previous session's poll task might still hand back before
-/// its `abort()` takes effect), and starts the proxy's poll task against
-/// the new port and token.
-fn start_session(app: &AppHandle, port: u16, token: String) {
+/// Installs the session once `PANTHEA_PORT` is parsed and starts the
+/// proxy's poll task against it, tagged with `launch_id` -- but only if
+/// `launch_id` is still current. If a stop or a newer spawn ended this
+/// launch before its `PANTHEA_PORT` line was read, this is a no-op: it
+/// must not install a dead launch's port/token as the tracked session,
+/// and must not start polling it.
+fn start_session(app: &AppHandle, port: u16, token: String, launch_id: u64) {
     let state = app.state::<SidecarState>();
+
+    let current = {
+        let frame = state.frame.lock().expect("sidecar state mutex poisoned");
+        is_current(&frame, launch_id)
+    };
+    if !current {
+        return;
+    }
 
     if let Some(task) = state
         .poll_task
@@ -298,15 +335,6 @@ fn start_session(app: &AppHandle, port: u16, token: String) {
     {
         task.abort();
     }
-
-    let generation = {
-        let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
-        frame.generation += 1;
-        frame.last_frame = None;
-        frame.last_frame_body = None;
-        frame.world = Default::default();
-        frame.generation
-    };
 
     let session = {
         let mut session = state.session.lock().expect("sidecar state mutex poisoned");
@@ -323,7 +351,7 @@ fn start_session(app: &AppHandle, port: u16, token: String) {
         return;
     };
 
-    let task = crate::proxy::start_polling(app.clone(), session.port, session.token, generation);
+    let task = crate::proxy::start_polling(app.clone(), session.port, session.token, launch_id);
     *state
         .poll_task
         .lock()
@@ -370,16 +398,6 @@ mod tests {
             lines.push(b"tial line more\n"),
             vec!["partial line more".to_string()]
         );
-    }
-
-    #[test]
-    fn a_stopped_sidecar_does_not_respawn_on_a_pending_retry() {
-        assert!(!should_retry_spawn(true));
-    }
-
-    #[test]
-    fn a_running_sidecar_respawns_on_a_pending_retry() {
-        assert!(should_retry_spawn(false));
     }
 
     #[test]

@@ -58,12 +58,19 @@ fn generate_token() -> std::io::Result<String> {
     Ok(buf.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// The supervisor's pure retry decision, isolated from `AppHandle` so it's
-/// unit-testable without a running Tauri app.
+/// The supervisor's retry decision: retry with the next backoff, or give
+/// up once too many attempts have failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptOutcome {
     Retry { attempt: u32, backoff: Duration },
     Exhausted,
+}
+
+/// Whether a scheduled retry should actually respawn the sidecar: an
+/// operator's explicit Stop Background request, arriving while the
+/// retry was pending, cancels it.
+fn should_retry_spawn(stopped: bool) -> bool {
+    !stopped
 }
 
 /// Given the number of restarts already recorded (before this failure),
@@ -104,11 +111,12 @@ fn clear_session(app: &AppHandle) {
     }
     let mut session = state.session.lock().expect("sidecar state mutex poisoned");
     *session = transition_session(session.take(), SessionEvent::Terminated);
-    *state
-        .last_frame
-        .lock()
-        .expect("sidecar state mutex poisoned") = None;
-    *state.world.lock().expect("sidecar state mutex poisoned") = Default::default();
+    drop(session);
+
+    let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
+    frame.last_frame = None;
+    frame.last_frame_body = None;
+    frame.world = Default::default();
 }
 
 /// Records a failed spawn/token-write/unexpected-exit attempt: clears the
@@ -142,7 +150,14 @@ fn record_attempt_failure(app: &AppHandle, reason: &str) {
             let app_for_retry = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(backoff);
-                spawn_sidecar(app_for_retry);
+                let stopped = *app_for_retry
+                    .state::<SidecarState>()
+                    .stopped
+                    .lock()
+                    .expect("sidecar state mutex poisoned");
+                if should_retry_spawn(stopped) {
+                    spawn_sidecar(app_for_retry);
+                }
             });
         }
         AttemptOutcome::Exhausted => {
@@ -181,12 +196,11 @@ pub fn kill_sidecar(app: &AppHandle) {
 /// same bounded-retry path as an unexpected exit. A child that fails its
 /// stdin token write is killed immediately rather than left running
 /// unauthenticated.
+///
+/// Does not touch `stopped` -- only an explicit Restart Simulation action
+/// clears it before calling this, and a scheduled retry checks it before
+/// calling this at all.
 pub fn spawn_sidecar(app: AppHandle) {
-    *app.state::<SidecarState>()
-        .stopped
-        .lock()
-        .expect("sidecar state mutex poisoned") = false;
-
     let token = match generate_token() {
         Ok(token) => token,
         Err(error) => {
@@ -269,8 +283,10 @@ pub fn spawn_sidecar(app: AppHandle) {
 
 /// Starts a fresh session once `PANTHEA_PORT` is parsed: replaces
 /// whatever session was tracked before, resets change-detection and
-/// world-status state, and starts the proxy's poll task against the new
-/// port and token.
+/// world-status state, bumps the generation counter (fencing out any
+/// frame the previous session's poll task might still hand back before
+/// its `abort()` takes effect), and starts the proxy's poll task against
+/// the new port and token.
 fn start_session(app: &AppHandle, port: u16, token: String) {
     let state = app.state::<SidecarState>();
 
@@ -282,11 +298,15 @@ fn start_session(app: &AppHandle, port: u16, token: String) {
     {
         task.abort();
     }
-    *state
-        .last_frame
-        .lock()
-        .expect("sidecar state mutex poisoned") = None;
-    *state.world.lock().expect("sidecar state mutex poisoned") = Default::default();
+
+    let generation = {
+        let mut frame = state.frame.lock().expect("sidecar state mutex poisoned");
+        frame.generation += 1;
+        frame.last_frame = None;
+        frame.last_frame_body = None;
+        frame.world = Default::default();
+        frame.generation
+    };
 
     let session = {
         let mut session = state.session.lock().expect("sidecar state mutex poisoned");
@@ -303,7 +323,7 @@ fn start_session(app: &AppHandle, port: u16, token: String) {
         return;
     };
 
-    let task = crate::proxy::start_polling(app.clone(), session.port, session.token);
+    let task = crate::proxy::start_polling(app.clone(), session.port, session.token, generation);
     *state
         .poll_task
         .lock()
@@ -350,6 +370,16 @@ mod tests {
             lines.push(b"tial line more\n"),
             vec!["partial line more".to_string()]
         );
+    }
+
+    #[test]
+    fn a_stopped_sidecar_does_not_respawn_on_a_pending_retry() {
+        assert!(!should_retry_spawn(true));
+    }
+
+    #[test]
+    fn a_running_sidecar_respawns_on_a_pending_retry() {
+        assert!(should_retry_spawn(false));
     }
 
     #[test]

@@ -164,9 +164,10 @@ pub fn refresh(app: &AppHandle) {
         .lock()
         .expect("sidecar state mutex poisoned");
     let world = state
-        .world
+        .frame
         .lock()
         .expect("sidecar state mutex poisoned")
+        .world
         .clone();
 
     let display = map_tray_display(
@@ -253,6 +254,9 @@ fn trigger_stop_or_restart(app: &AppHandle) {
     let state = app.state::<SidecarState>();
     let already_stopped = *state.stopped.lock().expect("sidecar state mutex poisoned");
     if already_stopped {
+        // Only this action clears `stopped` -- spawn_sidecar itself never
+        // does, so a retry left pending from before the stop stays cancelled.
+        *state.stopped.lock().expect("sidecar state mutex poisoned") = false;
         crate::sidecar::spawn_sidecar(app.clone());
         return;
     }

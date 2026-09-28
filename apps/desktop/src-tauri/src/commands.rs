@@ -10,10 +10,15 @@ use crate::state::SidecarState;
 
 /// Stores `frames` as the subscribed Channel; a resubscribe (e.g. after
 /// the webview reloads) replaces whatever channel was stored before.
-/// Pushed to by the proxy's poll task, never called directly here.
+/// Pushed to on every subsequent poll by the proxy's poll task -- but if
+/// a frame has already been polled, that cached frame is sent right
+/// away too, so a newly (re)subscribing webview sees the world's
+/// current state immediately rather than waiting up to a second for the
+/// next poll.
 #[tauri::command]
 pub fn subscribe_world(state: State<SidecarState>, frames: Channel<Value>) {
-    *state.channel.lock().expect("sidecar state mutex poisoned") = Some(frames);
+    let mut frame_state = state.frame.lock().expect("sidecar state mutex poisoned");
+    crate::proxy::apply_subscribe(&mut frame_state, frames);
 }
 
 /// Relays a presentation receipt for `event_id`, attributed to the
@@ -29,9 +34,10 @@ pub async fn present_event(app: AppHandle, event_id: String) -> Result<(), Strin
         .ok_or_else(|| "no active sidecar session".to_string())?;
     let session_id = app
         .state::<SidecarState>()
-        .last_frame
+        .frame
         .lock()
         .expect("sidecar state mutex poisoned")
+        .last_frame
         .as_ref()
         .map(|frame| frame.session_id.clone())
         .ok_or_else(|| "no frame received yet".to_string())?;

@@ -64,6 +64,32 @@ pub struct WorldStatusSnapshot {
     pub degraded_reason: Option<String>,
 }
 
+/// Everything a polled frame touches, behind one lock: the session
+/// generation, change-detection state, world status, and the subscribed
+/// Channel. Consolidated into one struct (rather than five separate
+/// mutexes) so a frame's generation check, decision, cache update,
+/// forward, and last-forwarded mark all happen atomically -- and so
+/// installing a Channel and replaying the cached frame to it happen
+/// atomically too, with no gap a concurrent poll or restart can land in.
+#[derive(Default)]
+pub struct FrameState {
+    /// Bumped by every new session (`start_session`) and by session
+    /// termination (`clear_session`); a poll task's frames are tagged
+    /// with the generation it started with, so a frame still in flight
+    /// after a restart or shutdown (a task-cancellation race) is fenced
+    /// out rather than acted on.
+    pub generation: u64,
+    /// The last frame forwarded to the webview, for change detection.
+    pub last_frame: Option<FrameKey>,
+    /// The most recently polled frame's raw body, cached regardless of
+    /// whether a subscriber was present to receive it -- replayed
+    /// immediately to a newly (re)subscribing Channel.
+    pub last_frame_body: Option<serde_json::Value>,
+    pub world: WorldStatusSnapshot,
+    /// The subscribed Channel; a resubscribe replaces it.
+    pub channel: Option<Channel<serde_json::Value>>,
+}
+
 #[derive(Default)]
 pub struct SidecarState {
     pub child: Mutex<Option<CommandChild>>,
@@ -84,13 +110,9 @@ pub struct SidecarState {
     /// The poll task's handle, so a restart or explicit stop can cancel
     /// the previous session's polling before starting a new one.
     pub poll_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    /// The last frame forwarded to the webview, for change detection.
-    pub last_frame: Mutex<Option<FrameKey>>,
-    /// The subscribed Channel; a resubscribe replaces it.
-    pub channel: Mutex<Option<Channel<serde_json::Value>>>,
     /// True while the main window is hidden (background mode).
     pub window_hidden: Mutex<bool>,
-    pub world: Mutex<WorldStatusSnapshot>,
+    pub frame: Mutex<FrameState>,
 }
 
 #[cfg(test)]

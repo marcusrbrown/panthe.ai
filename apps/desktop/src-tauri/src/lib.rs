@@ -1,11 +1,8 @@
-// Panthea desktop shell (ADR-0003 backend-lifecycle probe). Owns the Bun
-// simulation sidecar as a supervised child process, proxies its
-// authenticated HTTP frame stream to the webview over a Tauri Channel
-// (the token never crosses to the renderer), and exposes pause, resume,
-// and stop-background as tray-menu operator controls.
-//
-// See tools/probes/backend-lifecycle/README.md for the measured evidence
-// this shell was built to produce.
+// Panthea desktop shell. Owns the Bun simulation sidecar as a supervised
+// child process, proxies its authenticated HTTP frame stream to the
+// webview over a Tauri Channel (the token never crosses to the
+// renderer), and exposes pause, resume, and stop-background as
+// tray-menu operator controls.
 
 mod commands;
 pub mod proxy;
@@ -52,8 +49,8 @@ pub fn run() {
                         let quitting =
                             *state.quitting.lock().expect("sidecar state mutex poisoned");
                         if !quitting {
-                            // Keep running in the tray (ADR-0003): prevent
-                            // the actual close and hide instead.
+                            // Keep running in the tray: prevent the
+                            // actual close and hide instead.
                             api.prevent_close();
                             if let Some(window) = window_handle.get_webview_window("main") {
                                 let _ = window.hide();
@@ -79,7 +76,7 @@ pub fn run() {
             let quitting = *state.quitting.lock().expect("sidecar state mutex poisoned");
             if !quitting {
                 // A window-close-driven exit request keeps the app running
-                // in the tray rather than quitting (ADR-0003).
+                // in the tray rather than quitting.
                 api.prevent_exit();
             }
         }

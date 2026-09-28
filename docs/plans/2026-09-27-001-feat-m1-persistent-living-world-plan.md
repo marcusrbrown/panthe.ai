@@ -459,6 +459,7 @@ flowchart TB
 - Import and restore run through the staging-then-atomic-rename path; the slot index lists only fully materialized slots.
 - Request guards: loopback bind, token, `Host` check, and rejection of browser-originated requests (`Origin`/`Sec-Fetch-*`); presentation receipts are idempotent per event and session, rate-limited, and duplicates dropped.
 - Build script compiles the sidecar and runs the binary host-leak scan.
+- Projection storage: Phase A persists world projections as one JSON document rewritten every tick (per-tick cost scales with world size). Unit 6 replaces it with per-entity rows or dirty-subtree writes once real projections from Units 4–5 exist, and measures commit cost against the 1 Hz budget.
 
 **Patterns to follow:** `tools/probes/backend-lifecycle/src/{lock,sidecar}.ts`, `tools/probes/backend-lifecycle/scripts/{build-sidecar,scan-binary}.sh`.
 

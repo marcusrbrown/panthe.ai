@@ -24,7 +24,13 @@ function validPack(): Record<string, unknown> {
         id: "agora",
         realm: "mortal",
         name: "The Agora",
-        edges: [{ to: "tavern", transport: "path", bidirectional: true }],
+        edges: [{ to: "market-road", transport: "path", bidirectional: true }],
+      },
+      {
+        id: "market-road",
+        realm: "mortal",
+        name: "Market Road",
+        edges: [],
       },
     ],
     buildings: [
@@ -119,4 +125,72 @@ test("rules with a non-numeric balance value are rejected", () => {
   };
   const result = parseContentPack(pack);
   expect(result.ok).toBe(false);
+});
+
+test("an edge referencing an unknown location fails referential integrity", () => {
+  const pack = validPack();
+  (pack.locations as Record<string, unknown>[])[0].edges = [
+    { to: "nowhere", transport: "path", bidirectional: true },
+  ];
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("locations[0].edges[0].to");
+  }
+});
+
+test("a location realm not declared in the pack's realms list fails referential integrity", () => {
+  const pack = validPack();
+  pack.realms = ["mortal"];
+  (pack.locations as Record<string, unknown>[]).push({
+    id: "underworld-entry",
+    realm: "underworld",
+    name: "Underworld Entry",
+    edges: [],
+  });
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("locations[2].realm");
+  }
+});
+
+test("a building referencing an unknown location fails referential integrity", () => {
+  const pack = validPack();
+  (pack.buildings as Record<string, unknown>[])[0].locationId = "nowhere";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("buildings[0].locationId");
+  }
+});
+
+test("an inhabitant referencing an unknown location fails referential integrity", () => {
+  const pack = validPack();
+  (pack.inhabitants as Record<string, unknown>[])[0].locationId = "nowhere";
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("inhabitants[0].locationId");
+  }
+});
+
+test("duplicate location ids fail referential integrity", () => {
+  const pack = validPack();
+  (pack.locations as Record<string, unknown>[]).push({
+    id: "agora",
+    realm: "mortal",
+    name: "Duplicate Agora",
+    edges: [],
+  });
+  const result = parseContentPack(pack);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("malformed");
+    expect(result.path).toBe("locations[2].id");
+  }
 });

@@ -293,6 +293,71 @@ function parseWorldRules(
   });
 }
 
+/**
+ * Referential integrity, run after every field has already shape-parsed
+ * successfully. Shape parsing alone lets a syntactically valid pack
+ * reference geography that does not exist -- an edge to a phantom
+ * location, a building or inhabitant planted in a location that was never
+ * declared, a location realm the pack never lists, or two locations
+ * fighting over one id. Each of those loads as "valid" content right up
+ * until packages/world tries to use it, so this fails loudly at the same
+ * parse boundary as every other content error instead of surfacing later
+ * as a confusing runtime lookup miss.
+ */
+function checkReferentialIntegrity(
+  pack: ContentPack,
+): ParseResult<ContentPack> {
+  const declaredRealms = new Set<Realm>(pack.realms);
+  const locationIds = new Set<string>();
+
+  for (const [index, location] of pack.locations.entries()) {
+    if (locationIds.has(location.id)) {
+      return fail(
+        `locations[${index}].id`,
+        `duplicate location id: ${location.id}`,
+      );
+    }
+    locationIds.add(location.id);
+  }
+
+  for (const [index, location] of pack.locations.entries()) {
+    if (!declaredRealms.has(location.realm)) {
+      return fail(
+        `locations[${index}].realm`,
+        `location "${location.id}" declares realm "${location.realm}", which is not listed in the pack's realms`,
+      );
+    }
+    for (const [edgeIndex, edge] of location.edges.entries()) {
+      if (!locationIds.has(edge.to)) {
+        return fail(
+          `locations[${index}].edges[${edgeIndex}].to`,
+          `edge from "${location.id}" targets unknown location: ${edge.to}`,
+        );
+      }
+    }
+  }
+
+  for (const [index, building] of pack.buildings.entries()) {
+    if (!locationIds.has(building.locationId)) {
+      return fail(
+        `buildings[${index}].locationId`,
+        `building "${building.id}" references unknown location: ${building.locationId}`,
+      );
+    }
+  }
+
+  for (const [index, inhabitant] of pack.inhabitants.entries()) {
+    if (!locationIds.has(inhabitant.locationId)) {
+      return fail(
+        `inhabitants[${index}].locationId`,
+        `inhabitant "${inhabitant.id}" references unknown location: ${inhabitant.locationId}`,
+      );
+    }
+  }
+
+  return ok(pack);
+}
+
 export function parseContentPack(input: unknown): ParseResult<ContentPack> {
   if (!isRecord(input)) {
     return fail("", "expected a content pack object");
@@ -324,7 +389,7 @@ export function parseContentPack(input: unknown): ParseResult<ContentPack> {
   if (!inhabitants.ok) return inhabitants;
   const rules = parseWorldRules(input.rules, "rules");
   if (!rules.ok) return rules;
-  return ok({
+  return checkReferentialIntegrity({
     schemaVersion: schemaVersion.value,
     realms: realms.value,
     resources: resources.value,

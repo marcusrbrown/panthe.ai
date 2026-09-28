@@ -13,7 +13,10 @@ import type {
   ClockRow,
   ProjectionCodec,
   ProjectionReducers,
+  Store,
 } from "@panthea/persistence";
+import { getEventRow } from "@panthea/persistence";
+import type { EventSource } from "@panthea/telemetry";
 import {
   applyEvent,
   createInitialWorldState,
@@ -105,4 +108,15 @@ export function deserializePrngState(raw: string): PrngState | undefined {
     return undefined;
   }
   return JSON.parse(raw) as PrngState;
+}
+
+/**
+ * Bridges persistence's `getEventRow` to packages/telemetry's `EventSource`
+ * injection seam, so a trace query can resolve committed events without
+ * telemetry depending on `@panthea/persistence`'s `Store` type directly.
+ */
+export function createEventSource(store: Pick<Store, "db">): EventSource {
+  return {
+    getEvent: (id) => getEventRow(store.db, id),
+  };
 }

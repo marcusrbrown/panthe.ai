@@ -62,6 +62,7 @@
         "@panthea/content": "workspace:*",
         "@panthea/contracts": "workspace:*",
         "@panthea/persistence": "workspace:*",
+        "@panthea/telemetry": "workspace:*",
         "@panthea/world": "workspace:*",
       },
     },

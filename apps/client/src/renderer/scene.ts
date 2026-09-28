@@ -1,9 +1,10 @@
 import type { Realm } from "@panthea/contracts";
 import * as THREE from "three";
 import { WebGPURenderer } from "three/webgpu";
-import { Sprite2D, SpriteGroup } from "three-flatland";
+import { Sprite2D } from "three-flatland";
 
 import type { ViewLocation, WorldViewModel } from "../store";
+import { createMarkerLayer } from "./markers";
 import { type EffectTone, placeEvents } from "./presentation";
 
 export interface WorldRenderer {
@@ -13,16 +14,6 @@ export interface WorldRenderer {
 }
 
 export type RendererFactory = (canvas: HTMLCanvasElement) => WorldRenderer;
-
-export function replaceMarkerGroup(
-  scene: THREE.Scene,
-  previous: SpriteGroup,
-): SpriteGroup {
-  scene.remove(previous);
-  const current = new SpriteGroup();
-  scene.add(current);
-  return current;
-}
 
 function markerTexture(color: string, dead = false): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
@@ -102,14 +93,12 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
   scene.background = new THREE.Color("#e7dfce");
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
   camera.position.z = 120;
-  let markers = new SpriteGroup();
+  const markers = createMarkerLayer(scene);
   const owned: THREE.Object3D[] = [];
   const textures: THREE.Texture[] = [];
   let disposed = false;
   let lost = false;
   let onLost: (() => void) | undefined;
-
-  scene.add(markers);
 
   function resize(): void {
     const width = Math.max(1, canvas.clientWidth);
@@ -123,20 +112,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
   }
 
   function clearScene(): void {
-    for (const child of [...markers.children]) {
-      markers.remove(child);
-      const disposable = child as THREE.Object3D & {
-        geometry?: THREE.BufferGeometry;
-        material?: THREE.Material | THREE.Material[];
-      };
-      disposable.geometry?.dispose();
-      if (disposable.material) {
-        const materials = Array.isArray(disposable.material)
-          ? disposable.material
-          : [disposable.material];
-        for (const material of materials) material.dispose();
-      }
-    }
+    markers.clear();
     for (const child of owned.splice(0)) {
       scene.remove(child);
       if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
@@ -147,7 +123,6 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
         for (const material of materials) material.dispose();
       }
     }
-    markers = replaceMarkerGroup(scene, markers);
     for (const texture of textures.splice(0)) texture.dispose();
   }
 
@@ -334,6 +309,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
       disposed = true;
       window.removeEventListener("resize", handleResize);
       clearScene();
+      markers.dispose();
       renderer.setAnimationLoop(null);
       renderer.dispose();
     },

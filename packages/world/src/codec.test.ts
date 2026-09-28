@@ -16,6 +16,7 @@ function minimalRules(): ContentPack["rules"] {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
+    maxProposalsPerTick: 100,
     fireBalance: {},
     economyBalance: {},
   };
@@ -286,6 +287,7 @@ function economyPack(): ContentPack {
       catchUpCapMs: 1,
       catchUpChunkMs: 2,
       checkpointIntervalMs: 3,
+      maxProposalsPerTick: 4,
       fireBalance: { spreadChancePerTick: 0.1 },
       economyBalance: { value_food: 3 },
     },

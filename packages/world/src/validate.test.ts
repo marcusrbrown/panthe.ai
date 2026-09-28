@@ -15,6 +15,7 @@ function minimalRules(): ContentPack["rules"] {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
+    maxProposalsPerTick: 100,
     fireBalance: {},
     economyBalance: {},
   };
@@ -340,6 +341,7 @@ function economyFixtureState(): WorldState {
       catchUpCapMs: 0,
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
+      maxProposalsPerTick: 100,
       fireBalance: {},
       economyBalance: { value_wood: 1, value_currency: 1, gatherAmount: 2 },
     },
@@ -1157,6 +1159,7 @@ function fireFixtureState(): WorldState {
       catchUpCapMs: 0,
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
+      maxProposalsPerTick: 100,
       fireBalance: { igniteThreshold: 3 },
       economyBalance: { repairCostPlanks: 2, repairAmountPerTick: 1 },
     },

@@ -7,12 +7,15 @@
     "dev": "bun --watch run src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build:sidecar": "bash scripts/build-sidecar.sh",
+    "scan:binary": "bash scripts/scan-binary.sh"
   },
   "dependencies": {
     "@panthea/content": "workspace:*",
     "@panthea/contracts": "workspace:*",
     "@panthea/persistence": "workspace:*",
+    "@panthea/telemetry": "workspace:*",
     "@panthea/world": "workspace:*"
   }
 }

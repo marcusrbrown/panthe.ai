@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run --cwd ../client dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run --cwd ../client build && bash ../../tools/probes/backend-lifecycle/scripts/build-sidecar.sh",
+    "beforeBuildCommand": "bun run --cwd ../client build && bash ../simulation/scripts/build-sidecar.sh",
     "frontendDist": "../../client/dist"
   },
   "app": {

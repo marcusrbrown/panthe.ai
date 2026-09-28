@@ -97,6 +97,8 @@ export interface WorldRules {
   readonly catchUpCapMs: number;
   readonly catchUpChunkMs: number;
   readonly checkpointIntervalMs: number;
+  /** Proposals beyond this count in a single tick's queue are rejected as over-limit before they ever reach the world engine. */
+  readonly maxProposalsPerTick: number;
   readonly fireBalance: Readonly<Record<string, number>>;
   readonly economyBalance: Readonly<Record<string, number>>;
 }
@@ -333,6 +335,11 @@ function parseWorldRules(
     `${path}.checkpointIntervalMs`,
   );
   if (!checkpointIntervalMs.ok) return checkpointIntervalMs;
+  const maxProposalsPerTick = parseNonNegativeInteger(
+    value.maxProposalsPerTick,
+    `${path}.maxProposalsPerTick`,
+  );
+  if (!maxProposalsPerTick.ok) return maxProposalsPerTick;
   const fireBalance = parseBalanceRecord(
     value.fireBalance,
     `${path}.fireBalance`,
@@ -347,6 +354,7 @@ function parseWorldRules(
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
     checkpointIntervalMs: checkpointIntervalMs.value,
+    maxProposalsPerTick: maxProposalsPerTick.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
   });

@@ -1,7 +1,6 @@
 // "Follow this event" query: walks from an event or a proposal outcome
 // through observation -> proposal -> validation -> event -> projection
-// change -> presentation receipts, in order (Key Technical Decisions'
-// causal trace).
+// change -> presentation receipts, in order.
 
 import type { Database } from "bun:sqlite";
 import type { EventId, RejectionReasonCode } from "@panthea/contracts";

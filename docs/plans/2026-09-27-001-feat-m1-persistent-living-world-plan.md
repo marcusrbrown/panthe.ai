@@ -86,7 +86,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   "verdict": "extend",
   "scope": "repo root (apps/, packages/, tools/, content/)",
   "freshness": {
-    "vcs_reference": "19f7b6aedc398647225040f642f4c51eec74de86"
+    "vcs_reference": "0e486edfde40bf07d16684fadaa229110f54cfcf"
   },
   "budget": {
     "max_search_passes": 3,
@@ -96,80 +96,79 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   "candidates": [
     {
       "path_or_symbol": "tools/probes/backend-lifecycle/src/sidecar.ts",
-      "description": "Bun sidecar lifecycle, bearer-gated HTTP handling, 1 Hz tick loop, and persisted store access in the probe implementation.",
+      "description": "Probe sidecar lifecycle: authenticated HTTP, 1 Hz tick loop, database opening, and shutdown behavior.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "tools/probes/backend-lifecycle/src/clock.ts",
-      "description": "Elapsed-wall-clock helper that advances persisted time at most once across crash/restart boundaries.",
+      "path_or_symbol": "tools/probes/backend-lifecycle/src/{clock,lock}.ts",
+      "description": "Probe clock cursor math and lifecycle lock ownership: at-most-once elapsed-time application, duplicate-start refusal, stale-lock reclaim, and parent-death termination.",
       "disposition": "reuse"
     },
     {
-      "path_or_symbol": "tools/probes/backend-lifecycle/src/lock.ts",
-      "description": "Lifecycle lock for duplicate-start refusal, stale-lock recovery, and parent-death self-termination.",
+      "path_or_symbol": "tools/probes/backend-lifecycle/scripts/{build-sidecar,scan-binary}.sh",
+      "description": "Probe-side compiled-sidecar build and binary-scan harnesses used to assert the lifecycle and host-leak boundaries.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "apps/simulation/src/{index,world-store}.ts",
+      "description": "Simulation service entrypoint and world-store composition root bridging persistence, world reducers, clock restore, and PRNG serialization.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/persistence/src/{store,archive,snapshot}.ts",
+      "description": "WAL-backed store, archive export/import, and snapshot/rebuild plumbing with schema creation, event append, and projection replay.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/persistence/src/clock.ts",
+      "description": "Persisted clock policy: wall-clock elapsed-time application, catch-up cap, pause, and resume semantics.",
       "disposition": "reuse"
     },
     {
-      "path_or_symbol": "apps/desktop/src-tauri/src/lib.rs",
-      "description": "Tauri shell supervisor for sidecar launch, per-launch stdin token handling, restart backoff, tray behavior, and exit control.",
+      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
+      "description": "Local causal trace tables plus lookup/follow helpers for observations, proposal outcomes, receipts, and event chains.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "apps/desktop/src-tauri/tauri.conf.json",
-      "description": "Desktop config that wires the sidecar build step, IPC surface, CSP, and bundled binaries.",
+      "path_or_symbol": "apps/desktop/src-tauri/{src/lib.rs,tauri.conf.json}",
+      "description": "Rust shell supervision, per-launch token minting, restart/backoff, and packaged sidecar wiring/CSP config.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "apps/simulation/src/index.ts",
-      "description": "Simulation service entrypoint with health server wiring and shutdown handling.",
+      "path_or_symbol": "packages/world/src/{state,actions,validate,codec,geography}.ts",
+      "description": "Core world engine for state assembly, proposal validation, tick application, encode/decode, and adjacency/realm checks.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "apps/simulation/src/world-store.ts",
-      "description": "Composition root that bridges authored Greek content, world projection reducers, persistence codecs, clock restore, and PRNG serialization.",
+      "path_or_symbol": "packages/world/src/{economy,routines}.ts",
+      "description": "Economy transfer/applyRecipe/trade-acceptance helpers and routine proposal selection for actor drives.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/world/src/{fire,repair,worship}.ts",
+      "description": "Fire spread and building damage/burn/destroy transitions, repair progress/completion, and worship/favor effects.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/content/src/load.ts",
+      "description": "Content-pack loader that reads authored JSON and hands the merged pack to the parser.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
+      "description": "Parse-don't-validate schema layer for proposals, events, snapshots, and authored content packs.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "content/greek/world/*.json",
+      "description": "Authored Greek world pack data consumed by the loader.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "apps/client/src/App.tsx",
       "description": "Full-window canvas shell only; no renderer, state subscription, or scene lifecycle yet.",
       "disposition": "insufficient",
-      "insufficiency_reason": "This is still a placeholder mount point, not the actual client renderer the remaining unit needs."
-    },
-    {
-      "path_or_symbol": "packages/world/src/{state,actions,validate,codec,geography}.ts",
-      "description": "Pure world engine for initial world assembly, proposal validation, tick application, event projection, adjacency/realm checks, encode/decode, and PRNG state.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/content/src/load.ts",
-      "description": "Content-pack loader that reads authored JSON, distinguishes required versus optional files, and hands the merged pack to the parser.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "content/greek/world/*.json",
-      "description": "Authored Greek world pack data: locations, realm graph, balance rules, and other authored content consumed by the loader.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
-      "description": "Parse-don't-validate schema layer for proposals, world events, sync frames, and authored content packs; proposal kinds already cover move, realm-transition, gather, produce, trade, consume, strike, repair, worship, and claim.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/persistence/src/{store,archive,snapshot}.ts",
-      "description": "WAL-backed store, archive import/export, and snapshot/rebuild plumbing; owns STRICT schema creation, event append, projection replay, clock and PRNG persistence, and archive manifest/hash verification.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
-      "description": "Local causal trace tables and lookup helpers for observations, proposal outcomes, receipts, and correlation/causation chains.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "packages/world/src/{economy,routines}.ts",
-      "description": "No dedicated economy or routines module exists yet; those responsibilities are still split across content balance data, proposal validation, and tick scheduling.",
-      "disposition": "insufficient",
-      "insufficiency_reason": "The remaining units still need a dedicated owner for economy/routine behavior rather than only scattered logic in the existing engine."
+      "insufficiency_reason": "This is still a placeholder mount point, not the actual client renderer surface the remaining unit needs."
     }
   ]
 }
@@ -220,6 +219,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 ### Deferred to Implementation
 
 - Exact coarse-step and chunk sizes for catch-up: tune against the 1-hour cap and responsiveness on the baseline machine; record chosen values in configuration docs.
+  Resolved 2026-09-27: catch-up runs full-granularity ticks in 60-second chunks (`catchUpChunkMs`, 60 chunks under the one-hour `catchUpCapMs`), and the per-tick proposal cap is `maxProposalsPerTick: 50`, all in `content/greek/world/rules.json`. The JSON projection commit measured about 0.3 ms per tick for the authored world and 2–9 ms at ten times its actors and buildings, well inside the 1 Hz budget, so storage stays one document per tick.
 - Fire spread rates, per-zone burn bounds, and repair costs: balance values set in content data and adjusted from scenario observation.
 - Economy stabilizers (fixed floor/ceiling prices at the shop/tavern vs. pure NPC-to-NPC trade): choose the minimum that keeps the scenario's currency and goods conserved and non-degenerate over the one-hour trial.
   Resolved 2026-09-27 (owner): pure NPC-to-NPC trade, with no fixed shop or tavern prices. A trade names its counterparty and the exact goods and currency exchanged; the counterparty's acceptance is a deterministic rule over its drives and committed inventory, evaluated at execution.
@@ -455,7 +455,7 @@ flowchart TB
 
 ### Phase C — Service and shell
 
-- [ ] **Unit 6: Simulation service**
+- [x] **Unit 6: Simulation service**
 
 **Goal:** Turn `apps/simulation` into the authoritative sidecar: lifecycle, tick loop, pause, capped chunked catch-up with summary, autosave, world slots, authenticated API and stream, and the product sidecar build.
 
@@ -512,6 +512,7 @@ flowchart TB
 - A dedicated capability grants the main window only the Channel command; no shell, filesystem, network, or other plugin permission is added to the renderer.
 - On sidecar restart the proxy re-subscribes and requests a fresh committed-state frame; the client replaces its state with it.
 - Window close keeps ticking (background mode); the tray shows running / paused / background / stopped with the current state marked, plus a degraded label when the sidecar reports it; stop-background and quit remain explicit.
+- The sidecar embeds the authored Greek pack (statically imported JSON, inlined at `bun build --compile` time), so it needs no filesystem path to its content and the shell passes none when spawning it.
 
 **Test scenarios:**
 - Happy path: frames from the sidecar reach the Channel in order.

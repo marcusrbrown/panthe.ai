@@ -1,4 +1,4 @@
-// Generated-runtime host and validation live here (M4+). Generated code
+// Generated-runtime host and validation live here. Generated code
 // executes only through validated game APIs — no filesystem, shell,
 // credential, or network access. Placeholder until the sandbox host lands.
 

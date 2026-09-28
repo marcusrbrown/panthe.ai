@@ -1,4 +1,4 @@
-// Generation adapters, provenance, and the asset registry live here (M4+).
+// Generation adapters, provenance, and the asset registry live here.
 // Placeholder until the first generation adapter lands.
 
 export interface PackageStatus {

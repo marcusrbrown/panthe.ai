@@ -16,6 +16,7 @@
     "catchUpCapMs": 3600000,
     "catchUpChunkMs": 60000,
     "checkpointIntervalMs": 60000,
+    "maxProposalsPerTick": 50,
     "fireBalance": {
       "spreadChancePerTick": 0.1,
       "maxSpreadPerTick": 2,

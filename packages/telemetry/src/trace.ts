@@ -1,8 +1,8 @@
 // The local causal trace store: observation records, proposals (accepted
 // and rejected), and presentation receipts, linked by correlation/causation
-// IDs (Key Technical Decisions). Local causal recording and inspection are
-// always on; external export is a separate, opt-in concern (docs/README.md
-// invariants) this module does not implement.
+// IDs. Local causal recording and inspection are always on; external
+// export is a separate, opt-in concern (docs/README.md invariants) this
+// module does not implement.
 //
 // Deliberately decoupled from packages/persistence: this module takes a
 // plain `bun:sqlite` `Database` handle (the composing service, e.g.

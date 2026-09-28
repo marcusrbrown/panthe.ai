@@ -86,7 +86,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   "verdict": "extend",
   "scope": "repo root (apps/, packages/, tools/, content/)",
   "freshness": {
-    "vcs_reference": "2bb428e88c8ff992b7725f7676ada17f60c3b7f0"
+    "vcs_reference": "19f7b6aedc398647225040f642f4c51eec74de86"
   },
   "budget": {
     "max_search_passes": 3,
@@ -96,12 +96,12 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   "candidates": [
     {
       "path_or_symbol": "tools/probes/backend-lifecycle/src/sidecar.ts",
-      "description": "Bun sidecar with bearer gating, bun:sqlite WAL storage, events/clock tables, 1 Hz tick, and cursor advancement in one transaction.",
+      "description": "Bun sidecar lifecycle, bearer-gated HTTP handling, 1 Hz tick loop, and persisted store access in the probe implementation.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "tools/probes/backend-lifecycle/src/clock.ts",
-      "description": "Elapsed-wall-clock helper that applies a persisted cursor at most once across crash/restart boundaries.",
+      "description": "Elapsed-wall-clock helper that advances persisted time at most once across crash/restart boundaries.",
       "disposition": "reuse"
     },
     {
@@ -111,42 +111,65 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
     },
     {
       "path_or_symbol": "apps/desktop/src-tauri/src/lib.rs",
-      "description": "Tauri shell supervisor: sidecar launch, per-launch stdin token, restart backoff, tray and exit behavior.",
+      "description": "Tauri shell supervisor for sidecar launch, per-launch stdin token handling, restart backoff, tray behavior, and exit control.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "apps/desktop/src-tauri/tauri.conf.json",
-      "description": "Desktop config that builds the sidecar and constrains CSP/IPC surfaces.",
+      "description": "Desktop config that wires the sidecar build step, IPC surface, CSP, and bundled binaries.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "apps/simulation/src/index.ts",
-      "description": "Loopback Bun HTTP skeleton with /health and shutdown wiring.",
+      "description": "Simulation service entrypoint with health server wiring and shutdown handling.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "packages/contracts/src/index.ts",
-      "description": "Placeholder for versioned command, event, content, and save schemas.",
-      "disposition": "insufficient",
-      "insufficiency_reason": "Status stub only; no schemas exist."
-    },
-    {
-      "path_or_symbol": "packages/persistence/src/index.ts",
-      "description": "Placeholder for transactions, snapshots, migrations, replay.",
-      "disposition": "insufficient",
-      "insufficiency_reason": "Status stub only; no store, migrations, or snapshots exist."
-    },
-    {
-      "path_or_symbol": "packages/telemetry/src/index.ts",
-      "description": "Placeholder for correlation, local inspection, export adapters.",
-      "disposition": "insufficient",
-      "insufficiency_reason": "Status stub only; no trace store or query exists."
+      "path_or_symbol": "apps/simulation/src/world-store.ts",
+      "description": "Composition root that bridges authored Greek content, world projection reducers, persistence codecs, clock restore, and PRNG serialization.",
+      "disposition": "extend"
     },
     {
       "path_or_symbol": "apps/client/src/App.tsx",
-      "description": "Full-window canvas placeholder with no state subscription.",
+      "description": "Full-window canvas shell only; no renderer, state subscription, or scene lifecycle yet.",
       "disposition": "insufficient",
-      "insufficiency_reason": "No renderer, state store, or event-stream wiring."
+      "insufficiency_reason": "This is still a placeholder mount point, not the actual client renderer the remaining unit needs."
+    },
+    {
+      "path_or_symbol": "packages/world/src/{state,actions,validate,codec,geography}.ts",
+      "description": "Pure world engine for initial world assembly, proposal validation, tick application, event projection, adjacency/realm checks, encode/decode, and PRNG state.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/content/src/load.ts",
+      "description": "Content-pack loader that reads authored JSON, distinguishes required versus optional files, and hands the merged pack to the parser.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "content/greek/world/*.json",
+      "description": "Authored Greek world pack data: locations, realm graph, balance rules, and other authored content consumed by the loader.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
+      "description": "Parse-don't-validate schema layer for proposals, world events, sync frames, and authored content packs; proposal kinds already cover move, realm-transition, gather, produce, trade, consume, strike, repair, worship, and claim.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/persistence/src/{store,archive,snapshot}.ts",
+      "description": "WAL-backed store, archive import/export, and snapshot/rebuild plumbing; owns STRICT schema creation, event append, projection replay, clock and PRNG persistence, and archive manifest/hash verification.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
+      "description": "Local causal trace tables and lookup helpers for observations, proposal outcomes, receipts, and correlation/causation chains.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/world/src/{economy,routines}.ts",
+      "description": "No dedicated economy or routines module exists yet; those responsibilities are still split across content balance data, proposal validation, and tick scheduling.",
+      "disposition": "insufficient",
+      "insufficiency_reason": "The remaining units still need a dedicated owner for economy/routine behavior rather than only scattered logic in the existing engine."
     }
   ]
 }
@@ -199,6 +222,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 - Exact coarse-step and chunk sizes for catch-up: tune against the 1-hour cap and responsiveness on the baseline machine; record chosen values in configuration docs.
 - Fire spread rates, per-zone burn bounds, and repair costs: balance values set in content data and adjusted from scenario observation.
 - Economy stabilizers (fixed floor/ceiling prices at the shop/tavern vs. pure NPC-to-NPC trade): choose the minimum that keeps the scenario's currency and goods conserved and non-degenerate over the one-hour trial.
+  Resolved 2026-09-27 (owner): pure NPC-to-NPC trade, with no fixed shop or tavern prices. A trade names its counterparty and the exact goods and currency exchanged; the counterparty's acceptance is a deterministic rule over its drives and committed inventory, evaluated at execution.
 - Whether presentation receipts are batched per frame or per event: decide after measuring Channel throughput.
 - `SQLITE_FULL` behavior details beyond "suspend ticking, surface degraded status, never partially commit".
 

@@ -28,6 +28,7 @@ function minimalRules(
     catchUpCapMs: 0,
     catchUpChunkMs: 0,
     checkpointIntervalMs: 0,
+    maxProposalsPerTick: 100,
     fireBalance,
     economyBalance: {},
   };
@@ -142,6 +143,7 @@ function lifecyclePack(): ContentPack {
       catchUpCapMs: 0,
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
+      maxProposalsPerTick: 100,
       fireBalance: {
         igniteThreshold: 3,
         intensityGrowthPerTick: 1,

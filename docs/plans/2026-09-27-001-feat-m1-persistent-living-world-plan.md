@@ -219,6 +219,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 ### Deferred to Implementation
 
 - Exact coarse-step and chunk sizes for catch-up: tune against the 1-hour cap and responsiveness on the baseline machine; record chosen values in configuration docs.
+  Resolved 2026-09-27: catch-up runs full-granularity ticks in 60-second chunks (`catchUpChunkMs`, 60 chunks under the one-hour `catchUpCapMs`), and the per-tick proposal cap is `maxProposalsPerTick: 50`, all in `content/greek/world/rules.json`. The JSON projection commit measured about 0.3 ms per tick for the authored world and 2–9 ms at ten times its actors and buildings, well inside the 1 Hz budget, so storage stays one document per tick.
 - Fire spread rates, per-zone burn bounds, and repair costs: balance values set in content data and adjusted from scenario observation.
 - Economy stabilizers (fixed floor/ceiling prices at the shop/tavern vs. pure NPC-to-NPC trade): choose the minimum that keeps the scenario's currency and goods conserved and non-degenerate over the one-hour trial.
   Resolved 2026-09-27 (owner): pure NPC-to-NPC trade, with no fixed shop or tavern prices. A trade names its counterparty and the exact goods and currency exchanged; the counterparty's acceptance is a deterministic rule over its drives and committed inventory, evaluated at execution.
@@ -454,7 +455,7 @@ flowchart TB
 
 ### Phase C — Service and shell
 
-- [ ] **Unit 6: Simulation service**
+- [x] **Unit 6: Simulation service**
 
 **Goal:** Turn `apps/simulation` into the authoritative sidecar: lifecycle, tick loop, pause, capped chunked catch-up with summary, autosave, world slots, authenticated API and stream, and the product sidecar build.
 
@@ -511,6 +512,7 @@ flowchart TB
 - A dedicated capability grants the main window only the Channel command; no shell, filesystem, network, or other plugin permission is added to the renderer.
 - On sidecar restart the proxy re-subscribes and requests a fresh committed-state frame; the client replaces its state with it.
 - Window close keeps ticking (background mode); the tray shows running / paused / background / stopped with the current state marked, plus a degraded label when the sidecar reports it; stop-background and quit remain explicit.
+- The compiled sidecar cannot find authored content through its own module path, so the app bundles `content/greek/world` as a Tauri resource and the shell sets `PANTHEA_CONTENT_DIR` to it when spawning the sidecar.
 
 **Test scenarios:**
 - Happy path: frames from the sidecar reach the Channel in order.

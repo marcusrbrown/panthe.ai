@@ -85,17 +85,29 @@ test("buildRoutineQueue produces one proposal per drive-bearing living actor, no
   expect(queue.length).toBeGreaterThan(0);
 });
 
-test("stepWorldTick admits up to the cap and reports the rest as overflow, in order", () => {
+test("stepWorldTick admits up to the cap from the world's own authored rules and reports the rest as overflow, in order", () => {
   const state = loadGreekWorldState();
   const prng = createPrng(1);
   const queue = buildRoutineQueue(state);
   expect(queue.length).toBeGreaterThan(1);
 
-  const outcome = stepWorldTick(state, prng, queue, { maxProposalsPerTick: 1 });
+  const cappedState = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+  const outcome = stepWorldTick(cappedState, prng, queue);
   expect(outcome.admitted).toHaveLength(1);
   expect(outcome.admitted[0]).toBe(queue[0]);
   expect(outcome.overflow).toHaveLength(queue.length - 1);
   expect(outcome.overflow).toEqual(queue.slice(1));
+
+  // The same queue against the world's actual authored cap (well above the
+  // queue's size) admits everything -- the cap genuinely comes from
+  // configuration, not a hardcoded number.
+  expect(state.rules.maxProposalsPerTick).toBeGreaterThan(queue.length);
+  const uncappedOutcome = stepWorldTick(state, prng, queue);
+  expect(uncappedOutcome.admitted).toHaveLength(queue.length);
+  expect(uncappedOutcome.overflow).toHaveLength(0);
 });
 
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
@@ -196,23 +208,27 @@ test("a store write failure reports store-error and commits nothing (no trace ro
   }
 });
 
-test("proposals beyond the per-tick cap are rejected as over-limit before reaching the world engine", () => {
+test("proposals beyond the per-tick cap are rejected as over-limit before reaching the world engine, using the world's authored cap", () => {
   const storeDir = tempDir("panthea-sim-tick-cap-");
   try {
     const storePath = join(storeDir, "world.sqlite");
     const seeded = loadGreekWorldState();
-    const reducers = createWorldProjectionReducers(seeded);
+    const cappedState = {
+      ...seeded,
+      rules: { ...seeded.rules, maxProposalsPerTick: 1 },
+    };
+    const reducers = createWorldProjectionReducers(cappedState);
     const store = openStore(storePath, reducers);
     ensureTraceSchema(store.db);
 
-    const queue = buildRoutineQueue(seeded);
+    const queue = buildRoutineQueue(cappedState);
     expect(queue.length).toBeGreaterThan(1);
 
     const step = applyOneTick(
-      seeded,
+      cappedState,
       createPrng(1),
       queue,
-      { store, reducers, traceDb: store.db, maxProposalsPerTick: 1 },
+      { store, reducers, traceDb: store.db },
       { cursorWallMs: 1_000, paused: false },
     );
     expect(step.kind).toBe("committed");

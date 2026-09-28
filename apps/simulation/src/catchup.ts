@@ -133,7 +133,6 @@ export function runCatchUp(
 
     for (let i = 0; i < ticksThisChunk; i += 1) {
       const outcome = stepWorldTick(workingState, workingPrng, workingQueue, {
-        maxProposalsPerTick: deps.maxProposalsPerTick,
         approximate: true,
       });
       chunkOutcomes.push(outcome);

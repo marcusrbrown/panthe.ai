@@ -26,16 +26,18 @@ import {
   type WorldState,
 } from "@panthea/world";
 
-/** The authored Greek world content directory, resolved relative to this file. */
-export const GREEK_WORLD_CONTENT_DIR = join(
-  import.meta.dir,
-  "..",
-  "..",
-  "..",
-  "content",
-  "greek",
-  "world",
-);
+/**
+ * The authored Greek world content directory. Resolved relative to this
+ * file when running from source (`bun run`/`bun test`), where
+ * `import.meta.dir` is a real filesystem path. A `bun build --compile`
+ * binary has no such path -- `import.meta.dir` resolves to a virtual
+ * bundled root -- so `PANTHEA_CONTENT_DIR` overrides it for a packaged
+ * caller that bundles the content directory as its own resource and
+ * points this at it.
+ */
+export const GREEK_WORLD_CONTENT_DIR =
+  process.env.PANTHEA_CONTENT_DIR ??
+  join(import.meta.dir, "..", "..", "..", "content", "greek", "world");
 
 /** Loads the authored Greek content pack and builds its initial `WorldState` (no actors -- see packages/world/src/state.ts). */
 export function loadGreekWorldState(

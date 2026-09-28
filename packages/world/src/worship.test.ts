@@ -39,6 +39,7 @@ function pack(): ContentPack {
       catchUpCapMs: 0,
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
+      maxProposalsPerTick: 100,
       fireBalance: {},
       economyBalance: { worshipCapacityGain: 2, favorDurationTicks: 5 },
     },

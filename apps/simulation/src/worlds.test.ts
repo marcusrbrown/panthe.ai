@@ -1,11 +1,18 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   closeStore,
   commitTick,
   exportArchive,
+  ImportError,
   openStore,
   readClock,
   readLiveProjections,
@@ -125,5 +132,109 @@ test("importing an archive while the active world is running creates exactly one
     rmSync(storeDir, { recursive: true, force: true });
     rmSync(exportDir, { recursive: true, force: true });
     rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+test("a simulated disk-full during import leaves the active world unchanged and no partial slot behind", () => {
+  const storeDir = tempDir("panthea-sim-worlds-diskfull-");
+  const exportDir = tempDir("panthea-sim-worlds-diskfull-export-");
+  const slotsParent = tempDir("panthea-sim-worlds-diskfull-parent-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      actor: "farmer",
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId: "obs-1",
+      kind: "move",
+      to: "tavern",
+    });
+    if (!submitted.ok) throw new Error("test fixture proposal failed to parse");
+    const tick1 = runTick(seeded, createPrng(1), [submitted.proposal]);
+    commitTick(store, reducers, {
+      events: tick1.events,
+      cursorWallMs: 1_000,
+      paused: false,
+      tick: tick1.state.tick,
+      simTimeMs: tick1.state.simTime,
+      prngState: serializePrngState(tick1.prng),
+    });
+    const beforeFailure = restoreWorldTime(
+      readLiveProjections(store, reducers),
+      readClock(store.db),
+    );
+
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(store, exportPath);
+
+    // A slots directory whose parent the process cannot write into raises
+    // the same failure shape `mkdirSync` raises on a genuinely full disk
+    // (ENOSPC) -- a unit test cannot actually exhaust disk space, so this
+    // exercises the identical staging-creation failure path through the
+    // permission boundary instead.
+    chmodSync(slotsParent, 0o500);
+    const slotsDir = join(slotsParent, "slots");
+    try {
+      expect(() =>
+        importWorldArchive(exportPath, slotsDir, worldProjectionCodec),
+      ).toThrow();
+
+      // Nothing was created: not the slots directory itself, and no
+      // orphaned staging directory anywhere under its parent.
+      expect(readdirSync(slotsParent)).toEqual([]);
+
+      // The active world's own store is completely untouched.
+      const afterFailure = restoreWorldTime(
+        readLiveProjections(store, reducers),
+        readClock(store.db),
+      );
+      expect(afterFailure).toEqual(beforeFailure);
+    } finally {
+      chmodSync(slotsParent, 0o700);
+    }
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsParent, { recursive: true, force: true });
+  }
+});
+
+test("importArchive wraps a staging failure as a thrown error, and never as an ImportError meant for corrupt archive content", () => {
+  const storeDir = tempDir("panthea-sim-worlds-diskfull-kind-");
+  const exportDir = tempDir("panthea-sim-worlds-diskfull-kind-export-");
+  const slotsParent = tempDir("panthea-sim-worlds-diskfull-kind-parent-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(store, exportPath);
+    closeStore(store);
+
+    chmodSync(slotsParent, 0o500);
+    const slotsDir = join(slotsParent, "slots");
+    let caught: unknown;
+    try {
+      importWorldArchive(exportPath, slotsDir, worldProjectionCodec);
+    } catch (error) {
+      caught = error;
+    } finally {
+      chmodSync(slotsParent, 0o700);
+    }
+    expect(caught).toBeDefined();
+    expect(caught).not.toBeInstanceOf(ImportError);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsParent, { recursive: true, force: true });
   }
 });

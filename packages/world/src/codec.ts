@@ -509,6 +509,11 @@ function parseWorldRules(
     `${path}.checkpointIntervalMs`,
   );
   if (!checkpointIntervalMs.ok) return checkpointIntervalMs;
+  const maxProposalsPerTick = parseNonNegativeInteger(
+    value.maxProposalsPerTick,
+    `${path}.maxProposalsPerTick`,
+  );
+  if (!maxProposalsPerTick.ok) return maxProposalsPerTick;
   const fireBalance = parseNumberRecord(
     value.fireBalance,
     `${path}.fireBalance`,
@@ -523,6 +528,7 @@ function parseWorldRules(
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
     checkpointIntervalMs: checkpointIntervalMs.value,
+    maxProposalsPerTick: maxProposalsPerTick.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
   });

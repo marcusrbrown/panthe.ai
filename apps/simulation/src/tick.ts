@@ -42,14 +42,6 @@ import {
 } from "@panthea/world";
 import { serializePrngState } from "./world-store";
 
-/**
- * Convenience default for the per-tick proposal cap ("Proposal intake:
- * ... per-tick counts above a configured cap are rejected", Key Technical
- * Decisions). Not read implicitly -- callers pass it (or their own value)
- * explicitly via `TickDeps.maxProposalsPerTick`.
- */
-export const DEFAULT_MAX_PROPOSALS_PER_TICK = 100;
-
 export interface QueuedProposal {
   readonly id: ProposalId;
   readonly proposal: Proposal;
@@ -60,7 +52,6 @@ export interface TickDeps {
   readonly store: Store;
   readonly reducers: ProjectionReducers<WorldState>;
   readonly traceDb: Database;
-  readonly maxProposalsPerTick?: number;
   /** Injectable for tests that simulate a store write failure (e.g. `SQLITE_FULL`); defaults to persistence's real `commitTick`. */
   readonly commitTick?: typeof persistCommitTick;
 }
@@ -98,7 +89,6 @@ export function buildRoutineQueue(
 }
 
 export interface StepOptions {
-  readonly maxProposalsPerTick?: number;
   readonly elapsedMs?: number;
   readonly approximate?: boolean;
 }
@@ -111,11 +101,12 @@ export interface WorldTickOutcome {
 
 /**
  * Runs one world tick purely in memory: proposals beyond
- * `maxProposalsPerTick` never reach the world engine (over-limit),
- * everything else is revalidated and committed sequentially by
- * `runTick`. No store or trace I/O -- `commitWorldTick`/`traceWorldTick`
- * do that, separately, so a caller can run several ticks before
- * committing any of them (catchup.ts's chunking).
+ * `state.rules.maxProposalsPerTick` never reach the world engine
+ * (over-limit), everything else is revalidated and committed
+ * sequentially by `runTick`. No store or trace I/O --
+ * `commitWorldTick`/`traceWorldTick` do that, separately, so a caller can
+ * run several ticks before committing any of them (catchup.ts's
+ * chunking).
  */
 export function stepWorldTick(
   state: WorldState,
@@ -123,7 +114,7 @@ export function stepWorldTick(
   queue: readonly QueuedProposal[],
   options: StepOptions = {},
 ): WorldTickOutcome {
-  const cap = options.maxProposalsPerTick ?? DEFAULT_MAX_PROPOSALS_PER_TICK;
+  const cap = state.rules.maxProposalsPerTick;
   const admitted = queue.slice(0, cap);
   const overflow = queue.slice(cap);
   const result = runTick(
@@ -253,7 +244,6 @@ export function applyOneTick(
   },
 ): TickStepResult {
   const outcome = stepWorldTick(state, prng, queue, {
-    maxProposalsPerTick: deps.maxProposalsPerTick,
     elapsedMs: commit.elapsedMs,
     approximate: commit.approximate,
   });

@@ -56,6 +56,7 @@ test("getEntityRevision looks up both actors and locations by id", () => {
       catchUpCapMs: 0,
       catchUpChunkMs: 0,
       checkpointIntervalMs: 0,
+      maxProposalsPerTick: 100,
       fireBalance: {},
       economyBalance: {},
     },
@@ -94,6 +95,7 @@ function minimalRules(
     catchUpCapMs: 0,
     catchUpChunkMs: 0,
     checkpointIntervalMs: 0,
+    maxProposalsPerTick: 100,
     fireBalance: {},
     economyBalance,
   };

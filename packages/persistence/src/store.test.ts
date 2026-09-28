@@ -78,24 +78,24 @@ function makeMoveEvent(sequence: number): EntityMovedEvent {
 
 describe("openStore", () => {
   test("happy path: creates the parent dir 0700 and the db file 0600 once, at creation", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     expect((statSync(dir).mode & 0o777).toString(8)).toBe("700");
     expect((statSync(dbPath).mode & 0o777).toString(8)).toBe("600");
     closeStore(store);
   });
 
   test("happy path: a fresh store gets a generated world ID that survives reopen", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const worldId = store.worldId;
     closeStore(store);
 
-    const reopened = openStore(dbPath);
+    const reopened = openStore(dbPath, countReducer);
     expect(reopened.worldId).toBe(worldId);
     closeStore(reopened);
   });
 
   test("WAL mode is enabled and synchronous is NORMAL", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const journalMode = store.db.query("PRAGMA journal_mode").get() as {
       journal_mode: string;
     };
@@ -109,48 +109,59 @@ describe("openStore", () => {
   });
 
   test("reopening an existing store with a mismatched worldId throws and does not corrupt the slot", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const originalWorldId = store.worldId;
     closeStore(store);
 
     const mismatchedWorldId = createWorldId();
-    expect(() => openStore(dbPath, { worldId: mismatchedWorldId })).toThrow(
-      /already belongs to world/,
-    );
+    expect(() =>
+      openStore(dbPath, countReducer, { worldId: mismatchedWorldId }),
+    ).toThrow(/already belongs to world/);
 
-    const reopened = openStore(dbPath);
+    const reopened = openStore(dbPath, countReducer);
     expect(reopened.worldId).toBe(originalWorldId);
     closeStore(reopened);
   });
 
   test("reopening an existing store with a matching worldId opens normally", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const worldId = store.worldId;
     closeStore(store);
 
-    const reopened = openStore(dbPath, { worldId });
+    const reopened = openStore(dbPath, countReducer, { worldId });
     expect(reopened.worldId).toBe(worldId);
     closeStore(reopened);
   });
 
   test("opening an existing store whose schema version does not match this build's version throws and never resets it", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     closeStore(store);
 
     const db = new Database(dbPath);
     db.exec("PRAGMA user_version = 99");
     db.close();
 
-    expect(() => openStore(dbPath)).toThrow(/schema version 99/);
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 99/);
     // The failed open closes its handle rather than leaking it -- a repeat
     // attempt fails the same way, not with a "database is locked" error.
-    expect(() => openStore(dbPath)).toThrow(/schema version 99/);
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 99/);
+  });
+
+  test("happy path: a brand-new store's genesis row round-trips through the codec and matches its own projections row at creation", () => {
+    const store = openStore(dbPath, countReducer);
+    const genesisRow = store.db
+      .query("SELECT data FROM genesis WHERE id = 1")
+      .get() as {
+      data: string;
+    };
+    expect(JSON.parse(genesisRow.data)).toEqual(countReducer.initial);
+    closeStore(store);
   });
 });
 
 describe("commitTick", () => {
   test("happy path: commits events, advances projections, cursor, and PRNG state atomically", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const event = makeMoveEvent(1);
 
     const result = commitTick(store, countReducer, {
@@ -175,7 +186,7 @@ describe("commitTick", () => {
   });
 
   test("integration: a throw mid-tick (non-contiguous sequence) leaves events, projections, cursor, and PRNG state unchanged", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     commitTick(store, countReducer, {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
@@ -212,7 +223,7 @@ describe("commitTick", () => {
   });
 
   test("integration: a throwing reducer rolls back the whole tick, including already-inserted events in the same call", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const before = getCurrentSequence(store.db);
 
     const faultyReducer: ProjectionReducers<CountProjection> = {
@@ -242,7 +253,7 @@ describe("commitTick", () => {
   });
 
   test("happy path: rebuild-equals-live — replaying the log from scratch matches the stored projections", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     for (let i = 1; i <= 5; i++) {
       commitTick(store, countReducer, {
         events: [makeMoveEvent(i)],
@@ -259,11 +270,39 @@ describe("commitTick", () => {
     expect(rebuilt).toEqual(live);
     closeStore(store);
   });
+
+  test("rebuild starts from the store's own persisted genesis row, not the caller's reducers.initial", () => {
+    const store = openStore(dbPath, countReducer);
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+    });
+    closeStore(store);
+
+    // A reducers object with a *different* initial value and no relation to
+    // whatever the store was actually created with -- genesis makes rebuild
+    // independent of this.
+    const unrelatedReducers: ProjectionReducers<CountProjection> = {
+      ...countReducer,
+      initial: { moves: { phantom: 999 } },
+    };
+    const reopened = openStore(dbPath, unrelatedReducers);
+    const rebuilt = rebuildProjections(reopened, unrelatedReducers);
+    const live = readLiveProjections(reopened, unrelatedReducers);
+
+    expect(rebuilt).toEqual(live);
+    expect(rebuilt.moves.phantom).toBeUndefined();
+    closeStore(reopened);
+  });
 });
 
 describe("clock tick/simTime", () => {
   test("happy path: committing two ticks and reopening restores tick 2 and its simTime from the clock row", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     commitTick(store, countReducer, {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
@@ -282,7 +321,7 @@ describe("clock tick/simTime", () => {
     });
     closeStore(store);
 
-    const reopened = openStore(dbPath);
+    const reopened = openStore(dbPath, countReducer);
     expect(readClock(reopened.db)).toEqual({
       cursorWallMs: 2000,
       paused: false,
@@ -293,7 +332,7 @@ describe("clock tick/simTime", () => {
   });
 
   test("integration: a thrown mid-tick transaction leaves tick and simTime unchanged", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     commitTick(store, countReducer, {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
@@ -322,7 +361,7 @@ describe("clock tick/simTime", () => {
 
 describe("getEventRow / listEvents", () => {
   test("happy path: stored events round-trip through JSON with correlation/causation IDs intact", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, countReducer);
     const event = makeMoveEvent(1);
     commitTick(store, countReducer, {
       events: [event],
@@ -372,7 +411,7 @@ describe("projection codec", () => {
   };
 
   test("happy path: a Map-bearing projection round-trips through a Map-aware codec across commit -> close -> reopen for both readLiveProjections and rebuildProjections", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, mapReducer);
     const event = makeMoveEvent(1);
     commitTick(store, mapReducer, {
       events: [event],
@@ -384,7 +423,7 @@ describe("projection codec", () => {
     });
     closeStore(store);
 
-    const reopened = openStore(dbPath);
+    const reopened = openStore(dbPath, mapReducer);
     const live = readLiveProjections(reopened, mapReducer);
     const rebuilt = rebuildProjections(reopened, mapReducer);
 

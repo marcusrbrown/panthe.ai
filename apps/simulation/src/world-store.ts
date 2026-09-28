@@ -18,7 +18,6 @@ import {
   applyEvent,
   createInitialWorldState,
   decode as decodeWorldState,
-  type EncodedWorldState,
   encode as encodeWorldState,
   type PrngState,
   type WorldState,
@@ -58,7 +57,7 @@ export function loadGreekWorldState(
  */
 export const worldProjectionCodec: ProjectionCodec<WorldState> = {
   encode: (state) => encodeWorldState(state),
-  decode: (value) => decodeWorldState(value as EncodedWorldState),
+  decode: (value) => decodeWorldState(value),
 };
 
 /**

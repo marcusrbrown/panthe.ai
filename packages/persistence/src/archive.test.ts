@@ -80,7 +80,7 @@ function makeMoveEvent(sequence: number): EntityMovedEvent {
 }
 
 function buildPopulatedStore(dbPath: string): Store {
-  const store = openStore(dbPath);
+  const store = openStore(dbPath, reducer);
   for (let i = 1; i <= 3; i++) {
     commitTick(store, reducer, {
       events: [makeMoveEvent(i)],
@@ -186,6 +186,50 @@ describe("exportArchive", () => {
   });
 });
 
+describe("exportArchive: genesis", () => {
+  test("happy path: the exported archive carries a genesis row equal to the store's own genesis, and it is bound into the content hash", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const sourceGenesis = store.db
+      .query("SELECT data FROM genesis WHERE id = 1")
+      .get() as { data: string };
+
+    const archiveDb = new Database(archivePath, { readonly: true });
+    const archiveGenesis = archiveDb
+      .query("SELECT data FROM genesis WHERE id = 1")
+      .get() as { data: string } | null;
+    expect(archiveGenesis).not.toBeNull();
+    expect(JSON.parse(archiveGenesis?.data ?? "null")).toEqual(
+      JSON.parse(sourceGenesis.data),
+    );
+    archiveDb.close();
+    closeStore(store);
+  });
+
+  test("a tampered, rehashed genesis row is rejected by import as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE genesis SET data = ? WHERE id = 1", ["not json at all {"]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+});
+
 describe("importArchive: round-trip", () => {
   test("happy path: export -> import creates a new slot with identical world ID, sequence, projections, PRNG, and clock (including tick/simTime); the source is untouched", () => {
     const dbPath = join(dir, "world.sqlite");
@@ -199,7 +243,10 @@ describe("importArchive: round-trip", () => {
     const result = importArchive(archivePath, slotsDir, projectionCodec);
 
     expect(existsSync(result.slotPath)).toBe(true);
-    const importedStore = openStore(join(result.slotPath, "world.sqlite"));
+    const importedStore = openStore(
+      join(result.slotPath, "world.sqlite"),
+      reducer,
+    );
 
     expect(importedStore.worldId).toBe(store.worldId);
     expect(getCurrentSequence(importedStore.db)).toBe(
@@ -543,16 +590,32 @@ describe("importArchive: manifest inconsistency", () => {
     closeStore(store);
   });
 
-  test("error path: a flipped byte (hash left un-rehashed) is rejected as inconsistent-manifest or corrupt; no slot is created", () => {
+  test("error path: a flipped byte within a stored event's id (hash left un-rehashed) is rejected as inconsistent-manifest or corrupt; no slot is created", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
+    const inspectDb = new Database(archivePath, { readonly: true });
+    const firstEvent = inspectDb
+      .query("SELECT id FROM events ORDER BY sequence ASC LIMIT 1")
+      .get() as { id: string };
+    inspectDb.close();
+
     const flippedPath = join(dir, "flipped.sqlite");
     const bytes = readFileSync(archivePath);
+    // Target a known, unique-enough byte range (an event's own id, a random
+    // UUID) rather than an arbitrary file offset, so the flip always lands
+    // in real hashed table data instead of possibly landing in SQLite's own
+    // page padding, which a byte flip at a fixed numeric offset cannot
+    // guarantee once the file's size shifts with schema/content changes.
+    const offset = bytes.indexOf(Buffer.from(firstEvent.id, "utf8"));
+    if (offset < 0) {
+      throw new Error(
+        "test fixture: could not locate the event id in the archive bytes",
+      );
+    }
     const mutable = Buffer.from(bytes);
-    const offset = Math.floor(mutable.length / 2);
     mutable[offset] = (mutable[offset] ?? 0) ^ 0xff;
     writeFileSync(flippedPath, mutable);
 
@@ -646,6 +709,9 @@ describe("computeContentHash", () => {
         "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
       );
       db.exec(
+        "CREATE TABLE genesis (id INTEGER PRIMARY KEY, data TEXT NOT NULL) STRICT",
+      );
+      db.exec(
         "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
       );
       db.exec(
@@ -656,6 +722,7 @@ describe("computeContentHash", () => {
         "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
       );
       db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+      db.run("INSERT INTO genesis (id, data) VALUES (1, 'null')");
       db.run(
         "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
       );
@@ -704,6 +771,9 @@ describe("computeContentHash", () => {
       "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
     );
     db.exec(
+      "CREATE TABLE genesis (id INTEGER PRIMARY KEY, data TEXT NOT NULL) STRICT",
+    );
+    db.exec(
       "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
     );
     db.exec(
@@ -714,6 +784,7 @@ describe("computeContentHash", () => {
       "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
     );
     db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+    db.run("INSERT INTO genesis (id, data) VALUES (1, 'null')");
     db.run(
       "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
     );

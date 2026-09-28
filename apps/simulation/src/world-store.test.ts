@@ -3,6 +3,7 @@
 // packages/world and packages/persistence actually compose, not just that
 // each package's own unit tests pass in isolation.
 
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,9 @@ import type { Proposal } from "@panthea/contracts";
 import {
   closeStore,
   commitTick,
+  computeContentHash,
   exportArchive,
+  ImportError,
   importArchive,
   openStore,
   type ProjectionCodec,
@@ -83,7 +86,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
 
     const projectionReducers = createWorldProjectionReducers(seededState);
 
-    let store = openStore(storePath);
+    let store = openStore(storePath, projectionReducers);
 
     // --- 1. Two ticks, contiguous sequences across ticks ------------------
     const prng0 = createPrng(1);
@@ -127,7 +130,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
 
     // --- 2. Close -> reopen -> live projections restored to the full state
     closeStore(store);
-    store = openStore(storePath);
+    store = openStore(storePath, projectionReducers);
 
     const restoredAfterReopen = restoreWorldTime(
       readLiveProjections(store, projectionReducers),
@@ -178,7 +181,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
 
     const importValidationCodec: ProjectionCodec<unknown> = {
       encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value as never),
+      decode: (value) => worldProjectionCodec.decode(value),
     };
     const importResult = importArchive(
       exportPath,
@@ -188,6 +191,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
 
     const importedStore = openStore(
       join(importResult.slotPath, "world.sqlite"),
+      projectionReducers,
     );
     const restoredAfterImport = restoreWorldTime(
       readLiveProjections(importedStore, projectionReducers),
@@ -236,6 +240,177 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     rmSync(storeDir, { recursive: true, force: true });
     rmSync(slotsDir, { recursive: true, force: true });
     rmSync(exportDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild restores the seeded actor even from a freshly constructed composition root with no reference to the original seeded state", () => {
+  const storeDir = tempDir("panthea-sim-genesis-");
+  const exportDir = tempDir("panthea-sim-genesis-export-");
+  const slotsDir = tempDir("panthea-sim-genesis-slots-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+
+    const seeded = withActor(loadGreekWorldState(), {
+      id: toEntityId("wanderer"),
+      locationId: toEntityId("wilderness-grove"),
+      alive: true,
+      capabilities: [],
+      revision: 0,
+    });
+    const seededReducers = createWorldProjectionReducers(seeded);
+
+    let store = openStore(storePath, seededReducers);
+
+    const prng0 = createPrng(1);
+    const tick1 = runTick(seeded, prng0, [
+      moveProposal("wanderer", "wilderness-path", "obs-1"),
+    ]);
+    commitTick(store, seededReducers, {
+      events: tick1.committed.flatMap((record) => record.events),
+      cursorWallMs: 1_000,
+      paused: false,
+      tick: tick1.state.tick,
+      simTimeMs: tick1.state.simTime,
+      prngState: serializePrngState(tick1.prng),
+    });
+
+    const tick2 = runTick(tick1.state, tick1.prng, [
+      moveProposal("wanderer", "town-square", "obs-2"),
+    ]);
+    commitTick(store, seededReducers, {
+      events: tick2.committed.flatMap((record) => record.events),
+      cursorWallMs: 2_000,
+      paused: false,
+      tick: tick2.state.tick,
+      simTimeMs: tick2.state.simTime,
+      prngState: serializePrngState(tick2.prng),
+    });
+    closeStore(store);
+
+    // A freshly constructed composition root: new reducers built from
+    // loadGreekWorldState() again, with no reference to the seeded actor.
+    const freshReducers = createWorldProjectionReducers(loadGreekWorldState());
+    store = openStore(storePath, freshReducers);
+
+    const rebuilt = restoreWorldTime(
+      rebuildProjections(store, freshReducers),
+      readClock(store.db),
+    );
+    const live = restoreWorldTime(
+      readLiveProjections(store, freshReducers),
+      readClock(store.db),
+    );
+
+    expect(live).toEqual(tick2.state);
+    expect(rebuilt).toEqual(tick2.state);
+
+    // export -> import -> rebuild, still with the fresh (actor-less) reducers
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(store, exportPath);
+    const importValidationCodec: ProjectionCodec<unknown> = {
+      encode: (value) => value,
+      decode: (value) => worldProjectionCodec.decode(value),
+    };
+    const importResult = importArchive(
+      exportPath,
+      slotsDir,
+      importValidationCodec,
+    );
+    const importedStore = openStore(
+      join(importResult.slotPath, "world.sqlite"),
+      freshReducers,
+    );
+
+    const rebuiltAfterImport = restoreWorldTime(
+      rebuildProjections(importedStore, freshReducers),
+      readClock(importedStore.db),
+    );
+    expect(rebuiltAfterImport).toEqual(tick2.state);
+
+    closeStore(importedStore);
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+test("an archive whose genesis row contains a malformed actor entry is rejected as corrupt, even after rehashing; no slot is created", () => {
+  const storeDir = tempDir("panthea-sim-malformed-genesis-");
+  const exportDir = tempDir("panthea-sim-malformed-genesis-export-");
+  const slotsDir = tempDir("panthea-sim-malformed-genesis-slots-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = withActor(loadGreekWorldState(), {
+      id: toEntityId("wanderer"),
+      locationId: toEntityId("wilderness-grove"),
+      alive: true,
+      capabilities: [],
+      revision: 0,
+    });
+    const reducers = createWorldProjectionReducers(seeded);
+
+    const store = openStore(storePath, reducers);
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(store, exportPath);
+    closeStore(store);
+
+    // Insert a malformed actor entry (`["wanderer", null]`) into the
+    // archive's genesis row, then recompute the hash so the tamper is
+    // self-consistent -- a plain hash check alone cannot catch this.
+    const archiveDb = new Database(exportPath);
+    const genesisRow = archiveDb
+      .query("SELECT data FROM genesis WHERE id = 1")
+      .get() as { data: string };
+    const encoded = JSON.parse(genesisRow.data) as {
+      actors: unknown[];
+      [key: string]: unknown;
+    };
+    const corrupted = {
+      ...encoded,
+      actors: [...encoded.actors, ["wanderer", null]],
+    };
+    archiveDb.run("UPDATE genesis SET data = ? WHERE id = 1", [
+      JSON.stringify(corrupted),
+    ]);
+    const manifestRow = archiveDb
+      .query("SELECT * FROM manifest WHERE id = 1")
+      .get() as {
+      format_version: number;
+      sqlite_schema_version: number;
+      payload_schema_version: number;
+      world_id: string;
+      event_sequence: number;
+    };
+    const newHash = computeContentHash(archiveDb, {
+      formatVersion: manifestRow.format_version,
+      sqliteSchemaVersion: manifestRow.sqlite_schema_version,
+      payloadSchemaVersion: manifestRow.payload_schema_version,
+      worldId: manifestRow.world_id as never,
+      eventSequence: manifestRow.event_sequence,
+    });
+    archiveDb.run("UPDATE manifest SET content_hash = ?", [newHash]);
+    archiveDb.close();
+
+    const importValidationCodec: ProjectionCodec<unknown> = {
+      encode: (value) => value,
+      decode: (value) => worldProjectionCodec.decode(value),
+    };
+    let caught: unknown;
+    try {
+      importArchive(exportPath, slotsDir, importValidationCodec);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ImportError);
+    expect((caught as ImportError).kind).toBe("corrupt");
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
   }
 });
 

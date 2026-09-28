@@ -42,6 +42,12 @@ export function createSchema(db: Database): void {
       ) STRICT
     `);
     db.exec(`
+      CREATE TABLE genesis (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        data TEXT NOT NULL
+      ) STRICT
+    `);
+    db.exec(`
       CREATE TABLE projections (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         revision INTEGER NOT NULL,
@@ -109,14 +115,35 @@ export interface OpenStoreOptions {
 }
 
 /**
+ * The projection value and codec a store persists once, at creation, as
+ * its genesis row -- the true starting point `rebuildProjections` replays
+ * from. Required on every `openStore` call (not just the first) since a
+ * brand-new store needs it immediately; an existing store ignores it, the
+ * same way `OpenStoreOptions.worldId` is ignored on reopen.
+ */
+export interface GenesisInput<TProjections> {
+  readonly initial: TProjections;
+  readonly codec: Pick<ProjectionCodec<TProjections>, "encode">;
+}
+
+/**
  * Opens (creating if needed) the WAL SQLite store at `path`: macOS
  * persistent-WAL disabled before WAL mode is enabled (order matters --
  * some macOS SQLite builds default to a persistent WAL and re-enabling
  * journal_mode after the fact does not clear that setting),
  * `synchronous=NORMAL`, STRICT tables, and a `world` row identifying this
  * slot. A new slot's directory and file get 0700/0600 once, at creation.
+ * A brand-new store also persists `genesis.initial` (encoded through
+ * `genesis.codec`) once, in its own row, in the same creation transaction
+ * as `world`/`clock`/`prng_state`/`projections` -- the starting point
+ * `rebuildProjections` replays from, independent of whatever `initial`
+ * value a later caller's own `ProjectionReducers` happens to carry.
  */
-export function openStore(path: string, options: OpenStoreOptions = {}): Store {
+export function openStore<TProjections>(
+  path: string,
+  genesis: GenesisInput<TProjections>,
+  options: OpenStoreOptions = {},
+): Store {
   const dir = dirname(path);
   const existedBefore = existsSync(path);
   if (!existedBefore) {
@@ -152,6 +179,7 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
     } else {
       worldId = options.worldId ?? createWorldId();
       const now = Date.now();
+      const genesisData = JSON.stringify(genesis.codec.encode(genesis.initial));
       db.transaction(() => {
         db.run("INSERT INTO world (id, world_id) VALUES (1, ?)", [worldId]);
         db.run(
@@ -159,9 +187,10 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
           [now],
         );
         db.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [""]);
+        db.run("INSERT INTO genesis (id, data) VALUES (1, ?)", [genesisData]);
         db.run(
           "INSERT INTO projections (id, revision, data) VALUES (1, 0, ?)",
-          ["null"],
+          [genesisData],
         );
       }).immediate();
     }
@@ -261,11 +290,33 @@ export function readProjectionsRow<TProjections>(
   if (!row) {
     return { revision: 0, projections: reducers.initial };
   }
-  const raw = JSON.parse(row.data) as unknown;
-  if (raw === null) {
-    return { revision: row.revision, projections: reducers.initial };
+  return {
+    revision: row.revision,
+    projections: reducers.codec.decode(JSON.parse(row.data)),
+  };
+}
+
+/**
+ * Reads the store's genesis projection -- the value persisted once at
+ * creation, independent of whatever `initial` value the caller's own
+ * `ProjectionReducers` happens to carry. `rebuildProjections` replays the
+ * event log starting here, not from `reducers.initial`, so a freshly
+ * constructed composition root (no reference to however the store was
+ * originally seeded) still rebuilds the true starting state.
+ */
+export function readGenesisProjection<TProjections>(
+  db: Database,
+  reducers: Pick<ProjectionReducers<TProjections>, "codec">,
+): TProjections {
+  const row = db.query("SELECT data FROM genesis WHERE id = 1").get() as {
+    data: string;
+  } | null;
+  if (!row) {
+    throw new Error(
+      "store: genesis row is missing; every store persists its genesis projection at creation",
+    );
   }
-  return { revision: row.revision, projections: reducers.codec.decode(raw) };
+  return reducers.codec.decode(JSON.parse(row.data));
 }
 
 function writeProjectionsRow<TProjections>(
@@ -391,12 +442,12 @@ export function commitTick<TProjections>(
   return run.immediate();
 }
 
-/** Replays the entire event log from `reducers.initial`, ignoring whatever is currently stored -- used to prove rebuild-equals-live. */
+/** Replays the entire event log from the store's persisted genesis row, ignoring whatever is currently stored in `projections` -- used to prove rebuild-equals-live. */
 export function rebuildProjections<TProjections>(
   store: Store,
   reducers: ProjectionReducers<TProjections>,
 ): TProjections {
-  let projections = reducers.initial;
+  let projections = readGenesisProjection(store.db, reducers);
   for (const event of listEvents(store.db)) {
     projections = reducers.applyEvent(projections, event);
   }

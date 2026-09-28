@@ -67,6 +67,74 @@ test("the encoded form is JSON-safe (no Maps survive JSON.stringify without the 
   expect(reparsed.locations).toHaveLength(2);
 });
 
+test("decode rejects a non-object top-level value", () => {
+  expect(() => decode(null)).toThrow();
+  expect(() => decode("not an object")).toThrow();
+  expect(() => decode([])).toThrow();
+  expect(() => decode(42)).toThrow();
+});
+
+test("decode rejects a non-integer or negative tick or lastSequence, and a negative simTime", () => {
+  const base = encode(seededState());
+  expect(() => decode({ ...base, tick: -1 })).toThrow();
+  expect(() => decode({ ...base, tick: 1.5 })).toThrow();
+  expect(() => decode({ ...base, lastSequence: -1 })).toThrow();
+  expect(() => decode({ ...base, lastSequence: 1.5 })).toThrow();
+  expect(() => decode({ ...base, simTime: -1 })).toThrow();
+});
+
+test("decode rejects a location entry that is not [id, object] with the required fields and types", () => {
+  const base = encode(seededState());
+  expect(() =>
+    decode({ ...base, locations: [...base.locations, "not-a-tuple"] }),
+  ).toThrow();
+  expect(() =>
+    decode({ ...base, locations: [...base.locations, ["grove-2", null]] }),
+  ).toThrow();
+  expect(() =>
+    decode({
+      ...base,
+      locations: [...base.locations, ["grove-2", { id: "grove-2" }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects an actor entry that is not [id, object] with the required fields and types", () => {
+  const base = encode(seededState());
+  expect(() => decode({ ...base, actors: [["wanderer", null]] })).toThrow();
+  expect(() =>
+    decode({ ...base, actors: [["wanderer", { id: "wanderer" }]] }),
+  ).toThrow();
+});
+
+test("decode rejects an actor whose locationId is not a known location", () => {
+  const base = encode(seededState());
+  const [id, actor] = base.actors[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      actors: [[id, { ...actor, locationId: "nowhere" }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a location whose realm is not a known realm", () => {
+  const base = encode(seededState());
+  const [id, location] = base.locations[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      locations: [[id, { ...location, realm: "narnia" }], base.locations[1]],
+    }),
+  ).toThrow();
+});
+
 test("applying events to a decoded state equals applying them to the original", () => {
   const original = seededState();
   const submitted = submitProposal({

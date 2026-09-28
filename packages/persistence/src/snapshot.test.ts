@@ -61,7 +61,7 @@ function makeMoveEvent(sequence: number): EntityMovedEvent {
 
 describe("takeSnapshot", () => {
   test("happy path: pinned to the sequence committed at read time, including clock and PRNG state", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, reducer);
     commitTick(store, reducer, {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
@@ -94,7 +94,7 @@ describe("takeSnapshot", () => {
   });
 
   test("edge case: a snapshot always reflects exactly one committed sequence, never a partial tick", () => {
-    const store = openStore(dbPath);
+    const store = openStore(dbPath, reducer);
     for (let i = 1; i <= 10; i++) {
       commitTick(store, reducer, {
         events: [makeMoveEvent(i)],

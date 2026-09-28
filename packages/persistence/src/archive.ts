@@ -46,6 +46,7 @@ const HASHED_TABLES: readonly {
   { table: "world", pk: "id" },
   { table: "clock", pk: "id" },
   { table: "prng_state", pk: "id" },
+  { table: "genesis", pk: "id" },
   { table: "projections", pk: "id" },
   { table: "events", pk: "sequence" },
 ];
@@ -74,16 +75,14 @@ function manifestFieldsRow(
   };
 }
 
-const HASH_ROW_BATCH_SIZE = 500;
-
 /**
  * Canonical content hash: the manifest fields (everything but
  * `contentHash`, binding the manifest into the hash it stores) plus every
  * substantive table, in fixed order, rows ordered by primary key, sorted
- * object keys, normalized numbers (no `-0`). Computed incrementally --
- * one table at a time, in row batches for large tables -- via a streaming
- * digest rather than building the whole dump in memory. Export writes this
- * hash and import recomputes it, so the two can never drift apart.
+ * object keys, normalized numbers (no `-0`). Reads each table through a
+ * statement iterator (not `.all()`), so memory stays flat regardless of
+ * table size. Export writes this hash and import recomputes it, so the
+ * two can never drift apart.
  */
 export function computeContentHash(
   db: Database,
@@ -104,18 +103,11 @@ export function computeContentHash(
 
   for (const { table, pk } of HASHED_TABLES) {
     push(`TABLE ${table}`);
-    let offset = 0;
-    for (;;) {
-      const rows = db
-        .query(`SELECT * FROM ${table} ORDER BY ${pk} ASC LIMIT ? OFFSET ?`)
-        .all(HASH_ROW_BATCH_SIZE, offset) as Record<string, unknown>[];
-      for (const row of rows) {
-        push(JSON.stringify(normalizeRow(row)));
-      }
-      if (rows.length < HASH_ROW_BATCH_SIZE) {
-        break;
-      }
-      offset += rows.length;
+    const rows = db
+      .query(`SELECT * FROM ${table} ORDER BY ${pk} ASC`)
+      .iterate() as IterableIterator<Record<string, unknown>>;
+    for (const row of rows) {
+      push(JSON.stringify(normalizeRow(row)));
     }
   }
 
@@ -161,6 +153,7 @@ interface ExportData {
   readonly clockTick: number;
   readonly clockSimTimeMs: number;
   readonly prngState: string;
+  readonly genesisData: string;
   readonly projectionsRevision: number;
   readonly projectionsData: string;
   readonly eventRows: readonly Record<string, unknown>[];
@@ -188,6 +181,9 @@ function readExportData(store: Store): ExportData {
     const prngRow = store.db
       .query("SELECT state FROM prng_state WHERE id = 1")
       .get() as { state: string };
+    const genesisRow = store.db
+      .query("SELECT data FROM genesis WHERE id = 1")
+      .get() as { data: string };
     const projectionsRow = store.db
       .query("SELECT revision, data FROM projections WHERE id = 1")
       .get() as { revision: number; data: string };
@@ -202,6 +198,7 @@ function readExportData(store: Store): ExportData {
       clockTick: clockRow.tick,
       clockSimTimeMs: clockRow.sim_time_ms,
       prngState: prngRow.state,
+      genesisData: genesisRow.data,
       projectionsRevision: projectionsRow.revision,
       projectionsData: projectionsRow.data,
       eventRows,
@@ -244,6 +241,9 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
         );
         archiveDb.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [
           data.prngState,
+        ]);
+        archiveDb.run("INSERT INTO genesis (id, data) VALUES (1, ?)", [
+          data.genesisData,
         ]);
         archiveDb.run(
           "INSERT INTO projections (id, revision, data) VALUES (1, ?, ?)",
@@ -530,6 +530,21 @@ export function importArchive(
     }
     const prngState: string = prngRow.state;
 
+    const genesisRow = readOrCorrupt(
+      () =>
+        db.query("SELECT data FROM genesis WHERE id = 1").get() as {
+          data: string;
+        } | null,
+      "archive genesis table is missing or unreadable",
+    );
+    if (!genesisRow) {
+      throw new ImportError("corrupt", "archive genesis row is missing");
+    }
+    readOrCorrupt(
+      () => projectionsCodec.decode(JSON.parse(genesisRow.data)),
+      "archive genesis row is not valid JSON or failed to decode",
+    );
+
     const projectionsRow = readOrCorrupt(
       () =>
         db
@@ -547,40 +562,6 @@ export function importArchive(
       () => projectionsCodec.decode(JSON.parse(projectionsRow.data)),
       "archive projections row is not valid JSON or failed to decode",
     );
-
-    const eventRows = readOrCorrupt(
-      () =>
-        db.query("SELECT payload FROM events ORDER BY sequence ASC").all() as {
-          payload: string;
-        }[],
-      "archive events table is missing or unreadable",
-    );
-    const stagedEvents: WorldEvent[] = eventRows.map((row) => {
-      const raw = readOrCorrupt(
-        () => JSON.parse(row.payload) as unknown,
-        "event row has invalid JSON payload",
-      );
-      if (!isRecord(raw)) {
-        throw new ImportError("corrupt", "event row payload is not an object");
-      }
-      if (raw.schemaVersion !== LATEST_EVENT_SCHEMA_VERSION) {
-        throw new ImportError(
-          "incompatible-version",
-          `event payload schema version ${String(raw.schemaVersion)} does not match this build's version ${LATEST_EVENT_SCHEMA_VERSION}`,
-        );
-      }
-      const parsed = parseEvent(raw);
-      if (!parsed.ok) {
-        throw new ImportError(
-          "corrupt",
-          `event row failed to parse: ${parsed.message}`,
-        );
-      }
-      return parsed.value;
-    });
-
-    archiveDb.close();
-    archiveDb = undefined;
 
     // --- Staging: only validated values ever reach here -------------------
     if (!existsSync(slotsDir)) {
@@ -613,11 +594,47 @@ export function importArchive(
             stagingDb.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [
               prngState,
             ]);
+            stagingDb.run("INSERT INTO genesis (id, data) VALUES (1, ?)", [
+              genesisRow.data,
+            ]);
             stagingDb.run(
               "INSERT INTO projections (id, revision, data) VALUES (1, ?, ?)",
               [projectionsRow.revision, projectionsRow.data],
             );
-            for (const event of stagedEvents) {
+            // A statement iterator, not `.all()`, so memory stays flat
+            // regardless of event-log size. Each row is parsed and
+            // validated here, in the same pass that writes it into
+            // staging: the stored sequence/id/kind/correlation/causation
+            // columns come from the parsed event, never copied from the
+            // archive's own denormalized columns (only `payload` is read).
+            const eventRows = db
+              .query("SELECT payload FROM events ORDER BY sequence ASC")
+              .iterate() as IterableIterator<{ payload: string }>;
+            for (const row of eventRows) {
+              const raw = readOrCorrupt(
+                () => JSON.parse(row.payload) as unknown,
+                "event row has invalid JSON payload",
+              );
+              if (!isRecord(raw)) {
+                throw new ImportError(
+                  "corrupt",
+                  "event row payload is not an object",
+                );
+              }
+              if (raw.schemaVersion !== LATEST_EVENT_SCHEMA_VERSION) {
+                throw new ImportError(
+                  "incompatible-version",
+                  `event payload schema version ${String(raw.schemaVersion)} does not match this build's version ${LATEST_EVENT_SCHEMA_VERSION}`,
+                );
+              }
+              const parsed = parseEvent(raw);
+              if (!parsed.ok) {
+                throw new ImportError(
+                  "corrupt",
+                  `event row failed to parse: ${parsed.message}`,
+                );
+              }
+              const event: WorldEvent = parsed.value;
               stagingDb.run(
                 `INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload)
                  VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -638,6 +655,8 @@ export function importArchive(
       } finally {
         stagingDb.close();
       }
+      archiveDb.close();
+      archiveDb = undefined;
       chmodSync(stagingDbPath, 0o600);
       fsyncFile(stagingDbPath);
 

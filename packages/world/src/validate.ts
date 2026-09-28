@@ -387,7 +387,11 @@ function handleStrike(
   if (!target) {
     return reject("malformed", `unknown strike target: ${proposal.target}`);
   }
-  if (target.status === "destroyed" || target.status === "repairing") {
+  if (
+    target.status === "burning" ||
+    target.status === "destroyed" ||
+    target.status === "repairing"
+  ) {
     return reject(
       "malformed",
       `${target.id} cannot be struck while ${target.status}`,
@@ -425,7 +429,11 @@ function handleRepair(
   if (!building) {
     return reject("malformed", `unknown repair target: ${proposal.structure}`);
   }
-  if (building.status !== "destroyed" && building.status !== "repairing") {
+  if (
+    building.status !== "damaged" &&
+    building.status !== "destroyed" &&
+    building.status !== "repairing"
+  ) {
     return reject(
       "malformed",
       `${proposal.structure} is not in need of repair`,

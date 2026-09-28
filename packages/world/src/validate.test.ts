@@ -836,6 +836,51 @@ test("a strike against a repairing building is rejected and leaves it repairing"
   );
 });
 
+test("a strike against a burning building is rejected and leaves its fire state untouched", () => {
+  let state = fireFixtureState();
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  state = withBuilding(state, {
+    ...tavern,
+    status: "burning",
+    fireIntensity: 1,
+    ticksBurning: 1,
+  });
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 }),
+  );
+  expect(outcome.ok).toBe(false);
+  expect(state.buildings.get(toEntityId("the-tavern"))).toMatchObject({
+    status: "burning",
+    fireIntensity: 1,
+    ticksBurning: 1,
+  });
+});
+
+test("a repair proposal against a damaged building progresses it toward operational", () => {
+  let state = fireFixtureState();
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  state = withBuilding(state, { ...tavern, status: "damaged" });
+  const outcome = validateProposal(
+    state,
+    proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
+  );
+  expect(outcome.ok).toBe(true);
+  if (outcome.ok) {
+    expect(outcome.events).toEqual([
+      expect.objectContaining({
+        kind: "repair-progressed",
+        entityId: "farmer",
+        structureId: "the-tavern",
+        resource: "planks",
+        amount: 1,
+      }),
+    ]);
+  }
+});
+
 test("a weaker strike against a destroyed building does not move it to damaged", () => {
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));

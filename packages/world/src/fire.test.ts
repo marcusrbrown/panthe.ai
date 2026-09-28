@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ContentPack } from "@panthea/contracts";
+import { runTick, submitProposal } from "./actions";
 import {
   applyBuildingBurnTicked,
   applyBuildingDamaged,
@@ -8,9 +9,13 @@ import {
   igniteThresholdOf,
   planFireStep,
 } from "./fire";
+import { decideRoutineProposal } from "./routines";
 import {
+  BUILDING_STATUSES,
+  type BuildingStatus,
   createInitialWorldState,
   createPrng,
+  type PrngState,
   toEntityId,
   type WorldState,
   withBuilding,
@@ -95,6 +100,230 @@ function burning(state: WorldState): WorldState {
     ticksBurning: 0,
   });
 }
+
+function lifecyclePack(): ContentPack {
+  return {
+    schemaVersion: 1,
+    realms: ["mortal", "olympus"],
+    resources: [],
+    locations: [
+      { id: "town-square", realm: "mortal", name: "Town Square", edges: [] },
+      { id: "great-hall", realm: "olympus", name: "Great Hall", edges: [] },
+    ],
+    buildings: [
+      {
+        id: "the-tavern",
+        locationId: "town-square",
+        name: "The Tavern",
+        material: "wood",
+        combustible: true,
+        services: ["drink"],
+        inventory: [],
+        owner: "farmer",
+      },
+    ],
+    inhabitants: [
+      {
+        id: "farmer",
+        name: "The Farmer",
+        locationId: "town-square",
+        drives: { thrift: 0.9, appetite: 0, greed: 0, piety: 0 },
+        startingInventory: [{ resource: "planks", amount: 100 }],
+      },
+      {
+        id: "zeus",
+        name: "Zeus",
+        locationId: "great-hall",
+        deity: true,
+        startingInventory: [{ resource: "divinity", amount: 100 }],
+      },
+    ],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      fireBalance: {
+        igniteThreshold: 3,
+        intensityGrowthPerTick: 1,
+        destroyIntensity: 3,
+      },
+      economyBalance: { repairCostPlanks: 2, repairAmountPerTick: 1 },
+    },
+    recipes: {},
+  };
+}
+
+function lifecycleStrike(target: string, power: number, observationId: string) {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: "zeus",
+    targets: [target],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId,
+    kind: "strike",
+    target,
+    power,
+  });
+  if (!submitted.ok) {
+    throw new Error(
+      `test fixture proposal failed to parse: ${submitted.rejection.message}`,
+    );
+  }
+  return submitted.proposal;
+}
+
+test("a weak strike and a strong strike against a burning tavern are both rejected; fire still progresses to destroyed, and repair then restores operational", () => {
+  let state = createInitialWorldState(lifecyclePack());
+  let prng = createPrng(1);
+
+  // Tick 1: a strike strong enough to ignite.
+  let result = runTick(state, prng, [
+    lifecycleStrike("the-tavern", 3, "obs-ignite"),
+  ]);
+  expect(result.rejected).toEqual([]);
+  state = result.state;
+  prng = result.prng;
+  expect(state.buildings.get(toEntityId("the-tavern"))).toMatchObject({
+    status: "burning",
+    fireIntensity: 1,
+  });
+
+  // Tick 2: a weak strike (below the ignite threshold) against the now
+  // burning tavern is rejected; the fire step still advances it.
+  result = runTick(state, prng, [lifecycleStrike("the-tavern", 1, "obs-weak")]);
+  expect(result.rejected).toHaveLength(1);
+  state = result.state;
+  prng = result.prng;
+  expect(state.buildings.get(toEntityId("the-tavern"))).toMatchObject({
+    status: "burning",
+    fireIntensity: 2,
+  });
+
+  // Tick 3: a strike strong enough to ignite again is still rejected
+  // outright, rather than resetting the fire's intensity. The fire step
+  // crosses the destroy threshold this same tick.
+  result = runTick(state, prng, [
+    lifecycleStrike("the-tavern", 3, "obs-strong"),
+  ]);
+  expect(result.rejected).toHaveLength(1);
+  state = result.state;
+  prng = result.prng;
+  expect(state.buildings.get(toEntityId("the-tavern"))?.status).toBe(
+    "destroyed",
+  );
+
+  // The owner's own routine, motivated by owning a destroyed building and
+  // holding planks, repairs it back to operational.
+  let guard = 0;
+  while (
+    state.buildings.get(toEntityId("the-tavern"))?.status !== "operational" &&
+    guard < 10
+  ) {
+    const decision = decideRoutineProposal(state, toEntityId("farmer"));
+    const proposals = decision ? [decision.proposal] : [];
+    const tick = runTick(state, prng, proposals);
+    state = tick.state;
+    prng = tick.prng;
+    guard += 1;
+  }
+  expect(state.buildings.get(toEntityId("the-tavern"))?.status).toBe(
+    "operational",
+  );
+});
+
+test("a weak strike on an operational tavern leaves it damaged, and repair restores operational", () => {
+  let state = createInitialWorldState(lifecyclePack());
+  let prng = createPrng(1);
+
+  const result = runTick(state, prng, [
+    lifecycleStrike("the-tavern", 1, "obs-weak"),
+  ]);
+  expect(result.rejected).toEqual([]);
+  state = result.state;
+  prng = result.prng;
+  expect(state.buildings.get(toEntityId("the-tavern"))?.status).toBe("damaged");
+
+  let guard = 0;
+  while (
+    state.buildings.get(toEntityId("the-tavern"))?.status !== "operational" &&
+    guard < 10
+  ) {
+    const decision = decideRoutineProposal(state, toEntityId("farmer"));
+    const proposals = decision ? [decision.proposal] : [];
+    const tick = runTick(state, prng, proposals);
+    state = tick.state;
+    prng = tick.prng;
+    guard += 1;
+  }
+  expect(state.buildings.get(toEntityId("the-tavern"))?.status).toBe(
+    "operational",
+  );
+});
+
+function buildingInStatus(status: BuildingStatus): WorldState {
+  const state = createInitialWorldState(lifecyclePack());
+  const tavern = state.buildings.get(toEntityId("the-tavern"));
+  if (!tavern) throw new Error("expected the tavern fixture building");
+  switch (status) {
+    case "operational":
+      return state;
+    case "damaged":
+      return withBuilding(state, { ...tavern, status: "damaged" });
+    case "burning":
+      return withBuilding(state, {
+        ...tavern,
+        status: "burning",
+        fireIntensity: 0,
+        ticksBurning: 0,
+      });
+    case "destroyed":
+      return withBuilding(state, { ...tavern, status: "destroyed" });
+    case "repairing":
+      return withBuilding(state, {
+        ...tavern,
+        status: "repairing",
+        repairProgress: 1,
+      });
+  }
+}
+
+test("every building status has a path back to operational", () => {
+  for (const status of BUILDING_STATUSES) {
+    let state = buildingInStatus(status);
+    let prng: PrngState = createPrng(1);
+
+    // Burning must reach "destroyed" through the fire step alone before
+    // repair becomes eligible.
+    let guard = 0;
+    while (
+      state.buildings.get(toEntityId("the-tavern"))?.status === "burning" &&
+      guard < 20
+    ) {
+      const tick = runTick(state, prng, []);
+      state = tick.state;
+      prng = tick.prng;
+      guard += 1;
+    }
+
+    guard = 0;
+    while (
+      state.buildings.get(toEntityId("the-tavern"))?.status !== "operational" &&
+      guard < 20
+    ) {
+      const decision = decideRoutineProposal(state, toEntityId("farmer"));
+      const proposals = decision ? [decision.proposal] : [];
+      const tick = runTick(state, prng, proposals);
+      state = tick.state;
+      prng = tick.prng;
+      guard += 1;
+    }
+
+    expect(state.buildings.get(toEntityId("the-tavern"))?.status).toBe(
+      "operational",
+    );
+  }
+});
 
 test("igniteThresholdOf reads the content-authored threshold, defaulting to unreachable", () => {
   const withoutThreshold = createInitialWorldState(townPack());

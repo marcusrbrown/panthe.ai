@@ -1,8 +1,8 @@
-// The repair rule: a destroyed or repairing building is restored by an
-// actor spending planks against it, incrementally, over however many
-// ticks its full cost takes at the content-authored rate. Nothing but a
-// `repair` proposal advances it -- unlike fire, repair has no automatic
-// per-tick step.
+// The repair rule: a damaged, destroyed, or repairing building is
+// restored by an actor spending planks against it, incrementally, over
+// however many ticks its full cost takes at the content-authored rate.
+// Nothing but a `repair` proposal advances it -- unlike fire, repair has
+// no automatic per-tick step.
 
 import type { EntityId } from "@panthea/contracts";
 import { debitActorInventory, getResourceAmount } from "./economy";
@@ -25,14 +25,18 @@ export function repairAmountPerTickOf(state: WorldState): number {
   return state.rules.economyBalance.repairAmountPerTick ?? 1;
 }
 
-/** The first building `actorId` owns that is destroyed or mid-repair, or `undefined` if it owns none. */
+/** The first building `actorId` owns that is damaged, destroyed, or mid-repair, or `undefined` if it owns none. */
 export function findRepairableBuilding(
   state: WorldState,
   actorId: EntityId,
 ): BuildingState | undefined {
   for (const building of state.buildings.values()) {
     if (building.owner !== actorId) continue;
-    if (building.status === "destroyed" || building.status === "repairing") {
+    if (
+      building.status === "damaged" ||
+      building.status === "destroyed" ||
+      building.status === "repairing"
+    ) {
       return building;
     }
   }

@@ -5,7 +5,7 @@ import { Sprite2D } from "three-flatland";
 
 import type { ViewLocation, WorldViewModel } from "../store";
 import { createMarkerLayer } from "./markers";
-import { type EffectTone, placeEvents } from "./presentation";
+import { type EffectTone, placeEvents, realmPaths } from "./presentation";
 
 export interface WorldRenderer {
   start(onDeviceLost: () => void): Promise<void>;
@@ -173,13 +173,14 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
     for (let y = -280; y < 320; y += 44) {
       line(new THREE.Vector2(-460, y), new THREE.Vector2(460, y), 0xbdb5a5, 1);
     }
+    for (const [fromId, toId] of realmPaths(locations)) {
+      const start = points.get(fromId);
+      const end = points.get(toId);
+      if (start && end) line(start, end, ink, 3);
+    }
     for (const location of locations) {
       const from = points.get(location.id);
       if (!from) continue;
-      for (const edge of location.edges) {
-        const to = points.get(edge.to);
-        if (to && location.id < edge.to) line(from, to, ink, 3);
-      }
       block(
         from.x,
         from.y,

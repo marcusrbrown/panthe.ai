@@ -1,8 +1,8 @@
 // The local causal trace store: observation records, proposals (accepted
 // and rejected), and presentation receipts, linked by correlation/causation
-// IDs (Key Technical Decisions). Always on — local causal recording and
-// inspection are always on; external export is a separate, opt-in concern
-// (docs/README.md invariants) this module does not implement.
+// IDs (Key Technical Decisions). Local causal recording and inspection are
+// always on; external export is a separate, opt-in concern (docs/README.md
+// invariants) this module does not implement.
 //
 // Deliberately decoupled from packages/persistence: this module takes a
 // plain `bun:sqlite` `Database` handle (the composing service, e.g.
@@ -10,15 +10,12 @@
 // world store or a dedicated trace file) and an injected `EventSource` for
 // resolving committed events by ID, rather than depending on
 // @panthea/persistence's `Store` type. `packages/telemetry`'s package.json
-// only declares `@panthea/contracts` as a dependency; adding a workspace
-// dependency on persistence was out of scope for this unit (see the
-// report accompanying this change).
+// only declares `@panthea/contracts` as a dependency.
 //
-// Contracts gap (reported, not fixed here): `packages/contracts`' Proposal
-// shapes have no `id`/`proposalId` field, so a proposal can't be addressed
-// by trace records without one. This module mints a local `ProposalId`
-// brand using contracts' own generic `idParser`/`idFactory` helpers rather
-// than editing packages/contracts.
+// `packages/contracts`' Proposal shapes have no `id`/`proposalId` field, so
+// a proposal can't be addressed by trace records without one. This module
+// mints a local `ProposalId` brand using contracts' own generic
+// `idParser`/`idFactory` helpers rather than editing packages/contracts.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -39,19 +36,12 @@ export type ProposalId = Brand<string, "ProposalId">;
 export const parseProposalId = idParser<"ProposalId">();
 export const createProposalId = idFactory<"ProposalId">("proposal");
 
-export type ReceiptId = Brand<string, "ReceiptId">;
-export const createReceiptId = idFactory<"ReceiptId">("receipt");
-
-/** Marker returned by every trace read once retention pruning has dropped the payload body for that row. */
-export const PAYLOAD_EXPIRED = "payload expired" as const;
-export type PayloadExpired = typeof PAYLOAD_EXPIRED;
-
 /** Resolves committed events by ID. Injected so this module never assumes a specific events table shape (packages/persistence owns that). */
 export interface EventSource {
   getEvent(id: EventId): WorldEvent | undefined;
 }
 
-/** Creates the trace tables (idempotent). Safe to call on every open — no `user_version` ladder, since these tables are additive and never need a destructive migration in M1. */
+/** Creates the trace tables (idempotent). Safe to call on every open. */
 export function ensureTraceSchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS trace_observations (
@@ -60,8 +50,7 @@ export function ensureTraceSchema(db: Database): void {
       state_revision INTEGER NOT NULL,
       source TEXT NOT NULL,
       recorded_at INTEGER NOT NULL,
-      payload TEXT,
-      payload_expired INTEGER NOT NULL DEFAULT 0
+      payload TEXT NOT NULL
     ) STRICT
   `);
   db.exec(`
@@ -74,8 +63,7 @@ export function ensureTraceSchema(db: Database): void {
       reason TEXT,
       event_id TEXT,
       recorded_at INTEGER NOT NULL,
-      payload TEXT,
-      payload_expired INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
       CHECK (outcome IN ('committed', 'rejected'))
     ) STRICT
   `);
@@ -85,14 +73,10 @@ export function ensureTraceSchema(db: Database): void {
   `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS trace_receipts (
-      id TEXT PRIMARY KEY,
       event_id TEXT NOT NULL,
       session_id TEXT NOT NULL,
-      is_orphan INTEGER NOT NULL,
-      recorded_at INTEGER NOT NULL,
-      payload TEXT,
-      payload_expired INTEGER NOT NULL DEFAULT 0,
-      UNIQUE (event_id, session_id)
+      presented_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (event_id, session_id)
     ) STRICT
   `);
 }
@@ -118,7 +102,7 @@ export function recordObservation(
 }
 
 export interface ObservationEntry {
-  readonly record: ObservationRecord | PayloadExpired;
+  readonly record: ObservationRecord;
 }
 
 export function getObservation(
@@ -126,17 +110,12 @@ export function getObservation(
   id: ObservationId,
 ): ObservationEntry | undefined {
   const row = db
-    .query(
-      "SELECT payload, payload_expired FROM trace_observations WHERE id = ?",
-    )
-    .get(id) as { payload: string | null; payload_expired: number } | null;
+    .query("SELECT payload FROM trace_observations WHERE id = ?")
+    .get(id) as { payload: string } | null;
   if (!row) {
     return undefined;
   }
-  if (row.payload_expired) {
-    return { record: PAYLOAD_EXPIRED };
-  }
-  return { record: JSON.parse(row.payload as string) as ObservationRecord };
+  return { record: JSON.parse(row.payload) as ObservationRecord };
 }
 
 export type ProposalOutcomeKind = "committed" | "rejected";
@@ -183,7 +162,7 @@ export interface ProposalOutcomeRow {
   readonly outcome: ProposalOutcomeKind;
   readonly reason: RejectionReasonCode | undefined;
   readonly eventId: EventId | undefined;
-  readonly proposal: Proposal | PayloadExpired;
+  readonly proposal: Proposal;
 }
 
 function decodeProposalOutcomeRow(row: {
@@ -194,8 +173,7 @@ function decodeProposalOutcomeRow(row: {
   outcome: string;
   reason: string | null;
   event_id: string | null;
-  payload: string | null;
-  payload_expired: number;
+  payload: string;
 }): ProposalOutcomeRow {
   return {
     proposalId: row.proposal_id as ProposalId,
@@ -205,9 +183,7 @@ function decodeProposalOutcomeRow(row: {
     outcome: row.outcome as ProposalOutcomeKind,
     reason: (row.reason ?? undefined) as RejectionReasonCode | undefined,
     eventId: (row.event_id ?? undefined) as EventId | undefined,
-    proposal: row.payload_expired
-      ? PAYLOAD_EXPIRED
-      : (JSON.parse(row.payload as string) as Proposal),
+    proposal: JSON.parse(row.payload) as Proposal,
   };
 }
 
@@ -232,52 +208,45 @@ export function getProposalOutcomeByEventId(
 }
 
 export interface RecordReceiptInput {
-  readonly id: ReceiptId;
   readonly eventId: EventId;
   readonly sessionId: SessionId;
-  readonly payload?: unknown;
 }
 
-export interface RecordReceiptResult {
-  /** True when `eventId` did not resolve via the injected `EventSource` — stored as an orphan trace record, never mutating world tables. */
-  readonly orphan: boolean;
+/** Thrown by `recordReceipt` when `eventId` does not resolve via the injected `EventSource`. */
+export class UnknownEventError extends Error {
+  constructor(readonly eventId: EventId) {
+    super(`recordReceipt: unknown event id ${eventId}`);
+    this.name = "UnknownEventError";
+  }
 }
 
 /**
- * Append-only, idempotent per (event, session) via the table's UNIQUE
- * constraint plus `INSERT OR IGNORE`. Never issues a write to any world
- * table — this module has no reference to packages/persistence's `Store`
- * and cannot reach them even by mistake.
+ * Records that `sessionId` presented `eventId`. Rejects with
+ * `UnknownEventError` if `eventId` does not resolve via `eventSource` --
+ * a receipt only ever names a real, committed event. Idempotent per
+ * (event, session) via the table's primary key plus `INSERT OR IGNORE`.
  */
 export function recordReceipt(
   db: Database,
   eventSource: EventSource,
   input: RecordReceiptInput,
-  now: number = Date.now(),
-): RecordReceiptResult {
-  const orphan = eventSource.getEvent(input.eventId) === undefined;
+  presentedAtMs: number = Date.now(),
+): void {
+  if (eventSource.getEvent(input.eventId) === undefined) {
+    throw new UnknownEventError(input.eventId);
+  }
   db.run(
     `INSERT OR IGNORE INTO trace_receipts
-       (id, event_id, session_id, is_orphan, recorded_at, payload)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      input.id,
-      input.eventId,
-      input.sessionId,
-      orphan ? 1 : 0,
-      now,
-      JSON.stringify(input.payload ?? null),
-    ],
+       (event_id, session_id, presented_at_ms)
+     VALUES (?, ?, ?)`,
+    [input.eventId, input.sessionId, presentedAtMs],
   );
-  return { orphan };
 }
 
 export interface ReceiptRow {
-  readonly id: ReceiptId;
   readonly eventId: EventId;
   readonly sessionId: SessionId;
-  readonly orphan: boolean;
-  readonly payload: unknown | PayloadExpired;
+  readonly presentedAtMs: number;
 }
 
 export function listReceiptsByEvent(
@@ -286,52 +255,16 @@ export function listReceiptsByEvent(
 ): readonly ReceiptRow[] {
   const rows = db
     .query(
-      "SELECT * FROM trace_receipts WHERE event_id = ? ORDER BY recorded_at ASC",
+      "SELECT * FROM trace_receipts WHERE event_id = ? ORDER BY presented_at_ms ASC",
     )
     .all(eventId) as {
-    id: string;
     event_id: string;
     session_id: string;
-    is_orphan: number;
-    payload: string | null;
-    payload_expired: number;
+    presented_at_ms: number;
   }[];
   return rows.map((row) => ({
-    id: row.id as ReceiptId,
     eventId: row.event_id as EventId,
     sessionId: row.session_id as SessionId,
-    orphan: row.is_orphan !== 0,
-    payload: row.payload_expired
-      ? PAYLOAD_EXPIRED
-      : (JSON.parse(row.payload as string) as unknown),
+    presentedAtMs: row.presented_at_ms,
   }));
-}
-
-/**
- * Retention pruning: drops payload bodies for rows older than `olderThanMs`
- * but keeps every causal edge (IDs, correlation/causation, event links) and
- * a tombstone (`payload_expired = 1`) — follow-event queries keep walking
- * the full chain and mark expired hops instead of breaking (Key Technical
- * Decisions: "pruning drops payload bodies only").
- */
-export function pruneRetention(
-  db: Database,
-  olderThanMs: number,
-  now: number = Date.now(),
-): void {
-  const cutoff = now - olderThanMs;
-  db.transaction(() => {
-    db.run(
-      "UPDATE trace_observations SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-      [cutoff],
-    );
-    db.run(
-      "UPDATE trace_proposal_outcomes SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-      [cutoff],
-    );
-    db.run(
-      "UPDATE trace_receipts SET payload = NULL, payload_expired = 1 WHERE recorded_at < ? AND payload_expired = 0",
-      [cutoff],
-    );
-  }).immediate();
 }

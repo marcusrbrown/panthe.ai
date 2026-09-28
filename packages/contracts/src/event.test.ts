@@ -57,26 +57,6 @@ test("a valid realm-transitioned event parses", () => {
   }
 });
 
-test("an event written in a previous payload version upcasts to the latest form", () => {
-  const v1 = envelope({
-    schemaVersion: 1,
-    kind: "entity-moved",
-    entity: "npc-1",
-    to: "loc-2",
-  });
-  delete (v1 as { entityId?: unknown }).entityId;
-  const result = parseEvent(v1);
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.value.schemaVersion).toBe(LATEST_EVENT_SCHEMA_VERSION);
-    expect(result.value).toMatchObject({
-      kind: "entity-moved",
-      entityId: "npc-1",
-      to: "loc-2",
-    });
-  }
-});
-
 test("an unknown event kind is rejected with reason unknown-kind", () => {
   const result = parseEvent(
     envelope({ kind: "teleported", entityId: "npc-1" }),

@@ -10,5 +10,5 @@ test("barrel exports the public persistence API", () => {
   expect(typeof persistence.importArchive).toBe("function");
   expect(typeof persistence.applyElapsed).toBe("function");
   expect(typeof persistence.computeTick).toBe("function");
-  expect(typeof persistence.migrate).toBe("function");
+  expect(typeof persistence.createSchema).toBe("function");
 });

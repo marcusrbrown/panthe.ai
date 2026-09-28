@@ -1,10 +1,10 @@
 // The archive manifest is the self-describing header of an export archive
 // (Key Technical Decisions: "a single self-describing SQLite file captured
 // at a committed tick boundary"). It tracks three independent version
-// numbers on purpose: the archive container format, the SQLite user_version
+// numbers: the archive container format, the SQLite user_version
 // (packages/persistence's concern), and the payload schema version these
 // contracts define. Import treats every field as hostile until it parses
-// and the content hash recomputes (packages/persistence, Unit 2).
+// and the content hash recomputes (packages/persistence).
 
 import {
   fail,

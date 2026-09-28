@@ -7,16 +7,13 @@ import {
   type WorldState,
   withActor,
 } from "./state";
-import { createDefaultRuleRegistry } from "./validate";
+import { validateProposal } from "./validate";
 
 function minimalRules(): ContentPack["rules"] {
   return {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
-    importMaxBytes: 50_000_000,
-    importMaxRows: 1_000_000,
-    importMaxDurationMs: 30_000,
     fireBalance: {},
     economyBalance: {},
   };
@@ -111,9 +108,6 @@ function proposal(raw: Record<string, unknown>): Proposal {
     schemaVersion: 1,
     actor: "npc-1",
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "fixture",
     observationId: "obs-1",
@@ -130,8 +124,7 @@ function proposal(raw: Record<string, unknown>): Proposal {
 
 test("a move to an adjacent location commits an entity-moved draft", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ kind: "move", to: "square" }),
   );
@@ -148,8 +141,7 @@ test("a move to an adjacent location commits an entity-moved draft", () => {
 
 test("a move to a non-adjacent location is rejected as not-adjacent", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ kind: "move", to: "tavern" }),
   );
@@ -165,8 +157,7 @@ test("a plain move across a realm boundary is rejected as restricted-realm", () 
     capabilities: [],
     revision: 0,
   });
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ actor: "npc-3", kind: "move", to: "underworld-shore" }),
   );
@@ -182,8 +173,7 @@ test("a move into a location requiring an uncarried capability is rejected as re
     capabilities: [],
     revision: 0,
   });
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ actor: "npc-4", kind: "move", to: "judgment-hall" }),
   );
@@ -193,8 +183,7 @@ test("a move into a location requiring an uncarried capability is rejected as re
 
 test("a move by a dead actor is rejected as dead-actor and state is unaffected", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ actor: "npc-dead", kind: "move", to: "grove" }),
   );
@@ -205,8 +194,7 @@ test("a move by a dead actor is rejected as dead-actor and state is unaffected",
 
 test("a move by an unknown actor is rejected as dead-actor", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ actor: "npc-nonexistent", kind: "move", to: "grove" }),
   );
@@ -216,8 +204,7 @@ test("a move by an unknown actor is rejected as dead-actor", () => {
 
 test("a stale expected revision is rejected as stale-target", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({
       kind: "move",
@@ -238,8 +225,7 @@ test("a realm-transition using the authored transport element arrives in the Und
     capabilities: [],
     revision: 0,
   });
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({
       actor: "npc-5",
@@ -262,8 +248,7 @@ test("a realm-transition using the authored transport element arrives in the Und
 
 test("a realm-transition attempted from off the transport element is rejected as not-adjacent", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({
       kind: "realm-transition",
@@ -306,8 +291,7 @@ function crossRealmPathFixtureState(): WorldState {
 
 test("a realm-transition over a cross-realm path edge is rejected as restricted-realm", () => {
   const state = crossRealmPathFixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({
       actor: "npc-6",
@@ -323,8 +307,7 @@ test("a realm-transition over a cross-realm path edge is rejected as restricted-
 
 test("a claim never commits state, even a true-sounding one", () => {
   const state = fixtureState();
-  const registry = createDefaultRuleRegistry();
-  const outcome = registry.validateProposal(
+  const outcome = validateProposal(
     state,
     proposal({ kind: "claim", assertion: "I own the tavern" }),
   );

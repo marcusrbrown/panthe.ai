@@ -1,5 +1,6 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,12 +12,9 @@ import {
   type EntityMovedEvent,
   type WorldEvent,
 } from "@panthea/contracts";
-import type { Migration } from "./migrations";
 import {
-  checkpoint,
   closeStore,
   commitTick,
-  enforceDatabaseFileModes,
   getCurrentSequence,
   getEventRow,
   listEvents,
@@ -41,8 +39,7 @@ afterEach(() => {
 });
 
 /** A minimal generic projection: a count of moves per entity. Stands in for
- * packages/world's real projection shape, which does not exist yet — this
- * fixture exists precisely to prove persistence never needs to know it. */
+ * packages/world's real projection shape. */
 interface CountProjection {
   readonly moves: Record<string, number>;
 }
@@ -57,6 +54,10 @@ const countReducer: ProjectionReducers<CountProjection> = {
     return {
       moves: { ...projections.moves, [key]: (projections.moves[key] ?? 0) + 1 },
     };
+  },
+  codec: {
+    encode: (projections) => projections,
+    decode: (value) => value as CountProjection,
   },
 };
 
@@ -76,7 +77,7 @@ function makeMoveEvent(sequence: number): EntityMovedEvent {
 }
 
 describe("openStore", () => {
-  test("happy path: creates the parent dir 0700 and the db file 0600", () => {
+  test("happy path: creates the parent dir 0700 and the db file 0600 once, at creation", () => {
     const store = openStore(dbPath);
     expect((statSync(dir).mode & 0o777).toString(8)).toBe("700");
     expect((statSync(dbPath).mode & 0o777).toString(8)).toBe("600");
@@ -117,8 +118,6 @@ describe("openStore", () => {
       /already belongs to world/,
     );
 
-    // The rejected open must not leave the db handle open or the slot in a
-    // half-opened state — a normal reopen still recovers the original world.
     const reopened = openStore(dbPath);
     expect(reopened.worldId).toBe(originalWorldId);
     closeStore(reopened);
@@ -134,29 +133,18 @@ describe("openStore", () => {
     closeStore(reopened);
   });
 
-  test("a bootstrap/migration failure closes the db handle so the file can be reopened cleanly", () => {
-    const faultyMigrations: readonly Migration[] = [
-      {
-        version: 1,
-        description: "simulated migration failure",
-        up() {
-          throw new Error("simulated migration failure");
-        },
-      },
-    ];
-
-    expect(() =>
-      openStore(dbPath, {
-        migrateOptions: { migrations: faultyMigrations },
-      }),
-    ).toThrow("simulated migration failure");
-
-    // The failed open must close its db handle rather than leak it — a
-    // fresh open on the same path, this time with the real migration
-    // ladder, must succeed and bootstrap normally.
+  test("opening an existing store whose schema version does not match this build's version throws and never resets it", () => {
     const store = openStore(dbPath);
-    expect(store.worldId).toBeDefined();
     closeStore(store);
+
+    const db = new Database(dbPath);
+    db.exec("PRAGMA user_version = 99");
+    db.close();
+
+    expect(() => openStore(dbPath)).toThrow(/schema version 99/);
+    // The failed open closes its handle rather than leaking it -- a repeat
+    // attempt fails the same way, not with a "database is locked" error.
+    expect(() => openStore(dbPath)).toThrow(/schema version 99/);
   });
 });
 
@@ -169,13 +157,20 @@ describe("commitTick", () => {
       events: [event],
       cursorWallMs: 5000,
       paused: false,
+      tick: 1,
+      simTimeMs: 5000,
       prngState: "seed-1",
     });
 
     expect(result.sequence).toBe(1);
     expect(result.projections.moves[String(event.entityId)]).toBe(1);
     expect(getCurrentSequence(store.db)).toBe(1);
-    expect(readClock(store.db)).toEqual({ cursorWallMs: 5000, paused: false });
+    expect(readClock(store.db)).toEqual({
+      cursorWallMs: 5000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 5000,
+    });
     closeStore(store);
   });
 
@@ -185,6 +180,8 @@ describe("commitTick", () => {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
       paused: false,
+      tick: 1,
+      simTimeMs: 1000,
       prngState: "seed-1",
     });
 
@@ -200,6 +197,8 @@ describe("commitTick", () => {
         events: [makeMoveEvent(3)],
         cursorWallMs: 9999,
         paused: false,
+        tick: 2,
+        simTimeMs: 9999,
         prngState: "seed-should-not-persist",
       }),
     ).toThrow(NonContiguousSequenceError);
@@ -217,7 +216,7 @@ describe("commitTick", () => {
     const before = getCurrentSequence(store.db);
 
     const faultyReducer: ProjectionReducers<CountProjection> = {
-      initial: { moves: {} },
+      ...countReducer,
       applyEvent(projections, event) {
         if (event.sequence === 2) {
           throw new Error("simulated reducer fault");
@@ -231,6 +230,8 @@ describe("commitTick", () => {
         events: [makeMoveEvent(1), makeMoveEvent(2)],
         cursorWallMs: 1234,
         paused: false,
+        tick: 1,
+        simTimeMs: 1234,
         prngState: "seed-x",
       }),
     ).toThrow("simulated reducer fault");
@@ -247,6 +248,8 @@ describe("commitTick", () => {
         events: [makeMoveEvent(i)],
         cursorWallMs: 1000 * i,
         paused: false,
+        tick: i,
+        simTimeMs: 1000 * i,
         prngState: `seed-${i}`,
       });
     }
@@ -256,16 +259,63 @@ describe("commitTick", () => {
     expect(rebuilt).toEqual(live);
     closeStore(store);
   });
+});
 
-  test("file modes stay 0600 after every commit", () => {
+describe("clock tick/simTime", () => {
+  test("happy path: committing two ticks and reopening restores tick 2 and its simTime from the clock row", () => {
     const store = openStore(dbPath);
     commitTick(store, countReducer, {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
       paused: false,
-      prngState: "seed",
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
     });
-    expect((statSync(dbPath).mode & 0o777).toString(8)).toBe("600");
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(2)],
+      cursorWallMs: 2000,
+      paused: false,
+      tick: 2,
+      simTimeMs: 2000,
+      prngState: "seed-2",
+    });
+    closeStore(store);
+
+    const reopened = openStore(dbPath);
+    expect(readClock(reopened.db)).toEqual({
+      cursorWallMs: 2000,
+      paused: false,
+      tick: 2,
+      simTimeMs: 2000,
+    });
+    closeStore(reopened);
+  });
+
+  test("integration: a thrown mid-tick transaction leaves tick and simTime unchanged", () => {
+    const store = openStore(dbPath);
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(1)],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed-1",
+    });
+    const before = readClock(store.db);
+
+    expect(() =>
+      commitTick(store, countReducer, {
+        events: [makeMoveEvent(3)],
+        cursorWallMs: 9999,
+        paused: false,
+        tick: 99,
+        simTimeMs: 9999,
+        prngState: "seed-should-not-persist",
+      }),
+    ).toThrow(NonContiguousSequenceError);
+
+    expect(readClock(store.db)).toEqual(before);
     closeStore(store);
   });
 });
@@ -278,6 +328,8 @@ describe("getEventRow / listEvents", () => {
       events: [event],
       cursorWallMs: 1000,
       paused: false,
+      tick: 1,
+      simTimeMs: 1000,
       prngState: "seed",
     });
 
@@ -290,41 +342,57 @@ describe("getEventRow / listEvents", () => {
   });
 });
 
-describe("checkpoint", () => {
-  test("happy path: truncates the WAL without closing the store, keeping file modes intact", () => {
-    const store = openStore(dbPath);
-    commitTick(store, countReducer, {
-      events: [makeMoveEvent(1)],
-      cursorWallMs: 1000,
-      paused: false,
-      prngState: "seed",
-    });
+describe("projection codec", () => {
+  interface MapProjection {
+    readonly counts: Map<string, number>;
+  }
 
-    checkpoint(store);
+  const mapCodec = {
+    encode(projections: MapProjection): unknown {
+      return { counts: Object.fromEntries(projections.counts) };
+    },
+    decode(value: unknown): MapProjection {
+      const raw = value as { counts: Record<string, number> };
+      return { counts: new Map(Object.entries(raw.counts)) };
+    },
+  };
 
-    // The store is still usable after a checkpoint (not closed).
-    expect(getCurrentSequence(store.db)).toBe(1);
-    expect((statSync(dbPath).mode & 0o777).toString(8)).toBe("600");
-    closeStore(store);
-  });
-});
-
-describe("enforceDatabaseFileModes", () => {
-  test("re-asserts 0600 on the main file and any wal/shm siblings that exist", () => {
-    const store = openStore(dbPath);
-    commitTick(store, countReducer, {
-      events: [makeMoveEvent(1)],
-      cursorWallMs: 1000,
-      paused: false,
-      prngState: "seed",
-    });
-    enforceDatabaseFileModes(dbPath);
-    for (const suffix of ["", "-wal", "-shm"]) {
-      const path = `${dbPath}${suffix}`;
-      if (existsSync(path)) {
-        expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+  const mapReducer: ProjectionReducers<MapProjection> = {
+    initial: { counts: new Map() },
+    applyEvent(projections, event) {
+      if (event.kind !== "entity-moved") {
+        return projections;
       }
-    }
+      const key = String(event.entityId);
+      const counts = new Map(projections.counts);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      return { counts };
+    },
+    codec: mapCodec,
+  };
+
+  test("happy path: a Map-bearing projection round-trips through a Map-aware codec across commit -> close -> reopen for both readLiveProjections and rebuildProjections", () => {
+    const store = openStore(dbPath);
+    const event = makeMoveEvent(1);
+    commitTick(store, mapReducer, {
+      events: [event],
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed",
+    });
     closeStore(store);
+
+    const reopened = openStore(dbPath);
+    const live = readLiveProjections(reopened, mapReducer);
+    const rebuilt = rebuildProjections(reopened, mapReducer);
+
+    expect(live.counts).toBeInstanceOf(Map);
+    expect(live.counts.get(String(event.entityId))).toBe(1);
+    expect(rebuilt.counts).toBeInstanceOf(Map);
+    expect(rebuilt.counts.get(String(event.entityId))).toBe(1);
+    expect(live.counts).toEqual(rebuilt.counts);
+    closeStore(reopened);
   });
 });

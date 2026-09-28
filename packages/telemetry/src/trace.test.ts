@@ -14,19 +14,17 @@ import {
 } from "@panthea/contracts";
 import {
   createProposalId,
-  createReceiptId,
   type EventSource,
   ensureTraceSchema,
   getObservation,
   getProposalOutcomeByEventId,
   getProposalOutcomeByProposalId,
   listReceiptsByEvent,
-  PAYLOAD_EXPIRED,
   parseProposalId,
-  pruneRetention,
   recordObservation,
   recordProposalOutcome,
   recordReceipt,
+  UnknownEventError,
 } from "./trace";
 
 let db: Database;
@@ -56,9 +54,6 @@ function makeProposal(observationId: ObservationRecord["id"]): Proposal {
     schemaVersion: 1,
     actor: createEntityId(),
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "fixture",
     observationId,
@@ -104,6 +99,21 @@ describe("ensureTraceSchema", () => {
     );
     expect(usesIndex).toBe(true);
   });
+
+  test("only the three trace tables exist", () => {
+    const tables = (
+      db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+        name: string;
+      }[]
+    ).map((row) => row.name);
+    expect(tables.sort()).toEqual(
+      [
+        "trace_observations",
+        "trace_proposal_outcomes",
+        "trace_receipts",
+      ].sort(),
+    );
+  });
 });
 
 describe("recordObservation / getObservation", () => {
@@ -119,9 +129,7 @@ describe("recordObservation / getObservation", () => {
     recordObservation(db, record);
     recordObservation(db, { ...record, factsRead: ["different"] });
     const fetched = getObservation(db, record.id);
-    expect((fetched as { record: ObservationRecord }).record.factsRead).toEqual(
-      ["fact-1"],
-    );
+    expect(fetched?.record.factsRead).toEqual(["fact-1"]);
   });
 
   test("returns undefined for an unknown ID", () => {
@@ -178,48 +186,32 @@ describe("recordProposalOutcome", () => {
 });
 
 describe("recordReceipt", () => {
-  test("happy path: a receipt for a known event is not orphaned", () => {
+  test("happy path: a receipt for a known event is recorded", () => {
     const event = fakeEvent(createEventId());
     const eventSource: EventSource = {
       getEvent: (id) => (id === event.id ? event : undefined),
     };
+    const sessionId = createSessionId();
 
-    const result = recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: event.id,
-      sessionId: createSessionId(),
-    });
-    expect(result.orphan).toBe(false);
+    recordReceipt(db, eventSource, { eventId: event.id, sessionId });
+
+    const rows = listReceiptsByEvent(db, event.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventId: event.id, sessionId });
   });
 
-  test("error path: a receipt referencing an unknown event is stored as an orphan trace record only, never mutating world tables", () => {
+  test("error path: a receipt referencing an unknown event is rejected and never persisted", () => {
     const eventSource: EventSource = { getEvent: () => undefined };
     const unknownEventId = createEventId();
-    const result = recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: unknownEventId,
-      sessionId: createSessionId(),
-    });
-    expect(result.orphan).toBe(true);
 
-    const rows = listReceiptsByEvent(db, unknownEventId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.orphan).toBe(true);
+    expect(() =>
+      recordReceipt(db, eventSource, {
+        eventId: unknownEventId,
+        sessionId: createSessionId(),
+      }),
+    ).toThrow(UnknownEventError);
 
-    // No world tables exist in this trace-only database at all — the only
-    // tables present are the three trace tables this module created.
-    const tables = (
-      db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
-        name: string;
-      }[]
-    ).map((row) => row.name);
-    expect(tables.sort()).toEqual(
-      [
-        "trace_observations",
-        "trace_proposal_outcomes",
-        "trace_receipts",
-      ].sort(),
-    );
+    expect(listReceiptsByEvent(db, unknownEventId)).toHaveLength(0);
   });
 
   test("idempotent per event+session: duplicate receipts are dropped, not persisted twice", () => {
@@ -227,85 +219,9 @@ describe("recordReceipt", () => {
     const eventSource: EventSource = { getEvent: () => event };
     const sessionId = createSessionId();
 
-    recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: event.id,
-      sessionId,
-    });
-    recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: event.id,
-      sessionId,
-    });
+    recordReceipt(db, eventSource, { eventId: event.id, sessionId });
+    recordReceipt(db, eventSource, { eventId: event.id, sessionId });
 
     expect(listReceiptsByEvent(db, event.id)).toHaveLength(1);
-  });
-});
-
-describe("pruneRetention", () => {
-  test("edge case: after pruning, causal edges and tombstones remain and payload reads return the expired marker", () => {
-    const observation = makeObservation();
-    const now = 1_000_000;
-    recordObservation(db, observation, now - 1000);
-
-    pruneRetention(db, 500, now);
-
-    const fetched = getObservation(db, observation.id);
-    expect(fetched?.record).toBe(PAYLOAD_EXPIRED);
-
-    // The row (the causal edge — the ID itself) is still present.
-    const raw = db
-      .query("SELECT payload_expired FROM trace_observations WHERE id = ?")
-      .get(observation.id) as { payload_expired: number };
-    expect(raw.payload_expired).toBe(1);
-  });
-
-  test("rows newer than the cutoff are untouched", () => {
-    const observation = makeObservation();
-    const now = 1_000_000;
-    recordObservation(db, observation, now);
-    pruneRetention(db, 500, now);
-    expect(getObservation(db, observation.id)?.record).toEqual(observation);
-  });
-
-  test("integration: a failure in a later update rolls back the earlier updates in the same call", () => {
-    const observation = makeObservation();
-    const proposal = makeProposal(observation.id);
-    const proposalId = createProposalId();
-    const now = 1_000_000;
-
-    recordObservation(db, observation, now - 1000);
-    recordProposalOutcome(
-      db,
-      {
-        proposalId,
-        observationId: observation.id,
-        correlationId: createCorrelationId(),
-        causationId: createCausationId(),
-        proposal,
-        outcome: "committed",
-        eventId: createEventId(),
-      },
-      now - 1000,
-    );
-
-    // Force the third UPDATE (trace_receipts) to fail so the whole call
-    // rejects; the point of this test is that the first two UPDATEs, run
-    // earlier in the same call, must not have taken effect either.
-    db.exec("DROP TABLE trace_receipts");
-
-    expect(() => pruneRetention(db, 500, now)).toThrow();
-
-    const observationRow = db
-      .query("SELECT payload_expired FROM trace_observations WHERE id = ?")
-      .get(observation.id) as { payload_expired: number };
-    expect(observationRow.payload_expired).toBe(0);
-
-    const outcomeRow = db
-      .query(
-        "SELECT payload_expired FROM trace_proposal_outcomes WHERE proposal_id = ?",
-      )
-      .get(proposalId) as { payload_expired: number };
-    expect(outcomeRow.payload_expired).toBe(0);
   });
 });

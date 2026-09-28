@@ -1,71 +1,100 @@
 // The per-world SQLite store: WAL journal with macOS persistent-WAL
-// disabled, enforced 0700/0600 modes, STRICT tables, and one IMMEDIATE
-// transaction per tick that commits events + projections + clock cursor +
-// PRNG state atomically (Key Technical Decisions). Patterned after
-// tools/probes/backend-lifecycle/src/sidecar.ts's `openDatabase`/mode
-// enforcement, extended with migrations, projections, and tick commit.
+// disabled, STRICT tables, and one IMMEDIATE transaction per tick that
+// commits events + projections + clock cursor + PRNG state atomically.
 //
-// Projection ownership (Key Technical Decisions): "packages/world owns
-// event reducers and projection definitions and never depends on SQLite;
-// packages/persistence owns transactions, storage, snapshot/export/import,
-// and projection application/rebuild by calling world reducers." This
-// module never imports packages/world. Callers inject a `ProjectionReducers`
-// value — a pure `applyEvent`/`initial` pair — so persistence stays
-// generic over whatever projection shape packages/world eventually defines.
-// Persistence stores that shape as a single opaque JSON document; the
-// projection *tables* packages/world may want internally are a concern for
-// whichever unit defines their relational shape, not this one.
+// packages/world owns event reducers and projection definitions and never
+// depends on SQLite; this module owns transactions, storage, and
+// projection application/rebuild by calling an injected reducer. It never
+// imports packages/world. Persistence stores the projection shape as a
+// single opaque JSON document via the caller's `ProjectionCodec`.
 
 import { constants, Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
-import { type MigrateOptions, migrate } from "./migrations";
 
-/** Creates `path` (recursively) and enforces `mode`, regardless of umask, asserting the result. */
-export function ensureDirMode(path: string, mode: number): void {
-  mkdirSync(path, { recursive: true });
-  chmodSync(path, mode);
-  const actual = statSync(path).mode & 0o777;
-  if (actual !== mode) {
-    throw new Error(
-      `store: failed to enforce directory mode ${mode.toString(8)} on ${path} (got ${actual.toString(8)})`,
-    );
-  }
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/** Creates every STRICT table the store owns and stamps `user_version`. */
+export function createSchema(db: Database): void {
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE world (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        world_id TEXT NOT NULL
+      ) STRICT
+    `);
+    db.exec(`
+      CREATE TABLE clock (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        cursor_wall_ms INTEGER NOT NULL,
+        paused INTEGER NOT NULL,
+        tick INTEGER NOT NULL,
+        sim_time_ms INTEGER NOT NULL
+      ) STRICT
+    `);
+    db.exec(`
+      CREATE TABLE prng_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT NOT NULL
+      ) STRICT
+    `);
+    db.exec(`
+      CREATE TABLE projections (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        revision INTEGER NOT NULL,
+        data TEXT NOT NULL
+      ) STRICT
+    `);
+    db.exec(`
+      CREATE TABLE events (
+        sequence INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        correlation_id TEXT NOT NULL,
+        causation_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        approximate INTEGER NOT NULL,
+        payload TEXT NOT NULL
+      ) STRICT
+    `);
+    db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
+  }).immediate();
 }
 
-/** Enforces `mode` on an existing file, asserting the result. */
-export function ensureFileMode(path: string, mode: number): void {
-  chmodSync(path, mode);
-  const actual = statSync(path).mode & 0o777;
-  if (actual !== mode) {
-    throw new Error(
-      `store: failed to enforce file mode ${mode.toString(8)} on ${path} (got ${actual.toString(8)})`,
-    );
+/** Creates a fresh store's schema, or checks an existing one matches this build. Never migrates or resets a mismatched file. */
+function initializeSchema(db: Database): void {
+  const current = (
+    db.query("PRAGMA user_version").get() as { user_version: number }
+  ).user_version;
+  if (current === 0) {
+    createSchema(db);
+    return;
   }
-}
-
-/** Enforces 0600 on the main db file and any WAL/SHM siblings that currently exist. */
-export function enforceDatabaseFileModes(dbPath: string): void {
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const filePath = `${dbPath}${suffix}`;
-    if (existsSync(filePath)) {
-      ensureFileMode(filePath, 0o600);
-    }
+  if (current !== CURRENT_SCHEMA_VERSION) {
+    throw new Error(
+      `store: schema version ${current} does not match the version this build understands (${CURRENT_SCHEMA_VERSION})`,
+    );
   }
 }
 
 /**
- * Pure projection definitions injected by the caller (packages/world, via
- * apps/simulation's composition root). `applyEvent` must be a pure function
- * — no I/O, no SQLite access — so `rebuildProjections` can replay the
- * entire log deterministically.
+ * Converts `TProjections` to and from the JSON-safe value persistence
+ * actually stores. Required because a shape carrying `Map`/`Set` values
+ * needs an explicit encoding -- plain `JSON.stringify` silently serializes
+ * a `Map` to `{}`.
  */
+export interface ProjectionCodec<TProjections> {
+  encode(projections: TProjections): unknown;
+  decode(value: unknown): TProjections;
+}
+
+/** Pure projection definitions injected by the caller. `applyEvent` must be pure so `rebuildProjections` can replay the log deterministically. */
 export interface ProjectionReducers<TProjections> {
   readonly initial: TProjections;
   applyEvent(projections: TProjections, event: WorldEvent): TProjections;
+  readonly codec: ProjectionCodec<TProjections>;
 }
 
 export interface Store {
@@ -77,27 +106,27 @@ export interface Store {
 export interface OpenStoreOptions {
   /** Used only when creating a brand-new store; ignored (and asserted) when opening an existing one. */
   readonly worldId?: WorldId;
-  readonly migrateOptions?: MigrateOptions;
 }
 
 /**
- * Opens (creating if needed) the WAL SQLite store at `path` with every
- * Key Technical Decisions guarantee: 0700 parent dir / 0600 files enforced,
- * macOS persistent-WAL disabled before WAL mode is enabled (order matters —
- * see bun:sqlite's `SQLITE_FCNTL_PERSIST_WAL` docs), `synchronous=NORMAL`,
- * STRICT tables via migrations, and a `world` row identifying this slot.
+ * Opens (creating if needed) the WAL SQLite store at `path`: macOS
+ * persistent-WAL disabled before WAL mode is enabled (order matters --
+ * some macOS SQLite builds default to a persistent WAL and re-enabling
+ * journal_mode after the fact does not clear that setting),
+ * `synchronous=NORMAL`, STRICT tables, and a `world` row identifying this
+ * slot. A new slot's directory and file get 0700/0600 once, at creation.
  */
 export function openStore(path: string, options: OpenStoreOptions = {}): Store {
-  ensureDirMode(dirname(path), 0o700);
+  const dir = dirname(path);
   const existedBefore = existsSync(path);
+  if (!existedBefore) {
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o700);
+  }
 
   const db = new Database(path, { create: true });
 
   try {
-    // Order matters (bun:sqlite docs): disable persistent WAL *before*
-    // enabling WAL mode, since some macOS SQLite builds default to a
-    // persistent WAL and re-enabling journal_mode after the fact does not
-    // retroactively clear that setting.
     try {
       db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
     } catch {
@@ -107,7 +136,7 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA synchronous = NORMAL");
 
-    migrate(db, path, options.migrateOptions);
+    initializeSchema(db);
 
     let worldId: WorldId;
     const worldRow = db.query("SELECT world_id FROM world LIMIT 1").get() as {
@@ -126,7 +155,7 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
       db.transaction(() => {
         db.run("INSERT INTO world (id, world_id) VALUES (1, ?)", [worldId]);
         db.run(
-          "INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, ?, 0)",
+          "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, ?, 0, 0, 0)",
           [now],
         );
         db.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [""]);
@@ -137,9 +166,8 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
       }).immediate();
     }
 
-    enforceDatabaseFileModes(path);
     if (!existedBefore) {
-      ensureFileMode(path, 0o600);
+      chmodSync(path, 0o600);
     }
 
     return { db, path, worldId };
@@ -156,10 +184,9 @@ export function openStore(path: string, options: OpenStoreOptions = {}): Store {
 /** Checkpoints the WAL into the main file (TRUNCATE mode) without closing the store. */
 export function checkpoint(store: Store): void {
   store.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  enforceDatabaseFileModes(store.path);
 }
 
-/** Checkpoints, closes, and re-asserts file modes — the clean-shutdown path (docs/product/defaults.md's autosave row). */
+/** Checkpoints and closes -- the clean-shutdown path. */
 export function closeStore(store: Store): void {
   try {
     store.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -167,7 +194,6 @@ export function closeStore(store: Store): void {
     // Best-effort checkpoint; closing still flushes committed data.
   }
   store.db.close();
-  enforceDatabaseFileModes(store.path);
 }
 
 export function getCurrentSequence(db: Database): number {
@@ -177,18 +203,36 @@ export function getCurrentSequence(db: Database): number {
   return row.maxSequence ?? 0;
 }
 
-export function readClock(db: Database): PersistedClockState {
-  const row = db
-    .query("SELECT cursor_wall_ms, paused FROM clock WHERE id = 1")
-    .get() as { cursor_wall_ms: number; paused: number };
-  return { cursorWallMs: row.cursor_wall_ms, paused: row.paused !== 0 };
+/** Every field the `clock` table row carries: wall-clock cursor/pause plus packages/world's tick counter and simulated time, committed atomically with each tick. */
+export interface ClockRow extends PersistedClockState {
+  readonly tick: number;
+  readonly simTimeMs: number;
 }
 
-function writeClock(db: Database, state: PersistedClockState): void {
-  db.run("UPDATE clock SET cursor_wall_ms = ?, paused = ? WHERE id = 1", [
-    state.cursorWallMs,
-    state.paused ? 1 : 0,
-  ]);
+export function readClock(db: Database): ClockRow {
+  const row = db
+    .query(
+      "SELECT cursor_wall_ms, paused, tick, sim_time_ms FROM clock WHERE id = 1",
+    )
+    .get() as {
+    cursor_wall_ms: number;
+    paused: number;
+    tick: number;
+    sim_time_ms: number;
+  };
+  return {
+    cursorWallMs: row.cursor_wall_ms,
+    paused: row.paused !== 0,
+    tick: row.tick,
+    simTimeMs: row.sim_time_ms,
+  };
+}
+
+function writeClock(db: Database, state: ClockRow): void {
+  db.run(
+    "UPDATE clock SET cursor_wall_ms = ?, paused = ?, tick = ?, sim_time_ms = ? WHERE id = 1",
+    [state.cursorWallMs, state.paused ? 1 : 0, state.tick, state.simTimeMs],
+  );
 }
 
 export function readPrngState(db: Database): string {
@@ -209,7 +253,7 @@ export interface ProjectionsRow<TProjections> {
 
 export function readProjectionsRow<TProjections>(
   db: Database,
-  reducers: Pick<ProjectionReducers<TProjections>, "initial">,
+  reducers: Pick<ProjectionReducers<TProjections>, "initial" | "codec">,
 ): ProjectionsRow<TProjections> {
   const row = db
     .query("SELECT revision, data FROM projections WHERE id = 1")
@@ -217,21 +261,22 @@ export function readProjectionsRow<TProjections>(
   if (!row) {
     return { revision: 0, projections: reducers.initial };
   }
-  const parsed = JSON.parse(row.data) as TProjections | null;
-  return {
-    revision: row.revision,
-    projections: parsed ?? reducers.initial,
-  };
+  const raw = JSON.parse(row.data) as unknown;
+  if (raw === null) {
+    return { revision: row.revision, projections: reducers.initial };
+  }
+  return { revision: row.revision, projections: reducers.codec.decode(raw) };
 }
 
 function writeProjectionsRow<TProjections>(
   db: Database,
   revision: number,
   projections: TProjections,
+  codec: ProjectionCodec<TProjections>,
 ): void {
   db.run("UPDATE projections SET revision = ?, data = ? WHERE id = 1", [
     revision,
-    JSON.stringify(projections),
+    JSON.stringify(codec.encode(projections)),
   ]);
 }
 
@@ -292,7 +337,11 @@ export interface TickInput {
   readonly events: readonly WorldEvent[];
   readonly cursorWallMs: number;
   readonly paused: boolean;
-  /** Opaque seeded-PRNG state, serialized by the caller (packages/world owns the algorithm). */
+  /** The tick counter's value after this tick. */
+  readonly tick: number;
+  /** Simulated milliseconds elapsed after this tick. */
+  readonly simTimeMs: number;
+  /** Opaque seeded-PRNG state, serialized by the caller. */
   readonly prngState: string;
 }
 
@@ -303,11 +352,10 @@ export interface TickCommitResult<TProjections> {
 
 /**
  * Commits one tick: appends `input.events`, applies each to the injected
- * reducer to advance projections, and persists the clock cursor/pause flag
- * and PRNG state — all inside one `BEGIN IMMEDIATE` transaction. A thrown
- * error at any point (a non-contiguous sequence, a faulting reducer) rolls
- * the whole transaction back automatically; nothing above is left
- * partially applied.
+ * reducer to advance projections, and persists the clock (cursor, pause,
+ * tick, sim time) and PRNG state -- all inside one `BEGIN IMMEDIATE`
+ * transaction. A thrown error at any point (a non-contiguous sequence, a
+ * faulting reducer) rolls the whole transaction back automatically.
  */
 export function commitTick<TProjections>(
   store: Store,
@@ -328,22 +376,22 @@ export function commitTick<TProjections>(
       sequence = event.sequence;
     }
 
-    writeProjectionsRow(store.db, sequence, projections);
+    writeProjectionsRow(store.db, sequence, projections, reducers.codec);
     writeClock(store.db, {
       cursorWallMs: input.cursorWallMs,
       paused: input.paused,
+      tick: input.tick,
+      simTimeMs: input.simTimeMs,
     });
     writePrngState(store.db, input.prngState);
 
     return { sequence, projections };
   });
 
-  const result = run.immediate();
-  enforceDatabaseFileModes(store.path);
-  return result;
+  return run.immediate();
 }
 
-/** Replays the entire event log from `reducers.initial`, ignoring whatever is currently stored — used to prove rebuild-equals-live. */
+/** Replays the entire event log from `reducers.initial`, ignoring whatever is currently stored -- used to prove rebuild-equals-live. */
 export function rebuildProjections<TProjections>(
   store: Store,
   reducers: ProjectionReducers<TProjections>,

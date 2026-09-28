@@ -38,6 +38,10 @@ const reducer: ProjectionReducers<CountProjection> = {
   applyEvent(projections) {
     return { total: projections.total + 1 };
   },
+  codec: {
+    encode: (projections) => projections,
+    decode: (value) => value as CountProjection,
+  },
 };
 
 function makeMoveEvent(sequence: number): EntityMovedEvent {
@@ -62,19 +66,28 @@ describe("takeSnapshot", () => {
       events: [makeMoveEvent(1)],
       cursorWallMs: 1000,
       paused: false,
+      tick: 1,
+      simTimeMs: 1000,
       prngState: "seed-1",
     });
     commitTick(store, reducer, {
       events: [makeMoveEvent(2)],
       cursorWallMs: 2000,
       paused: true,
+      tick: 2,
+      simTimeMs: 2000,
       prngState: "seed-2",
     });
 
     const snapshot = takeSnapshot(store, reducer);
     expect(snapshot.sequence).toBe(2);
     expect(snapshot.projections).toEqual({ total: 2 });
-    expect(snapshot.clock).toEqual({ cursorWallMs: 2000, paused: true });
+    expect(snapshot.clock).toEqual({
+      cursorWallMs: 2000,
+      paused: true,
+      tick: 2,
+      simTimeMs: 2000,
+    });
     expect(snapshot.prngState).toBe("seed-2");
     expect(snapshot.worldId).toBe(store.worldId);
     closeStore(store);
@@ -87,6 +100,8 @@ describe("takeSnapshot", () => {
         events: [makeMoveEvent(i)],
         cursorWallMs: 100 * i,
         paused: false,
+        tick: i,
+        simTimeMs: 100 * i,
         prngState: `seed-${i}`,
       });
     }

@@ -3,10 +3,10 @@
 // return a typed success or a structured failure naming the field path and
 // a reason code, following tools/probes/shared/src/schema.ts.
 //
-// Design decision (Unit 1): the same RejectionReasonCode vocabulary is used
-// both for structural parse failures here and for execution-time proposal
-// validation in packages/world (Unit 3+), so there is one taxonomy of "why
-// didn't this become world state" instead of two parallel ones.
+// The same RejectionReasonCode vocabulary is used both for structural
+// parse failures here and for execution-time proposal validation in
+// packages/world, so there is one taxonomy of "why didn't this become
+// world state" instead of two parallel ones.
 
 declare const brandTag: unique symbol;
 

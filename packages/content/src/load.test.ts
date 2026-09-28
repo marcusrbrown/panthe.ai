@@ -43,9 +43,6 @@ function validRules(): Record<string, unknown> {
       catchUpCapMs: 3_600_000,
       catchUpChunkMs: 60_000,
       checkpointIntervalMs: 60_000,
-      importMaxBytes: 50_000_000,
-      importMaxRows: 1_000_000,
-      importMaxDurationMs: 30_000,
       fireBalance: { spreadChancePerTick: 0.1 },
       economyBalance: { priceFloor: 1, priceCeiling: 100 },
     },
@@ -214,16 +211,14 @@ test("the authored Greek world content loads with the expected geography and rul
 
   // Representative rule values from rules.json, not just "rules exist".
   expect(pack.rules.catchUpCapMs).toBe(3_600_000);
-  expect(pack.rules.importMaxBytes).toBe(50_000_000);
-  expect(pack.rules.importMaxDurationMs).toBe(30_000);
   expect(pack.rules.fireBalance).toMatchObject({ spreadChancePerTick: 0.1 });
   expect(pack.rules.economyBalance).toMatchObject({
     priceFloor: 1,
     priceCeiling: 100,
   });
 
-  // Unit 3 authors no buildings or inhabitants yet; the loader must still
-  // report them present-but-empty, not absent.
+  // No buildings or inhabitants are authored in this content pack; the
+  // loader must still report them present-but-empty, not absent.
   expect(pack.buildings).toEqual([]);
   expect(pack.inhabitants).toEqual([]);
 });

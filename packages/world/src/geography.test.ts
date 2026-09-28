@@ -14,9 +14,6 @@ function minimalRules(): ContentPack["rules"] {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
-    importMaxBytes: 50_000_000,
-    importMaxRows: 1_000_000,
-    importMaxDurationMs: 30_000,
     fireBalance: {},
     economyBalance: {},
   };

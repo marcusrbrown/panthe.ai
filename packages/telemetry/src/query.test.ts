@@ -15,11 +15,8 @@ import {
 import { followEvent, followProposal } from "./query";
 import {
   createProposalId,
-  createReceiptId,
   type EventSource,
   ensureTraceSchema,
-  PAYLOAD_EXPIRED,
-  pruneRetention,
   recordObservation,
   recordProposalOutcome,
   recordReceipt,
@@ -61,9 +58,6 @@ function seedCommittedChain(): {
     schemaVersion: 1,
     actor: createEntityId(),
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "fixture",
     observationId: observation.id,
@@ -102,11 +96,8 @@ function seedCommittedChain(): {
 describe("followEvent", () => {
   test("happy path: returns observation -> proposal -> validation -> event -> projection change -> receipt in order", () => {
     const { observation, proposal, event } = seedCommittedChain();
-    recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: event.id,
-      sessionId: createSessionId(),
-    });
+    const sessionId = createSessionId();
+    recordReceipt(db, eventSource, { eventId: event.id, sessionId });
 
     const result = followEvent(db, eventSource, event.id);
     expect(result.found).toBe(true);
@@ -119,7 +110,8 @@ describe("followEvent", () => {
       "receipt",
     ]);
 
-    const [obsStep, propStep, validStep, eventStep, projStep] = result.steps;
+    const [obsStep, propStep, validStep, eventStep, projStep, receiptStep] =
+      result.steps;
     expect(obsStep).toMatchObject({ step: "observation", record: observation });
     expect(propStep).toMatchObject({ step: "proposal", record: proposal });
     expect(validStep).toMatchObject({
@@ -131,6 +123,7 @@ describe("followEvent", () => {
       step: "projection-change",
       revision: event.sequence,
     });
+    expect(receiptStep).toMatchObject({ step: "receipt", sessionId });
   });
 
   test("error path: a rejected proposal's follow-event-by-proposal returns its reason and no event/receipt steps", () => {
@@ -148,9 +141,6 @@ describe("followEvent", () => {
       schemaVersion: 1,
       actor: createEntityId(),
       targets: [],
-      preconditions: [],
-      requiredCapabilities: [],
-      costs: [],
       expectedRevisions: [],
       source: "fixture",
       observationId: observation.id,
@@ -178,44 +168,6 @@ describe("followEvent", () => {
       step: "validation",
       outcome: "rejected",
       reason: "unauthorized-claim",
-    });
-  });
-
-  test("edge case: after retention pruning, follow-event still walks the full chain with expired markers instead of breaking", () => {
-    const { event } = seedCommittedChain();
-    recordReceipt(db, eventSource, {
-      id: createReceiptId(),
-      eventId: event.id,
-      sessionId: createSessionId(),
-    });
-
-    // Prune everything (cutoff far in the future relative to `now: 0`).
-    pruneRetention(db, -1, Number.MAX_SAFE_INTEGER);
-
-    const result = followEvent(db, eventSource, event.id);
-    expect(result.found).toBe(true);
-    expect(result.steps.map((s) => s.step)).toEqual([
-      "observation",
-      "proposal",
-      "validation",
-      "event",
-      "projection-change",
-      "receipt",
-    ]);
-    const observationStep = result.steps[0];
-    expect(observationStep).toMatchObject({
-      step: "observation",
-      record: PAYLOAD_EXPIRED,
-    });
-    const proposalStep = result.steps[1];
-    expect(proposalStep).toMatchObject({
-      step: "proposal",
-      record: PAYLOAD_EXPIRED,
-    });
-    const receiptStep = result.steps[5];
-    expect(receiptStep).toMatchObject({
-      step: "receipt",
-      record: PAYLOAD_EXPIRED,
     });
   });
 

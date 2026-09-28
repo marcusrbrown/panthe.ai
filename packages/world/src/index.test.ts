@@ -1,8 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ContentPack } from "@panthea/contracts";
 import {
-  createDefaultReducerRegistry,
-  createDefaultRuleRegistry,
   createInitialWorldState,
   createPrng,
   runTick,
@@ -31,9 +29,6 @@ test("the barrel export wires state, geography, validate, and actions together",
       catchUpCapMs: 3_600_000,
       catchUpChunkMs: 60_000,
       checkpointIntervalMs: 60_000,
-      importMaxBytes: 50_000_000,
-      importMaxRows: 1_000_000,
-      importMaxDurationMs: 30_000,
       fireBalance: {},
       economyBalance: {},
     },
@@ -52,9 +47,6 @@ test("the barrel export wires state, geography, validate, and actions together",
     schemaVersion: 1,
     actor: "npc-1",
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "fixture",
     observationId: "obs-1",
@@ -64,13 +56,7 @@ test("the barrel export wires state, geography, validate, and actions together",
   expect(submitted.ok).toBe(true);
   if (!submitted.ok) return;
 
-  const result = runTick(
-    state,
-    createPrng(1),
-    createDefaultRuleRegistry(),
-    createDefaultReducerRegistry(),
-    [submitted.proposal],
-  );
+  const result = runTick(state, createPrng(1), [submitted.proposal]);
 
   expect(result.rejected).toEqual([]);
   expect(result.state.actors.get(toEntityId("npc-1"))).toMatchObject({

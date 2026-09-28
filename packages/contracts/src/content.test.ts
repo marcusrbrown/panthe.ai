@@ -6,9 +6,6 @@ function validRules(): Record<string, unknown> {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
-    importMaxBytes: 50_000_000,
-    importMaxRows: 1_000_000,
-    importMaxDurationMs: 30_000,
     fireBalance: { spreadChancePerTick: 0.1 },
     economyBalance: { priceFloor: 1, priceCeiling: 100 },
   };

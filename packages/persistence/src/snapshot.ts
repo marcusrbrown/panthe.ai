@@ -1,12 +1,12 @@
-// A snapshot is a consistent read pinned to a committed event sequence —
-// "never authority" (Key Technical Decisions: projections are always
-// rebuildable from the log; a snapshot is a restore/speed artifact). Export
-// (archive.ts) builds on top of this: it takes a snapshot, then adds the
-// manifest and canonical content hash.
+// A snapshot is a consistent read pinned to a committed event sequence.
+// Projections are always rebuildable from the log; a snapshot is a
+// restore/speed artifact, never authority. Export (archive.ts) builds on
+// this: it takes a snapshot, then adds the manifest and canonical content
+// hash.
 
 import type { WorldId } from "@panthea/contracts";
-import type { PersistedClockState } from "./clock";
 import {
+  type ClockRow,
   getCurrentSequence,
   type ProjectionReducers,
   readClock,
@@ -19,7 +19,7 @@ export interface Snapshot<TProjections> {
   readonly worldId: WorldId;
   readonly sequence: number;
   readonly projections: TProjections;
-  readonly clock: PersistedClockState;
+  readonly clock: ClockRow;
   readonly prngState: string;
 }
 
@@ -27,8 +27,7 @@ export interface Snapshot<TProjections> {
  * Takes a snapshot pinned to the sequence committed at the moment the read
  * transaction opens. Wrapped in a deferred (read) transaction so a
  * snapshot always reflects exactly one committed sequence even if it is
- * requested while the tick loop is running — "export while ticking always
- * reflects one committed sequence" (Unit 2 test scenario).
+ * requested while the tick loop is running.
  */
 export function takeSnapshot<TProjections>(
   store: Store,

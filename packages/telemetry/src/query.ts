@@ -1,8 +1,7 @@
 // "Follow this event" query: walks from an event or a proposal outcome
 // through observation -> proposal -> validation -> event -> projection
 // change -> presentation receipts, in order (Key Technical Decisions'
-// causal trace, the O04 chain). A pruned hop returns the
-// `PAYLOAD_EXPIRED` marker instead of breaking the chain.
+// causal trace).
 
 import type { Database } from "bun:sqlite";
 import type { EventId, RejectionReasonCode } from "@panthea/contracts";
@@ -13,7 +12,6 @@ import {
   getProposalOutcomeByProposalId,
   listReceiptsByEvent,
   type ObservationEntry,
-  type PayloadExpired,
   type ProposalId,
   type ProposalOutcomeRow,
   type ReceiptRow,
@@ -39,7 +37,7 @@ export type TraceStep =
   | {
       readonly step: "receipt";
       readonly sessionId: ReceiptRow["sessionId"];
-      readonly record: unknown | PayloadExpired;
+      readonly presentedAtMs: ReceiptRow["presentedAtMs"];
     };
 
 export interface FollowResult {
@@ -89,7 +87,7 @@ function buildChain(
       steps.push({
         step: "receipt",
         sessionId: receipt.sessionId,
-        record: receipt.payload,
+        presentedAtMs: receipt.presentedAtMs,
       });
     }
   }

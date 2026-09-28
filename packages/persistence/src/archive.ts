@@ -1,41 +1,41 @@
-// Export/import of a single self-describing SQLite archive file (Key
-// Technical Decisions). Export takes a snapshot pinned to a committed
-// sequence and writes a manifest with a canonical content hash. Import
-// treats the archive as hostile: it is copied to a private temp location
-// and opened read-only, checked against configured limits, integrity-
-// checked, matched against an explicit table allowlist (no triggers,
-// views, or virtual tables), manifest-parsed, version-checked, and
-// hash-verified — all *before* anything is staged. Only then are the
-// validated rows copied into a fresh database created by our own
-// migrations in a staging directory, fsynced, and atomically renamed into
-// a new, service-generated slot. Nothing overwrites an existing slot;
-// any failure removes the staging artifact.
+// Export/import of a single self-describing SQLite archive file. Export
+// pins a read to a committed sequence and writes a manifest with a
+// canonical content hash. Import opens the archive read-only, validates
+// its manifest and rows, and copies validated data into a freshly
+// schema'd staging database before an atomic rename into a new slot.
+// Nothing overwrites an existing slot; any failure removes staging.
 
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
-  copyFileSync,
   existsSync,
   fsyncSync,
+  mkdirSync,
   openSync,
   renameSync,
   rmSync,
-  statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   ARCHIVE_FORMAT_VERSIONS,
   type ArchiveManifest,
+  isRecord,
   LATEST_EVENT_SCHEMA_VERSION,
   parseArchiveManifest,
+  parseEvent,
+  type WorldEvent,
   type WorldId,
 } from "@panthea/contracts";
-import { LATEST_SCHEMA_VERSION, migrate } from "./migrations";
-import { ensureDirMode, ensureFileMode, type Store } from "./store";
+import {
+  CURRENT_SCHEMA_VERSION,
+  createSchema,
+  type ProjectionCodec,
+  type Store,
+} from "./store";
 
-const LATEST_ARCHIVE_FORMAT_VERSION =
+const CURRENT_ARCHIVE_FORMAT_VERSION =
   ARCHIVE_FORMAT_VERSIONS[ARCHIVE_FORMAT_VERSIONS.length - 1] ?? 1;
 
 /** Fixed order the canonical dump (and therefore the content hash) always uses. */
@@ -50,72 +50,6 @@ const HASHED_TABLES: readonly {
   { table: "events", pk: "sequence" },
 ];
 
-const ALLOWED_TABLE_NAMES = new Set([
-  "world",
-  "clock",
-  "prng_state",
-  "projections",
-  "events",
-  "manifest",
-  // sqlite's own bookkeeping table for AUTOINCREMENT columns; none of our
-  // tables use AUTOINCREMENT, but tolerate it defensively rather than
-  // rejecting a benign artifact.
-  "sqlite_sequence",
-]);
-
-/**
- * True for the well-known errno codes a directory-fsync refusal shows up
- * as on platforms/filesystems that don't support it. Any other error
- * (e.g. ENOENT, EACCES on a file that should genuinely be syncable)
- * propagates rather than being silently swallowed.
- */
-export function isTolerableFsyncError(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "EISDIR" || code === "EINVAL" || code === "EPERM";
-}
-
-/** Fsyncs a single file, propagating any error — a file must always be syncable. */
-export function fsyncFile(path: string): void {
-  const fd = openSync(path, "r+");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/**
- * Best-effort fsync of a directory — how a rename's atomicity is actually
- * persisted to disk on POSIX filesystems (durability requires the parent
- * directory entry to be flushed, not just the file/inode itself). Some
- * platforms or filesystems refuse to open or fsync a directory fd; those
- * specific, well-known refusals are tolerated silently (see
- * `isTolerableFsyncError`) since this is a durability best-effort, not a
- * correctness requirement — the rename itself is already atomic at the
- * filesystem level.
- */
-export function fsyncDirectoryBestEffort(path: string): void {
-  let fd: number;
-  try {
-    fd = openSync(path, "r");
-  } catch (error) {
-    if (isTolerableFsyncError(error)) {
-      return;
-    }
-    throw error;
-  }
-  try {
-    fsyncSync(fd);
-  } catch (error) {
-    if (isTolerableFsyncError(error)) {
-      return;
-    }
-    throw error;
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(row).sort()) {
@@ -125,68 +59,85 @@ function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
   return result;
 }
 
-/**
- * Every manifest field except `contentHash` itself (which cannot hash
- * itself). Passed explicitly rather than read from a `manifest` table row
- * so the same function works both at export time (before the manifest row
- * exists) and at import time (from the parsed, not-yet-trusted manifest) —
- * and so the manifest is *bound into* the hash rather than excluded from
- * it, per the P1 manifest-integrity fix: a manifest field tampered without
- * correspondingly recomputing the hash now fails hash verification, and a
- * tampered-and-rehashed manifest (self-consistent but wrong) is still
- * caught by `importArchive`'s separate cross-check against the archive's
- * actual `events`/`world` tables.
- */
+/** Every manifest field except `contentHash` itself (which cannot hash itself). */
 export type HashableManifestFields = Omit<ArchiveManifest, "contentHash">;
 
 function manifestFieldsRow(
-  manifestFields: HashableManifestFields,
+  fields: HashableManifestFields,
 ): Record<string, unknown> {
   return {
-    format_version: manifestFields.formatVersion,
-    sqlite_schema_version: manifestFields.sqliteSchemaVersion,
-    payload_schema_version: manifestFields.payloadSchemaVersion,
-    world_id: manifestFields.worldId,
-    event_sequence: manifestFields.eventSequence,
+    format_version: fields.formatVersion,
+    sqlite_schema_version: fields.sqliteSchemaVersion,
+    payload_schema_version: fields.payloadSchemaVersion,
+    world_id: fields.worldId,
+    event_sequence: fields.eventSequence,
   };
 }
 
-/**
- * Canonical dump of the manifest fields (everything but `contentHash`)
- * plus every substantive table: fixed order (manifest first, then the
- * fixed `HASHED_TABLES` order), rows ordered by primary key, sorted
- * object keys, explicit UTF-8 (via `JSON.stringify`, which always emits
- * UTF-8-safe escapes), explicit null, and normalized numbers (no `-0`).
- * No SQLite page or rowid artifacts are included since every `SELECT`
- * names explicit columns.
- */
-export function canonicalDump(
-  db: Database,
-  manifestFields: HashableManifestFields,
-): string {
-  const parts: string[] = [];
-  parts.push("TABLE manifest");
-  parts.push(JSON.stringify(normalizeRow(manifestFieldsRow(manifestFields))));
-  for (const { table, pk } of HASHED_TABLES) {
-    parts.push(`TABLE ${table}`);
-    const rows = db
-      .query(`SELECT * FROM ${table} ORDER BY ${pk} ASC`)
-      .all() as Record<string, unknown>[];
-    for (const row of rows) {
-      parts.push(JSON.stringify(normalizeRow(row)));
-    }
-  }
-  return parts.join("\n");
-}
+const HASH_ROW_BATCH_SIZE = 500;
 
+/**
+ * Canonical content hash: the manifest fields (everything but
+ * `contentHash`, binding the manifest into the hash it stores) plus every
+ * substantive table, in fixed order, rows ordered by primary key, sorted
+ * object keys, normalized numbers (no `-0`). Computed incrementally --
+ * one table at a time, in row batches for large tables -- via a streaming
+ * digest rather than building the whole dump in memory. Export writes this
+ * hash and import recomputes it, so the two can never drift apart.
+ */
 export function computeContentHash(
   db: Database,
   manifestFields: HashableManifestFields,
 ): string {
-  return createHash("sha256")
-    .update(canonicalDump(db, manifestFields), "utf8")
-    .digest("hex");
+  const hash = createHash("sha256");
+  let wroteAnything = false;
+  const push = (text: string): void => {
+    if (wroteAnything) {
+      hash.update("\n", "utf8");
+    }
+    hash.update(text, "utf8");
+    wroteAnything = true;
+  };
+
+  push("TABLE manifest");
+  push(JSON.stringify(normalizeRow(manifestFieldsRow(manifestFields))));
+
+  for (const { table, pk } of HASHED_TABLES) {
+    push(`TABLE ${table}`);
+    let offset = 0;
+    for (;;) {
+      const rows = db
+        .query(`SELECT * FROM ${table} ORDER BY ${pk} ASC LIMIT ? OFFSET ?`)
+        .all(HASH_ROW_BATCH_SIZE, offset) as Record<string, unknown>[];
+      for (const row of rows) {
+        push(JSON.stringify(normalizeRow(row)));
+      }
+      if (rows.length < HASH_ROW_BATCH_SIZE) {
+        break;
+      }
+      offset += rows.length;
+    }
+  }
+
+  return hash.digest("hex");
 }
+
+/** Fsyncs a file so the bytes are durable before the rename that publishes it. */
+function fsyncFile(path: string): void {
+  const fd = openSync(path, "r+");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function createDirMode0700(path: string): void {
+  mkdirSync(path, { recursive: true });
+  chmodSync(path, 0o700);
+}
+
+// --- Export ------------------------------------------------------------------
 
 function createManifestTable(db: Database): void {
   db.exec(`
@@ -207,6 +158,8 @@ interface ExportData {
   readonly sequence: number;
   readonly clockCursorWallMs: number;
   readonly clockPaused: number;
+  readonly clockTick: number;
+  readonly clockSimTimeMs: number;
   readonly prngState: string;
   readonly projectionsRevision: number;
   readonly projectionsData: string;
@@ -220,13 +173,18 @@ function readExportData(store: Store): ExportData {
       (
         store.db
           .query("SELECT MAX(sequence) as maxSequence FROM events")
-          .get() as {
-          maxSequence: number | null;
-        }
+          .get() as { maxSequence: number | null }
       ).maxSequence ?? 0;
     const clockRow = store.db
-      .query("SELECT cursor_wall_ms, paused FROM clock WHERE id = 1")
-      .get() as { cursor_wall_ms: number; paused: number };
+      .query(
+        "SELECT cursor_wall_ms, paused, tick, sim_time_ms FROM clock WHERE id = 1",
+      )
+      .get() as {
+      cursor_wall_ms: number;
+      paused: number;
+      tick: number;
+      sim_time_ms: number;
+    };
     const prngRow = store.db
       .query("SELECT state FROM prng_state WHERE id = 1")
       .get() as { state: string };
@@ -241,6 +199,8 @@ function readExportData(store: Store): ExportData {
       sequence,
       clockCursorWallMs: clockRow.cursor_wall_ms,
       clockPaused: clockRow.paused,
+      clockTick: clockRow.tick,
+      clockSimTimeMs: clockRow.sim_time_ms,
       prngState: prngRow.state,
       projectionsRevision: projectionsRow.revision,
       projectionsData: projectionsRow.data,
@@ -254,7 +214,10 @@ function readExportData(store: Store): ExportData {
  * Exports `store` to a single archive file at `destPath`, pinned to the
  * sequence committed at the moment the read transaction opens. Built at a
  * temp path first and renamed into place, so a crash mid-export never
- * leaves a partial file at `destPath`.
+ * leaves a partial file at `destPath`. The archive stays in SQLite's
+ * default rollback-journal mode (no WAL): it has no concurrent writers,
+ * and a WAL-mode file can't be opened read-only without creating a `-shm`
+ * reader-lock file, which import's read-only open must not need to do.
  */
 export function exportArchive(store: Store, destPath: string): ArchiveManifest {
   const data = readExportData(store);
@@ -262,13 +225,7 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
   const tempPath = `${destPath}.tmp-${randomUUID()}`;
   const archiveDb = new Database(tempPath, { create: true });
   try {
-    // Deliberately *not* WAL: an exported archive is a single self-contained
-    // file with no concurrent writers, and the default rollback-journal
-    // mode means no sibling -wal/-shm files ever exist — which also avoids
-    // a real SQLite constraint: opening a WAL-mode database read-only (as
-    // `importArchive` does against a private copy) requires creating a
-    // -shm file for the reader's lock, which a read-only open cannot do.
-    migrate(archiveDb, tempPath, { skipSnapshotForTests: true });
+    createSchema(archiveDb);
     createManifestTable(archiveDb);
 
     archiveDb
@@ -277,8 +234,13 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
           data.worldId,
         ]);
         archiveDb.run(
-          "INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, ?, ?)",
-          [data.clockCursorWallMs, data.clockPaused],
+          "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, ?, ?, ?, ?)",
+          [
+            data.clockCursorWallMs,
+            data.clockPaused,
+            data.clockTick,
+            data.clockSimTimeMs,
+          ],
         );
         archiveDb.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [
           data.prngState,
@@ -306,8 +268,8 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
       .immediate();
 
     const manifestFields: HashableManifestFields = {
-      formatVersion: LATEST_ARCHIVE_FORMAT_VERSION,
-      sqliteSchemaVersion: LATEST_SCHEMA_VERSION,
+      formatVersion: CURRENT_ARCHIVE_FORMAT_VERSION,
+      sqliteSchemaVersion: CURRENT_SCHEMA_VERSION,
       payloadSchemaVersion: LATEST_EVENT_SCHEMA_VERSION,
       worldId: data.worldId,
       eventSequence: data.sequence,
@@ -333,10 +295,9 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
       .immediate();
 
     archiveDb.close();
-    ensureFileMode(tempPath, 0o600);
+    chmodSync(tempPath, 0o600);
     fsyncFile(tempPath);
     renameSync(tempPath, destPath);
-    fsyncDirectoryBestEffort(dirname(destPath));
     return manifest;
   } catch (error) {
     try {
@@ -344,9 +305,7 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
     } catch {
       // already closed or never fully opened; ignore.
     }
-    for (const suffix of ["", "-wal", "-shm"]) {
-      rmSync(`${tempPath}${suffix}`, { force: true });
-    }
+    rmSync(tempPath, { force: true });
     throw error;
   }
 }
@@ -354,16 +313,10 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
 // --- Import ------------------------------------------------------------------
 
 export type ImportErrorKind =
-  | "over-limit-bytes"
-  | "over-limit-rows"
-  | "over-limit-time"
   | "corrupt"
-  | "disallowed-schema"
-  | "missing-manifest"
-  | "malformed-manifest"
-  | "unsupported-version"
-  | "manifest-mismatch"
-  | "hash-mismatch";
+  | "incompatible-version"
+  | "inconsistent-manifest"
+  | "io";
 
 export class ImportError extends Error {
   constructor(
@@ -375,79 +328,79 @@ export class ImportError extends Error {
   }
 }
 
-export interface ImportLimits {
-  readonly maxBytes: number;
-  readonly maxRows: number;
-  readonly maxDurationMs: number;
-}
-
 export interface ImportResult {
   readonly slotId: string;
   readonly slotPath: string;
   readonly manifest: ArchiveManifest;
 }
 
-function checkDeadline(deadline: number, now: () => number = Date.now): void {
-  if (now() > deadline) {
-    throw new ImportError(
-      "over-limit-time",
-      "archive validation exceeded the configured time budget",
-    );
+/** Runs `fn`, wrapping any thrown error (a missing or incompatible table, malformed data) as `ImportError("corrupt")`. */
+function readOrCorrupt<T>(fn: () => T, context: string): T {
+  try {
+    return fn();
+  } catch (error) {
+    if (error instanceof ImportError) {
+      throw error;
+    }
+    throw new ImportError("corrupt", `${context}: ${(error as Error).message}`);
   }
 }
 
+interface ClockRowData {
+  readonly cursor_wall_ms: number;
+  readonly paused: number;
+  readonly tick: number;
+  readonly sim_time_ms: number;
+}
+
+function validClockRow(row: ClockRowData): boolean {
+  return (
+    (row.paused === 0 || row.paused === 1) &&
+    Number.isFinite(row.cursor_wall_ms) &&
+    Number.isInteger(row.tick) &&
+    row.tick >= 0 &&
+    Number.isFinite(row.sim_time_ms) &&
+    row.sim_time_ms >= 0
+  );
+}
+
 /**
- * Imports `archivePath` into a brand-new slot under `slotsDir`. Every
- * validation step runs against a private read-only copy of the archive
- * before anything is staged; any rejection leaves `slotsDir` untouched.
+ * Imports `archivePath` into a brand-new slot under `slotsDir`. The
+ * archive is opened read-only and every row is validated -- decoded
+ * through `projectionsCodec`, event payloads through contracts' event
+ * parser -- while being read into the values that get copied into a
+ * fresh, app-created staging database. A missing or incompatible table,
+ * a manifest that disagrees with the archive's own tables, or a content
+ * hash mismatch is rejected before anything is staged.
  */
 export function importArchive(
   archivePath: string,
   slotsDir: string,
-  limits: ImportLimits,
-  now: () => number = Date.now,
+  projectionsCodec: ProjectionCodec<unknown>,
 ): ImportResult {
-  const deadline = now() + limits.maxDurationMs;
-  checkDeadline(deadline, now);
-
   if (!existsSync(archivePath)) {
-    throw new ImportError("corrupt", `archive not found: ${archivePath}`);
+    throw new ImportError("io", `archive not found: ${archivePath}`);
   }
-  const size = statSync(archivePath).size;
-  if (size > limits.maxBytes) {
-    throw new ImportError(
-      "over-limit-bytes",
-      `archive is ${size} bytes, exceeding the ${limits.maxBytes}-byte limit`,
-    );
-  }
-
-  const tempPath = join(tmpdir(), `panthea-import-${randomUUID()}.sqlite`);
 
   let archiveDb: Database | undefined;
   try {
-    copyFileSync(archivePath, tempPath);
-    ensureFileMode(tempPath, 0o600);
-
     try {
-      archiveDb = new Database(tempPath, { readonly: true });
+      archiveDb = new Database(archivePath, { readonly: true });
     } catch (error) {
       throw new ImportError(
         "corrupt",
         `unable to open archive as SQLite: ${(error as Error).message}`,
       );
     }
+    const db = archiveDb;
 
-    let integrity: { integrity_check: string };
-    try {
-      integrity = archiveDb.query("PRAGMA integrity_check").get() as {
-        integrity_check: string;
-      };
-    } catch (error) {
-      throw new ImportError(
-        "corrupt",
-        `integrity_check failed to run: ${(error as Error).message}`,
-      );
-    }
+    const integrity = readOrCorrupt(
+      () =>
+        db.query("PRAGMA integrity_check").get() as {
+          integrity_check: string;
+        },
+      "archive failed integrity_check",
+    );
     if (integrity.integrity_check !== "ok") {
       throw new ImportError(
         "corrupt",
@@ -455,73 +408,17 @@ export function importArchive(
       );
     }
 
-    const schemaRows = archiveDb
-      .query("SELECT name, type, sql FROM sqlite_master")
-      .all() as { name: string; type: string; sql: string | null }[];
-    for (const row of schemaRows) {
-      if (row.type === "trigger" || row.type === "view") {
-        throw new ImportError(
-          "disallowed-schema",
-          `archive contains a disallowed ${row.type}: ${row.name}`,
-        );
-      }
-      if (row.sql && /CREATE VIRTUAL TABLE/i.test(row.sql)) {
-        throw new ImportError(
-          "disallowed-schema",
-          `archive contains a disallowed virtual table: ${row.name}`,
-        );
-      }
-      if (row.type === "table" && !ALLOWED_TABLE_NAMES.has(row.name)) {
-        throw new ImportError(
-          "disallowed-schema",
-          `archive contains an unexpected table: ${row.name}`,
-        );
-      }
-    }
-
-    let rowCount = 0;
-    for (const { table } of HASHED_TABLES) {
-      const hasTable = schemaRows.some(
-        (row) => row.type === "table" && row.name === table,
-      );
-      if (!hasTable) {
-        continue;
-      }
-      const count = (
-        archiveDb.query(`SELECT COUNT(*) as count FROM ${table}`).get() as {
-          count: number;
-        }
-      ).count;
-      rowCount += count;
-    }
-    if (rowCount > limits.maxRows) {
-      throw new ImportError(
-        "over-limit-rows",
-        `archive contains ${rowCount} rows, exceeding the ${limits.maxRows}-row limit`,
-      );
-    }
-
-    checkDeadline(deadline, now);
-
-    const manifestTableExists = schemaRows.some(
-      (row) => row.type === "table" && row.name === "manifest",
+    const manifestRow = readOrCorrupt(
+      () =>
+        db.query("SELECT * FROM manifest WHERE id = 1").get() as Record<
+          string,
+          unknown
+        > | null,
+      "archive manifest table is missing or unreadable",
     );
-    if (!manifestTableExists) {
-      throw new ImportError(
-        "missing-manifest",
-        "archive has no manifest table",
-      );
-    }
-    const manifestRow = archiveDb
-      .query("SELECT * FROM manifest WHERE id = 1")
-      .get() as Record<string, unknown> | null;
     if (!manifestRow) {
-      throw new ImportError(
-        "missing-manifest",
-        "archive manifest table is empty",
-      );
+      throw new ImportError("corrupt", "archive manifest table is empty");
     }
-
     const parsedManifest = parseArchiveManifest({
       formatVersion: manifestRow.format_version,
       sqliteSchemaVersion: manifestRow.sqlite_schema_version,
@@ -533,137 +430,216 @@ export function importArchive(
     if (!parsedManifest.ok) {
       throw new ImportError(
         parsedManifest.reason === "unsupported-version"
-          ? "unsupported-version"
-          : "malformed-manifest",
+          ? "incompatible-version"
+          : "corrupt",
         `archive manifest is invalid at ${parsedManifest.path}: ${parsedManifest.message}`,
       );
     }
     const manifest = parsedManifest.value;
 
-    if (manifest.sqliteSchemaVersion > LATEST_SCHEMA_VERSION) {
+    if (manifest.sqliteSchemaVersion !== CURRENT_SCHEMA_VERSION) {
       throw new ImportError(
-        "unsupported-version",
-        `archive's SQLite schema version ${manifest.sqliteSchemaVersion} is newer than the latest this build understands (${LATEST_SCHEMA_VERSION})`,
+        "incompatible-version",
+        `archive's SQLite schema version ${manifest.sqliteSchemaVersion} does not match this build's version ${CURRENT_SCHEMA_VERSION}`,
       );
     }
-    if (manifest.payloadSchemaVersion > LATEST_EVENT_SCHEMA_VERSION) {
+    if (manifest.payloadSchemaVersion !== LATEST_EVENT_SCHEMA_VERSION) {
       throw new ImportError(
-        "unsupported-version",
-        `archive's payload schema version ${manifest.payloadSchemaVersion} is newer than the latest this build understands (${LATEST_EVENT_SCHEMA_VERSION})`,
+        "incompatible-version",
+        `archive's payload schema version ${manifest.payloadSchemaVersion} does not match this build's version ${LATEST_EVENT_SCHEMA_VERSION}`,
       );
     }
 
-    // Cross-check the manifest's claims against the archive's *actual*
-    // table content, independent of the hash: a manifest field tampered
-    // and then correspondingly rehashed (self-consistent, but wrong) would
-    // otherwise pass the hash check below. `eventSequence` gates which
-    // events get staged and `worldId` identifies the imported slot, so
-    // both are named explicitly in the P1 manifest-integrity fix.
-    const actualMaxSequence =
-      (
-        archiveDb.query("SELECT MAX(sequence) as m FROM events").get() as {
-          m: number | null;
-        }
-      ).m ?? 0;
-    if (manifest.eventSequence !== actualMaxSequence) {
+    const worldRow = readOrCorrupt(
+      () =>
+        db.query("SELECT world_id FROM world WHERE id = 1").get() as {
+          world_id: unknown;
+        } | null,
+      "archive world table is missing or unreadable",
+    );
+    if (
+      !worldRow ||
+      typeof worldRow.world_id !== "string" ||
+      worldRow.world_id.length === 0
+    ) {
       throw new ImportError(
-        "manifest-mismatch",
-        `archive manifest claims event sequence ${manifest.eventSequence}, but the archive's event log actually ends at ${actualMaxSequence}`,
+        "corrupt",
+        "archive world row is missing or invalid",
       );
     }
-    const actualWorldRow = archiveDb
-      .query("SELECT world_id FROM world WHERE id = 1")
-      .get() as { world_id: string } | null;
-    if (!actualWorldRow || actualWorldRow.world_id !== manifest.worldId) {
+    const worldId = worldRow.world_id as WorldId;
+    if (worldId !== manifest.worldId) {
       throw new ImportError(
-        "manifest-mismatch",
+        "inconsistent-manifest",
         "archive manifest's world ID does not match the archive's own world table",
       );
     }
 
-    const manifestFieldsFromManifest: HashableManifestFields = {
-      formatVersion: manifest.formatVersion,
-      sqliteSchemaVersion: manifest.sqliteSchemaVersion,
-      payloadSchemaVersion: manifest.payloadSchemaVersion,
-      worldId: manifest.worldId,
-      eventSequence: manifest.eventSequence,
-    };
-    const recomputedHash = computeContentHash(
-      archiveDb,
-      manifestFieldsFromManifest,
-    );
-    if (recomputedHash !== manifest.contentHash) {
+    const actualMaxSequence =
+      readOrCorrupt(
+        () =>
+          db.query("SELECT MAX(sequence) as m FROM events").get() as {
+            m: number | null;
+          } | null,
+        "archive events table is missing or unreadable",
+      )?.m ?? 0;
+    if (manifest.eventSequence !== actualMaxSequence) {
       throw new ImportError(
-        "hash-mismatch",
+        "inconsistent-manifest",
+        `archive manifest claims event sequence ${manifest.eventSequence}, but the archive's event log actually ends at ${actualMaxSequence}`,
+      );
+    }
+
+    const { contentHash: claimedHash, ...manifestFields } = manifest;
+    const recomputedHash = computeContentHash(db, manifestFields);
+    if (recomputedHash !== claimedHash) {
+      throw new ImportError(
+        "inconsistent-manifest",
         "archive content hash does not match its manifest; the file was tampered with or corrupted",
       );
     }
 
-    checkDeadline(deadline, now);
+    const clockRow = readOrCorrupt(
+      () =>
+        db
+          .query(
+            "SELECT cursor_wall_ms, paused, tick, sim_time_ms FROM clock WHERE id = 1",
+          )
+          .get() as ClockRowData | null,
+      "archive clock table is missing or unreadable",
+    );
+    if (!clockRow || !validClockRow(clockRow)) {
+      throw new ImportError(
+        "corrupt",
+        "archive clock row is missing or invalid",
+      );
+    }
+
+    const prngRow = readOrCorrupt(
+      () =>
+        db.query("SELECT state FROM prng_state WHERE id = 1").get() as {
+          state: unknown;
+        } | null,
+      "archive PRNG table is missing or unreadable",
+    );
+    if (!prngRow || typeof prngRow.state !== "string") {
+      throw new ImportError(
+        "corrupt",
+        "archive PRNG row is missing or not a string",
+      );
+    }
+    const prngState: string = prngRow.state;
+
+    const projectionsRow = readOrCorrupt(
+      () =>
+        db
+          .query("SELECT revision, data FROM projections WHERE id = 1")
+          .get() as {
+          revision: number;
+          data: string;
+        } | null,
+      "archive projections table is missing or unreadable",
+    );
+    if (!projectionsRow) {
+      throw new ImportError("corrupt", "archive projections row is missing");
+    }
+    readOrCorrupt(
+      () => projectionsCodec.decode(JSON.parse(projectionsRow.data)),
+      "archive projections row is not valid JSON or failed to decode",
+    );
+
+    const eventRows = readOrCorrupt(
+      () =>
+        db.query("SELECT payload FROM events ORDER BY sequence ASC").all() as {
+          payload: string;
+        }[],
+      "archive events table is missing or unreadable",
+    );
+    const stagedEvents: WorldEvent[] = eventRows.map((row) => {
+      const raw = readOrCorrupt(
+        () => JSON.parse(row.payload) as unknown,
+        "event row has invalid JSON payload",
+      );
+      if (!isRecord(raw)) {
+        throw new ImportError("corrupt", "event row payload is not an object");
+      }
+      if (raw.schemaVersion !== LATEST_EVENT_SCHEMA_VERSION) {
+        throw new ImportError(
+          "incompatible-version",
+          `event payload schema version ${String(raw.schemaVersion)} does not match this build's version ${LATEST_EVENT_SCHEMA_VERSION}`,
+        );
+      }
+      const parsed = parseEvent(raw);
+      if (!parsed.ok) {
+        throw new ImportError(
+          "corrupt",
+          `event row failed to parse: ${parsed.message}`,
+        );
+      }
+      return parsed.value;
+    });
 
     archiveDb.close();
     archiveDb = undefined;
 
-    // --- Staging: only validated bytes ever reach here ---------------------
-    ensureDirMode(slotsDir, 0o700);
+    // --- Staging: only validated values ever reach here -------------------
+    if (!existsSync(slotsDir)) {
+      createDirMode0700(slotsDir);
+    }
     const slotId = `slot-${randomUUID()}`;
     const stagingDir = join(slotsDir, `.staging-${randomUUID()}`);
-    ensureDirMode(stagingDir, 0o700);
+    createDirMode0700(stagingDir);
 
-    const stagingDbPath = join(stagingDir, "world.sqlite");
     try {
+      const stagingDbPath = join(stagingDir, "world.sqlite");
       const stagingDb = new Database(stagingDbPath, { create: true });
       try {
+        createSchema(stagingDb);
         stagingDb.exec("PRAGMA journal_mode = WAL");
-        migrate(stagingDb, stagingDbPath, { skipSnapshotForTests: true });
-
-        checkDeadline(deadline, now);
-
-        stagingDb.run("ATTACH DATABASE ? AS src", [tempPath]);
-        try {
-          stagingDb
-            .transaction(() => {
-              stagingDb.run("INSERT INTO main.world SELECT * FROM src.world");
-              checkDeadline(deadline, now);
-              stagingDb.run("INSERT INTO main.clock SELECT * FROM src.clock");
-              checkDeadline(deadline, now);
+        stagingDb
+          .transaction(() => {
+            stagingDb.run("INSERT INTO world (id, world_id) VALUES (1, ?)", [
+              worldId,
+            ]);
+            stagingDb.run(
+              "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, ?, ?, ?, ?)",
+              [
+                clockRow.cursor_wall_ms,
+                clockRow.paused,
+                clockRow.tick,
+                clockRow.sim_time_ms,
+              ],
+            );
+            stagingDb.run("INSERT INTO prng_state (id, state) VALUES (1, ?)", [
+              prngState,
+            ]);
+            stagingDb.run(
+              "INSERT INTO projections (id, revision, data) VALUES (1, ?, ?)",
+              [projectionsRow.revision, projectionsRow.data],
+            );
+            for (const event of stagedEvents) {
               stagingDb.run(
-                "INSERT INTO main.prng_state SELECT * FROM src.prng_state",
+                `INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  event.sequence,
+                  event.id,
+                  event.correlationId,
+                  event.causationId,
+                  event.kind,
+                  event.approximate ? 1 : 0,
+                  JSON.stringify(event),
+                ],
               );
-              checkDeadline(deadline, now);
-              stagingDb.run(
-                "INSERT INTO main.projections SELECT * FROM src.projections",
-              );
-              checkDeadline(deadline, now);
-              // No WHERE bound: the manifest's claimed eventSequence has
-              // already been cross-checked against MAX(sequence) above, so
-              // every validated row is copied unconditionally rather than
-              // trusting a manifest-derived bound as a filter.
-              stagingDb.run("INSERT INTO main.events SELECT * FROM src.events");
-            })
-            .immediate();
-        } finally {
-          stagingDb.exec("DETACH DATABASE src");
-        }
-
+            }
+          })
+          .immediate();
         stagingDb.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       } finally {
         stagingDb.close();
       }
-      for (const suffix of ["", "-wal", "-shm"]) {
-        const path = `${stagingDbPath}${suffix}`;
-        if (existsSync(path)) {
-          ensureFileMode(path, 0o600);
-        }
-      }
-
-      checkDeadline(deadline, now);
-
-      // Durability: fsync the staged database file and its containing
-      // staging directory before the atomic rename, then fsync the parent
-      // (slots) directory afterward so the rename itself survives a crash.
+      chmodSync(stagingDbPath, 0o600);
       fsyncFile(stagingDbPath);
-      fsyncDirectoryBestEffort(stagingDir);
 
       const finalDir = join(slotsDir, slotId);
       if (existsSync(finalDir)) {
@@ -672,8 +648,6 @@ export function importArchive(
         );
       }
       renameSync(stagingDir, finalDir);
-      fsyncDirectoryBestEffort(slotsDir);
-
       return { slotId, slotPath: finalDir, manifest };
     } catch (error) {
       rmSync(stagingDir, { recursive: true, force: true });
@@ -687,6 +661,5 @@ export function importArchive(
         // ignore
       }
     }
-    rmSync(tempPath, { force: true });
   }
 }

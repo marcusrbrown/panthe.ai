@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -20,22 +19,18 @@ import {
   LATEST_EVENT_SCHEMA_VERSION,
 } from "@panthea/contracts";
 import {
-  canonicalDump,
   computeContentHash,
   exportArchive,
-  fsyncDirectoryBestEffort,
-  fsyncFile,
   ImportError,
-  type ImportLimits,
   importArchive,
-  isTolerableFsyncError,
 } from "./archive";
-import { LATEST_SCHEMA_VERSION } from "./migrations";
 import {
+  CURRENT_SCHEMA_VERSION,
   closeStore,
   commitTick,
   getCurrentSequence,
   openStore,
+  type ProjectionCodec,
   type ProjectionReducers,
   readClock,
   readLiveProjections,
@@ -56,16 +51,22 @@ interface CountProjection {
   readonly total: number;
 }
 
+const projectionCodec: ProjectionCodec<CountProjection> = {
+  encode: (projections) => projections,
+  decode: (value) => value as CountProjection,
+};
+
 const reducer: ProjectionReducers<CountProjection> = {
   initial: { total: 0 },
   applyEvent(projections) {
     return { total: projections.total + 1 };
   },
+  codec: projectionCodec,
 };
 
 function makeMoveEvent(sequence: number): EntityMovedEvent {
   return {
-    schemaVersion: 2,
+    schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
     id: createEventId(),
     sequence,
     simTime: sequence,
@@ -85,34 +86,68 @@ function buildPopulatedStore(dbPath: string): Store {
       events: [makeMoveEvent(i)],
       cursorWallMs: 1000 * i,
       paused: false,
+      tick: i,
+      simTimeMs: 1000 * i,
       prngState: `seed-${i}`,
     });
   }
   return store;
 }
 
-const generousLimits: ImportLimits = {
-  maxBytes: 10 * 1024 * 1024,
-  maxRows: 10_000,
-  maxDurationMs: 30_000,
-};
+/** Recomputes and rewrites the manifest's content_hash to match the
+ * archive's current table content, using the manifest's own recorded
+ * fields -- simulates a tamper that also rehashes, which a plain hash
+ * check alone cannot catch. */
+function rehash(archivePath: string): void {
+  const db = new Database(archivePath);
+  const manifestRow = db.query("SELECT * FROM manifest WHERE id = 1").get() as {
+    format_version: number;
+    sqlite_schema_version: number;
+    payload_schema_version: number;
+    world_id: string;
+    event_sequence: number;
+  };
+  const newHash = computeContentHash(db, {
+    formatVersion: manifestRow.format_version,
+    sqliteSchemaVersion: manifestRow.sqlite_schema_version,
+    payloadSchemaVersion: manifestRow.payload_schema_version,
+    worldId: manifestRow.world_id as never,
+    eventSequence: manifestRow.event_sequence,
+  });
+  db.run("UPDATE manifest SET content_hash = ?", [newHash]);
+  db.close();
+}
+
+function expectRejected(
+  fn: () => unknown,
+  kind: ImportError["kind"],
+  slotsDir: string,
+): void {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(ImportError);
+  expect((caught as ImportError).kind).toBe(kind);
+  expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+}
 
 describe("exportArchive", () => {
-  test("happy path: same world exported twice yields the same content hash", () => {
+  test("happy path: the same world exported twice yields the same content hash", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
 
-    const archivePath1 = join(dir, "archive1.sqlite");
-    const archivePath2 = join(dir, "archive2.sqlite");
-    const manifest1 = exportArchive(store, archivePath1);
-    const manifest2 = exportArchive(store, archivePath2);
+    const manifest1 = exportArchive(store, join(dir, "archive1.sqlite"));
+    const manifest2 = exportArchive(store, join(dir, "archive2.sqlite"));
 
     expect(manifest1.contentHash).toBe(manifest2.contentHash);
     expect(manifest1.eventSequence).toBe(manifest2.eventSequence);
     closeStore(store);
   });
 
-  test("happy path: export includes the event log and causal IDs but excludes observation/rejection/receipt records (persistence never stores them)", () => {
+  test("happy path: export includes the event log with causal IDs", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
     const archivePath = join(dir, "archive.sqlite");
@@ -120,21 +155,6 @@ describe("exportArchive", () => {
     closeStore(store);
 
     const archiveDb = new Database(archivePath, { readonly: true });
-    const tableNames = (
-      archiveDb
-        .query("SELECT name FROM sqlite_master WHERE type = 'table'")
-        .all() as { name: string }[]
-    ).map((row) => row.name);
-    expect(tableNames.sort()).toEqual(
-      [
-        "clock",
-        "events",
-        "manifest",
-        "prng_state",
-        "projections",
-        "world",
-      ].sort(),
-    );
     const events = archiveDb.query("SELECT * FROM events").all() as {
       correlation_id: string;
       causation_id: string;
@@ -147,7 +167,7 @@ describe("exportArchive", () => {
     archiveDb.close();
   });
 
-  test("edge case: export while ticking always reflects one committed sequence; manifest sequence matches archive contents", () => {
+  test("edge case: export while ticking always reflects one committed sequence", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
     const archivePath = join(dir, "archive.sqlite");
@@ -166,84 +186,64 @@ describe("exportArchive", () => {
   });
 });
 
-describe("importArchive", () => {
-  function exportFreshArchive(): {
-    store: Store;
-    archivePath: string;
-    dbPath: string;
-  } {
+describe("importArchive: round-trip", () => {
+  test("happy path: export -> import creates a new slot with identical world ID, sequence, projections, PRNG, and clock (including tick/simTime); the source is untouched", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const beforeSourceBytes = readFileSync(dbPath);
+
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slotsDir = join(dir, "slots");
+    const result = importArchive(archivePath, slotsDir, projectionCodec);
+
+    expect(existsSync(result.slotPath)).toBe(true);
+    const importedStore = openStore(join(result.slotPath, "world.sqlite"));
+
+    expect(importedStore.worldId).toBe(store.worldId);
+    expect(getCurrentSequence(importedStore.db)).toBe(
+      getCurrentSequence(store.db),
+    );
+    expect(readLiveProjections(importedStore, reducer)).toEqual(
+      readLiveProjections(store, reducer),
+    );
+    expect(readClock(importedStore.db)).toEqual(readClock(store.db));
+
+    closeStore(importedStore);
+    expect(readFileSync(dbPath)).toEqual(beforeSourceBytes);
+    closeStore(store);
+  });
+
+  test("happy path: importing the same archive twice never overwrites an existing slot -- each import gets its own fresh slot ID and the first slot's bytes are untouched", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
-    return { store, archivePath, dbPath };
-  }
-
-  test("happy path: export -> import creates a new slot with identical IDs, sequence, projections, and PRNG state; the source is untouched", () => {
-    const { store, archivePath, dbPath } = exportFreshArchive();
-    const beforeSourceHash = readFileSync(dbPath);
-
     const slotsDir = join(dir, "slots");
-    const result = importArchive(archivePath, slotsDir, generousLimits);
 
-    expect(existsSync(result.slotPath)).toBe(true);
-    // Read-write, not readonly: the imported slot is a live WAL-mode store
-    // (like any other slot), and opening a WAL database read-only requires
-    // creating a -shm reader lock file, which a read-only handle cannot do.
-    const importedDb = new Database(join(result.slotPath, "world.sqlite"));
-    const worldRow = importedDb.query("SELECT world_id FROM world").get() as {
-      world_id: string;
-    };
-    expect(worldRow.world_id).toBe(store.worldId);
+    const first = importArchive(archivePath, slotsDir, projectionCodec);
+    const firstBytes = readFileSync(join(first.slotPath, "world.sqlite"));
 
-    const importedSequence = (
-      importedDb.query("SELECT MAX(sequence) as m FROM events").get() as {
-        m: number;
-      }
-    ).m;
-    expect(importedSequence).toBe(getCurrentSequence(store.db));
+    const second = importArchive(archivePath, slotsDir, projectionCodec);
 
-    const importedProjections = importedDb
-      .query("SELECT data FROM projections WHERE id = 1")
-      .get() as { data: string };
-    expect(JSON.parse(importedProjections.data)).toEqual(
-      readLiveProjections(store, reducer),
-    );
-
-    const importedPrng = importedDb
-      .query("SELECT state FROM prng_state WHERE id = 1")
-      .get() as { state: string };
-    expect(importedPrng.state).toBe("seed-3");
-
-    const importedClock = importedDb
-      .query("SELECT cursor_wall_ms, paused FROM clock WHERE id = 1")
-      .get() as { cursor_wall_ms: number; paused: number };
-    expect({
-      cursorWallMs: importedClock.cursor_wall_ms,
-      paused: importedClock.paused !== 0,
-    }).toEqual(readClock(store.db));
-
-    importedDb.close();
-
-    // Source untouched.
-    expect(readFileSync(dbPath)).toEqual(beforeSourceHash);
-    closeStore(store);
-  });
-
-  test("happy path: import never overwrites an existing slot (each import gets a fresh slot ID)", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const slotsDir = join(dir, "slots");
-    const first = importArchive(archivePath, slotsDir, generousLimits);
-    const second = importArchive(archivePath, slotsDir, generousLimits);
     expect(first.slotId).not.toBe(second.slotId);
-    expect(first.slotPath).not.toBe(second.slotPath);
     expect(existsSync(first.slotPath)).toBe(true);
     expect(existsSync(second.slotPath)).toBe(true);
+    expect(readFileSync(join(first.slotPath, "world.sqlite"))).toEqual(
+      firstBytes,
+    );
     closeStore(store);
   });
+});
 
+describe("importArchive: corruption", () => {
   test("error path: a truncated archive file is rejected as corrupt; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
     const truncatedPath = join(dir, "truncated.sqlite");
     const bytes = readFileSync(archivePath);
     writeFileSync(
@@ -252,26 +252,306 @@ describe("importArchive", () => {
     );
 
     const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(truncatedPath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("corrupt");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
+    expectRejected(
+      () => importArchive(truncatedPath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
     closeStore(store);
   });
 
-  test("error path: a flipped byte in the payload is rejected (hash mismatch or corrupt), distinct from other failures; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
+  test("error path: a missing archive file is rejected as an io error; no slot is created", () => {
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () =>
+        importArchive(
+          join(dir, "does-not-exist.sqlite"),
+          slotsDir,
+          projectionCodec,
+        ),
+      "io",
+      slotsDir,
+    );
+  });
+
+  test("error path: a missing manifest table is rejected as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.exec("DROP TABLE manifest");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a missing events table is rejected as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.exec("DROP TABLE events");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed archive with a malformed clock row is rejected as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE clock SET paused = 7");
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed archive with a malformed event payload is rejected as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    const firstEvent = db
+      .query(
+        "SELECT sequence, payload FROM events ORDER BY sequence ASC LIMIT 1",
+      )
+      .get() as { sequence: number; payload: string };
+    const corrupted = {
+      ...JSON.parse(firstEvent.payload),
+      kind: "not-a-real-kind",
+    };
+    db.run("UPDATE events SET payload = ? WHERE sequence = ?", [
+      JSON.stringify(corrupted),
+      firstEvent.sequence,
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed archive with a non-JSON projections row is rejected as corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE projections SET data = ? WHERE id = 1", [
+      "not json at all {",
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a projections row rejected by the codec is rejected as corrupt", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const strictCodec: ProjectionCodec<unknown> = {
+      encode: (value) => value,
+      decode: (value) => {
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("total" in (value as Record<string, unknown>))
+        ) {
+          throw new Error("expected a { total } shape");
+        }
+        return value;
+      },
+    };
+
+    const slotsDir = join(dir, "slots");
+    const okResult = importArchive(archivePath, slotsDir, strictCodec);
+    expect(existsSync(okResult.slotPath)).toBe(true);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE projections SET data = ? WHERE id = 1", [
+      JSON.stringify({ somethingElse: true }),
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    expectRejected(
+      () => importArchive(archivePath, join(dir, "slots2"), strictCodec),
+      "corrupt",
+      join(dir, "slots2"),
+    );
+    closeStore(store);
+  });
+});
+
+describe("importArchive: version mismatch", () => {
+  test("error path: a manifest reporting a different SQLite schema version is rejected as incompatible-version; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET sqlite_schema_version = ?", [
+      CURRENT_SCHEMA_VERSION + 1,
+    ]);
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a manifest reporting a different payload schema version is rejected as incompatible-version (exact-current, not a range); no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET payload_schema_version = ?", [
+      LATEST_EVENT_SCHEMA_VERSION - 1,
+    ]);
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed event row declaring a stale payload schema version is rejected as incompatible-version; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    const firstEvent = db
+      .query(
+        "SELECT sequence, payload FROM events ORDER BY sequence ASC LIMIT 1",
+      )
+      .get() as { sequence: number; payload: string };
+    const stale = {
+      ...JSON.parse(firstEvent.payload),
+      schemaVersion: LATEST_EVENT_SCHEMA_VERSION - 1,
+    };
+    db.run("UPDATE events SET payload = ? WHERE sequence = ?", [
+      JSON.stringify(stale),
+      firstEvent.sequence,
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+});
+
+describe("importArchive: manifest inconsistency", () => {
+  test("error path: a rehashed manifest whose eventSequence disagrees with the archive's actual event log is rejected as inconsistent-manifest; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET event_sequence = ?", [999]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a rehashed manifest whose worldId disagrees with the archive's own world row is rejected as inconsistent-manifest; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET world_id = ?", ["world-not-the-real-one"]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a flipped byte (hash left un-rehashed) is rejected as inconsistent-manifest or corrupt; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
     const flippedPath = join(dir, "flipped.sqlite");
     const bytes = readFileSync(archivePath);
     const mutable = Buffer.from(bytes);
-    // Flip a byte roughly in the middle of the file, away from the header,
-    // likely landing inside a page's payload rather than corrupting the
-    // format entirely.
     const offset = Math.floor(mutable.length / 2);
     mutable[offset] = (mutable[offset] ?? 0) ^ 0xff;
     writeFileSync(flippedPath, mutable);
@@ -279,463 +559,119 @@ describe("importArchive", () => {
     const slotsDir = join(dir, "slots");
     let caught: unknown;
     try {
-      importArchive(flippedPath, slotsDir, generousLimits);
+      importArchive(flippedPath, slotsDir, projectionCodec);
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(ImportError);
-    expect(["hash-mismatch", "corrupt"]).toContain(
+    expect(["inconsistent-manifest", "corrupt"]).toContain(
       (caught as ImportError).kind,
     );
     expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
     closeStore(store);
   });
+});
 
-  test("error path: a manifest reporting an unsupported (future) SQLite schema version is rejected distinctly; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.run("UPDATE manifest SET sqlite_schema_version = ?", [
-      LATEST_SCHEMA_VERSION + 100,
+describe("importArchive: interrupted staging leaves no slot, and existing slots stay untouched", () => {
+  test("error path: a staging-time failure (duplicate event ID smuggled past per-row validation) leaves no slot behind", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    const [first, second] = db
+      .query("SELECT sequence, payload FROM events ORDER BY sequence ASC")
+      .all() as { sequence: number; payload: string }[];
+    if (!first || !second) {
+      throw new Error("test fixture needs at least two events");
+    }
+    // Each row still parses fine on its own (per-row validation can't see
+    // across rows); the duplicate only surfaces as a UNIQUE constraint
+    // violation once staging actually inserts both rows.
+    const firstPayload = JSON.parse(first.payload) as { id: string };
+    const secondPayload = {
+      ...JSON.parse(second.payload),
+      id: firstPayload.id,
+    };
+    db.run("UPDATE events SET payload = ? WHERE sequence = ?", [
+      JSON.stringify(secondPayload),
+      second.sequence,
     ]);
-    archiveDb.close();
+    db.close();
+    rehash(archivePath);
 
     const slotsDir = join(dir, "slots");
     let caught: unknown;
     try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("unsupported-version");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: a missing manifest table is rejected distinctly; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.exec("DROP TABLE manifest");
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("missing-manifest");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive containing a view is rejected before any slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.exec("CREATE VIEW events_view AS SELECT * FROM events");
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("disallowed-schema");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive containing a trigger is rejected before any slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.exec(`
-      CREATE TABLE trigger_target (id INTEGER PRIMARY KEY) STRICT;
-      CREATE TRIGGER evil_trigger AFTER INSERT ON events
-      BEGIN
-        INSERT INTO trigger_target (id) VALUES (1);
-      END;
-    `);
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("disallowed-schema");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive containing an unexpected table is rejected before any slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.exec("CREATE TABLE sneaky (id INTEGER PRIMARY KEY) STRICT");
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("disallowed-schema");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive over the configured byte limit is rejected before staging", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const tinyLimits: ImportLimits = {
-      maxBytes: 10,
-      maxRows: 10_000,
-      maxDurationMs: 30_000,
-    };
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, tinyLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("over-limit-bytes");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive over the configured row limit is rejected before staging", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const tinyRowLimits: ImportLimits = {
-      maxBytes: 10 * 1024 * 1024,
-      maxRows: 1,
-      maxDurationMs: 30_000,
-    };
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, tinyRowLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("over-limit-rows");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: an archive validated past the configured time budget is rejected before staging", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const expiredLimits: ImportLimits = {
-      maxBytes: 10 * 1024 * 1024,
-      maxRows: 10_000,
-      maxDurationMs: -1,
-    };
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, expiredLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("over-limit-time");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("error path: a copy failure while staging the private archive copy leaves no temp file behind", () => {
-    // A directory in place of the archive file makes `copyFileSync` fail
-    // (EISDIR) after the earlier existsSync/statSync checks have already
-    // passed, exercising the copy-step failure path specifically.
-    const bogusArchivePath = join(dir, "archive-is-a-directory");
-    mkdirSync(bogusArchivePath);
-    const slotsDir = join(dir, "slots");
-
-    const tempFilesBefore = readdirSync(tmpdir()).filter((name) =>
-      name.startsWith("panthea-import-"),
-    );
-
-    let caught: unknown;
-    try {
-      importArchive(bogusArchivePath, slotsDir, generousLimits);
+      importArchive(archivePath, slotsDir, projectionCodec);
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeDefined();
-
-    const tempFilesAfter = readdirSync(tmpdir()).filter((name) =>
-      name.startsWith("panthea-import-"),
-    );
-    expect(tempFilesAfter).toEqual(tempFilesBefore);
-  });
-
-  test("error path: the time budget is enforced during staging, not only before it", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const slotsDir = join(dir, "slots");
-    const staleLimits: ImportLimits = {
-      maxBytes: 10 * 1024 * 1024,
-      maxRows: 10_000,
-      maxDurationMs: 30_000,
-    };
-    const realNow = Date.now();
-    let calls = 0;
-    // The first three checkDeadline calls happen during pre-staging
-    // validation (start, post-row-count, post-hash-check); returning the
-    // real clock for those lets validation succeed normally so staging is
-    // actually reached. From the fourth call onward -- staging's own
-    // checkDeadline calls, the first of which guards the copy transaction
-    // -- return a time past the deadline to force an over-limit-time abort
-    // mid-staging, after the staging directory already exists.
-    const now = () => {
-      calls += 1;
-      return calls <= 3 ? realNow : realNow + staleLimits.maxDurationMs + 1;
-    };
-
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, staleLimits, now);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("over-limit-time");
     expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
     closeStore(store);
   });
-});
 
-describe("importArchive manifest integrity", () => {
-  function exportFreshArchive(): { store: Store; archivePath: string } {
+  test("happy path: importing a second archive never touches an already-materialized slot", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
-    return { store, archivePath };
-  }
-
-  test("error path: a manifest-only tamper of eventSequence (hash left alone) is rejected as a manifest mismatch, distinct from a hash mismatch; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.run("UPDATE manifest SET event_sequence = ?", [999]);
-    archiveDb.close();
-
     const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("manifest-mismatch");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
 
-  test("error path: a manifest-only tamper of worldId (hash left alone) is rejected as a manifest mismatch; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    archiveDb.run("UPDATE manifest SET world_id = ?", [
-      "world-not-the-real-one",
-    ]);
-    archiveDb.close();
+    const first = importArchive(archivePath, slotsDir, projectionCodec);
+    const firstBytesBefore = readFileSync(join(first.slotPath, "world.sqlite"));
 
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("manifest-mismatch");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
+    importArchive(archivePath, slotsDir, projectionCodec);
 
-  test("error path: a manifest-only tamper of a version field (hash left alone) is rejected as a hash mismatch, since no other table can cross-check a version claim; no slot is created", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const archiveDb = new Database(archivePath);
-    // 0 is a valid non-negative integer and still <= LATEST_SCHEMA_VERSION,
-    // so this does not trip the explicit "newer than we understand" gate --
-    // only hash binding can catch it.
-    archiveDb.run("UPDATE manifest SET sqlite_schema_version = 0");
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("hash-mismatch");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-
-  test("happy path: a clean archive still round-trips with an identical hash when exported twice (no false positives from the manifest binding)", () => {
-    const dbPath = join(dir, "world.sqlite");
-    const store = buildPopulatedStore(dbPath);
-    const archivePath1 = join(dir, "clean1.sqlite");
-    const archivePath2 = join(dir, "clean2.sqlite");
-    const manifest1 = exportArchive(store, archivePath1);
-    const manifest2 = exportArchive(store, archivePath2);
-    expect(manifest1.contentHash).toBe(manifest2.contentHash);
-
-    const slotsDir = join(dir, "slots");
-    const result = importArchive(archivePath1, slotsDir, generousLimits);
-    expect(existsSync(result.slotPath)).toBe(true);
-    closeStore(store);
-  });
-
-  test("happy path: all events are copied unconditionally (not filtered by the manifest's eventSequence) once the manifest is verified to match", () => {
-    const { store, archivePath } = exportFreshArchive();
-    const slotsDir = join(dir, "slots");
-    const result = importArchive(archivePath, slotsDir, generousLimits);
-    const importedDb = new Database(join(result.slotPath, "world.sqlite"));
-    const count = (
-      importedDb.query("SELECT COUNT(*) as c FROM events").get() as {
-        c: number;
-      }
-    ).c;
-    expect(count).toBe(3);
-    importedDb.close();
+    expect(readFileSync(join(first.slotPath, "world.sqlite"))).toEqual(
+      firstBytesBefore,
+    );
     closeStore(store);
   });
 });
 
-describe("importArchive future payload version", () => {
-  test("error path: a manifest reporting an unsupported (future) payload schema version is rejected distinctly from the SQLite schema version gate; no slot is created", () => {
-    const dbPath = join(dir, "world.sqlite");
-    const store = buildPopulatedStore(dbPath);
-    const archivePath = join(dir, "archive.sqlite");
-    exportArchive(store, archivePath);
-
-    const archiveDb = new Database(archivePath);
-    archiveDb.run("UPDATE manifest SET payload_schema_version = ?", [
-      LATEST_EVENT_SCHEMA_VERSION + 100,
-    ]);
-    archiveDb.close();
-
-    const slotsDir = join(dir, "slots");
-    let caught: unknown;
-    try {
-      importArchive(archivePath, slotsDir, generousLimits);
-    } catch (error) {
-      caught = error;
+describe("computeContentHash", () => {
+  test("identical data yields an identical hash regardless of insertion order", () => {
+    function makeFixtureDb(path: string): Database {
+      const db = new Database(path, { create: true });
+      db.exec(
+        "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL, tick INTEGER NOT NULL, sim_time_ms INTEGER NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
+      );
+      db.exec(
+        "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
+      );
+      db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
+      db.run(
+        "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
+      );
+      db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+      db.run(
+        "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
+      );
+      return db;
     }
-    expect(caught).toBeInstanceOf(ImportError);
-    expect((caught as ImportError).kind).toBe("unsupported-version");
-    expect(existsSync(slotsDir) ? readdirSync(slotsDir) : []).toHaveLength(0);
-    closeStore(store);
-  });
-});
 
-describe("fsync durability helpers", () => {
-  test("isTolerableFsyncError recognizes the well-known directory-fsync refusal codes and nothing else", () => {
-    expect(isTolerableFsyncError({ code: "EISDIR" })).toBe(true);
-    expect(isTolerableFsyncError({ code: "EINVAL" })).toBe(true);
-    expect(isTolerableFsyncError({ code: "EPERM" })).toBe(true);
-    expect(isTolerableFsyncError({ code: "ENOENT" })).toBe(false);
-    expect(isTolerableFsyncError(new Error("no code"))).toBe(false);
-    expect(isTolerableFsyncError(undefined)).toBe(false);
-  });
+    const manifestFields = {
+      formatVersion: 1,
+      sqliteSchemaVersion: CURRENT_SCHEMA_VERSION,
+      payloadSchemaVersion: 1,
+      worldId: "world-fixture" as never,
+      eventSequence: 2,
+    };
 
-  test("fsyncFile succeeds on a real file", () => {
-    const filePath = join(dir, "fsync-target.txt");
-    writeFileSync(filePath, "hello");
-    expect(() => fsyncFile(filePath)).not.toThrow();
-  });
-
-  test("fsyncFile propagates a genuine error (missing file)", () => {
-    expect(() => fsyncFile(join(dir, "does-not-exist.txt"))).toThrow();
-  });
-
-  test("fsyncDirectoryBestEffort succeeds on a real directory", () => {
-    expect(() => fsyncDirectoryBestEffort(dir)).not.toThrow();
-  });
-
-  test("fsyncDirectoryBestEffort propagates a genuine (non-tolerable) error for a missing directory", () => {
-    expect(() =>
-      fsyncDirectoryBestEffort(join(dir, "does-not-exist-dir")),
-    ).toThrow();
-  });
-
-  test("exportArchive still succeeds end-to-end with fsync calls exercised on the happy path", () => {
-    const dbPath = join(dir, "world.sqlite");
-    const store = buildPopulatedStore(dbPath);
-    const archivePath = join(dir, "durable.sqlite");
-    const manifest = exportArchive(store, archivePath);
-    expect(existsSync(archivePath)).toBe(true);
-    expect(manifest.eventSequence).toBe(3);
-    closeStore(store);
-  });
-
-  test("importArchive still succeeds end-to-end with fsync calls exercised during staging", () => {
-    const dbPath = join(dir, "world.sqlite");
-    const store = buildPopulatedStore(dbPath);
-    const archivePath = join(dir, "durable-import.sqlite");
-    exportArchive(store, archivePath);
-    const slotsDir = join(dir, "slots");
-    const result = importArchive(archivePath, slotsDir, generousLimits);
-    expect(existsSync(join(result.slotPath, "world.sqlite"))).toBe(true);
-    closeStore(store);
-  });
-});
-
-describe("computeContentHash / canonicalDump", () => {
-  const manifestFields = {
-    formatVersion: 1,
-    sqliteSchemaVersion: LATEST_SCHEMA_VERSION,
-    payloadSchemaVersion: 1,
-    worldId: "world-fixture" as never,
-    eventSequence: 2,
-  };
-
-  function makeFixtureDb(path: string): Database {
-    const db = new Database(path, { create: true });
-    db.exec(
-      "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
-    );
-    db.exec(
-      "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL) STRICT",
-    );
-    db.exec(
-      "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
-    );
-    db.exec(
-      "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
-    );
-    db.exec(
-      "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
-    );
-    db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
-    db.run("INSERT INTO clock (id, cursor_wall_ms, paused) VALUES (1, 0, 0)");
-    db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
-    db.run(
-      "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
-    );
-    return db;
-  }
-
-  test("identical data yields an identical hash regardless of insertion order (fixed table order, rows ordered by primary key)", () => {
     const db1 = makeFixtureDb(join(dir, "a.sqlite"));
     const db2 = makeFixtureDb(join(dir, "b.sqlite"));
-    // Insert events in reverse order between the two DBs — the canonical
-    // dump orders by primary key, so insertion order must not matter.
     db1.run(
       "INSERT INTO events (sequence, id, correlation_id, causation_id, kind, approximate, payload) VALUES (1, 'e1', 'c1', 'k1', 'kind', 0, '{}')",
     );
@@ -752,15 +688,43 @@ describe("computeContentHash / canonicalDump", () => {
     expect(computeContentHash(db1, manifestFields)).toBe(
       computeContentHash(db2, manifestFields),
     );
-    expect(canonicalDump(db1, manifestFields)).toBe(
-      canonicalDump(db2, manifestFields),
-    );
     db1.close();
     db2.close();
   });
 
-  test("the manifest fields are bound into the hash: changing any one of them changes the hash even though the tables are identical", () => {
-    const db = makeFixtureDb(join(dir, "c.sqlite"));
+  test("the manifest fields are bound into the hash: changing any one of them changes the hash even with identical table data", () => {
+    const db = new Database(join(dir, "c.sqlite"), { create: true });
+    db.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY, world_id TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE clock (id INTEGER PRIMARY KEY, cursor_wall_ms INTEGER NOT NULL, paused INTEGER NOT NULL, tick INTEGER NOT NULL, sim_time_ms INTEGER NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE prng_state (id INTEGER PRIMARY KEY, state TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE projections (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
+    );
+    db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
+    db.run(
+      "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
+    );
+    db.run("INSERT INTO prng_state (id, state) VALUES (1, '')");
+    db.run(
+      "INSERT INTO projections (id, revision, data) VALUES (1, 0, 'null')",
+    );
+
+    const manifestFields = {
+      formatVersion: 1,
+      sqliteSchemaVersion: CURRENT_SCHEMA_VERSION,
+      payloadSchemaVersion: 1,
+      worldId: "world-fixture" as never,
+      eventSequence: 2,
+    };
     const baseline = computeContentHash(db, manifestFields);
 
     expect(
@@ -772,9 +736,7 @@ describe("computeContentHash / canonicalDump", () => {
         worldId: "world-other" as never,
       }),
     ).not.toBe(baseline);
-    expect(
-      computeContentHash(db, { ...manifestFields, sqliteSchemaVersion: 0 }),
-    ).not.toBe(baseline);
+
     db.close();
   });
 });

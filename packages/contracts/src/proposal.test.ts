@@ -1,9 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  PROPOSAL_BYTE_LIMIT,
-  parseObservationRecord,
-  parseProposal,
-} from "./proposal";
+import { parseObservationRecord, parseProposal } from "./proposal";
 
 function base(
   overrides: Record<string, unknown> = {},
@@ -12,9 +8,6 @@ function base(
     schemaVersion: 1,
     actor: "npc-1",
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "routine",
     observationId: "obs-1",
@@ -103,7 +96,7 @@ test("a valid produce proposal parses to its typed variant", () => {
   }
 });
 
-test("a valid trade proposal parses to its typed variant", () => {
+test("a valid trade proposal parses to its typed variant, keeping actual trade terms", () => {
   const result = parseProposal(
     base({
       kind: "trade",
@@ -213,7 +206,7 @@ test("unknown kind is rejected with reason unknown-kind", () => {
   }
 });
 
-test("non-numeric cost is a structured rejection naming the field", () => {
+test("a non-numeric gather amount is a structured rejection naming the field", () => {
   const result = parseProposal(
     base({ kind: "gather", resource: "wood", amount: "a lot" }),
   );
@@ -223,7 +216,29 @@ test("non-numeric cost is a structured rejection naming the field", () => {
   }
 });
 
-test("a claim asserting an inventory grant is rejected as unauthorized-claim", () => {
+test("a proposal declaring preconditions is rejected as unauthorized-claim", () => {
+  const result = parseProposal(
+    base({ kind: "move", to: "loc-town", preconditions: ["tavern is open"] }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("unauthorized-claim");
+    expect(result.path).toBe("preconditions");
+  }
+});
+
+test("a proposal declaring requiredCapabilities is rejected as unauthorized-claim", () => {
+  const result = parseProposal(
+    base({ kind: "move", to: "loc-town", requiredCapabilities: ["divine"] }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("unauthorized-claim");
+    expect(result.path).toBe("requiredCapabilities");
+  }
+});
+
+test("a proposal declaring costs is rejected as unauthorized-claim", () => {
   const result = parseProposal(
     base({
       kind: "claim",
@@ -235,6 +250,32 @@ test("a claim asserting an inventory grant is rejected as unauthorized-claim", (
   if (!result.ok) {
     expect(result.reason).toBe("unauthorized-claim");
     expect(result.path).toBe("costs");
+  }
+});
+
+test("a proposal declaring a modelRequestId is rejected as unauthorized-claim", () => {
+  const result = parseProposal(
+    base({ kind: "move", to: "loc-town", modelRequestId: "model-req-1" }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("unauthorized-claim");
+    expect(result.path).toBe("modelRequestId");
+  }
+});
+
+test("a claim proposal asserting expected entity revisions is rejected as unauthorized-claim", () => {
+  const result = parseProposal(
+    base({
+      kind: "claim",
+      assertion: "I own the tavern",
+      expectedRevisions: [{ entityId: "tavern-1", revision: 2 }],
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.reason).toBe("unauthorized-claim");
+    expect(result.path).toBe("expectedRevisions");
   }
 });
 
@@ -251,16 +292,6 @@ test("an unsupported schema version is rejected distinctly from malformed payloa
   expect(malformed.ok).toBe(false);
   if (!malformed.ok) {
     expect(malformed.reason).toBe("malformed");
-  }
-});
-
-test("a proposal over the byte limit is rejected", () => {
-  const result = parseProposal(
-    base({ kind: "claim", assertion: "x".repeat(PROPOSAL_BYTE_LIMIT + 1) }),
-  );
-  expect(result.ok).toBe(false);
-  if (!result.ok) {
-    expect(result.reason).toBe("over-limit");
   }
 });
 

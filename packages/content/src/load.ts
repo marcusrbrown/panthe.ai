@@ -1,16 +1,12 @@
 // Loads an authored content pack from disk and parses it through
-// packages/contracts' `parseContentPack`. Invalid content fails loudly with
-// a clear, structured message (Unit 3's "Content loads through contracts
-// parsers; invalid content fails loudly at startup") -- a missing required
-// file, malformed JSON syntax, and a structurally invalid pack are each
-// reported distinctly.
+// packages/contracts' `parseContentPack`. Invalid content fails loudly --
+// a missing required file, malformed JSON syntax, and a structurally
+// invalid pack are each reported distinctly.
 //
 // Authored packs split geography from balance/economy across two required
-// files (`locations.json`, `rules.json`) plus two files a later unit may add
-// (`buildings.json`, `inhabitants.json`): Unit 3 authors no buildings or
-// inhabitants, so those two are optional here and default to an empty list
-// when absent. When Unit 4 adds them, this loader picks them up with no
-// change required.
+// files (`locations.json`, `rules.json`) plus two optional files
+// (`buildings.json`, `inhabitants.json`) that default to an empty list
+// when absent.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

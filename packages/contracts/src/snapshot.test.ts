@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { LATEST_EVENT_SCHEMA_VERSION } from "./event";
 import { parseSyncFrame } from "./snapshot";
 
 function frame(
@@ -7,112 +6,71 @@ function frame(
 ): Record<string, unknown> {
   return {
     schemaVersion: 1,
+    sequence: 10,
+    worldId: "world-1",
     sessionId: "session-1",
-    sessionGeneration: 0,
+    status: "running",
+    state: { actors: [] },
     ...overrides,
   };
 }
 
-test("a valid snapshot frame parses", () => {
-  const result = parseSyncFrame(
-    frame({
-      kind: "snapshot",
-      sequence: 10,
-      worldId: "world-1",
-      projections: { actors: [] },
-    }),
-  );
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.value).toMatchObject({
-      kind: "snapshot",
-      sequence: 10,
-      worldId: "world-1",
-      projections: { actors: [] },
-    });
-  }
-});
-
-test("a valid delta frame with events parses", () => {
-  const event = {
-    schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
-    id: "evt-1",
-    sequence: 1,
-    simTime: 1,
-    correlationId: "corr-1",
-    causationId: "cause-1",
-    approximate: false,
-    kind: "entity-moved",
-    entityId: "npc-1",
-    to: "loc-2",
-  };
-  const result = parseSyncFrame(
-    frame({ kind: "delta", sequence: 1, events: [event] }),
-  );
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.value).toMatchObject({ kind: "delta", sequence: 1 });
-  }
-});
-
-test("a delta with a non-integer sequence is rejected", () => {
-  const result = parseSyncFrame(
-    frame({ kind: "delta", sequence: 1.5, events: [] }),
-  );
-  expect(result.ok).toBe(false);
-});
-
-test("a delta with a negative sequence is rejected", () => {
-  const result = parseSyncFrame(
-    frame({ kind: "delta", sequence: -1, events: [] }),
-  );
-  expect(result.ok).toBe(false);
-});
-
-test("a valid resync frame parses", () => {
-  const result = parseSyncFrame(
-    frame({ kind: "resync", reason: "gap detected" }),
-  );
+test("a valid running frame parses", () => {
+  const result = parseSyncFrame(frame());
   expect(result.ok).toBe(true);
   if (result.ok) {
     expect(result.value).toMatchObject({
       schemaVersion: 1,
+      sequence: 10,
+      worldId: "world-1",
       sessionId: "session-1",
-      sessionGeneration: 0,
-      kind: "resync",
-      reason: "gap detected",
+      status: "running",
+      state: { actors: [] },
     });
+    expect(result.value.degradedReason).toBeUndefined();
+    expect(result.value.catchUpSummary).toBeUndefined();
   }
 });
 
-test("a valid session-change frame parses", () => {
+test("a valid paused frame parses", () => {
+  const result = parseSyncFrame(frame({ status: "paused" }));
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.status).toBe("paused");
+  }
+});
+
+test("a degraded frame requires and carries a reason", () => {
   const result = parseSyncFrame(
-    frame({ kind: "session-change", sessionGeneration: 1 }),
+    frame({ status: "degraded", degradedReason: "disk-full" }),
   );
   expect(result.ok).toBe(true);
   if (result.ok) {
     expect(result.value).toMatchObject({
-      schemaVersion: 1,
-      sessionId: "session-1",
-      sessionGeneration: 1,
-      kind: "session-change",
+      status: "degraded",
+      degradedReason: "disk-full",
     });
   }
 });
 
-test("a valid catch-up-summary frame parses", () => {
+test("a degraded frame missing a reason is rejected", () => {
+  const result = parseSyncFrame(frame({ status: "degraded" }));
+  expect(result.ok).toBe(false);
+});
+
+test("a frame with a catch-up summary parses", () => {
   const result = parseSyncFrame(
     frame({
-      kind: "catch-up-summary",
-      appliedMs: 3_600_000,
-      skippedMs: 120_000,
-      majorOutcomes: ["tavern fire spread"],
+      catchUpSummary: {
+        appliedMs: 3_600_000,
+        skippedMs: 120_000,
+        majorOutcomes: ["tavern fire spread"],
+      },
     }),
   );
   expect(result.ok).toBe(true);
   if (result.ok) {
-    expect(result.value).toMatchObject({
-      kind: "catch-up-summary",
+    expect(result.value.catchUpSummary).toMatchObject({
       appliedMs: 3_600_000,
       skippedMs: 120_000,
       majorOutcomes: ["tavern fire spread"],
@@ -120,42 +78,30 @@ test("a valid catch-up-summary frame parses", () => {
   }
 });
 
-test("a valid degraded-status frame parses with and without a reason", () => {
-  const degraded = parseSyncFrame(
-    frame({ kind: "degraded-status", degraded: true, reason: "disk-full" }),
-  );
-  expect(degraded.ok).toBe(true);
-  if (degraded.ok) {
-    expect(degraded.value).toMatchObject({
-      degraded: true,
-      reason: "disk-full",
-    });
+test("a frame missing the state payload is rejected", () => {
+  const payload = frame();
+  delete payload.state;
+  const result = parseSyncFrame(payload);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("state");
   }
+});
 
-  const recovered = parseSyncFrame(
-    frame({ kind: "degraded-status", degraded: false }),
-  );
-  expect(recovered.ok).toBe(true);
-  if (recovered.ok) {
-    expect(recovered.value).toMatchObject({ degraded: false });
-    expect((recovered.value as { reason?: unknown }).reason).toBeUndefined();
-  }
+test("a sequence that is not a non-negative integer is rejected", () => {
+  expect(parseSyncFrame(frame({ sequence: 1.5 })).ok).toBe(false);
+  expect(parseSyncFrame(frame({ sequence: -1 })).ok).toBe(false);
 });
 
 test("an unsupported schema version is rejected", () => {
-  const result = parseSyncFrame(
-    frame({ schemaVersion: 99, kind: "session-change" }),
-  );
+  const result = parseSyncFrame(frame({ schemaVersion: 99 }));
   expect(result.ok).toBe(false);
   if (!result.ok) {
     expect(result.reason).toBe("unsupported-version");
   }
 });
 
-test("an unknown frame kind is rejected", () => {
-  const result = parseSyncFrame(frame({ kind: "heartbeat" }));
+test("an unknown status is rejected", () => {
+  const result = parseSyncFrame(frame({ status: "crashed" }));
   expect(result.ok).toBe(false);
-  if (!result.ok) {
-    expect(result.reason).toBe("unknown-kind");
-  }
 });

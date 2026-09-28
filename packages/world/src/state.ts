@@ -10,17 +10,16 @@
 //
 // packages/world never depends on SQLite or any storage engine: everything
 // here is a plain immutable value plus pure functions over it. Persistence
-// (Unit 2) treats these shapes as the opaque projection payload described in
-// packages/contracts' `SnapshotFrame.projections`.
+// treats these shapes as the opaque projection payload described in
+// packages/contracts' `SyncFrame.state`.
 
-import {
-  type ContentPack,
-  type EntityId,
-  type EventEnvelope,
-  type LocationEdge,
-  parseEntityId,
-  type Realm,
-  type WorldEvent,
+import type {
+  ContentPack,
+  EntityId,
+  EventEnvelope,
+  LocationEdge,
+  Realm,
+  WorldEvent,
 } from "@panthea/contracts";
 
 /** A location's live state: the authored graph node plus a revision counter. */
@@ -60,6 +59,16 @@ export interface WorldState {
   readonly tick: number;
   /** Simulated milliseconds elapsed; advances by each tick's elapsed time. */
   readonly simTime: number;
+  /**
+   * The sequence number of the last event committed anywhere in this
+   * world's history -- global and contiguous across every tick, matching
+   * packages/persistence's `commitTick` contiguity requirement. Bumped by
+   * `ReducerRegistry.apply` (actions.ts) to the applied event's own
+   * `sequence`, never reset per tick, so `runTick` can always number a new
+   * tick's events starting from `state.lastSequence + 1` regardless of how
+   * many prior ticks committed.
+   */
+  readonly lastSequence: number;
   readonly locations: ReadonlyMap<EntityId, LocationState>;
   readonly actors: ReadonlyMap<EntityId, ActorState>;
 }
@@ -70,8 +79,7 @@ export interface WorldState {
  * correlationId, causationId, approximate). Rule handlers stay pure and
  * focused on "what happened"; only the tick loop knows the running
  * sequence number and the proposal's causal identifiers. Distributes over
- * `WorldEvent` so a new event kind (Units 4-5) gets a draft counterpart for
- * free.
+ * `WorldEvent` so a new event kind gets a draft counterpart for free.
  */
 export type WorldEventDraft<E = WorldEvent> = E extends EventEnvelope
   ? Omit<E, keyof EventEnvelope>
@@ -81,26 +89,20 @@ export type WorldEventDraft<E = WorldEvent> = E extends EventEnvelope
  * Brands a known-good, non-empty string as an `EntityId`. Content ids are
  * reused directly as live entity ids (see module docs), so this is the one
  * place that conversion happens; it is exported so fixtures, scenarios, and
- * later units minting entities from their own content (buildings,
- * inhabitants) can do the same conversion without an unsafe cast.
+ * content-derived entities (buildings, inhabitants) can do the same
+ * conversion. A trusted cast, not a parse: the caller already knows the
+ * string is a valid, non-empty id (content already passed through
+ * packages/contracts' parser).
  */
 export function toEntityId(raw: string): EntityId {
-  const result = parseEntityId(raw, "id");
-  if (!result.ok) {
-    // Content is validated by packages/contracts before this point, so a
-    // non-empty string id can never fail branding; a throw here signals a
-    // real bug rather than untrusted input reaching this function.
-    throw new Error(`invalid entity id from content: ${raw}`);
-  }
-  return result.value;
+  return raw as EntityId;
 }
 
 /**
  * Builds the initial live world state from a validated content pack: every
- * authored location becomes a `LocationState` at revision 0. No actors exist
- * yet -- content packs authored for Unit 3 carry no inhabitants; actors are
- * seeded by `withActor` (fixtures, scenarios) or, in later units, by content
- * that does author inhabitants.
+ * authored location becomes a `LocationState` at revision 0. No actors are
+ * created here; they are seeded separately by `withActor` (fixtures,
+ * scenarios) or by content that authors inhabitants.
  */
 export function createInitialWorldState(pack: ContentPack): WorldState {
   const locations = new Map<EntityId, LocationState>();
@@ -120,6 +122,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
   return {
     tick: 0,
     simTime: 0,
+    lastSequence: 0,
     locations,
     actors: new Map(),
   };

@@ -1,9 +1,9 @@
-// Authored world content (content/greek/world/*.json, Unit 3+): realms,
-// locations and edges, buildings, inhabitants, the resource graph, and
-// numeric rules. Content ids are plain strings (authoring-time keys), not
-// branded EntityId values -- packages/world mints live EntityIds when it
-// instantiates a pack. Invalid content must fail loudly at load (Unit 3),
-// so every field here is parsed, never assumed.
+// Authored world content (content/greek/world/*.json): realms, locations
+// and edges, buildings, inhabitants, the resource graph, and numeric
+// rules. Content ids are plain strings (authoring-time keys), not branded
+// EntityId values -- packages/world mints live EntityIds when it
+// instantiates a pack. Invalid content fails loudly at load, so every
+// field here is parsed, never assumed.
 
 import {
   fail,
@@ -43,12 +43,11 @@ export interface Location {
   readonly name: string;
   readonly edges: readonly LocationEdge[];
   /**
-   * Capability an actor must hold to enter this location (Unit 3 addition,
-   * additive/optional): gates both `move` and `realm-transition` proposals
-   * whose destination names this location, so a restricted destination
-   * (e.g. a divine-only sanctum) rejects entry with reason
-   * `restricted-realm` distinctly from a plain adjacency failure. Absent
-   * means unrestricted.
+   * Capability an actor must hold to enter this location, optional and
+   * additive: gates both `move` and `realm-transition` proposals whose
+   * destination names this location, so a restricted destination (e.g. a
+   * divine-only sanctum) rejects entry with reason `restricted-realm`
+   * distinctly from a plain adjacency failure. Absent means unrestricted.
    */
   readonly requiredCapability?: string;
 }
@@ -81,9 +80,6 @@ export interface WorldRules {
   readonly catchUpCapMs: number;
   readonly catchUpChunkMs: number;
   readonly checkpointIntervalMs: number;
-  readonly importMaxBytes: number;
-  readonly importMaxRows: number;
-  readonly importMaxDurationMs: number;
   readonly fireBalance: Readonly<Record<string, number>>;
   readonly economyBalance: Readonly<Record<string, number>>;
 }
@@ -256,21 +252,6 @@ function parseWorldRules(
     `${path}.checkpointIntervalMs`,
   );
   if (!checkpointIntervalMs.ok) return checkpointIntervalMs;
-  const importMaxBytes = parseNonNegativeInteger(
-    value.importMaxBytes,
-    `${path}.importMaxBytes`,
-  );
-  if (!importMaxBytes.ok) return importMaxBytes;
-  const importMaxRows = parseNonNegativeInteger(
-    value.importMaxRows,
-    `${path}.importMaxRows`,
-  );
-  if (!importMaxRows.ok) return importMaxRows;
-  const importMaxDurationMs = parseNonNegativeInteger(
-    value.importMaxDurationMs,
-    `${path}.importMaxDurationMs`,
-  );
-  if (!importMaxDurationMs.ok) return importMaxDurationMs;
   const fireBalance = parseBalanceRecord(
     value.fireBalance,
     `${path}.fireBalance`,
@@ -285,9 +266,6 @@ function parseWorldRules(
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
     checkpointIntervalMs: checkpointIntervalMs.value,
-    importMaxBytes: importMaxBytes.value,
-    importMaxRows: importMaxRows.value,
-    importMaxDurationMs: importMaxDurationMs.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
   });

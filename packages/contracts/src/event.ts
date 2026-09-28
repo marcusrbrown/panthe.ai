@@ -1,11 +1,6 @@
-// Committed world events: the append-only source of truth per Key Technical
-// Decisions ("append-only event log is the source of truth; projection
-// tables are updated in the same transaction and are rebuildable from the
-// log"). Every event carries its own schema version, independent of the
-// SQLite user_version (packages/persistence's concern) and independent of
-// proposal schema versions. An upcaster registry decodes any prior payload
-// version to the latest form before structural parsing, so packages/world
-// only ever consumes latest-form events.
+// Committed world events: the append-only source of truth. Every event
+// carries its own schema version, independent of the SQLite schema and
+// independent of proposal schema versions.
 
 import {
   type CausationId,
@@ -23,6 +18,7 @@ import {
   parseEventId,
   parseFiniteNumber,
   parseNonNegativeInteger,
+  parseSchemaVersion,
 } from "./ids";
 
 export interface EventEnvelope {
@@ -50,84 +46,38 @@ export interface RealmTransitionedEvent extends EventEnvelope {
 
 export type WorldEvent = EntityMovedEvent | RealmTransitionedEvent;
 
-export const LATEST_EVENT_SCHEMA_VERSION = 2;
-
-type RawEvent = Record<string, unknown>;
-type Upcaster = (raw: RawEvent) => RawEvent;
-
-/**
- * v1 "entity-moved" events used the field name `entity`; v2 renamed it to
- * `entityId` for consistency with every other event kind. A lossless
- * rename, seeded here per the plan's "at minimum the pipeline + test."
- */
-const upcasters = new Map<number, Upcaster>([
-  [
-    1,
-    (raw) => {
-      if (raw.kind !== "entity-moved") {
-        return { ...raw, schemaVersion: 2 };
-      }
-      const { entity, ...rest } = raw;
-      return { ...rest, entityId: entity, schemaVersion: 2 };
-    },
-  ],
-]);
-
-function upcastToLatest(raw: RawEvent): ParseResult<RawEvent> {
-  let current = raw;
-  const seen = new Set<number>();
-  for (;;) {
-    const version = current.schemaVersion;
-    if (typeof version !== "number" || !Number.isInteger(version)) {
-      return fail("schemaVersion", "expected an integer schema version");
-    }
-    if (version === LATEST_EVENT_SCHEMA_VERSION) {
-      return ok(current);
-    }
-    if (seen.has(version)) {
-      return fail(
-        "schemaVersion",
-        "upcast cycle detected",
-        "unsupported-version",
-      );
-    }
-    seen.add(version);
-    const upcast = upcasters.get(version);
-    if (!upcast) {
-      return fail(
-        "schemaVersion",
-        `unsupported schema version: ${version}`,
-        "unsupported-version",
-      );
-    }
-    current = upcast(current);
-  }
-}
+export const LATEST_EVENT_SCHEMA_VERSION = 1;
+const EVENT_SCHEMA_VERSIONS = [LATEST_EVENT_SCHEMA_VERSION] as const;
 
 export function parseEvent(input: unknown): ParseResult<WorldEvent> {
   if (!isRecord(input)) {
     return fail("", "expected an event object");
   }
 
-  const upcasted = upcastToLatest(input);
-  if (!upcasted.ok) return upcasted;
-  const raw = upcasted.value;
+  const schemaVersion = parseSchemaVersion(
+    input.schemaVersion,
+    EVENT_SCHEMA_VERSIONS,
+  );
+  if (!schemaVersion.ok) return schemaVersion;
 
-  const id = parseEventId(raw.id, "id");
+  const id = parseEventId(input.id, "id");
   if (!id.ok) return id;
-  const sequence = parseNonNegativeInteger(raw.sequence, "sequence");
+  const sequence = parseNonNegativeInteger(input.sequence, "sequence");
   if (!sequence.ok) return sequence;
-  const simTime = parseFiniteNumber(raw.simTime, "simTime");
+  const simTime = parseFiniteNumber(input.simTime, "simTime");
   if (!simTime.ok) return simTime;
-  const correlationId = parseCorrelationId(raw.correlationId, "correlationId");
+  const correlationId = parseCorrelationId(
+    input.correlationId,
+    "correlationId",
+  );
   if (!correlationId.ok) return correlationId;
-  const causationId = parseCausationId(raw.causationId, "causationId");
+  const causationId = parseCausationId(input.causationId, "causationId");
   if (!causationId.ok) return causationId;
-  const approximate = parseBoolean(raw.approximate, "approximate");
+  const approximate = parseBoolean(input.approximate, "approximate");
   if (!approximate.ok) return approximate;
 
   const envelope: EventEnvelope = {
-    schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
+    schemaVersion: schemaVersion.value,
     id: id.value,
     sequence: sequence.value,
     simTime: simTime.value,
@@ -136,11 +86,11 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     approximate: approximate.value,
   };
 
-  switch (raw.kind) {
+  switch (input.kind) {
     case "entity-moved": {
-      const entityId = parseEntityId(raw.entityId, "entityId");
+      const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
-      const to = parseEntityId(raw.to, "to");
+      const to = parseEntityId(input.to, "to");
       if (!to.ok) return to;
       return ok({
         ...envelope,
@@ -150,11 +100,11 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       });
     }
     case "realm-transitioned": {
-      const entityId = parseEntityId(raw.entityId, "entityId");
+      const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
-      const to = parseEntityId(raw.to, "to");
+      const to = parseEntityId(input.to, "to");
       if (!to.ok) return to;
-      const via = parseEntityId(raw.via, "via");
+      const via = parseEntityId(input.via, "via");
       if (!via.ok) return via;
       return ok({
         ...envelope,
@@ -167,7 +117,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     default:
       return fail(
         "kind",
-        `unknown event kind: ${String(raw.kind)}`,
+        `unknown event kind: ${String(input.kind)}`,
         "unknown-kind",
       );
   }

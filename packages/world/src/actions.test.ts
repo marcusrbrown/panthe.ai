@@ -1,10 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ContentPack, Proposal } from "@panthea/contracts";
-import {
-  createDefaultReducerRegistry,
-  runTick,
-  submitProposal,
-} from "./actions";
+import { applyEvents, runTick, submitProposal } from "./actions";
+import { decode, encode } from "./codec";
 import {
   createInitialWorldState,
   createPrng,
@@ -12,16 +9,12 @@ import {
   type WorldState,
   withActor,
 } from "./state";
-import { createDefaultRuleRegistry } from "./validate";
 
 function minimalRules(): ContentPack["rules"] {
   return {
     catchUpCapMs: 3_600_000,
     catchUpChunkMs: 60_000,
     checkpointIntervalMs: 60_000,
-    importMaxBytes: 50_000_000,
-    importMaxRows: 1_000_000,
-    importMaxDurationMs: 30_000,
     fireBalance: {},
     economyBalance: {},
   };
@@ -88,9 +81,6 @@ function proposal(raw: Record<string, unknown>): Proposal {
     schemaVersion: 1,
     actor: "wanderer",
     targets: [],
-    preconditions: [],
-    requiredCapabilities: [],
-    costs: [],
     expectedRevisions: [],
     source: "fixture",
     observationId: "obs-1",
@@ -111,10 +101,8 @@ function moveTo(to: string, overrides: Record<string, unknown> = {}): Proposal {
 
 test("a wilderness-to-town walk commits one entity-moved event per step across ticks", () => {
   let state = walkState();
-  const rules = createDefaultRuleRegistry();
-  const reducers = createDefaultReducerRegistry();
 
-  const hop1 = runTick(state, createPrng(1), rules, reducers, [moveTo("path")]);
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
   expect(hop1.rejected).toEqual([]);
   expect(hop1.committed).toHaveLength(1);
   expect(hop1.committed[0]?.events).toEqual([
@@ -129,7 +117,7 @@ test("a wilderness-to-town walk commits one entity-moved event per step across t
     locationId: "path",
   });
 
-  const hop2 = runTick(state, hop1.prng, rules, reducers, [moveTo("town")]);
+  const hop2 = runTick(state, hop1.prng, [moveTo("town")]);
   expect(hop2.rejected).toEqual([]);
   expect(hop2.committed[0]?.events).toEqual([
     expect.objectContaining({
@@ -152,10 +140,8 @@ test("a realm-transition proposal changes realm and location in one event", () =
     capabilities: [],
     revision: 0,
   });
-  const rules = createDefaultRuleRegistry();
-  const reducers = createDefaultReducerRegistry();
 
-  const result = runTick(state, createPrng(1), rules, reducers, [
+  const result = runTick(state, createPrng(1), [
     proposal({
       actor: "ferryman",
       observationId: "obs-2",
@@ -182,10 +168,8 @@ test("a realm-transition proposal changes realm and location in one event", () =
 
 test("two same-tick proposals from one actor: the first commits, the second is rejected busy-actor", () => {
   const state = walkState();
-  const rules = createDefaultRuleRegistry();
-  const reducers = createDefaultReducerRegistry();
 
-  const result = runTick(state, createPrng(1), rules, reducers, [
+  const result = runTick(state, createPrng(1), [
     moveTo("path"),
     moveTo("path", { observationId: "obs-2" }),
   ]);
@@ -199,12 +183,8 @@ test("two same-tick proposals from one actor: the first commits, the second is r
 
 test("a rejected proposal leaves state unchanged", () => {
   const state = walkState();
-  const rules = createDefaultRuleRegistry();
-  const reducers = createDefaultReducerRegistry();
 
-  const result = runTick(state, createPrng(1), rules, reducers, [
-    moveTo("town"),
-  ]);
+  const result = runTick(state, createPrng(1), [moveTo("town")]);
   expect(result.rejected).toHaveLength(1);
   expect(result.rejected[0]?.reason).toBe("not-adjacent");
   expect(result.state.actors).toEqual(state.actors);
@@ -219,15 +199,11 @@ test("a malformed fixture proposal is rejected before it ever reaches the queue"
   }
 });
 
-test("reducers applied to the recorded event stream reproduce the live committed state", () => {
+test("applyEvents applied to the recorded event stream reproduces the live committed state", () => {
   const initial = walkState();
-  const rules = createDefaultRuleRegistry();
-  const reducers = createDefaultReducerRegistry();
 
-  const hop1 = runTick(initial, createPrng(1), rules, reducers, [
-    moveTo("path"),
-  ]);
-  const hop2 = runTick(hop1.state, hop1.prng, rules, reducers, [
+  const hop1 = runTick(initial, createPrng(1), [moveTo("path")]);
+  const hop2 = runTick(hop1.state, hop1.prng, [
     moveTo("town", { observationId: "obs-2" }),
   ]);
 
@@ -238,29 +214,43 @@ test("reducers applied to the recorded event stream reproduce the live committed
 
   // Rebuild from the initial state through only the recorded event log,
   // ignoring the tick/simTime bookkeeping runTick also advances.
-  const rebuilt = reducers.applyAll(initial, allEvents);
+  const rebuilt = applyEvents(initial, allEvents);
   expect(rebuilt.actors).toEqual(hop2.state.actors);
   expect(rebuilt.locations).toEqual(hop2.state.locations);
+});
+
+test("event sequence numbers are contiguous across ticks, not reset each tick", () => {
+  const state = walkState();
+
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
+  expect(hop1.committed[0]?.events[0]?.sequence).toBe(1);
+  expect(hop1.state.lastSequence).toBe(1);
+
+  const hop2 = runTick(hop1.state, hop1.prng, [moveTo("town")]);
+  expect(hop2.committed[0]?.events[0]?.sequence).toBe(2);
+  expect(hop2.state.lastSequence).toBe(2);
+});
+
+test("resuming from a restored state (via the codec) continues the sequence rather than restarting it", () => {
+  const state = walkState();
+
+  const hop1 = runTick(state, createPrng(1), [moveTo("path")]);
+  expect(hop1.state.lastSequence).toBe(1);
+
+  const restored = decode(JSON.parse(JSON.stringify(encode(hop1.state))));
+  expect(restored.lastSequence).toBe(1);
+
+  const hop2 = runTick(restored, hop1.prng, [moveTo("town")]);
+  expect(hop2.committed[0]?.events[0]?.sequence).toBe(2);
+  expect(hop2.state.lastSequence).toBe(2);
 });
 
 test("same state, PRNG-irrelevant proposals, and queue produce identical output on repeated runs", () => {
   const state = walkState();
   const queue = [moveTo("path")];
 
-  const runA = runTick(
-    state,
-    createPrng(1),
-    createDefaultRuleRegistry(),
-    createDefaultReducerRegistry(),
-    queue,
-  );
-  const runB = runTick(
-    state,
-    createPrng(1),
-    createDefaultRuleRegistry(),
-    createDefaultReducerRegistry(),
-    queue,
-  );
+  const runA = runTick(state, createPrng(1), queue);
+  const runB = runTick(state, createPrng(1), queue);
 
   expect(runA.state).toEqual(runB.state);
   expect(runA.prng).toEqual(runB.prng);

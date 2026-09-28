@@ -1,13 +1,16 @@
-// Proposals are the only way routines, fixtures, the operator, and
-// (reserved for M2) models can attempt to change committed world state.
-// Every proposal is revalidated against expected entity revisions at
-// execution time (packages/world, Unit 3+); this module only owns the wire
-// shape and its parse-don't-validate parser. A proposal never mutates state
-// by existing -- only a validator's commit does that.
+// Proposals are the only way routines, fixtures, and the operator can
+// attempt to change committed world state. Every proposal is revalidated
+// against expected entity revisions at execution time (packages/world);
+// this module only owns the wire shape and its parse-don't-validate
+// parser. A proposal never mutates state by existing -- only a validator's
+// commit does that. Rules derive required capabilities and costs from
+// world and content state, never from a proposal-declared field: a
+// proposal that declares `preconditions`, `requiredCapabilities`, `costs`,
+// or `modelRequestId` is rejected outright, since nothing evaluates those
+// fields against any authority.
 //
-// Observation records live here too (not a separate file, per the plan's
-// "observation may live in proposal.ts if cleaner"): every proposal cites
-// the observation it was made from, so the two shapes are tightly coupled.
+// Observation records live here too: every proposal cites the observation
+// it was made from, so the two shapes are tightly coupled.
 
 import {
   type Brand,
@@ -81,18 +84,10 @@ export function parseObservationRecord(
   });
 }
 
-// --- Proposal source and model reservation -----------------------------------
+// --- Proposal source -----------------------------------------------------
 
-export const PROPOSAL_SOURCES = [
-  "routine",
-  "fixture",
-  "operator",
-  "model-reserved",
-] as const;
+export const PROPOSAL_SOURCES = ["routine", "fixture", "operator"] as const;
 export type ProposalSource = (typeof PROPOSAL_SOURCES)[number];
-
-export type ModelRequestId = Brand<string, "ModelRequestId">;
-export const parseModelRequestId = idParser<"ModelRequestId">();
 
 function parseProposalSource(
   value: unknown,
@@ -111,24 +106,20 @@ function parseProposalSource(
 
 export const PROPOSAL_SCHEMA_VERSIONS = [1] as const;
 
-/**
- * Starting byte-size cap for a serialized proposal (~16 KiB). A configurable
- * constant per Key Technical Decisions ("Proposal intake is bounded now,
- * before M2 makes it a model path"); revisit once packages/persistence
- * exposes real configuration (Unit 2+).
- */
-export const PROPOSAL_BYTE_LIMIT = 16 * 1024;
+/** Fields the current contract does not define; a proposal declaring any of these is rejected outright. */
+const REMOVED_AUTHORITY_FIELDS = [
+  "preconditions",
+  "requiredCapabilities",
+  "costs",
+  "modelRequestId",
+] as const;
 
 export interface ProposalBase {
   readonly schemaVersion: number;
   readonly actor: EntityId;
   readonly targets: readonly EntityId[];
-  readonly preconditions: readonly string[];
-  readonly requiredCapabilities: readonly string[];
-  readonly costs: readonly ResourceAmount[];
   readonly expectedRevisions: readonly EntityRevision[];
   readonly source: ProposalSource;
-  readonly modelRequestId?: ModelRequestId;
   readonly observationId: ObservationId;
 }
 
@@ -185,11 +176,7 @@ export interface WorshipProposal extends ProposalBase {
   readonly offering?: ResourceAmount;
 }
 
-/**
- * A legend/claim ("I own the tavern") never grants state by itself: the
- * parser rejects a claim carrying costs, required capabilities, or expected
- * revisions with reason "unauthorized-claim" naming the offending field.
- */
+/** A legend/claim ("I own the tavern") never grants state by itself: it may not assert expected entity revisions either. */
 export interface ClaimProposal extends ProposalBase {
   readonly kind: "claim";
   readonly assertion: string;
@@ -207,29 +194,19 @@ export type Proposal =
   | WorshipProposal
   | ClaimProposal;
 
-function estimateByteSize(value: unknown): number | undefined {
-  try {
-    return new TextEncoder().encode(JSON.stringify(value)).length;
-  } catch {
-    return undefined;
-  }
-}
-
 export function parseProposal(input: unknown): ParseResult<Proposal> {
   if (!isRecord(input)) {
     return fail("", "expected a proposal object");
   }
 
-  const size = estimateByteSize(input);
-  if (size === undefined) {
-    return fail("", "proposal payload is not serializable");
-  }
-  if (size > PROPOSAL_BYTE_LIMIT) {
-    return fail(
-      "",
-      `proposal exceeds the ${PROPOSAL_BYTE_LIMIT}-byte limit`,
-      "over-limit",
-    );
+  for (const field of REMOVED_AUTHORITY_FIELDS) {
+    if (input[field] !== undefined) {
+      return fail(
+        field,
+        `${field} is not a supported proposal field; rules derive it from world and content state`,
+        "unauthorized-claim",
+      );
+    }
   }
 
   const schemaVersion = parseSchemaVersion(
@@ -244,23 +221,6 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
   const targets = parseArray(input.targets, "targets", parseEntityId);
   if (!targets.ok) return targets;
 
-  const preconditions = parseArray(
-    input.preconditions,
-    "preconditions",
-    parseString,
-  );
-  if (!preconditions.ok) return preconditions;
-
-  const requiredCapabilities = parseArray(
-    input.requiredCapabilities,
-    "requiredCapabilities",
-    parseString,
-  );
-  if (!requiredCapabilities.ok) return requiredCapabilities;
-
-  const costs = parseArray(input.costs, "costs", parseResourceAmount);
-  if (!costs.ok) return costs;
-
   const expectedRevisions = parseArray(
     input.expectedRevisions,
     "expectedRevisions",
@@ -270,12 +230,6 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
 
   const source = parseProposalSource(input.source, "source");
   if (!source.ok) return source;
-
-  const modelRequestId =
-    input.modelRequestId === undefined
-      ? ok<ModelRequestId | undefined>(undefined)
-      : parseModelRequestId(input.modelRequestId, "modelRequestId");
-  if (!modelRequestId.ok) return modelRequestId;
 
   const observationId = parseObservationId(
     input.observationId,
@@ -287,14 +241,8 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
     schemaVersion: schemaVersion.value,
     actor: actor.value,
     targets: targets.value,
-    preconditions: preconditions.value,
-    requiredCapabilities: requiredCapabilities.value,
-    costs: costs.value,
     expectedRevisions: expectedRevisions.value,
     source: source.value,
-    ...(modelRequestId.value === undefined
-      ? {}
-      : { modelRequestId: modelRequestId.value }),
     observationId: observationId.value,
   };
 
@@ -400,20 +348,6 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       });
     }
     case "claim": {
-      if (base.costs.length > 0) {
-        return fail(
-          "costs",
-          "a claim may not carry costs",
-          "unauthorized-claim",
-        );
-      }
-      if (base.requiredCapabilities.length > 0) {
-        return fail(
-          "requiredCapabilities",
-          "a claim may not require capabilities",
-          "unauthorized-claim",
-        );
-      }
       if (base.expectedRevisions.length > 0) {
         return fail(
           "expectedRevisions",

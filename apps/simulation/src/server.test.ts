@@ -15,6 +15,7 @@ import {
 } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
+import { refreshStatusAfterCatchUp } from "./index";
 import {
   applyLiveTick,
   type CatchUpControl,
@@ -576,9 +577,15 @@ test("a real POST /pause request during an in-progress catch-up stops it at a ch
           headers: { Authorization: `Bearer ${token}` },
         },
       );
-      expect(pauseResponse.status).toBe(200);
+      // 202, not 200: the request is accepted, not yet in effect -- the
+      // actual pause commit still has to happen at the next chunk
+      // boundary and can itself still fail.
+      expect(pauseResponse.status).toBe(202);
 
       const result = await catchUpPromise;
+      // Mirrors index.ts's runCatchUpNow: the entrypoint refreshes
+      // status from the catch-up result once it resolves.
+      refreshStatusAfterCatchUp(statusRef, result, store);
 
       expect(result.degraded).toBeUndefined();
       expect(result.summary.skippedMs).toBeGreaterThan(0);
@@ -586,6 +593,135 @@ test("a real POST /pause request during an in-progress catch-up stops it at a ch
 
       const clock = readClock(store.db);
       expect(clock.paused).toBe(true);
+
+      const operatorObservations = store.db
+        .query("SELECT id FROM trace_observations WHERE observer = 'operator'")
+        .all() as { id: string }[];
+      expect(operatorObservations.length).toBeGreaterThan(0);
+
+      const frameResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/frame`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const frame = (await frameResponse.json()) as { status: string };
+      expect(frame.status).toBe("paused");
+    } finally {
+      handle.stop(true);
+      closeStore(store);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("a real POST /pause request whose mid-catch-up commit fails (injected trace failure) leaves status degraded, the world not paused-but-unrecorded, and reports no premature success", async () => {
+  const storeDir = tempDir("panthea-sim-server-pause-catchup-fail-");
+  const slotsDir = tempDir("panthea-sim-server-pause-catchup-fail-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const seededWithTinyChunks = {
+      ...seeded,
+      rules: { ...seeded.rules, catchUpChunkMs: 1_000 },
+    };
+    const reducers = createWorldProjectionReducers(seededWithTinyChunks);
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+
+    const startCursor = readClock(store.db).cursorWallMs;
+    const totalMs = 20 * 60 * 1000;
+    const nowWallMs = startCursor + totalMs;
+
+    const token = "the-launch-token";
+    const statusRef = createServiceStatusRef(seededWithTinyChunks);
+    const externalQueue = createExternalQueue();
+
+    let catchUpInProgress = true;
+    let pauseRequestedDuringCatchUp = false;
+    let chunksCommitted = 0;
+    const catchUpControl: CatchUpControl = {
+      isRunning: () => catchUpInProgress,
+      requestPause: () => {
+        pauseRequestedDuringCatchUp = true;
+        // The regular chunk commits so far succeeded with a real trace
+        // schema; dropping it now means the pause boundary's own
+        // operator-observation write -- inside the same transaction as
+        // the clock transition -- genuinely fails.
+        store.db.run("DROP TABLE trace_observations");
+      },
+    };
+
+    const handle = createSimulationServer({
+      token,
+      store,
+      reducers,
+      traceDb: store.db,
+      slotsDir,
+      statusRef,
+      externalQueue,
+      catchUpControl,
+      port: 0,
+    });
+
+    try {
+      const catchUpPromise = runCatchUp(
+        seededWithTinyChunks,
+        createPrng(1),
+        { store, reducers, traceDb: store.db },
+        {
+          nowWallMs,
+          onChunkCommitted: () => {
+            chunksCommitted += 1;
+            return pauseRequestedDuringCatchUp;
+          },
+        },
+      ).finally(() => {
+        catchUpInProgress = false;
+      });
+
+      const deadline = Date.now() + 10_000;
+      while (chunksCommitted < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(chunksCommitted).toBeGreaterThanOrEqual(3);
+
+      const clockBeforePause = readClock(store.db);
+
+      const pauseResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/pause`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      // The request itself is still accepted (catch-up owns the actual
+      // commit); no premature 2xx claiming the pause already succeeded.
+      expect(pauseResponse.status).toBe(202);
+
+      const result = await catchUpPromise;
+      refreshStatusAfterCatchUp(statusRef, result, store);
+      expect(result.degraded).toBeDefined();
+
+      // Not paused-but-unrecorded: the failed commit rolled back, so the
+      // clock still shows whatever the last successfully committed chunk
+      // left it at -- never `paused: true` without its operator
+      // observation alongside it.
+      const clockAfter = readClock(store.db);
+      expect(clockAfter.paused).toBe(false);
+      expect(clockAfter.cursorWallMs).toBeGreaterThanOrEqual(
+        clockBeforePause.cursorWallMs,
+      );
+
+      const frameResponse = await fetch(
+        `http://127.0.0.1:${handle.port}/frame`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const frame = (await frameResponse.json()) as {
+        status: string;
+        degradedReason?: string;
+      };
+      expect(frame.status).toBe("degraded");
     } finally {
       handle.stop(true);
       closeStore(store);

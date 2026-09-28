@@ -85,7 +85,7 @@ describe("refreshStatusAfterCatchUp", () => {
       expect(result.degraded).toBeDefined();
       expect(result.state.lastSequence).toBeGreaterThan(0);
 
-      refreshStatusAfterCatchUp(statusRef, result);
+      refreshStatusAfterCatchUp(statusRef, result, store);
 
       expect(statusRef.status).toBe("degraded");
       expect(statusRef.degradedReason).toBe(result.degraded?.reason);

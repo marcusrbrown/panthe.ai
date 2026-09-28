@@ -16,7 +16,6 @@ import { timingSafeEqual } from "node:crypto";
 import {
   type ArchiveManifest,
   type CatchUpSummary,
-  createObservationId,
   createSessionId,
   type DegradedReason,
   parseEventId,
@@ -39,16 +38,16 @@ import {
   followEvent,
   followProposal,
   parseProposalId,
-  recordObservation,
   recordReceipt,
   UnknownEventError,
 } from "@panthea/telemetry";
-import { type PrngState, toEntityId, type WorldState } from "@panthea/world";
+import type { PrngState, WorldState } from "@panthea/world";
 import {
   applyOneTick,
   commitWorldTick,
   intakeProposal,
   type QueuedProposal,
+  recordOperatorEvent,
   type TickDeps,
   type TickStepResult,
 } from "./tick";
@@ -193,12 +192,22 @@ export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
   };
 }
 
+/**
+ * Updates `ref` from `state`, deriving `status` from `options.paused`
+ * rather than assuming "running" -- a caller that just finished a
+ * catch-up run (or any other operation that can leave the world paused)
+ * must pass the persisted clock's actual `paused` flag, or a mid-run
+ * pause would be silently reported as running.
+ */
 export function updateServiceStatus(
   ref: ServiceStatusRef,
   state: WorldState,
-  options: { readonly catchUpSummary?: CatchUpSummary } = {},
+  options: {
+    readonly catchUpSummary?: CatchUpSummary;
+    readonly paused?: boolean;
+  } = {},
 ): void {
-  ref.status = "running";
+  ref.status = options.paused ? "paused" : "running";
   ref.degradedReason = undefined;
   ref.sequence = state.lastSequence;
   ref.encodedState = worldProjectionCodec.encode(state);
@@ -221,34 +230,6 @@ function buildFrame(
     ...(ref.degradedReason ? { degradedReason: ref.degradedReason } : {}),
     ...(ref.catchUpSummary ? { catchUpSummary: ref.catchUpSummary } : {}),
     state: ref.encodedState,
-  };
-}
-
-// --- Operator events -----------------------------------------------------
-
-const OPERATOR_ENTITY_ID = toEntityId("operator");
-
-/**
- * Records a pause/resume as an operator event, distinct from any
- * character action: it never goes through `runTick`/`validateProposal`
- * and produces no `WorldEvent`. Returned as a callback rather than called
- * directly, so `handlePause`/`handleResume` can pass it to
- * `commitWorldTick`'s `onCommitted` hook and have it write inside the
- * same transaction as the clock transition -- a trace failure then rolls
- * the transition back exactly like a world-state write failure would,
- * instead of leaving the clock changed under a response that reports
- * failure.
- */
-function operatorEventWriter(kind: string): (db: Database) => void {
-  return (db) => {
-    recordObservation(db, {
-      schemaVersion: 1,
-      id: createObservationId(),
-      observer: OPERATOR_ENTITY_ID,
-      stateRevision: 0,
-      factsRead: [`operator:${kind}`],
-      source: "operator",
-    });
   };
 }
 
@@ -453,9 +434,13 @@ export function createSimulationServer(
       // A catch-up run is actively committing chunks against this same
       // store; requesting our own commit here would race it. Ask
       // catch-up itself to stop at its next chunk boundary and persist
-      // paused -- it owns that commit.
+      // paused (with its own operator observation, in the same
+      // transaction) -- it owns that commit. 202 (not 200): the request
+      // is accepted, not yet in effect, and that commit can itself still
+      // fail; the caller reads the actual outcome from `/frame` or
+      // status once catch-up reaches the boundary.
       catchUpControl.requestPause();
-      return jsonResponse({ ok: true, pausingAtNextChunk: true });
+      return jsonResponse({ ok: true, pausingAtNextChunk: true }, 202);
     }
     const clock = readClock(store.db);
     if (clock.paused) {
@@ -472,7 +457,7 @@ export function createSimulationServer(
         paused: true,
       },
       [],
-      operatorEventWriter("pause"),
+      recordOperatorEvent("pause"),
     );
     if (!commit.ok) {
       statusRef.status = "degraded";
@@ -503,7 +488,7 @@ export function createSimulationServer(
         paused: false,
       },
       [],
-      operatorEventWriter("resume"),
+      recordOperatorEvent("resume"),
     );
     if (!commit.ok) {
       statusRef.status = "degraded";

@@ -25,6 +25,7 @@ import {
 import {
   buildRoutineQueue,
   commitWorldTick,
+  recordOperatorEvent,
   stepWorldTick,
   type TickDeps,
   type WorldTickOutcome,
@@ -207,17 +208,41 @@ export async function runCatchUp(
         ticksRemaining: totalTicks - ticksDone,
       })
     ) {
-      // Best-effort: persists the pause alongside the cursor already
-      // advanced through the last committed chunk. A failure here doesn't
-      // change the outcome already committed above -- catch-up still
-      // stops, just without this bookkeeping commit.
-      commitWorldTick(deps, [], {
-        tick: committedState.tick,
-        simTimeMs: committedState.simTime,
-        prngState: serializePrngState(committedPrng),
-        cursorWallMs,
-        paused: true,
-      });
+      // Persists the pause, alongside the cursor already advanced
+      // through the last committed chunk, and its operator observation
+      // in the same transaction -- through the same `commitWorldTick`
+      // `onCommitted` path `/pause` itself uses (`recordOperatorEvent`),
+      // so a trace failure here rolls the pause transition back exactly
+      // like it would for a live `/pause` request, rather than being
+      // swallowed.
+      const pauseCommit = commitWorldTick(
+        deps,
+        [],
+        {
+          tick: committedState.tick,
+          simTimeMs: committedState.simTime,
+          prngState: serializePrngState(committedPrng),
+          cursorWallMs,
+          paused: true,
+        },
+        [],
+        recordOperatorEvent("pause"),
+      );
+      if (!pauseCommit.ok) {
+        return {
+          summary: {
+            appliedMs: ticksDone * tickMs,
+            skippedMs: remainingSkippedMs(),
+            majorOutcomes,
+          },
+          state: committedState,
+          prng: committedPrng,
+          degraded: {
+            reason: pauseCommit.reason,
+            message: pauseCommit.message,
+          },
+        };
+      }
       pausedMidCatchUp = true;
       break;
     }

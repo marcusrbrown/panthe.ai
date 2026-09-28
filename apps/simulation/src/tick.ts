@@ -18,6 +18,7 @@ import type {
   Proposal,
   WorldEvent,
 } from "@panthea/contracts";
+import { createObservationId } from "@panthea/contracts";
 import {
   getEventRow,
   type ProjectionReducers,
@@ -38,6 +39,7 @@ import {
   runTick,
   type SubmitResult,
   submitProposal,
+  toEntityId,
   type WorldState,
 } from "@panthea/world";
 import { serializePrngState } from "./world-store";
@@ -133,6 +135,32 @@ export type CommitOutcome =
       readonly reason: DegradedReason;
       readonly message: string;
     };
+
+const OPERATOR_ENTITY_ID = toEntityId("operator");
+
+/**
+ * Records a pause/resume as an operator event, distinct from any
+ * character action: it never goes through `runTick`/`validateProposal`
+ * and produces no `WorldEvent`. Returned as a callback rather than called
+ * directly, so both `server.ts`'s `/pause`/`/resume` handlers and
+ * catchup.ts's mid-catch-up pause can pass it to `commitWorldTick`'s
+ * `onCommitted` hook and have it write inside the same transaction as
+ * the clock transition -- a trace failure then rolls the transition back
+ * exactly like a world-state write failure would, instead of leaving the
+ * clock changed under an outcome that reports failure.
+ */
+export function recordOperatorEvent(kind: string): (db: Database) => void {
+  return (db) => {
+    recordObservation(db, {
+      schemaVersion: 1,
+      id: createObservationId(),
+      observer: OPERATOR_ENTITY_ID,
+      stateRevision: 0,
+      factsRead: [`operator:${kind}`],
+      source: "operator",
+    });
+  };
+}
 
 /**
  * Commits `events` in one store transaction; every proposal outcome in

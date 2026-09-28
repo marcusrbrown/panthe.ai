@@ -13,6 +13,7 @@ import {
   readClock,
   readLiveProjections,
   readPrngState,
+  type Store,
 } from "@panthea/persistence";
 import { ensureTraceSchema } from "@panthea/telemetry";
 import type { PrngState, WorldState } from "@panthea/world";
@@ -76,20 +77,27 @@ function ensureDirMode(path: string, mode: number): void {
  * by however many chunks succeeded, so `/frame` must reflect that
  * progress rather than staying pinned to whatever state existed before
  * catch-up started.
+ *
+ * Status comes from the persisted clock, not an assumption: a
+ * successful run can still have stopped for a mid-catch-up pause, and
+ * `/frame` must show `paused`, not `running`, for that outcome.
  */
 export function refreshStatusAfterCatchUp(
   statusRef: ServiceStatusRef,
   result: CatchUpResult,
+  store: Pick<Store, "db">,
 ): void {
-  updateServiceStatus(
-    statusRef,
-    result.state,
-    result.degraded ? {} : { catchUpSummary: result.summary },
-  );
   if (result.degraded) {
+    updateServiceStatus(statusRef, result.state, {});
     statusRef.status = "degraded";
     statusRef.degradedReason = result.degraded.reason;
+    return;
   }
+  const paused = readClock(store.db).paused;
+  updateServiceStatus(statusRef, result.state, {
+    catchUpSummary: result.summary,
+    paused,
+  });
 }
 
 export interface StartOptions {
@@ -173,7 +181,7 @@ export function startService(options: StartOptions): ServiceHandle {
       });
       state = result.state;
       prng = result.prng;
-      refreshStatusAfterCatchUp(statusRef, result);
+      refreshStatusAfterCatchUp(statusRef, result, store);
       return Boolean(result.degraded);
     } finally {
       catchUpInProgress = false;
@@ -267,6 +275,7 @@ export function startService(options: StartOptions): ServiceHandle {
   void runCatchUpNow(Date.now()).then(() => {
     log("panthea-simulation: startup catch-up complete");
     queue = [...buildRoutineQueue(state)];
+    serverHandle.broadcastFrame();
   });
 
   let shuttingDown = false;

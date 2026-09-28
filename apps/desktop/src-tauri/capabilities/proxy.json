@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "proxy",
+  "description": "Grants the main window only the sidecar-proxy commands: subscribing to the frame stream and relaying a presentation receipt. No shell, filesystem, network, or other plugin permission is granted.",
+  "windows": ["main"],
+  "permissions": ["allow-subscribe-world", "allow-present-event"]
+}

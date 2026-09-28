@@ -86,7 +86,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   "verdict": "extend",
   "scope": "repo root (apps/, packages/, tools/, content/)",
   "freshness": {
-    "vcs_reference": "0e486edfde40bf07d16684fadaa229110f54cfcf"
+    "vcs_reference": "f65654852112fae1323245eb5b7119ca5c67b13e"
   },
   "budget": {
     "max_search_passes": 3,
@@ -95,44 +95,30 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   },
   "candidates": [
     {
-      "path_or_symbol": "tools/probes/backend-lifecycle/src/sidecar.ts",
-      "description": "Probe sidecar lifecycle: authenticated HTTP, 1 Hz tick loop, database opening, and shutdown behavior.",
+      "path_or_symbol": "apps/simulation/{src/{index,server,tick,catchup,lifecycle,worlds,world-store,greek-world-pack}.ts,scripts/*.sh}",
+      "description": "Simulation service entrypoint, authenticated HTTP/frame server, tick and catch-up orchestration, lifecycle lock/parent-guard handling, world loading and projection, embedded Greek world pack, and build/scan shell harnesses.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "tools/probes/backend-lifecycle/src/{clock,lock}.ts",
-      "description": "Probe clock cursor math and lifecycle lock ownership: at-most-once elapsed-time application, duplicate-start refusal, stale-lock reclaim, and parent-death termination.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "tools/probes/backend-lifecycle/scripts/{build-sidecar,scan-binary}.sh",
-      "description": "Probe-side compiled-sidecar build and binary-scan harnesses used to assert the lifecycle and host-leak boundaries.",
+      "path_or_symbol": "apps/desktop/src-tauri/{src/lib.rs,tauri.conf.json,capabilities/default.json}",
+      "description": "Rust tray shell with token minting, sidecar spawn and restart/backoff, plus packaged sidecar and CSP/capability wiring.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "apps/simulation/src/{index,world-store}.ts",
-      "description": "Simulation service entrypoint and world-store composition root bridging persistence, world reducers, clock restore, and PRNG serialization.",
-      "disposition": "extend"
+      "path_or_symbol": "apps/client/src/App.tsx",
+      "description": "Full-window canvas placeholder and title shell; still no renderer, scene lifecycle, or state subscription.",
+      "disposition": "insufficient",
+      "insufficiency_reason": "This remains a placeholder mount point, not the actual client renderer surface the plan needs."
     },
     {
       "path_or_symbol": "packages/persistence/src/{store,archive,snapshot}.ts",
-      "description": "WAL-backed store, archive export/import, and snapshot/rebuild plumbing with schema creation, event append, and projection replay.",
+      "description": "WAL-backed store, archive import/export, and snapshot/replay plumbing with schema creation, event append, and projection rebuild.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "packages/persistence/src/clock.ts",
-      "description": "Persisted clock policy: wall-clock elapsed-time application, catch-up cap, pause, and resume semantics.",
+      "description": "Persisted clock policy with elapsed-time application, catch-up cap, pause, and resume semantics.",
       "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
-      "description": "Local causal trace tables plus lookup/follow helpers for observations, proposal outcomes, receipts, and event chains.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/{src/lib.rs,tauri.conf.json}",
-      "description": "Rust shell supervision, per-launch token minting, restart/backoff, and packaged sidecar wiring/CSP config.",
-      "disposition": "extend"
     },
     {
       "path_or_symbol": "packages/world/src/{state,actions,validate,codec,geography}.ts",
@@ -141,12 +127,17 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
     },
     {
       "path_or_symbol": "packages/world/src/{economy,routines}.ts",
-      "description": "Economy transfer/applyRecipe/trade-acceptance helpers and routine proposal selection for actor drives.",
+      "description": "Economy transfer and trade-acceptance helpers plus routine proposal selection for actor drives.",
       "disposition": "extend"
     },
     {
       "path_or_symbol": "packages/world/src/{fire,repair,worship}.ts",
-      "description": "Fire spread and building damage/burn/destroy transitions, repair progress/completion, and worship/favor effects.",
+      "description": "Fire spread and building damage/burn/destroy transitions, repair progression/completion, and worship/favor effects.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
+      "description": "Parse-don't-validate schema layer for proposals, events, snapshots, and authored content packs.",
       "disposition": "extend"
     },
     {
@@ -155,20 +146,14 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
       "disposition": "reuse"
     },
     {
-      "path_or_symbol": "packages/contracts/src/{proposal,event,snapshot,content}.ts",
-      "description": "Parse-don't-validate schema layer for proposals, events, snapshots, and authored content packs.",
-      "disposition": "extend"
-    },
-    {
       "path_or_symbol": "content/greek/world/*.json",
       "description": "Authored Greek world pack data consumed by the loader.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "apps/client/src/App.tsx",
-      "description": "Full-window canvas shell only; no renderer, state subscription, or scene lifecycle yet.",
-      "disposition": "insufficient",
-      "insufficiency_reason": "This is still a placeholder mount point, not the actual client renderer surface the remaining unit needs."
+      "path_or_symbol": "packages/telemetry/src/{trace,query}.ts",
+      "description": "Local causal trace tables plus lookup/follow helpers for observations, proposal outcomes, receipts, and event chains.",
+      "disposition": "extend"
     }
   ]
 }
@@ -194,6 +179,7 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 - **Causal trace:** every event carries event ID, sequence, correlation ID, and causation ID; proposals (accepted and rejected) are first-class trace records, stored as typed domain records as they are. Presentation receipts record event ID, session ID, and presentation time only, appended to a trace-only table that cannot mutate world state; a receipt for an unknown event is rejected. M1 keeps every causal record for the life of the world; retention pruning belongs to the requirement that owns it (O05).
   Superseded 2026-09-27: replaces the redaction harness on trace/export payloads, orphan-receipt storage, and seven-day pruning of payload bodies. M1 has no credential-bearing inputs -- credentials and transport headers never enter trace construction, so there is nothing to redact -- and no shipped retention requirement yet (departs from `docs/product/defaults.md`'s Trace-retention default of seven days, noted here rather than in that file). Revisit redaction if a producer starts passing credential-bearing data into trace records; revisit pruning under O05.
 - **Transport: the webview never holds the sidecar token.** The sidecar binds only to `127.0.0.1` and serves authenticated HTTP + WebSocket; the Rust shell, which already owns the token, subscribes with a header and forwards state to the webview over a Tauri Channel. The sidecar rejects any request or upgrade lacking the token, carrying an `Origin` or `Sec-Fetch-*` header (browser-originated, covering DNS-rebinding and CSRF), or with a `Host` other than its own loopback address. Every sidecar spawn mints a fresh token; the shell closes prior subscriptions. `connect-src` stays IPC-only.
+  Superseded 2026-09-27 (owner): the shell polls `GET /frame` once a second with the token through `reqwest` and forwards a frame over the Channel only when its sequence, status, or session id changes; it holds no WebSocket client. Pause, resume, and receipts are token-bearing POSTs. The sidecar's `/stream` remains for other local subscribers.
 - **Sync: one committed-state frame** (sequence, world ID, session ID, status including degraded, optional catch-up summary, state). A reconnect requests a fresh frame; there is no incremental delta protocol until measuring full-frame transport cost shows one is needed. One session identity, with no separate generation counter or session-change marker.
   Superseded 2026-09-27: replaces the snapshot-plus-sequenced-deltas model (resync markers on a subscriber falling behind, a session generation counter, and a session-change marker on sidecar restart). Greenfield M1 has one subscriber and no measured evidence that sending full state is too costly -- revisit (add deltas) once frame transport cost is measured against the 1 Hz budget and found wanting.
 - **Proposal intake:** every proposal carries source and schema version; unknown sources and per-tick counts above a configured cap are rejected.
@@ -496,7 +482,7 @@ flowchart TB
 
 **Verification:** Service passes tests headless; compiled binary passes the host-leak scan.
 
-- [ ] **Unit 7: Shell proxy and operator controls**
+- [x] **Unit 7: Shell proxy and operator controls**
 
 **Goal:** The Rust shell subscribes to the sidecar stream with the token, forwards it to the webview over a Tauri Channel, relays presentation receipts, handles sidecar restarts by requesting a fresh committed-state frame, and exposes pause/resume/stop-background in the tray as recorded operator events.
 

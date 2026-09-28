@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
+    "@panthea/contracts": "workspace:*",
+    "@panthea/world": "workspace:*",
     "@tauri-apps/api": "2.12.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

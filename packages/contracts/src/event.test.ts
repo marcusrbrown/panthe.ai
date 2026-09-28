@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { LATEST_EVENT_SCHEMA_VERSION, parseEvent } from "./event";
+import {
+  eventSubjects,
+  LATEST_EVENT_SCHEMA_VERSION,
+  parseEvent,
+  WORLD_EVENT_KINDS,
+  type WorldEvent,
+} from "./event";
 
 function envelope(
   overrides: Record<string, unknown> = {},
@@ -372,6 +378,119 @@ test("a valid legend-recorded event parses, linked and verified", () => {
       expect(String(result.value.linkedEventId)).toBe("evt-9");
     }
   }
+});
+
+function subjectsOf(event: WorldEvent): readonly string[] {
+  return eventSubjects(event);
+}
+
+function parsedEvent(overrides: Record<string, unknown>): WorldEvent {
+  const result = parseEvent(envelope(overrides));
+  if (!result.ok) {
+    throw new Error(`fixture failed to parse: ${result.message}`);
+  }
+  return result.value;
+}
+
+test("eventSubjects lists every entity a movement touches", () => {
+  expect(
+    subjectsOf(
+      parsedEvent({ kind: "entity-moved", entityId: "npc-1", to: "loc-2" }),
+    ),
+  ).toEqual(["npc-1", "loc-2"]);
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "realm-transitioned",
+        entityId: "npc-1",
+        to: "underworld-gate",
+        via: "styx",
+      }),
+    ),
+  ).toEqual(["npc-1", "underworld-gate", "styx"]);
+});
+
+test("eventSubjects lists the counterparty, structure, deity, and building an event names", () => {
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "resource-traded",
+        entityId: "npc-1",
+        counterpartyId: "npc-2",
+        give: [],
+        receive: [],
+      }),
+    ),
+  ).toEqual(["npc-1", "npc-2"]);
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "repair-progressed",
+        entityId: "npc-1",
+        structureId: "tavern",
+        resource: "planks",
+        amount: 1,
+      }),
+    ),
+  ).toEqual(["npc-1", "tavern"]);
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "worship-performed",
+        entityId: "npc-1",
+        deity: "zeus",
+        favorEffect: "gather-bonus",
+        favorExpiresAtTick: 12,
+      }),
+    ),
+  ).toEqual(["npc-1", "zeus"]);
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "income-earned",
+        entityId: "npc-1",
+        buildingId: "tavern",
+        amount: 1,
+      }),
+    ),
+  ).toEqual(["npc-1", "tavern"]);
+});
+
+test("eventSubjects lists only the building for building-scoped events", () => {
+  expect(
+    subjectsOf(parsedEvent({ kind: "building-ignited", entityId: "tavern" })),
+  ).toEqual(["tavern"]);
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "building-burn-ticked",
+        entityId: "tavern",
+        fireIntensity: 1,
+        ticksBurning: 1,
+      }),
+    ),
+  ).toEqual(["tavern"]);
+});
+
+test("eventSubjects never repeats an id an event names twice", () => {
+  expect(
+    subjectsOf(
+      parsedEvent({
+        kind: "resource-traded",
+        entityId: "npc-1",
+        counterpartyId: "npc-1",
+        give: [],
+        receive: [],
+      }),
+    ),
+  ).toEqual(["npc-1"]);
+});
+
+test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
+  expect(WORLD_EVENT_KINDS).toContain("entity-moved");
+  expect(WORLD_EVENT_KINDS).toContain("legend-recorded");
+  expect(new Set(WORLD_EVENT_KINDS).size).toBe(WORLD_EVENT_KINDS.length);
+  expect(WORLD_EVENT_KINDS).toHaveLength(15);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {

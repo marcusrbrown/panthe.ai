@@ -14,6 +14,8 @@
       "name": "@panthea/client",
       "version": "0.1.0",
       "dependencies": {
+        "@panthea/contracts": "workspace:*",
+        "@panthea/world": "workspace:*",
         "@tauri-apps/api": "2.12.0",
         "react": "19.3.0",
         "react-dom": "19.3.0",

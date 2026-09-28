@@ -477,6 +477,7 @@ flowchart TB
 - Request guards: loopback bind, token, `Host` check, and rejection of browser-originated requests (`Origin`/`Sec-Fetch-*`); presentation receipts are idempotent per event and session, rate-limited, and duplicates dropped.
 - Build script compiles the sidecar and runs the binary host-leak scan.
 - Projection storage: measure the JSON-document-per-tick commit against the 1 Hz budget first; convert to per-entity rows or dirty-subtree writes only if the measurement fails it.
+- Legend intake: before a legend proposal is queued, the service checks its `linkedEventId` against the store's committed events and rejects an unknown ID with a reason code, so a legend is verified only when its linked event exists. The world engine stays storage-free.
 
 **Patterns to follow:** `tools/probes/backend-lifecycle/src/{lock,sidecar}.ts`, `tools/probes/backend-lifecycle/scripts/{build-sidecar,scan-binary}.sh`.
 
@@ -491,6 +492,7 @@ flowchart TB
 - Error path: simulated disk-full during import or restore leaves the active world unchanged and no partial slot behind.
 - Error path: requests carrying an `Origin` header, a foreign `Host`, or a previous session's token are rejected (DNS-rebinding/CSRF and stale-token abuse cases).
 - Error path: a receipt flood is capped; duplicates are not persisted; trace size stays bounded.
+- Error path: a legend proposal linking an event ID that was never committed is rejected at intake; linking a committed event commits a verified legend.
 
 **Verification:** Service passes tests headless; compiled binary passes the host-leak scan.
 

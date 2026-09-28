@@ -14,6 +14,16 @@ export interface WorldRenderer {
 
 export type RendererFactory = (canvas: HTMLCanvasElement) => WorldRenderer;
 
+export function replaceMarkerGroup(
+  scene: THREE.Scene,
+  previous: SpriteGroup,
+): SpriteGroup {
+  scene.remove(previous);
+  const current = new SpriteGroup();
+  scene.add(current);
+  return current;
+}
+
 function markerTexture(color: string, dead = false): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 28;
@@ -92,7 +102,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
   scene.background = new THREE.Color("#e7dfce");
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
   camera.position.z = 120;
-  const markers = new SpriteGroup();
+  let markers = new SpriteGroup();
   const owned: THREE.Object3D[] = [];
   const textures: THREE.Texture[] = [];
   let disposed = false;
@@ -137,6 +147,7 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
         for (const material of materials) material.dispose();
       }
     }
+    markers = replaceMarkerGroup(scene, markers);
     for (const texture of textures.splice(0)) texture.dispose();
   }
 

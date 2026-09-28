@@ -6,6 +6,7 @@ import {
   type ObserverTarget,
   type ObserverView,
 } from "../observer";
+import { eventsInRealm } from "../renderer/presentation";
 import type {
   ViewActor,
   ViewBuilding,
@@ -200,6 +201,7 @@ export function ClientSurface({
         ? observation.lastKnown?.locationId
         : undefined;
   const location = locationInRealm(view, realm, locationId);
+  const recentEvents = view ? eventsInRealm(view, realm) : [];
   const selectedTarget =
     observation.kind === "idle" ? undefined : observation.target;
 
@@ -219,7 +221,7 @@ export function ClientSurface({
           <span className="meta-divider" />
           <span>Tick {view?.tick ?? "—"}</span>
           <span className="meta-divider" />
-          <span>Frame {view?.sequence ?? "—"}</span>
+          <span>Event {view?.sequence ?? "—"}</span>
         </div>
         <span className="read-only-label">
           <span aria-hidden="true">◉</span> Read only
@@ -383,9 +385,9 @@ export function ClientSurface({
           <section className="detail-section event-section">
             <p className="eyebrow">Committed events</p>
             <h2>Recent activity</h2>
-            {view?.recentEvents.length ? (
+            {recentEvents.length ? (
               <ol className="event-list">
-                {[...view.recentEvents]
+                {[...recentEvents]
                   .slice(-5)
                   .reverse()
                   .map((event) => (
@@ -417,7 +419,7 @@ export function ClientSurface({
             </p>
           )}
           <div className="detail-foot">
-            <span>Frame {view?.sequence ?? "—"}</span>
+            <span>Event {view?.sequence ?? "—"}</span>
             <span>Local inspection</span>
           </div>
         </aside>

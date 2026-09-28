@@ -26,6 +26,33 @@ export interface PlacedEvent {
   readonly locationId: string;
 }
 
+function subjectLocations(
+  view: WorldViewModel,
+  realm: Realm,
+): ReadonlyMap<string, string> {
+  const subjectLocation = new Map<string, string>();
+  for (const location of view.realms[realm]) {
+    subjectLocation.set(location.id, location.id);
+    for (const actor of location.actors) {
+      subjectLocation.set(actor.id, location.id);
+    }
+    for (const building of location.buildings) {
+      subjectLocation.set(building.id, location.id);
+    }
+  }
+  return subjectLocation;
+}
+
+export function eventsInRealm(
+  view: WorldViewModel,
+  realm: Realm,
+): readonly RecentEvent[] {
+  const locationsBySubject = subjectLocations(view, realm);
+  return view.recentEvents.filter((event) =>
+    event.subjects.some((subject) => locationsBySubject.has(subject)),
+  );
+}
+
 /**
  * The drawable recent events that concern the viewed realm, each placed at
  * the location of its first subject that resolves there. A subject resolves
@@ -36,17 +63,7 @@ export function placeEvents(
   view: WorldViewModel,
   realm: Realm,
 ): readonly PlacedEvent[] {
-  const locations = view.realms[realm];
-  const subjectLocation = new Map<string, string>();
-  for (const location of locations) {
-    subjectLocation.set(location.id, location.id);
-    for (const actor of location.actors) {
-      subjectLocation.set(actor.id, location.id);
-    }
-    for (const building of location.buildings) {
-      subjectLocation.set(building.id, location.id);
-    }
-  }
+  const subjectLocation = subjectLocations(view, realm);
 
   const placed: PlacedEvent[] = [];
   for (const event of view.recentEvents) {

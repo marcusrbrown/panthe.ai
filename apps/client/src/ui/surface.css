@@ -24,10 +24,17 @@
 * {
   box-sizing: border-box;
 }
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
 body {
   margin: 0;
   min-width: 760px;
-  min-height: 100vh;
   background: var(--paper);
 }
 button {
@@ -48,7 +55,8 @@ a:focus-visible {
 }
 
 .panthea-shell {
-  min-height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -205,7 +213,9 @@ a:focus-visible {
 .workspace {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: grid;
+  overflow: hidden;
   grid-template-columns: minmax(230px, 274px) minmax(380px, 1fr) minmax(
       250px,
       292px
@@ -220,6 +230,7 @@ a:focus-visible {
 }
 .target-rail {
   border-right: 1px solid var(--line);
+  overflow: hidden;
 }
 .rail-heading {
   padding: 24px 21px 15px;
@@ -279,7 +290,10 @@ a:focus-visible {
   color: #76584a;
 }
 .target-groups {
+  flex: 1 1 0;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 3px 11px 12px;
 }
 .target-group {
@@ -492,7 +506,7 @@ a:focus-visible {
 
 .detail-rail {
   border-left: 1px solid var(--line);
-  overflow-y: auto;
+  overflow: hidden;
 }
 .detail-section {
   padding: 22px 18px 16px;
@@ -588,8 +602,16 @@ a:focus-visible {
 }
 .event-section {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .event-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -697,10 +719,11 @@ a:focus-visible {
   }
   .workspace {
     grid-template-columns: minmax(190px, 34%) 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(150px, 32%);
   }
   .detail-rail {
     grid-column: 1 / -1;
-    min-height: 230px;
+    min-height: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
     border: 0;
@@ -725,15 +748,12 @@ a:focus-visible {
     display: none;
   }
   .workspace {
-    display: flex;
-    flex-direction: column;
-    overflow: visible;
-  }
-  .panthea-shell {
-    overflow: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 46%) minmax(100px, 24%) minmax(120px, 30%);
   }
   .target-rail {
-    max-height: 260px;
+    max-height: none;
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
@@ -751,10 +771,12 @@ a:focus-visible {
     grid-template-columns: repeat(3, minmax(130px, 1fr));
   }
   .scene-column {
-    min-height: 430px;
+    min-height: 0;
   }
   .detail-rail {
-    display: block;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
   .detail-section + .detail-section {
     border-left: 0;

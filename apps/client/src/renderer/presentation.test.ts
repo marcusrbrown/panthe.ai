@@ -9,6 +9,7 @@ import { createRecovery } from "../recovery";
 import { createWorldStore, toViewModel, type WorldViewModel } from "../store";
 import {
   drawableEvents,
+  eventsInRealm,
   placeEvents,
   receiptDrawnEvents,
 } from "./presentation";
@@ -125,6 +126,20 @@ test("a location subject resolves to itself", () => {
   expect(placeEvents(view, "mortal").map((entry) => entry.locationId)).toEqual([
     "agora",
   ]);
+});
+
+test("recent activity includes every kind with any subject in the viewed realm", () => {
+  const view = viewWith([
+    event("move-1", "entity-moved", ["zeus", "farmer"], 1),
+    event("burn-tick-1", "building-burn-ticked", ["the-tavern"], 2),
+    event("legend-1", "legend-recorded", ["town-square"], 3),
+    event("worship-1", "worship-performed", ["zeus"], 4),
+    event("orphan-1", "resource-traded", ["missing-subject"], 5),
+  ]);
+
+  expect(
+    eventsInRealm(view, "mortal").map((entry) => String(entry.id)),
+  ).toEqual(["move-1", "burn-tick-1", "legend-1"]);
 });
 
 test("an event whose subjects are all in another realm is neither drawn nor receipted", async () => {

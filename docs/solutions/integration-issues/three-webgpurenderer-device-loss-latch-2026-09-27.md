@@ -1,19 +1,21 @@
 ---
 title: three@0.185.1's WebGPURenderer never recovers from a WebGL context loss on the same instance
 date: 2026-09-27
-category: renderer
-requirement_ids: [P02, P05]
+category: integration-issues
 module: probe-renderer
 problem_type: integration_issue
-severity: high
+component: tooling
 symptoms:
   - "`webglcontextlost` and `webglcontextrestored` both fire, but the same renderer instance stays blank"
   - sprites are rebuilt from retained app state, yet no pixels are presented
   - click-to-visible latency kept resolving after loss until it was gated
 root_cause: wrong_api
 resolution_type: code_fix
-tags: [three-js, webgpurenderer, webgl2, context-loss, device-lost, recovery, probe-renderer]
+severity: high
+tags: [three-js, webgpurenderer, webgl2, context-loss, device-lost, recovery, p02, p05]
 ---
+
+# three@0.185.1's WebGPURenderer never recovers from a WebGL context loss on the same instance
 
 ## Problem
 
@@ -31,7 +33,7 @@ context, the renderer instance never resumes. This has been reported upstream as
 - The probe's first report published a 21 ms "post-loss click latency" — fabricated, because
   `noteRenderSubmitted` was called for frames that were never presented.
 
-## What didn't work
+## What Didn't Work
 
 - Rebuilding scene state on the same renderer (`apps/probe-renderer/src/Scene.tsx`, `onLost`):
   logical state returns, pixels do not.
@@ -63,7 +65,7 @@ never cleared gates `noteRenderSubmitted`, so latency freezes at its pre-loss va
 inventing post-loss numbers. Verified on the packaged app: after loss+restore a new click bumps
 `clickHitCount` 1→2 while `clickToVisibleLatencyMs` stays exactly frozen.
 
-## Why this works
+## Why This Works
 
 The renderer's lost state is a one-way latch in this build, `init()` is memoised, and
 `dispose()` tears the backend down by losing its own context — so nothing on the same instance
@@ -88,12 +90,12 @@ is implemented.
   (`pmset displaysleepnow`) is **untested** — forced `WEBGL_lose_context` is not a full
   suspend/resume proxy. Both are M1 renderer work.
 
-## Related
+## Related Issues
 
-- [ADR-0002 Renderer backend](../decisions/0002-renderer-backend.md) — recovery pattern
-- [WKWebView does not expose WebGPU on macOS 15](2026-09-26-wkwebview-webgpu-unavailable-macos-15.md)
+- [ADR-0002 Renderer backend](../../decisions/0002-renderer-backend.md) — recovery pattern
+- [WKWebView does not expose WebGPU on macOS 15](wkwebview-webgpu-unavailable-macos-15-2026-09-26.md)
   — why the WebGL2 backend is the one that matters here
-- [three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP](2026-09-27-koota-new-function-tauri-csp.md)
+- [three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP](koota-new-function-tauri-csp-2026-09-27.md)
   — same probe app
-- [tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md),
+- [tools/probes/renderer-webgl2/README.md](../../../tools/probes/renderer-webgl2/README.md),
   [PR #12](https://github.com/marcusrbrown/panthea/pull/12)

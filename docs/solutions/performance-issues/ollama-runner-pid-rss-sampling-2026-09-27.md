@@ -1,19 +1,21 @@
 ---
 title: Sampling Ollama's real memory usage needs re-resolving the runner child pid every poll
 date: 2026-09-27
-category: providers
-requirement_ids: [P04, P06]
+category: performance-issues
 module: inference-baseline
 problem_type: performance_issue
-severity: medium
+component: tooling
 symptoms:
   - the recommended `llama3.2:3b` profile reported ~29 MiB "server RSS peak" while the parallel run of the same model showed 2,780 MiB
   - nine of thirteen published suite rows carried a supervisor-pid reading
   - a child pid resolved once at start goes stale when the next model loads
 root_cause: scope_issue
 resolution_type: code_fix
-tags: [ollama, rss, process-sampling, benchmarking, inference-baseline, runner-pid]
+severity: medium
+tags: [ollama, rss, process-sampling, benchmarking, inference-baseline, runner-pid, p04, p06]
 ---
+
+# Sampling Ollama's real memory usage needs re-resolving the runner child pid every poll
 
 ## Problem
 
@@ -31,7 +33,7 @@ review compared it with the parallel run.
 - `results/summary.json`: nine suite rows flagged `rssBug: true` with the on-disk model size as a
   lower-bound proxy.
 
-## What didn't work
+## What Didn't Work
 
 - Sampling `ollama serve`'s pid.
 - Resolving the child once at start: each model load (and reload) spawns a new runner pid, so a
@@ -56,7 +58,7 @@ async function resolveRssPids(serverKind: ServerKind, supervisorPid: number): Pr
 }
 ```
 
-## Why this works
+## Why This Works
 
 The supervisor/worker split is the whole bug: the runner holds the weights, so the sampler must
 follow that boundary and follow it continuously, because Ollama does not promise a stable runner
@@ -76,12 +78,12 @@ contract.
 On any Ollama release: verify `findOllamaRunnerPids` still matches the runner process name and
 parent/child shape before trusting new RSS numbers.
 
-## Related
+## Related Issues
 
-- [ADR-0005 Model providers](../decisions/0005-model-providers.md) — local baseline profile
-- [P04, P06](../product/requirements.md)
-- [Proving "offline mode sends nothing" needs a self-owned, falsifiable packet capture](2026-09-27-tcpdump-sudo-pid-resolution-offline-proof.md)
+- [ADR-0005 Model providers](../../decisions/0005-model-providers.md) — local baseline profile
+- [P04, P06](../../product/requirements.md)
+- [Proving "offline mode sends nothing" needs a self-owned, falsifiable packet capture](../test-failures/tcpdump-sudo-pid-resolution-offline-proof-2026-09-27.md)
   — same "signal or sample the real child, not the wrapper" pattern
-- [tools/probes/inference-baseline/README.md](../../tools/probes/inference-baseline/README.md),
-  [docs/research/inference-2026-09-26.md](../research/inference-2026-09-26.md),
+- [tools/probes/inference-baseline/README.md](../../../tools/probes/inference-baseline/README.md),
+  [docs/research/inference-2026-09-26.md](../../research/inference-2026-09-26.md),
   [PR #19](https://github.com/marcusrbrown/panthea/pull/19)

@@ -46,7 +46,7 @@ docs/
   product/      Brief, decisions, defaults, requirements, traceability, roadmap, acceptance
   decisions/    ADRs for architecture choices made during implementation
   research/     Stack, inference, and reference research
-  solutions/    Reusable engineering lessons
+  solutions/    Solved problems and practices by category, YAML frontmatter (module, tags, problem_type); relevant when working in a documented area
   discovery/    Historical interview record (owner evidence, do not edit)
 ```
 

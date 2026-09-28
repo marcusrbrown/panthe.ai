@@ -1,18 +1,20 @@
 ---
 title: Reading validated arguments out of a sandboxed guest needs a captured accessor handle, not a live global lookup
 date: 2026-09-27
-category: sandbox
-requirement_ids: [U04, U05]
+category: security-issues
 module: sandbox
 problem_type: security_issue
-severity: high
+component: tooling
 symptoms:
   - "a Proxy argument with a parity-flipping `get` trap committed `{x: 999999, y: 1}` through validation instead of `{x: 1, y: 1}`"
   - guest code that reassigns `Object.getOwnPropertyDescriptor` before calling the API poisons a host lookup made by identifier
 root_cause: wrong_api
 resolution_type: code_fix
-tags: [quickjs, proxy, property-descriptor, sandbox, generated-code, security, intrinsics]
+severity: high
+tags: [quickjs, proxy, property-descriptor, sandbox, security, intrinsics, u04, u05]
 ---
+
+# Reading validated arguments out of a sandboxed guest needs a captured accessor handle, not a live global lookup
 
 ## Problem
 
@@ -31,7 +33,7 @@ two fixes were each bypassed in turn across three review rounds on
 - The `guest-reassigns-descriptor` fixture poisoned the second fix by overwriting the global
   `Object.getOwnPropertyDescriptor` before calling `api.move()`.
 
-## What didn't work
+## What Didn't Work
 
 1. **Separate `[[Get]]` per field** — the guest controls every read.
 2. **"Dump twice and compare"** — measured to fail: both dumps land on the same parity phase of
@@ -76,7 +78,7 @@ path — it cannot rebind the intrinsic or escape the host boundary. The damage 
 range check; a finite poisoned coordinate is still possible and is the world rules' job to
 reject.
 
-## Why this works
+## Why This Works
 
 `[[GetOwnProperty]]` never invokes the Proxy `get` trap, so the parity flip has nothing to hook.
 A function value captured before guest evaluation is immune to later global reassignment.
@@ -98,10 +100,10 @@ Rejecting accessor descriptors up front removes getters/setters as a smuggling c
 - If Lua/wasmoon ever becomes primary: ADR-0004 records that its metatable-equivalent bypass was
   not adversarially tested.
 
-## Related
+## Related Issues
 
-- [ADR-0004 Generated behavior runtime](../decisions/0004-generated-behavior-runtime.md)
-- [U04, U05](../product/requirements.md)
-- [tools/probes/sandbox/README.md](../../tools/probes/sandbox/README.md),
-  [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md) (sandbox section),
+- [ADR-0004 Generated behavior runtime](../../decisions/0004-generated-behavior-runtime.md)
+- [U04, U05](../../product/requirements.md)
+- [tools/probes/sandbox/README.md](../../../tools/probes/sandbox/README.md),
+  [docs/research/stack-2026-09-26.md](../../research/stack-2026-09-26.md) (sandbox section),
   [PR #14](https://github.com/marcusrbrown/panthea/pull/14)

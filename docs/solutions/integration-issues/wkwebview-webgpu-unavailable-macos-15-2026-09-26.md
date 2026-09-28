@@ -1,20 +1,21 @@
 ---
 title: WKWebView does not expose WebGPU on macOS 15
 date: 2026-09-26
-last_updated: 2026-09-27
-category: renderer
-requirement_ids: [P02]
+category: integration-issues
 module: probe-renderer
 problem_type: integration_issue
-severity: high
+component: tooling
 symptoms:
   - "`typeof navigator.gpu` is `undefined` inside a WKWebView on macOS 15.7.9"
   - unchanged after force-enabling WebKit's private `WebGPUEnabled` feature flag
   - the packaged Tauri app on the same OS reports `renderer.backend.isWebGLBackend === true`
 root_cause: config_error
 resolution_type: config_change
-tags: [webgpu, wkwebview, tauri, macos, webgl2, dual-backend, d25]
+severity: high
+tags: [webgpu, wkwebview, tauri, macos, webgl2, dual-backend, d25, p02]
 ---
+
+# WKWebView does not expose WebGPU on macOS 15
 
 ## Problem
 
@@ -33,15 +34,15 @@ renderer code existed turned a possible rewrite into a one-day probe.
   `WebGPUHDREnabled`, `WebXRWebGPUBindingsEnabled`) via `_setEnabled:forFeature:`.
 - Later confirmed from inside the packaged probe app: `WEBGL_debug_renderer_info` shows the Apple
   GPU and `renderer.backend.isWebGLBackend` is `true`
-  ([tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md)).
+  ([tools/probes/renderer-webgl2/README.md](../../../tools/probes/renderer-webgl2/README.md)).
 
-## What didn't work
+## What Didn't Work
 
 - Private WebKit feature flags. The SPI calls succeed mechanically — no crash, flags read back
   enabled — but WebKit gates the WebGPU JS API to macOS 26; the flag does not unlock it for a
   third-party WKWebView host on 15.
 - Treating this as a script problem. The probe is an ad-hoc `swift probe.swift`
-  ([tools/probes/webgpu-wkwebview/probe.swift](../../tools/probes/webgpu-wkwebview/probe.swift));
+  ([tools/probes/webgpu-wkwebview/probe.swift](../../../tools/probes/webgpu-wkwebview/probe.swift));
   its only unverified caveat is code-signing, addressed under Re-check.
 
 ## Solution
@@ -49,14 +50,14 @@ renderer code existed turned a possible rewrite into a one-day probe.
 Owner decision D25 (2026-09-26): dual-backend rendering with WebGL2 as the baseline. Keep
 Three.js `WebGPURenderer` + Three Flatland and let the renderer pick the backend at runtime —
 WebGL2 where `navigator.gpu` is absent (macOS 15 WKWebView), WebGPU where present (macOS 26+,
-Windows WebView2 where supported). Recorded in [ADR-0002](../decisions/0002-renderer-backend.md);
+Windows WebView2 where supported). Recorded in [ADR-0002](../../decisions/0002-renderer-backend.md);
 P02's acceptance evidence amended to match.
 
 The packaged WebGL2 path was then measured rather than assumed: 17 ms frame p50/p95 (~59 fps),
 230 sprites, click-to-visible p50 28 ms / p95 31 ms over 14 real clicks, zero effect failures
 ([PR #12](https://github.com/marcusrbrown/panthea/pull/12)).
 
-## Why this works
+## Why This Works
 
 `WebGPURenderer` in three 0.185.1 already carries a WebGL2 backend and selects it when
 `navigator.gpu` is missing, so one renderer and one scene graph serve both targets; the cost is
@@ -80,15 +81,15 @@ sprite/tilemap/effect set, not for lighting or particles).
   the WebGPU backend clear the same packaged measurements?
 - Windows WebView2 and WebKitGTK (Linux) remain unprobed; ADR-0002 gates Linux on a packaged
   either-backend result. These four re-checks are listed in
-  [docs/product/m0-exit.md](../product/m0-exit.md).
+  [docs/product/m0-exit.md](../../product/m0-exit.md).
 
-## Related
+## Related Issues
 
-- [ADR-0002 Renderer backend](../decisions/0002-renderer-backend.md), D25 in
-  [decisions.md](../product/decisions.md)
-- [three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP](2026-09-27-koota-new-function-tauri-csp.md)
+- [ADR-0002 Renderer backend](../../decisions/0002-renderer-backend.md), D25 in
+  [decisions.md](../../product/decisions.md)
+- [three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP](koota-new-function-tauri-csp-2026-09-27.md)
   — same packaged surface; a blank packaged window can be CSP, not WebGPU
-- [three@0.185.1's WebGPURenderer never recovers from a context loss on the same instance](2026-09-27-three-webgpurenderer-device-loss-latch.md)
+- [three@0.185.1's WebGPURenderer never recovers from a context loss on the same instance](three-webgpurenderer-device-loss-latch-2026-09-27.md)
   — the WebGL2 backend's recovery limit
-- [tools/probes/webgpu-wkwebview/README.md](../../tools/probes/webgpu-wkwebview/README.md),
-  [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md)
+- [tools/probes/webgpu-wkwebview/README.md](../../../tools/probes/webgpu-wkwebview/README.md),
+  [docs/research/stack-2026-09-26.md](../../research/stack-2026-09-26.md)

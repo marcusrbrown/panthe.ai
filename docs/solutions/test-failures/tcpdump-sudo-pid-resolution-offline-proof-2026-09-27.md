@@ -1,18 +1,22 @@
 ---
 title: Proving "offline mode sends nothing" needs a self-owned, falsifiable packet capture
 date: 2026-09-27
-category: providers
-requirement_ids: [P07]
+category: test-failures
 module: provider-matrix
-problem_type: workflow_issue
+problem_type: test_failure
+component: tooling
+symptoms:
+  - "`results/offline.pcap` was 0 bytes after a clean-looking run; the first summary reported it as `capture-failed`"
+  - "`tcpdump: results/offline.pcap: Permission denied` after a previous run's root-owned savefile blocked the next open"
+  - "`stopPath: sigint-child`, `tcpdumpExitCode: 0`, stderr `0 packets captured / 96 packets received by filter`, file still 0 bytes"
+  - "`0 packets captured / 382 received by filter` on a provider-host filter — the legitimate silent shape, but only provable with a control"
+root_cause: missing_tooling
+resolution_type: code_fix
 severity: medium
-applies_when:
-  - proving an offline mode or fallback path makes no external network requests
-  - using tcpdump under sudo as evidence for wire silence
-  - a capture could be blind because the wrong process, filter, or buffering mode was used
-  - distinguishing "silent" from "cannot see traffic" needs a positive control
-tags: [tcpdump, sudo, offline, packet-capture, positive-control, provider-matrix]
+tags: [tcpdump, sudo, offline, packet-capture, positive-control, provider-matrix, p07]
 ---
+
+# Proving "offline mode sends nothing" needs a self-owned, falsifiable packet capture
 
 ## Problem
 
@@ -37,7 +41,7 @@ before the proof held. Each round removed one way the capture could lie.
 - Run 5: `0 packets captured / 382 received by filter` on a provider-host filter — which is the
   legitimate silent shape, but only provable with a control.
 
-## What didn't work
+## What Didn't Work
 
 1. **Signalling the `sudo` pid.** `proc.kill("SIGTERM")` on `sudo -n tcpdump …` never reached
    tcpdump: macOS sudo 1.9 runs with `use_pty`, which forks a monitor, so tcpdump is a
@@ -101,7 +105,7 @@ Measured on the M1 Pro: offline window `silent` (20 requests through the real fa
 hosted-client constructions, 0 matching packets); control `not-silent` (39 packets to the
 resolved opencode.ai addresses).
 
-## Why this works
+## Why This Works
 
 - With `use_pty`, tcpdump is never sudo's direct child; only an exact-name lookup validated
   against the `-w` path signals the process holding the capture handle.
@@ -133,8 +137,8 @@ resolved opencode.ai addresses).
 
 ## Decision
 
-Recorded in [ADR-0005](../decisions/0005-model-providers.md) (offline consequence) and
-[tools/probes/provider-matrix/README.md](../../tools/probes/provider-matrix/README.md). Scope:
+Recorded in [ADR-0005](../../decisions/0005-model-providers.md) (offline consequence) and
+[tools/probes/provider-matrix/README.md](../../../tools/probes/provider-matrix/README.md). Scope:
 this proves the *probe's* fallback router; the product service's offline guard is M1 work and
 needs its own capture plus control, not a reused result.
 
@@ -145,12 +149,12 @@ needs its own capture plus control, not a reused result.
   confirm `stopPath: sigint-child`, a non-`port 53`-only filter, and a `not-silent` control.
 - When the offline guard moves into the product network layer (M1+).
 
-## Related
+## Related Issues
 
-- [ADR-0005 Model providers](../decisions/0005-model-providers.md) — offline consequence
-- [D22](../product/decisions.md), [P07](../product/requirements.md) — the invariant and its
+- [ADR-0005 Model providers](../../decisions/0005-model-providers.md) — offline consequence
+- [D22](../../product/decisions.md), [P07](../../product/requirements.md) — the invariant and its
   requirement
-- [Sampling Ollama's real memory usage needs the runner child pid](2026-09-27-ollama-runner-pid-rss-sampling.md)
+- [Sampling Ollama's real memory usage needs the runner child pid](../performance-issues/ollama-runner-pid-rss-sampling-2026-09-27.md)
   — same "resolve the real child process, not the wrapper" pattern
 - [PR #13](https://github.com/marcusrbrown/panthea/pull/13) (capture pending),
   [PR #18](https://github.com/marcusrbrown/panthea/pull/18) (falsifiable proof)

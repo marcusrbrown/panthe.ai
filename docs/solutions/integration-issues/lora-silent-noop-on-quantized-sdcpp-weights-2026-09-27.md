@@ -1,17 +1,20 @@
 ---
 title: A LoRA on a quantized stable-diffusion.cpp checkpoint can silently no-op
 date: 2026-09-27
-category: content
-requirement_ids: [U06, U07]
+category: integration-issues
 module: art-local
-problem_type: tooling_decision
+problem_type: integration_issue
+component: tooling
+symptoms:
+  - a LoRA had no visible effect on a Q4_0 quantized checkpoint despite the server logging `(576/576) LoRA tensors have been applied`
+  - prompt text alone produced pixel-art-ish output, so nothing in the response, logs, timings, or memory numbers distinguished a working arm from a broken one
+root_cause: wrong_api
+resolution_type: config_change
 severity: medium
-applies_when:
-  - pairing any LoRA with a quantized checkpoint on stable-diffusion.cpp
-  - publishing a LoRA measurement or picking a base-arm quantization
-  - comparing image-generation arms whose precision differs
-tags: [stable-diffusion-cpp, lora, quantization, art-local, q8-0, q4-0, fixed-seed]
+tags: [stable-diffusion-cpp, lora, quantization, q8-0, q4-0, fixed-seed, u06, u07]
 ---
+
+# A LoRA on a quantized stable-diffusion.cpp checkpoint can silently no-op
 
 ## Problem
 
@@ -49,7 +52,7 @@ bun run src/run.ts suite --arm sd.cpp --base-url http://127.0.0.1:1234 \
 Numbers from `tools/probes/art-local/results/summary.json`; contact sheets for Q8_0
 (`sdcpp-512`), Q4_0 (`sdcpp-q4-512`) and Draw Things under `results/images/`.
 
-## Why this works
+## Why This Works
 
 The fixed-seed A/B isolates the LoRA's contribution from the prompt's. Upstream documents the
 precision hazard: at the pinned tag, `docs/lora.md` says the "immediately" apply mode "may have
@@ -63,7 +66,7 @@ touched.)
 
 ## Decision
 
-Q8_0 is the base-arm quantization in [ADR-0007](../decisions/0007-local-image-generation.md).
+Q8_0 is the base-arm quantization in [ADR-0007](../../decisions/0007-local-image-generation.md).
 Q4_0 rows stay in the table as speed/RSS reference, flagged effectively no-LoRA. The Draw Things
 comparison (f16 in-app) is precision-confounded and says nothing engine-isolating until an f16
 sd.cpp + LoRA run exists. The trigger word `PixArFK` must be the first prompt token.
@@ -82,11 +85,11 @@ A new stable-diffusion.cpp release, a new LoRA, a new base checkpoint, or a new 
 run the A/B again. If Q8_0 stops showing a clear delta, this record is stale. If a fixed build
 lands, retry f16 + LoRA to get the precision-matched Draw Things comparison.
 
-## Related
+## Related Issues
 
-- [ADR-0007 Local image generation](../decisions/0007-local-image-generation.md)
-- [U06, U07](../product/requirements.md), [D15](../product/decisions.md)
-- [stable-diffusion.cpp needs --diffusion-fa and has no real job cancellation](2026-09-27-sdcpp-cancel-sigint-diffusion-fa.md)
+- [ADR-0007 Local image generation](../../decisions/0007-local-image-generation.md)
+- [U06, U07](../../product/requirements.md), [D15](../../product/decisions.md)
+- [stable-diffusion.cpp needs --diffusion-fa and has no real job cancellation](sdcpp-cancel-sigint-diffusion-fa-2026-09-27.md)
   — same arm, different failure mode
-- [tools/probes/art-local/README.md](../../tools/probes/art-local/README.md),
+- [tools/probes/art-local/README.md](../../../tools/probes/art-local/README.md),
   [PR #21](https://github.com/marcusrbrown/panthea/pull/21)

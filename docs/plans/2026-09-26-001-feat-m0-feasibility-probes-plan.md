@@ -57,7 +57,7 @@ Two constraints shape every unit: the 16 GB unified memory pool is shared by the
 
 ### Institutional Learnings
 
-- `docs/solutions/2026-09-26-wkwebview-webgpu-unavailable-macos-15.md` — WebGL2 is the baseline, not a temporary fallback.
+- `docs/solutions/integration-issues/wkwebview-webgpu-unavailable-macos-15-2026-09-26.md` — WebGL2 is the baseline, not a temporary fallback.
 - Mothership `docs/solutions/documentation-gaps/mothership-phase1-tracer-deviations-2026-07-04.md` — re-verify live server and Tauri lifecycle behavior; research snapshots drift.
 - Mothership `docs/solutions/best-practices/pty-portable-pty-xterm6-decision-2026-07-04.md` — keep a fragile backend behind one narrow seam so swaps stay reversible.
 - Mothership `docs/solutions/integration-issues/tauri-dragdrop-swallows-dockview-dnd-2026-07-04.md` — Tauri window config can silently intercept DOM input; validate input in the packaged app.
@@ -455,7 +455,7 @@ Each evidence lane (Units 3–7) flips its own ADR in its own PR. Unit 8 informs
 
 **Files:**
 - Modify: `docs/decisions/0003-simulation-service.md`, `0004-generated-behavior-runtime.md`, `0005-model-providers.md`, `0007-local-image-generation.md`, `docs/decisions/README.md`, `docs/product/open-decisions.md`, `docs/product/traceability.md`, `docs/product/mvp-roadmap.md` (M0 exit note)
-- Create: `docs/solutions/2026-*-<lesson>.md` per reusable lesson (via `ce:compound`)
+- Create: `docs/solutions/<category>/<lesson>-<date>.md` per reusable lesson (via `ce:compound`)
 
 **Approach:**
 - Each evidence unit flips its own ADR in its own PR (status → accepted with an Evidence line naming the probe README, or → revised with the measured conflict and the concrete alternative — never silent scope reduction). This unit turns Unit 8's measured recommendation into the final heavy-work policy wording across 0003/0005/0007, reconciles the index, and updates any ADR whose evidence arrived after its flip.

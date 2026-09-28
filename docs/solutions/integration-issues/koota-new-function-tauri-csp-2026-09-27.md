@@ -1,20 +1,22 @@
 ---
 title: three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP
 date: 2026-09-27
-category: renderer
-requirement_ids: [P02]
+category: integration-issues
 module: probe-renderer
 problem_type: integration_issue
-severity: high
+component: tooling
 symptoms:
   - packaged Tauri .app shows a blank white WKWebView with correct window chrome
   - no CSP or JS error in `log show` / `log stream`
   - Web Inspector logs `EvalError: Refused to evaluate a string as JavaScript because 'unsafe-eval' is not an allowed source`
-  - `tauri dev` and `vite preview` + Safari render the identical bundle fine
+  - "`tauri dev` and `vite preview` + Safari render the identical bundle fine"
 root_cause: config_error
 resolution_type: config_change
-tags: [koota, csp, tauri, three-flatland, ecs, unsafe-eval, wkwebview]
+severity: high
+tags: [koota, csp, tauri, three-flatland, ecs, unsafe-eval, wkwebview, p02]
 ---
+
+# three-flatland's koota dependency needs 'unsafe-eval' under Tauri's packaged CSP
 
 ## Problem
 
@@ -32,7 +34,7 @@ edits, which reframed it as a regression rather than a bundling property.
   because 'unsafe-eval' is not an allowed source of script in the following Content Security
   Policy directive: "script-src 'self' …"`.
 
-## What didn't work
+## What Didn't Work
 
 - Chasing WebGL2 / three-flatland / renderer initialisation — the failure is a synchronous throw
   before first paint.
@@ -59,7 +61,7 @@ reproduces the blank window and the identical error on demand; restoring `'unsaf
 every time. Measured afterwards on the packaged binary: 17 ms frame p50/p95, 59 fps, 230 sprites,
 zero effect failures ([PR #12](https://github.com/marcusrbrown/panthea/pull/12)).
 
-## Why this works
+## Why This Works
 
 `three-flatland` depends on `koota` (ECS), whose trait system generates struct-of-arrays property
 accessors with `new Function("index", "store", "value", …)` at store-creation time
@@ -73,7 +75,7 @@ dev server over plain HTTP with no CSP header, and a browser tab has none either
 ## Decision
 
 Any Panthea surface that imports `three-flatland` carries `'unsafe-eval'` in `script-src`,
-recorded in [ADR-0002](../decisions/0002-renderer-backend.md). This is conditional on U05: the
+recorded in [ADR-0002](../../decisions/0002-renderer-backend.md). This is conditional on U05: the
 generated-behavior runtime stays in the simulation service and never loads into the renderer's JS
 realm, so `'unsafe-eval'` widens what trusted first-party renderer code may do, not what generated
 content may do. The scope is renderer shells that load this dependency chain — the probe proves
@@ -97,13 +99,13 @@ nothing about `apps/client`/`apps/desktop` until they are packaged with it.
   generated-behavior/renderer process boundary (U05) changes.
 - On Tauri CSP or protocol changes.
 
-## Related
+## Related Issues
 
-- [ADR-0002 Renderer backend](../decisions/0002-renderer-backend.md)
-- [WKWebView does not expose WebGPU on macOS 15](2026-09-26-wkwebview-webgpu-unavailable-macos-15.md)
+- [ADR-0002 Renderer backend](../../decisions/0002-renderer-backend.md)
+- [WKWebView does not expose WebGPU on macOS 15](wkwebview-webgpu-unavailable-macos-15-2026-09-26.md)
   — same packaged WKWebView surface; a blank packaged window can be CSP, not only WebGPU absence
-- [three@0.185.1's WebGPURenderer never recovers from a context loss on the same instance](2026-09-27-three-webgpurenderer-device-loss-latch.md)
+- [three@0.185.1's WebGPURenderer never recovers from a context loss on the same instance](three-webgpurenderer-device-loss-latch-2026-09-27.md)
   — same probe app, different failure
-- [docs/research/stack-2026-09-26.md](../research/stack-2026-09-26.md),
-  [tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md),
+- [docs/research/stack-2026-09-26.md](../../research/stack-2026-09-26.md),
+  [tools/probes/renderer-webgl2/README.md](../../../tools/probes/renderer-webgl2/README.md),
   [PR #12](https://github.com/marcusrbrown/panthea/pull/12)

@@ -160,3 +160,23 @@ test("presentEvent rejects when the relay fails, so the caller can report it", a
     "no active sidecar session",
   );
 });
+
+test("an error callback that throws on an invalid payload does not propagate, and a later valid frame is still delivered", async () => {
+  const fake = fakeTransport();
+  const frames: ConnectedFrame[] = [];
+  let errorCalls = 0;
+  await subscribe(
+    (connected) => frames.push(connected),
+    () => {
+      errorCalls += 1;
+      throw new Error("error reporter bug");
+    },
+    fake.transport,
+  );
+
+  expect(() => fake.push({ not: "a frame" })).not.toThrow();
+  fake.push(framePayload(baseState(), { sequence: 21 }));
+
+  expect(errorCalls).toBe(1);
+  expect(frames.map((connected) => connected.frame.sequence)).toEqual([21]);
+});

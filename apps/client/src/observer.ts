@@ -104,9 +104,9 @@ function held(
 
 /**
  * Resolves what the observer shows for `target` in `view`. A target the
- * state no longer supports holds the last location this observer knew, or
- * the location the state itself reports when there was none, with the
- * reason. Recomputed from state on every update, so a target the state
+ * state no longer supports holds with the reason: a dead actor at the
+ * location the state reports for it, and any other lost target at the last
+ * location this observer knew. Recomputed from state on every update, so a target the state
  * shows alive and placed again is followed again.
  */
 function resolve(
@@ -137,7 +137,7 @@ function resolve(
   }
   const location = findLocation(view, actor.locationId);
   if (actor.alive === false) {
-    return held(target, "died", fallback ?? location);
+    return held(target, "died", location ?? fallback);
   }
   if (location === undefined) {
     return held(target, "unreachable", fallback);

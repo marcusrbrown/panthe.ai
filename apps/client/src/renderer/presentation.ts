@@ -1,17 +1,73 @@
-import type { RecentEvent } from "@panthea/contracts";
+import type { Realm, RecentEvent } from "@panthea/contracts";
 import type { ReceiptEmitter } from "../receipts";
 import type { WorldViewModel } from "../store";
 
-const DRAWN_EVENT_KINDS = ["strike", "fire", "ignit", "trade", "worship"];
+export type EffectTone = "fire" | "worship" | "neutral";
+
+/**
+ * The event kinds the scene draws an effect for, and the tone of that
+ * effect. A kind absent from the map is not drawn or receipted: per-tick
+ * upkeep such as burn ticks, repair progress, income, movement, and
+ * resource flow would only add noise.
+ */
+const EFFECT_TONES: Partial<Record<RecentEvent["kind"], EffectTone>> = {
+  "building-damaged": "fire",
+  "building-ignited": "fire",
+  "building-destroyed": "fire",
+  "worship-performed": "worship",
+  "resource-traded": "neutral",
+  "building-repaired": "neutral",
+};
+
+export interface PlacedEvent {
+  readonly event: RecentEvent;
+  readonly tone: EffectTone;
+  /** The location in the viewed realm the effect is drawn at. */
+  readonly locationId: string;
+}
+
+/**
+ * The drawable recent events that concern the viewed realm, each placed at
+ * the location of its first subject that resolves there. A subject resolves
+ * when it is a location in the realm, or an actor or building standing at
+ * one. An event with no resolving subject is not drawn.
+ */
+export function placeEvents(
+  view: WorldViewModel,
+  realm: Realm,
+): readonly PlacedEvent[] {
+  const locations = view.realms[realm];
+  const subjectLocation = new Map<string, string>();
+  for (const location of locations) {
+    subjectLocation.set(location.id, location.id);
+    for (const actor of location.actors) {
+      subjectLocation.set(actor.id, location.id);
+    }
+    for (const building of location.buildings) {
+      subjectLocation.set(building.id, location.id);
+    }
+  }
+
+  const placed: PlacedEvent[] = [];
+  for (const event of view.recentEvents) {
+    const tone = EFFECT_TONES[event.kind];
+    if (tone === undefined) continue;
+    for (const subject of event.subjects) {
+      const locationId = subjectLocation.get(subject);
+      if (locationId !== undefined) {
+        placed.push({ event, tone, locationId });
+        break;
+      }
+    }
+  }
+  return placed;
+}
 
 export function drawableEvents(
   view: WorldViewModel,
-  _realm: string,
+  realm: Realm,
 ): readonly RecentEvent[] {
-  return view.recentEvents.filter((event) => {
-    const kind = String(event.kind).toLowerCase();
-    return DRAWN_EVENT_KINDS.some((marker) => kind.includes(marker));
-  });
+  return placeEvents(view, realm).map((placed) => placed.event);
 }
 
 export async function receiptDrawnEvents(

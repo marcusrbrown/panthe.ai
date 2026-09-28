@@ -222,9 +222,7 @@ export function updateServiceStatus(
   ref.sequence = state.lastSequence;
   ref.tick = state.tick;
   ref.encodedState = worldProjectionCodec.encode(state);
-  if (options.catchUpSummary) {
-    ref.catchUpSummary = options.catchUpSummary;
-  }
+  ref.catchUpSummary = options.catchUpSummary;
 }
 
 /** How many ticks back from the frame's tick the recent-event window reaches. */

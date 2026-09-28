@@ -225,6 +225,27 @@ test("a held target that the state shows alive again is followed again", () => {
   });
 });
 
+test("a held actor that reappears dead somewhere new holds at the new location", () => {
+  const observer = createObserver();
+  observer.pick({ kind: "actor", id: "woodcutter" });
+  observer.update(view(baseState()));
+  observer.update(view(withoutActor(baseState(), "woodcutter"), 2));
+
+  const heldElsewhere = observer.update(
+    view(
+      deadActor(movedActor(baseState(), "woodcutter", "agora"), "woodcutter"),
+      3,
+    ),
+  );
+
+  expect(heldElsewhere).toEqual({
+    kind: "held",
+    target: { kind: "actor", id: "woodcutter" },
+    reason: "died",
+    lastKnown: { locationId: "agora", realm: "mortal" },
+  });
+});
+
 test("picking an actor that is already dead holds at the location state reports", () => {
   const observer = createObserver();
   observer.pick({ kind: "actor", id: "woodcutter" });

@@ -2,6 +2,7 @@ import type { Realm } from "@panthea/contracts";
 import { useEffect, useRef, useState } from "react";
 
 import type { WorldViewModel } from "../store";
+import { drawScene, startSceneRenderer } from "./lifecycle";
 import {
   createWorldRenderer,
   type RendererFactory,
@@ -35,45 +36,29 @@ export function SceneHost({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    let current: WorldRenderer | undefined;
-    let active = true;
-    let recovering = false;
     setStarted(false);
     setFailure(undefined);
-    try {
-      current = rendererFactory(canvas);
-      rendererRef.current = current;
-      void current
-        .start(() => {
-          if (!active || recovering) return;
-          recovering = true;
-          onDeviceLostRef.current?.();
-        })
-        .then(() => {
-          if (active) setStarted(true);
-        })
-        .catch((error: unknown) => {
-          if (active)
-            setFailure(error instanceof Error ? error.message : String(error));
-        });
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
-    }
+    const session = startSceneRenderer(canvas, rendererFactory, {
+      onStarted: () => setStarted(true),
+      onFailure: setFailure,
+      onDeviceLost: () => onDeviceLostRef.current?.(),
+    });
+    rendererRef.current = session.renderer;
 
     return () => {
-      active = false;
-      if (rendererRef.current === current) rendererRef.current = undefined;
-      current?.dispose();
+      if (rendererRef.current === session.renderer) {
+        rendererRef.current = undefined;
+      }
+      session.dispose();
     };
   }, [rendererFactory]);
 
   useEffect(() => {
     if (!started || !view) return;
-    try {
-      onDrawnRef.current?.(rendererRef.current?.draw(view, realm) ?? []);
-    } catch (error) {
-      setFailure(error instanceof Error ? error.message : String(error));
-    }
+    drawScene(rendererRef.current, view, realm, {
+      onDrawn: (eventIds) => onDrawnRef.current?.(eventIds),
+      onFailure: setFailure,
+    });
   }, [realm, started, view]);
 
   return (

@@ -4,7 +4,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { Sprite2D, SpriteGroup } from "three-flatland";
 
 import type { ViewLocation, WorldViewModel } from "../store";
-import { drawableEvents } from "./presentation";
+import { type EffectTone, placeEvents } from "./presentation";
 
 export interface WorldRenderer {
   start(onDeviceLost: () => void): Promise<void>;
@@ -48,6 +48,12 @@ const REALM_TINT: Record<Realm, number> = {
   mortal: 0x9a7956,
   olympus: 0x8c9d91,
   underworld: 0x716b73,
+};
+
+const EFFECT_COLOR: Record<EffectTone, number> = {
+  fire: 0xc95637,
+  worship: 0x8e7957,
+  neutral: 0x668b80,
 };
 
 const STATUS_TINT: Record<string, number> = {
@@ -253,18 +259,11 @@ export function createWorldRenderer(canvas: HTMLCanvasElement): WorldRenderer {
     }
 
     const drawnEventIds: string[] = [];
-    for (const [index, event] of drawableEvents(view, realm).entries()) {
-      const point = locations.length
-        ? points.get(locations[index % locations.length]?.id ?? "")
-        : undefined;
+    for (const [index, placed] of placeEvents(view, realm).entries()) {
+      const { event } = placed;
+      const point = points.get(placed.locationId);
       if (!point) continue;
-      const color =
-        String(event.kind).toLowerCase().includes("fire") ||
-        String(event.kind).toLowerCase().includes("ignit")
-          ? 0xc95637
-          : String(event.kind).toLowerCase().includes("worship")
-            ? 0x8e7957
-            : 0x668b80;
+      const color = EFFECT_COLOR[placed.tone];
       const effect = new THREE.Mesh(
         new THREE.RingGeometry(13 + (index % 3) * 3, 17 + (index % 3) * 3, 20),
         new THREE.MeshBasicMaterial({

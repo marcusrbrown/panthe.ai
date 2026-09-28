@@ -9,6 +9,7 @@ import {
   subscribe,
   type Transport,
 } from "./connection";
+import { previewView } from "./fixtures";
 import {
   createObserver,
   type ObserverTarget,
@@ -33,128 +34,6 @@ export interface ClientDependencies {
   readonly rendererFactory?: RendererFactory;
   readonly initialView?: WorldViewModel;
   readonly fixture?: boolean;
-}
-
-function fixtureView(): WorldViewModel {
-  const realm = (
-    id: string,
-    name: string,
-    actors: WorldViewModel["realms"][Realm][number]["actors"] = [],
-    buildings: WorldViewModel["realms"][Realm][number]["buildings"] = [],
-  ) => ({
-    id,
-    name,
-    realm: "mortal" as Realm,
-    edges: [],
-    actors,
-    buildings,
-  });
-  const recentEvents = [
-    {
-      id: "evt-strike-14",
-      sequence: 14,
-      tick: 14,
-      kind: "strike" as never,
-      subjects: [] as never[],
-    },
-    {
-      id: "evt-fire-15",
-      sequence: 15,
-      tick: 15,
-      kind: "building-ignited" as never,
-      subjects: [] as never[],
-    },
-    {
-      id: "evt-trade-16",
-      sequence: 16,
-      tick: 16,
-      kind: "trade" as never,
-      subjects: [] as never[],
-    },
-    {
-      id: "evt-worship-17",
-      sequence: 17,
-      tick: 17,
-      kind: "worship" as never,
-      subjects: [] as never[],
-    },
-  ] as unknown as WorldViewModel["recentEvents"];
-  const woodcutter = {
-    id: "wanderer",
-    locationId: "town-square",
-    alive: true,
-    isDeity: false,
-    inventory: [
-      { resource: "wood", amount: 2 },
-      { resource: "currency", amount: 5 },
-    ],
-  };
-  const deadActor = {
-    id: "fallen-guard",
-    locationId: "town-square",
-    alive: false,
-    isDeity: false,
-    inventory: [],
-  };
-  const tavern = {
-    id: "the-tavern",
-    name: "The Tavern",
-    locationId: "town-square",
-    status: "burning" as const,
-    inventory: [],
-    fire: { intensity: 2, ticksBurning: 2, destroyAt: 3 },
-  };
-  const shop = {
-    id: "agora-shop",
-    name: "Agora Shop",
-    locationId: "agora",
-    status: "operational" as const,
-    inventory: [{ resource: "planks", amount: 1 }],
-  };
-  const mortalSquare = {
-    ...realm("town-square", "Town Square", [woodcutter, deadActor], [tavern]),
-    edges: [{ to: "agora", transport: "path", bidirectional: true }],
-  };
-  const agora = {
-    ...realm("agora", "Agora", [], [shop]),
-    edges: [{ to: "town-square", transport: "path", bidirectional: true }],
-  };
-  const olympusHall = {
-    ...realm("olympus-hall", "Hall of Olympus", [
-      {
-        id: "zeus",
-        locationId: "olympus-hall",
-        alive: true,
-        isDeity: true,
-        inventory: [{ resource: "divinity", amount: 10 }],
-      },
-    ]),
-    realm: "olympus" as Realm,
-  };
-  const underworldGate = {
-    ...realm("underworld-gate", "Underworld Gate"),
-    realm: "underworld" as Realm,
-  };
-  return {
-    sessionId: "preview-session",
-    sequence: 17,
-    tick: 17,
-    status: "running",
-    catchUpSummary: {
-      appliedMs: 7_200_000,
-      skippedMs: 10_800_000,
-      majorOutcomes: [
-        "The tavern fire spread",
-        "A route through the agora reopened",
-      ],
-    },
-    realms: {
-      mortal: [agora, mortalSquare],
-      olympus: [olympusHall],
-      underworld: [underworldGate],
-    },
-    recentEvents,
-  } as WorldViewModel;
 }
 
 export function App({
@@ -218,7 +97,7 @@ export function App({
     if (dependencies.initialView) {
       setView(dependencies.initialView);
     } else if (fixtureMode) {
-      const initial = fixtureView();
+      const initial = previewView();
       observer.pick({ kind: "actor", id: "wanderer" });
       setView(initial);
       setObservation(observer.update(initial));

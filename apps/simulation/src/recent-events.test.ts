@@ -23,6 +23,7 @@ import {
   RECENT_EVENT_CAP,
   RECENT_EVENT_WINDOW_TICKS,
   readRecentEvents,
+  updateServiceStatus,
 } from "./server";
 import {
   createWorldProjectionReducers,
@@ -237,6 +238,47 @@ test("GET /frame carries the strike's events, and the frame parses under the con
       expect(parsed.value.recentEvents.map((event) => event.id)).toEqual(
         struck.map((event) => event.id),
       );
+    } finally {
+      handle.stop(true);
+      rmSync(slotsDir, { recursive: true, force: true });
+    }
+  }));
+
+test("a catch-up summary appears only in the frame built right after it; the next ordinary status update drops it", () =>
+  withStore(async (store, reducers, seeded) => {
+    const chain = commitTicks(store, reducers, seeded, [[]]);
+    const token = "the-launch-token";
+    const slotsDir = mkdtempSync(join(tmpdir(), "panthea-sim-summary-slots-"));
+    const statusRef = createServiceStatusRef(chain.state);
+    const handle = createSimulationServer({
+      token,
+      store,
+      reducers,
+      traceDb: store.db,
+      slotsDir,
+      statusRef,
+      externalQueue: createExternalQueue(),
+      port: 0,
+    });
+    const summary = {
+      appliedMs: 3_600_000,
+      skippedMs: 60_000,
+      majorOutcomes: ["tavern fire spread"],
+    };
+    const fetchFrame = async () => {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/frame`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const parsed = parseSyncFrame(await response.json());
+      if (!parsed.ok) throw new Error(parsed.message);
+      return parsed.value;
+    };
+    try {
+      updateServiceStatus(statusRef, chain.state, { catchUpSummary: summary });
+      expect((await fetchFrame()).catchUpSummary).toEqual(summary);
+
+      updateServiceStatus(statusRef, chain.state);
+      expect((await fetchFrame()).catchUpSummary).toBeUndefined();
     } finally {
       handle.stop(true);
       rmSync(slotsDir, { recursive: true, force: true });

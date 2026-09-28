@@ -508,7 +508,7 @@ flowchart TB
 
 ### Phase D — View and evidence
 
-- [ ] **Unit 8: Read-only client view with observer switching**
+- [x] **Unit 8: Read-only client view with observer switching**
 
 **Goal:** A Flatland-based view (WebGL2 baseline, WebGPU where available) that renders placeholder town, wilderness, Olympus, and Underworld layouts from live state, shows actors, buildings, fire/damage, and resource changes as they commit, and switches the observer across actors and locations in all three realms without affecting the world.
 

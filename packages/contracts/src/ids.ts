@@ -27,6 +27,7 @@ export const REJECTION_REASON_CODES = [
   "restricted-realm",
   "busy-actor",
   "unauthorized-claim",
+  "counterparty-declined",
   "over-limit",
 ] as const;
 
@@ -121,6 +122,16 @@ export function parseBoolean(
     return fail(path, "expected a boolean");
   }
   return ok(value);
+}
+
+export function parseOptionalBoolean(
+  value: unknown,
+  path: string,
+): ParseResult<boolean | undefined> {
+  if (value === undefined) {
+    return ok(undefined);
+  }
+  return parseBoolean(value, path);
 }
 
 export function parseEnum<T extends string>(
@@ -224,6 +235,10 @@ export const createCausationId = idFactory<"CausationId">("cause");
 export type SessionId = Brand<string, "SessionId">;
 export const parseSessionId = idParser<"SessionId">();
 export const createSessionId = idFactory<"SessionId">("session");
+
+export type LegendId = Brand<string, "LegendId">;
+export const parseLegendId = idParser<"LegendId">();
+export const createLegendId = idFactory<"LegendId">("legend");
 
 // --- Shared value shapes -----------------------------------------------------
 

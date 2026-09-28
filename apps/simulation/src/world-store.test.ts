@@ -25,9 +25,13 @@ import {
 } from "@panthea/persistence";
 import {
   createPrng,
+  decideRoutineProposal,
+  effectiveServices,
+  getResourceAmount,
   runTick,
   submitProposal,
   toEntityId,
+  type WorldState,
   withActor,
 } from "@panthea/world";
 import {
@@ -81,6 +85,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
 
@@ -94,39 +99,43 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       moveProposal("wanderer", "wilderness-path", "obs-1"),
     ]);
     expect(tick1.rejected).toEqual([]);
-    const events1 = tick1.committed.flatMap((record) => record.events);
-    expect(events1.map((event) => event.sequence)).toEqual([1]);
+    // The move commits at sequence 1; the farmer's two operational, owned
+    // buildings (the shop and the tavern) each earn one income-earned
+    // event every tick, right after the proposal queue drains.
+    const moveEvents1 = tick1.committed.flatMap((record) => record.events);
+    expect(moveEvents1.map((event) => event.sequence)).toEqual([1]);
+    expect(tick1.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
 
     const commit1 = commitTick(store, projectionReducers, {
-      events: events1,
+      events: tick1.events,
       cursorWallMs: 1_000,
       paused: false,
       tick: tick1.state.tick,
       simTimeMs: tick1.state.simTime,
       prngState: serializePrngState(tick1.prng),
     });
-    expect(commit1.sequence).toBe(1);
+    expect(commit1.sequence).toBe(3);
 
     const tick2 = runTick(tick1.state, tick1.prng, [
       moveProposal("wanderer", "town-square", "obs-2"),
     ]);
     expect(tick2.rejected).toEqual([]);
-    const events2 = tick2.committed.flatMap((record) => record.events);
+    const moveEvents2 = tick2.committed.flatMap((record) => record.events);
     // Contiguous with tick 1's sequence, not reset to 1 again.
-    expect(events2.map((event) => event.sequence)).toEqual([2]);
+    expect(moveEvents2.map((event) => event.sequence)).toEqual([4]);
 
     const commit2 = commitTick(store, projectionReducers, {
-      events: events2,
+      events: tick2.events,
       cursorWallMs: 2_000,
       paused: false,
       tick: tick2.state.tick,
       simTimeMs: tick2.state.simTime,
       prngState: serializePrngState(tick2.prng),
     });
-    expect(commit2.sequence).toBe(2);
+    expect(commit2.sequence).toBe(6);
     expect(tick2.state.tick).toBe(2);
     expect(tick2.state.simTime).toBe(2_000);
-    expect(tick2.state.lastSequence).toBe(2);
+    expect(tick2.state.lastSequence).toBe(6);
 
     // --- 2. Close -> reopen -> live projections restored to the full state
     closeStore(store);
@@ -161,23 +170,23 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       moveProposal("wanderer", "tavern", "obs-3"),
     ]);
     expect(tick3.rejected).toEqual([]);
-    const events3 = tick3.committed.flatMap((record) => record.events);
-    expect(events3.map((event) => event.sequence)).toEqual([3]);
+    const moveEvents3 = tick3.committed.flatMap((record) => record.events);
+    expect(moveEvents3.map((event) => event.sequence)).toEqual([7]);
 
     const commit3 = commitTick(store, projectionReducers, {
-      events: events3,
+      events: tick3.events,
       cursorWallMs: 3_000,
       paused: false,
       tick: tick3.state.tick,
       simTimeMs: tick3.state.simTime,
       prngState: serializePrngState(tick3.prng),
     });
-    expect(commit3.sequence).toBe(3);
+    expect(commit3.sequence).toBe(9);
 
     // --- 4. Export -> importArchive (world codec) -> reopen -> equal ------
     const exportPath = join(exportDir, "archive.sqlite");
     const manifest = exportArchive(store, exportPath);
-    expect(manifest.eventSequence).toBe(3);
+    expect(manifest.eventSequence).toBe(9);
 
     const importValidationCodec: ProjectionCodec<unknown> = {
       encode: (value) => value,
@@ -228,7 +237,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       prngState: serializePrngState(tick3.prng),
     });
     // Sequence is unchanged: no events were committed.
-    expect(commit4.sequence).toBe(3);
+    expect(commit4.sequence).toBe(9);
     const restoredAfterRejection = restoreWorldTime(
       readLiveProjections(store, projectionReducers),
       readClock(store.db),
@@ -256,6 +265,7 @@ test("rebuild restores the seeded actor even from a freshly constructed composit
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
     const seededReducers = createWorldProjectionReducers(seeded);
@@ -267,7 +277,7 @@ test("rebuild restores the seeded actor even from a freshly constructed composit
       moveProposal("wanderer", "wilderness-path", "obs-1"),
     ]);
     commitTick(store, seededReducers, {
-      events: tick1.committed.flatMap((record) => record.events),
+      events: tick1.events,
       cursorWallMs: 1_000,
       paused: false,
       tick: tick1.state.tick,
@@ -279,7 +289,7 @@ test("rebuild restores the seeded actor even from a freshly constructed composit
       moveProposal("wanderer", "town-square", "obs-2"),
     ]);
     commitTick(store, seededReducers, {
-      events: tick2.committed.flatMap((record) => record.events),
+      events: tick2.events,
       cursorWallMs: 2_000,
       paused: false,
       tick: tick2.state.tick,
@@ -349,6 +359,7 @@ test("an archive whose genesis row contains a malformed actor entry is rejected 
       locationId: toEntityId("wilderness-grove"),
       alive: true,
       capabilities: [],
+      inventory: new Map(),
       revision: 0,
     });
     const reducers = createWorldProjectionReducers(seeded);
@@ -407,6 +418,494 @@ test("an archive whose genesis row contains a malformed actor entry is rejected 
     }
     expect(caught).toBeInstanceOf(ImportError);
     expect((caught as ImportError).kind).toBe("corrupt");
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+function totalAcrossActors(state: WorldState, resource: string): number {
+  let total = 0;
+  for (const actor of state.actors.values()) {
+    total += getResourceAmount(actor.inventory, resource);
+  }
+  return total;
+}
+
+test("an economy run of routine-driven inhabitants through a real store conserves currency and survives reopen and rebuild", () => {
+  const storeDir = tempDir("panthea-sim-economy-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seededState = loadGreekWorldState();
+    const projectionReducers = createWorldProjectionReducers(seededState);
+    const store = openStore(storePath, projectionReducers);
+
+    const currencyBefore = totalAcrossActors(seededState, "currency");
+    const woodBefore = totalAcrossActors(seededState, "wood");
+    const foodBefore = totalAcrossActors(seededState, "food");
+
+    let gatheredWood = 0;
+    let gatheredFood = 0;
+    let consumedFood = 0;
+    let tradedCount = 0;
+    let producedEventCount = 0;
+    let woodConsumedByRecipe = 0;
+    let incomeEarned = 0;
+    const producedByResource: Record<string, number> = {};
+
+    let state = seededState;
+    let prng = createPrng(7);
+    const recipes = seededState.recipes;
+    const routineActorIds = [...state.actors.entries()]
+      .filter(([, actor]) => actor.drives !== undefined)
+      .map(([id]) => id);
+
+    for (let tick = 1; tick <= 15; tick++) {
+      const proposals: Proposal[] = [];
+      for (const actorId of routineActorIds) {
+        const decision = decideRoutineProposal(state, actorId);
+        if (decision) proposals.push(decision.proposal);
+      }
+
+      const result = runTick(state, prng, proposals);
+      for (const event of result.environmentEvents) {
+        if (event.kind === "income-earned") {
+          incomeEarned += event.amount;
+        }
+      }
+      for (const record of result.committed) {
+        for (const event of record.events) {
+          if (event.kind === "resource-gathered" && event.resource === "wood") {
+            gatheredWood += event.amount;
+          }
+          if (event.kind === "resource-gathered" && event.resource === "food") {
+            gatheredFood += event.amount;
+          }
+          if (event.kind === "resource-consumed" && event.resource === "food") {
+            consumedFood += event.amount;
+          }
+          if (event.kind === "resource-traded") {
+            tradedCount += 1;
+          }
+          if (event.kind === "resource-produced") {
+            producedEventCount += 1;
+            const recipe = recipes[event.output];
+            if (recipe) {
+              for (const output of recipe.outputs) {
+                producedByResource[output.resource] =
+                  (producedByResource[output.resource] ?? 0) +
+                  output.amount * event.quantity;
+              }
+              for (const input of recipe.inputs) {
+                if (input.resource === "wood") {
+                  woodConsumedByRecipe += input.amount * event.quantity;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      commitTick(store, projectionReducers, {
+        events: result.events,
+        cursorWallMs: tick * 1_000,
+        paused: false,
+        tick: result.state.tick,
+        simTimeMs: result.state.simTime,
+        prngState: serializePrngState(result.prng),
+      });
+
+      state = result.state;
+      prng = result.prng;
+    }
+
+    // Progress happened: routines did not stall degenerately.
+    expect(gatheredWood).toBeGreaterThan(0);
+    expect(gatheredFood).toBeGreaterThan(0);
+    expect(tradedCount).toBeGreaterThan(0);
+    // The authored woodcutter actually produces during a normal run.
+    expect(producedEventCount).toBeGreaterThan(0);
+
+    // Currency moves between actors via trade (zero-sum, no proposal ever
+    // names it) plus one declared source: an operational owned building's
+    // per-tick service revenue.
+    expect(incomeEarned).toBeGreaterThan(0);
+    expect(totalAcrossActors(state, "currency")).toBe(
+      currencyBefore + incomeEarned,
+    );
+    // Wood is conserved except at its declared source (gather) and its
+    // declared conversion into planks (the recipe's input side).
+    expect(totalAcrossActors(state, "wood")).toBe(
+      woodBefore + gatheredWood - woodConsumedByRecipe,
+    );
+    // Food is conserved except at its declared source (gather) and sink
+    // (consume).
+    expect(totalAcrossActors(state, "food")).toBe(
+      foodBefore + gatheredFood - consumedFood,
+    );
+    // Planks exist only through the declared recipe conversion; trading
+    // them between actors never changes the total the world holds.
+    expect(totalAcrossActors(state, "planks")).toBe(
+      producedByResource.planks ?? 0,
+    );
+
+    closeStore(store);
+
+    // Fresh composition root: reopen with reducers built from
+    // `loadGreekWorldState()` again, holding no reference to `state`.
+    const freshReducers = createWorldProjectionReducers(loadGreekWorldState());
+    const reopened = openStore(storePath, freshReducers);
+
+    const live = restoreWorldTime(
+      readLiveProjections(reopened, freshReducers),
+      readClock(reopened.db),
+    );
+    const rebuilt = restoreWorldTime(
+      rebuildProjections(reopened, freshReducers),
+      readClock(reopened.db),
+    );
+    expect(live).toEqual(state);
+    expect(rebuilt).toEqual(state);
+
+    // No trade this run ever left an actor holding a negative balance of
+    // anything, in the state reopened and decoded from the real store.
+    for (const actor of live.actors.values()) {
+      for (const amount of actor.inventory.values()) {
+        expect(amount).toBeGreaterThanOrEqual(0);
+      }
+    }
+
+    closeStore(reopened);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+function worshipProposal(actor: string, deity: string): Proposal {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor,
+    targets: [deity],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-worship",
+    kind: "worship",
+    deity,
+  });
+  if (!submitted.ok) {
+    throw new Error(
+      `test fixture proposal failed to parse: ${submitted.rejection.message}`,
+    );
+  }
+  return submitted.proposal;
+}
+
+function gatherProposal(
+  actor: string,
+  resource: string,
+  amount: number,
+  observationId: string,
+): Proposal {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor,
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId,
+    kind: "gather",
+    resource,
+    amount,
+  });
+  if (!submitted.ok) {
+    throw new Error(
+      `test fixture proposal failed to parse: ${submitted.rejection.message}`,
+    );
+  }
+  return submitted.proposal;
+}
+
+test("a favor from worship increases gather yield until it expires, and the bonus is conserved", () => {
+  const storeDir = tempDir("panthea-sim-favor-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seededState = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seededState);
+    const store = openStore(storePath, reducers);
+
+    const woodBefore = totalAcrossActors(seededState, "wood");
+    let gatheredWood = 0;
+    let prng = createPrng(3);
+    let state = seededState;
+
+    function commit(result: ReturnType<typeof runTick>, wallMs: number): void {
+      for (const event of result.committed.flatMap((r) => r.events)) {
+        if (event.kind === "resource-gathered" && event.resource === "wood") {
+          gatheredWood += event.amount;
+        }
+      }
+      commitTick(store, reducers, {
+        events: result.events,
+        cursorWallMs: wallMs,
+        paused: false,
+        tick: result.state.tick,
+        simTimeMs: result.state.simTime,
+        prngState: serializePrngState(result.prng),
+      });
+      state = result.state;
+      prng = result.prng;
+    }
+
+    // Tick 1: the woodcutter worships Zeus and is granted a favor.
+    let result = runTick(state, prng, [worshipProposal("woodcutter", "zeus")]);
+    expect(result.rejected).toEqual([]);
+    commit(result, 1_000);
+    const favor = state.actors.get(toEntityId("woodcutter"))?.favors?.[0];
+    expect(favor).toMatchObject({ source: "zeus", effect: "divine-favor" });
+    if (!favor) throw new Error("expected the granted favor");
+
+    // Tick 2: gathering while the favor is active yields the base amount
+    // (2, from content) plus its bonus (1).
+    result = runTick(state, prng, [
+      gatherProposal("woodcutter", "wood", 2, "obs-gather-1"),
+    ]);
+    expect(result.rejected).toEqual([]);
+    const favoredEvent = result.committed[0]?.events[0];
+    expect(favoredEvent).toMatchObject({
+      kind: "resource-gathered",
+      resource: "wood",
+      amount: 3,
+    });
+    commit(result, 2_000);
+
+    // Advance empty ticks until the favor expires.
+    while (state.tick < favor.expiresAtTick) {
+      result = runTick(state, prng, []);
+      commit(result, (state.tick + 1) * 1_000);
+    }
+
+    // Gathering after expiry yields the base amount only.
+    result = runTick(state, prng, [
+      gatherProposal("woodcutter", "wood", 2, "obs-gather-2"),
+    ]);
+    expect(result.rejected).toEqual([]);
+    const unfavoredEvent = result.committed[0]?.events[0];
+    expect(unfavoredEvent).toMatchObject({
+      kind: "resource-gathered",
+      resource: "wood",
+      amount: 2,
+    });
+    commit(result, (state.tick + 1) * 1_000);
+
+    // The favor's bonus is a declared source, summed like any other gather:
+    // the total wood held is exactly what every resource-gathered event
+    // this test committed says it is.
+    expect(totalAcrossActors(state, "wood")).toBe(woodBefore + gatheredWood);
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+function strikeProposal(target: string, power: number): Proposal {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: "zeus",
+    targets: [target],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-strike",
+    kind: "strike",
+    target,
+    power,
+  });
+  if (!submitted.ok) {
+    throw new Error(
+      `test fixture proposal failed to parse: ${submitted.rejection.message}`,
+    );
+  }
+  return submitted.proposal;
+}
+
+test("a strike ignites the tavern; it burns, stops services and income, and a motivated repair restores it -- mid-fire reopen/rebuild and export/import agree", () => {
+  const storeDir = tempDir("panthea-sim-fire-");
+  const exportDir = tempDir("panthea-sim-fire-export-");
+  const slotsDir = tempDir("panthea-sim-fire-slots-");
+
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seededState = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seededState);
+    let store = openStore(storePath, reducers);
+
+    // --- Tick 1: Zeus strikes the tavern with enough power to ignite it.
+    const prng = createPrng(11);
+    let result = runTick(seededState, prng, [strikeProposal("the-tavern", 3)]);
+    expect(result.rejected).toEqual([]);
+    const tavernAfterStrike = result.state.buildings.get(
+      toEntityId("the-tavern"),
+    );
+    if (!tavernAfterStrike) throw new Error("expected the tavern building");
+    // Ignition and its first burn tick both happen this same tick: the
+    // environment step runs right after the proposal that caused it.
+    expect(tavernAfterStrike).toMatchObject({
+      status: "burning",
+      fireIntensity: 1,
+      ticksBurning: 1,
+    });
+    expect(effectiveServices(tavernAfterStrike)).toEqual([]);
+    // Income stopped the very tick it started burning; the stone shop,
+    // unaffected, still earns its owner income.
+    const incomeThisTick = result.environmentEvents.filter(
+      (event) => event.kind === "income-earned",
+    );
+    expect(
+      incomeThisTick.some(
+        (event) => "buildingId" in event && event.buildingId === "the-tavern",
+      ),
+    ).toBe(false);
+    expect(
+      incomeThisTick.some(
+        (event) => "buildingId" in event && event.buildingId === "agora-shop",
+      ),
+    ).toBe(true);
+
+    commitTick(store, reducers, {
+      events: result.events,
+      cursorWallMs: 1_000,
+      paused: false,
+      tick: result.state.tick,
+      simTimeMs: result.state.simTime,
+      prngState: serializePrngState(result.prng),
+    });
+
+    // --- Mid-fire reopen/rebuild equality ------------------------------
+    closeStore(store);
+    store = openStore(storePath, reducers);
+    const midFireLive = restoreWorldTime(
+      readLiveProjections(store, reducers),
+      readClock(store.db),
+    );
+    const midFireRebuilt = restoreWorldTime(
+      rebuildProjections(store, reducers),
+      readClock(store.db),
+    );
+    expect(midFireLive).toEqual(result.state);
+    expect(midFireRebuilt).toEqual(result.state);
+
+    // --- Export -> import at this mid-fire point: continuing from either
+    //     the original store's state or a freshly imported copy, with the
+    //     same PRNG and the same (empty) proposal queue, produces the same
+    //     fire outcome.
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(store, exportPath);
+    const importValidationCodec: ProjectionCodec<unknown> = {
+      encode: (value) => value,
+      decode: (value) => worldProjectionCodec.decode(value),
+    };
+    const importResult = importArchive(
+      exportPath,
+      slotsDir,
+      importValidationCodec,
+    );
+    const importedStore = openStore(
+      join(importResult.slotPath, "world.sqlite"),
+      reducers,
+    );
+    const importedState = restoreWorldTime(
+      readLiveProjections(importedStore, reducers),
+      readClock(importedStore.db),
+    );
+    const importedPrng =
+      deserializePrngState(readPrngState(importedStore.db)) ?? createPrng(0);
+
+    const continuedFromOriginal = runTick(result.state, result.prng, []);
+    const continuedFromImported = runTick(importedState, importedPrng, []);
+    expect(continuedFromImported.state).toEqual(continuedFromOriginal.state);
+    expect(continuedFromImported.events).toEqual(continuedFromOriginal.events);
+    closeStore(importedStore);
+
+    // --- Continue in the original store: the burn crosses the destroy
+    //     threshold, the building is destroyed, its inventory disposed,
+    //     and it exposes no services.
+    result = continuedFromOriginal;
+    commitTick(store, reducers, {
+      events: result.events,
+      cursorWallMs: 2_000,
+      paused: false,
+      tick: result.state.tick,
+      simTimeMs: result.state.simTime,
+      prngState: serializePrngState(result.prng),
+    });
+
+    result = runTick(result.state, result.prng, []);
+    commitTick(store, reducers, {
+      events: result.events,
+      cursorWallMs: 3_000,
+      paused: false,
+      tick: result.state.tick,
+      simTimeMs: result.state.simTime,
+      prngState: serializePrngState(result.prng),
+    });
+    const tavernDestroyed = result.state.buildings.get(
+      toEntityId("the-tavern"),
+    );
+    if (!tavernDestroyed) throw new Error("expected the tavern building");
+    expect(tavernDestroyed.status).toBe("destroyed");
+    expect(tavernDestroyed.inventory.size).toBe(0);
+    expect(effectiveServices(tavernDestroyed)).toEqual([]);
+
+    // --- Motivated repair: the real economy (the woodcutter gathering,
+    //     producing, and selling planks; the farmer buying them) is the
+    //     only source of the farmer's planks. Once it holds enough, its
+    //     own routine proposes repair over any other choice.
+    let tick = 3;
+    let repaired = false;
+    while (tick < 100 && !repaired) {
+      tick += 1;
+      const proposals: Proposal[] = [];
+      for (const actorId of ["woodcutter", "farmer"] as const) {
+        const decision = decideRoutineProposal(
+          result.state,
+          toEntityId(actorId),
+        );
+        if (decision) proposals.push(decision.proposal);
+      }
+      result = runTick(result.state, result.prng, proposals);
+      commitTick(store, reducers, {
+        events: result.events,
+        cursorWallMs: tick * 1_000,
+        paused: false,
+        tick: result.state.tick,
+        simTimeMs: result.state.simTime,
+        prngState: serializePrngState(result.prng),
+      });
+      repaired =
+        result.state.buildings.get(toEntityId("the-tavern"))?.status ===
+        "operational";
+    }
+
+    expect(repaired).toBe(true);
+    const tavernRepaired = result.state.buildings.get(toEntityId("the-tavern"));
+    if (!tavernRepaired) throw new Error("expected the tavern building");
+    expect(tavernRepaired.repairProgress).toBeUndefined();
+    expect(effectiveServices(tavernRepaired)).toEqual(["drink"]);
+
+    // Reopen once more from a fresh composition root: the fully repaired
+    // state survives, proposal-free.
+    closeStore(store);
+    const freshReducers = createWorldProjectionReducers(loadGreekWorldState());
+    const reopened = openStore(storePath, freshReducers);
+    const finalLive = restoreWorldTime(
+      readLiveProjections(reopened, freshReducers),
+      readClock(reopened.db),
+    );
+    expect(finalLive).toEqual(result.state);
+    closeStore(reopened);
   } finally {
     rmSync(storeDir, { recursive: true, force: true });
     rmSync(exportDir, { recursive: true, force: true });

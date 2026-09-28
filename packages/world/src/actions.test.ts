@@ -61,6 +61,7 @@ function walkPack(): ContentPack {
     buildings: [],
     inhabitants: [],
     rules: minimalRules(),
+    recipes: {},
   };
 }
 
@@ -71,6 +72,7 @@ function walkState(): WorldState {
     locationId: toEntityId("wilderness"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
 }
@@ -138,6 +140,7 @@ test("a realm-transition proposal changes realm and location in one event", () =
     locationId: toEntityId("ferry-dock"),
     alive: true,
     capabilities: [],
+    inventory: new Map(),
     revision: 0,
   });
 
@@ -256,4 +259,135 @@ test("same state, PRNG-irrelevant proposals, and queue produce identical output 
   expect(runA.prng).toEqual(runB.prng);
   expect(runA.committed).toEqual(runB.committed);
   expect(runA.rejected).toEqual(runB.rejected);
+});
+
+function economyWalkPack(): ContentPack {
+  return {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "square", realm: "mortal", name: "Square", edges: [] }],
+    buildings: [],
+    inhabitants: [],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      fireBalance: {},
+      economyBalance: { value_wood: 1, value_currency: 1, gatherAmount: 4 },
+    },
+    recipes: {
+      planks: {
+        inputs: [{ resource: "wood", amount: 2 }],
+        outputs: [{ resource: "planks", amount: 1 }],
+      },
+    },
+  };
+}
+
+function economyWalkState(): WorldState {
+  let state = createInitialWorldState(economyWalkPack());
+  state = withActor(state, {
+    id: toEntityId("woodcutter"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map(),
+    drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    gathers: "wood",
+    revision: 0,
+  });
+  state = withActor(state, {
+    id: toEntityId("farmer"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 10]]),
+    drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+    revision: 0,
+  });
+  return state;
+}
+
+test("a gather, produce, trade, and consume run through a tick and reproduce via replay", () => {
+  const state = economyWalkState();
+
+  const gather = runTick(state, createPrng(1), [
+    proposal({
+      actor: "woodcutter",
+      kind: "gather",
+      resource: "wood",
+      amount: 4,
+    }),
+  ]);
+  expect(gather.rejected).toEqual([]);
+  expect(
+    gather.state.actors.get(toEntityId("woodcutter"))?.inventory.get("wood"),
+  ).toBe(4);
+
+  const trade = runTick(gather.state, gather.prng, [
+    proposal({
+      actor: "woodcutter",
+      observationId: "obs-2",
+      kind: "trade",
+      counterparty: "farmer",
+      give: [{ resource: "wood", amount: 2 }],
+      receive: [{ resource: "currency", amount: 2 }],
+    }),
+  ]);
+  expect(trade.rejected).toEqual([]);
+  expect(
+    trade.state.actors.get(toEntityId("woodcutter"))?.inventory.get("currency"),
+  ).toBe(2);
+  expect(
+    trade.state.actors.get(toEntityId("woodcutter"))?.inventory.get("wood"),
+  ).toBe(2);
+  expect(
+    trade.state.actors.get(toEntityId("farmer"))?.inventory.get("wood"),
+  ).toBe(2);
+  expect(
+    trade.state.actors.get(toEntityId("farmer"))?.inventory.get("currency"),
+  ).toBe(8);
+
+  const produce = runTick(trade.state, trade.prng, [
+    proposal({
+      actor: "woodcutter",
+      observationId: "obs-3",
+      kind: "produce",
+      output: "planks",
+      quantity: 1,
+    }),
+  ]);
+  expect(produce.rejected).toEqual([]);
+  expect(
+    produce.state.actors.get(toEntityId("woodcutter"))?.inventory.has("wood"),
+  ).toBe(false);
+  expect(
+    produce.state.actors.get(toEntityId("woodcutter"))?.inventory.get("planks"),
+  ).toBe(1);
+
+  const consume = runTick(produce.state, produce.prng, [
+    proposal({
+      actor: "woodcutter",
+      observationId: "obs-4",
+      kind: "consume",
+      resource: "currency",
+      amount: 2,
+    }),
+  ]);
+  expect(consume.rejected).toEqual([]);
+  expect(
+    consume.state.actors
+      .get(toEntityId("woodcutter"))
+      ?.inventory.has("currency"),
+  ).toBe(false);
+
+  const allEvents = [
+    ...gather.committed.flatMap((r) => r.events),
+    ...trade.committed.flatMap((r) => r.events),
+    ...produce.committed.flatMap((r) => r.events),
+    ...consume.committed.flatMap((r) => r.events),
+  ];
+  const rebuilt = applyEvents(state, allEvents);
+  expect(rebuilt.actors).toEqual(consume.state.actors);
 });

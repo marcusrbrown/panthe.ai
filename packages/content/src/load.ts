@@ -98,6 +98,7 @@ export function loadContentPack(baseDir: string): ParseResult<ContentPack> {
     buildings: buildingsRaw?.buildings ?? [],
     inhabitants: inhabitantsRaw?.inhabitants ?? [],
     rules: rulesRaw.rules,
+    recipes: rulesRaw.recipes ?? {},
   };
 
   return parseContentPack(merged);

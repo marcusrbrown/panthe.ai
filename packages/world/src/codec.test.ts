@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
-import type { ContentPack } from "@panthea/contracts";
+import type { ContentPack, EventId } from "@panthea/contracts";
 import { applyEvent, runTick, submitProposal } from "./actions";
 import { decode, encode } from "./codec";
 import {
   createInitialWorldState,
   createPrng,
   toEntityId,
+  toLegendId,
   withActor,
+  withLegend,
 } from "./state";
 
 function minimalRules(): ContentPack["rules"] {
@@ -36,6 +38,7 @@ function walkPack(): ContentPack {
     buildings: [],
     inhabitants: [],
     rules: minimalRules(),
+    recipes: {},
   };
 }
 
@@ -46,6 +49,7 @@ function seededState() {
     locationId: toEntityId("grove"),
     alive: true,
     capabilities: ["divine"],
+    inventory: new Map([["wood", 3]]),
     revision: 2,
   });
 }
@@ -241,4 +245,241 @@ test("applying events to a decoded state equals applying them to the original", 
   const viaDecoded = applyEvent(roundTripped, event);
 
   expect(viaDecoded).toEqual(viaOriginal);
+});
+
+function economyPack(): ContentPack {
+  return {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "shop", realm: "mortal", name: "Shop", edges: [] }],
+    buildings: [
+      {
+        id: "agora-shop",
+        locationId: "shop",
+        name: "The Agora Shop",
+        material: "stone",
+        combustible: false,
+        services: ["trade"],
+        inventory: [{ resource: "food", amount: 5 }],
+        owner: "farmer",
+      },
+    ],
+    inhabitants: [
+      {
+        id: "farmer",
+        name: "The Farmer",
+        locationId: "shop",
+        drives: { thrift: 0.2, appetite: 0.5, greed: 0.2, piety: 0.1 },
+        wants: "planks",
+        startingInventory: [{ resource: "currency", amount: 10 }],
+      },
+      {
+        id: "zeus",
+        name: "Zeus",
+        locationId: "shop",
+        deity: true,
+        startingInventory: [{ resource: "divinity", amount: 10 }],
+      },
+    ],
+    rules: {
+      catchUpCapMs: 1,
+      catchUpChunkMs: 2,
+      checkpointIntervalMs: 3,
+      fireBalance: { spreadChancePerTick: 0.1 },
+      economyBalance: { value_food: 3 },
+    },
+    recipes: {
+      planks: {
+        inputs: [{ resource: "wood", amount: 2 }],
+        outputs: [{ resource: "planks", amount: 1 }],
+      },
+    },
+  };
+}
+
+test("encode -> JSON round-trip -> decode reproduces buildings, rules, recipes, and actor inventory/drives", () => {
+  const original = createInitialWorldState(economyPack());
+  const roundTripped = decode(JSON.parse(JSON.stringify(encode(original))));
+  expect(roundTripped).toEqual(original);
+  const farmer = roundTripped.actors.get(toEntityId("farmer"));
+  expect(farmer?.inventory.get("currency")).toBe(10);
+  expect(farmer?.wants).toBe("planks");
+  expect(farmer?.isDeity).toBeUndefined();
+  expect(farmer?.drives).toEqual({
+    thrift: 0.2,
+    appetite: 0.5,
+    greed: 0.2,
+    piety: 0.1,
+  });
+  const zeus = roundTripped.actors.get(toEntityId("zeus"));
+  expect(zeus?.isDeity).toBe(true);
+  const shop = roundTripped.buildings.get(toEntityId("agora-shop"));
+  expect(shop?.inventory.get("food")).toBe(5);
+  expect(shop?.owner).toBe(toEntityId("farmer"));
+  expect(roundTripped.rules).toEqual(original.rules);
+  expect(roundTripped.recipes).toEqual(original.recipes);
+});
+
+test("decode rejects a building whose owner references an unknown actor", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const [id, building] = base.buildings[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      buildings: [[id, { ...building, owner: "nobody" }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a building whose locationId is not a known location", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const [id, building] = base.buildings[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      buildings: [[id, { ...building, locationId: "nowhere" }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a duplicate key among the building entries", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const [id, building] = base.buildings[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      buildings: [...base.buildings, [id, building]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects an inventory entry with a negative amount", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const [id, building] = base.buildings[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      buildings: [[id, { ...building, inventory: [["food", -1]] }]],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a duplicate resource within one inventory", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const [id, building] = base.buildings[0] as unknown as [
+    string,
+    Record<string, unknown>,
+  ];
+  expect(() =>
+    decode({
+      ...base,
+      buildings: [
+        [
+          id,
+          {
+            ...building,
+            inventory: [
+              ["food", 1],
+              ["food", 2],
+            ],
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a malformed recipes record", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({ ...base, recipes: { planks: { inputs: "not-an-array" } } }),
+  ).toThrow();
+});
+
+test("decode rejects a rules object missing a required numeric field", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  const { catchUpCapMs: _omit, ...incompleteRules } = base.rules;
+  expect(() => decode({ ...base, rules: incompleteRules })).toThrow();
+});
+
+test("decode rejects a legend claiming verified without a linkedEventId", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({
+      ...base,
+      legends: [
+        [
+          "legend-1",
+          {
+            id: "legend-1",
+            narrator: "farmer",
+            assertion: "Zeus struck down the old oak",
+            verified: true,
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
+});
+
+test("decode rejects a legend with a linkedEventId claiming unverified", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({
+      ...base,
+      legends: [
+        [
+          "legend-1",
+          {
+            id: "legend-1",
+            narrator: "farmer",
+            assertion: "Zeus struck down the old oak",
+            linkedEventId: "evt-9",
+            verified: false,
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
+});
+
+test("encode -> JSON round-trip -> decode reproduces both an unlinked rumor and a linked verified legend", () => {
+  let original = createInitialWorldState(economyPack());
+  original = withLegend(original, {
+    id: toLegendId("legend-rumor"),
+    narrator: toEntityId("farmer"),
+    assertion: "Zeus struck down the old oak",
+    verified: false,
+  });
+  original = withLegend(original, {
+    id: toLegendId("legend-verified"),
+    narrator: toEntityId("farmer"),
+    assertion: "Zeus struck down the old oak",
+    linkedEventId: "evt-9" as EventId,
+    verified: true,
+  });
+  const roundTripped = decode(JSON.parse(JSON.stringify(encode(original))));
+  expect(roundTripped).toEqual(original);
+  expect(roundTripped.legends.get(toLegendId("legend-rumor"))).toMatchObject({
+    verified: false,
+  });
+  expect(roundTripped.legends.get(toLegendId("legend-verified"))).toMatchObject(
+    {
+      linkedEventId: "evt-9",
+      verified: true,
+    },
+  );
 });

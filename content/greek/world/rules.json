@@ -3,19 +3,41 @@
     { "resource": "currency", "amount": 0 },
     { "resource": "food", "amount": 0 },
     { "resource": "wood", "amount": 0 },
-    { "resource": "wine", "amount": 0 }
+    { "resource": "wine", "amount": 0 },
+    { "resource": "planks", "amount": 0 }
   ],
+  "recipes": {
+    "planks": {
+      "inputs": [{ "resource": "wood", "amount": 2 }],
+      "outputs": [{ "resource": "planks", "amount": 1 }]
+    }
+  },
   "rules": {
     "catchUpCapMs": 3600000,
     "catchUpChunkMs": 60000,
     "checkpointIntervalMs": 60000,
     "fireBalance": {
       "spreadChancePerTick": 0.1,
-      "maxSpreadPerTick": 2
+      "maxSpreadPerTick": 2,
+      "igniteThreshold": 3,
+      "intensityGrowthPerTick": 1,
+      "destroyIntensity": 3
     },
     "economyBalance": {
       "priceFloor": 1,
-      "priceCeiling": 100
+      "priceCeiling": 100,
+      "gatherAmount": 2,
+      "consumeAmount": 1,
+      "value_currency": 1,
+      "value_wood": 1,
+      "value_food": 3,
+      "value_planks": 2,
+      "repairCostPlanks": 3,
+      "repairAmountPerTick": 1,
+      "worshipCapacityGain": 1,
+      "favorDurationTicks": 10,
+      "favorGatherBonus": 1,
+      "incomePerTick": 1
     }
   }
 }

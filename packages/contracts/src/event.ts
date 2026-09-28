@@ -9,16 +9,24 @@ import {
   type EventId,
   fail,
   isRecord,
+  type LegendId,
   ok,
   type ParseResult,
+  parseArray,
   parseBoolean,
   parseCausationId,
   parseCorrelationId,
   parseEntityId,
   parseEventId,
   parseFiniteNumber,
+  parseLegendId,
   parseNonNegativeInteger,
+  parseNonNegativeNumber,
+  parseOptionalString,
+  parseResourceAmount,
   parseSchemaVersion,
+  parseString,
+  type ResourceAmount,
 } from "./ids";
 
 export interface EventEnvelope {
@@ -44,7 +52,119 @@ export interface RealmTransitionedEvent extends EventEnvelope {
   readonly via: EntityId;
 }
 
-export type WorldEvent = EntityMovedEvent | RealmTransitionedEvent;
+export interface ResourceGatheredEvent extends EventEnvelope {
+  readonly kind: "resource-gathered";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+}
+
+export interface ResourceProducedEvent extends EventEnvelope {
+  readonly kind: "resource-produced";
+  readonly entityId: EntityId;
+  readonly output: string;
+  readonly quantity: number;
+}
+
+export interface ResourceTradedEvent extends EventEnvelope {
+  readonly kind: "resource-traded";
+  readonly entityId: EntityId;
+  readonly counterpartyId: EntityId;
+  readonly give: readonly ResourceAmount[];
+  readonly receive: readonly ResourceAmount[];
+}
+
+export interface ResourceConsumedEvent extends EventEnvelope {
+  readonly kind: "resource-consumed";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+}
+
+export interface BuildingDamagedEvent extends EventEnvelope {
+  readonly kind: "building-damaged";
+  readonly entityId: EntityId;
+  readonly amount: number;
+}
+
+export interface BuildingIgnitedEvent extends EventEnvelope {
+  readonly kind: "building-ignited";
+  readonly entityId: EntityId;
+}
+
+export interface BuildingBurnTickedEvent extends EventEnvelope {
+  readonly kind: "building-burn-ticked";
+  readonly entityId: EntityId;
+  readonly fireIntensity: number;
+  readonly ticksBurning: number;
+}
+
+export interface BuildingDestroyedEvent extends EventEnvelope {
+  readonly kind: "building-destroyed";
+  readonly entityId: EntityId;
+  readonly disposedInventory: readonly ResourceAmount[];
+}
+
+export interface RepairProgressedEvent extends EventEnvelope {
+  readonly kind: "repair-progressed";
+  readonly entityId: EntityId;
+  readonly structureId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+}
+
+export interface BuildingRepairedEvent extends EventEnvelope {
+  readonly kind: "building-repaired";
+  readonly entityId: EntityId;
+}
+
+export interface WorshipPerformedEvent extends EventEnvelope {
+  readonly kind: "worship-performed";
+  readonly entityId: EntityId;
+  readonly deity: EntityId;
+  readonly offering?: ResourceAmount;
+  readonly favorEffect: string;
+  readonly favorExpiresAtTick: number;
+}
+
+export interface IncomeEarnedEvent extends EventEnvelope {
+  readonly kind: "income-earned";
+  readonly entityId: EntityId;
+  readonly buildingId: EntityId;
+  readonly amount: number;
+}
+
+/**
+ * Records that a narrative was told, never that it is fact: `verified` is
+ * exactly whether `linkedEventId` is present, so a rumor and a linked,
+ * verified telling of the same happening are distinguished by this event
+ * alone -- no separate lookup required.
+ */
+export interface LegendRecordedEvent extends EventEnvelope {
+  readonly kind: "legend-recorded";
+  readonly entityId: EntityId;
+  readonly legendId: LegendId;
+  readonly assertion: string;
+  readonly linkedEventId?: EventId;
+  readonly verified: boolean;
+}
+
+export type WorldEvent =
+  | EntityMovedEvent
+  | RealmTransitionedEvent
+  | ResourceGatheredEvent
+  | ResourceProducedEvent
+  | ResourceTradedEvent
+  | ResourceConsumedEvent
+  | BuildingDamagedEvent
+  | BuildingIgnitedEvent
+  | BuildingBurnTickedEvent
+  | BuildingDestroyedEvent
+  | RepairProgressedEvent
+  | BuildingRepairedEvent
+  | WorshipPerformedEvent
+  | IncomeEarnedEvent
+  | LegendRecordedEvent;
 
 export const LATEST_EVENT_SCHEMA_VERSION = 1;
 const EVENT_SCHEMA_VERSIONS = [LATEST_EVENT_SCHEMA_VERSION] as const;
@@ -112,6 +232,231 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         entityId: entityId.value,
         to: to.value,
         via: via.value,
+      });
+    }
+    case "resource-gathered": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "resource-gathered",
+        entityId: entityId.value,
+        resource: resource.value,
+        amount: amount.value,
+      });
+    }
+    case "resource-produced": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const output = parseString(input.output, "output");
+      if (!output.ok) return output;
+      const quantity = parseNonNegativeNumber(input.quantity, "quantity");
+      if (!quantity.ok) return quantity;
+      return ok({
+        ...envelope,
+        kind: "resource-produced",
+        entityId: entityId.value,
+        output: output.value,
+        quantity: quantity.value,
+      });
+    }
+    case "resource-traded": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const counterpartyId = parseEntityId(
+        input.counterpartyId,
+        "counterpartyId",
+      );
+      if (!counterpartyId.ok) return counterpartyId;
+      const give = parseArray(input.give, "give", parseResourceAmount);
+      if (!give.ok) return give;
+      const receive = parseArray(input.receive, "receive", parseResourceAmount);
+      if (!receive.ok) return receive;
+      return ok({
+        ...envelope,
+        kind: "resource-traded",
+        entityId: entityId.value,
+        counterpartyId: counterpartyId.value,
+        give: give.value,
+        receive: receive.value,
+      });
+    }
+    case "resource-consumed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "resource-consumed",
+        entityId: entityId.value,
+        resource: resource.value,
+        amount: amount.value,
+      });
+    }
+    case "building-damaged": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "building-damaged",
+        entityId: entityId.value,
+        amount: amount.value,
+      });
+    }
+    case "building-ignited": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      return ok({
+        ...envelope,
+        kind: "building-ignited",
+        entityId: entityId.value,
+      });
+    }
+    case "building-burn-ticked": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const fireIntensity = parseNonNegativeNumber(
+        input.fireIntensity,
+        "fireIntensity",
+      );
+      if (!fireIntensity.ok) return fireIntensity;
+      const ticksBurning = parseNonNegativeInteger(
+        input.ticksBurning,
+        "ticksBurning",
+      );
+      if (!ticksBurning.ok) return ticksBurning;
+      return ok({
+        ...envelope,
+        kind: "building-burn-ticked",
+        entityId: entityId.value,
+        fireIntensity: fireIntensity.value,
+        ticksBurning: ticksBurning.value,
+      });
+    }
+    case "building-destroyed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const disposedInventory = parseArray(
+        input.disposedInventory,
+        "disposedInventory",
+        parseResourceAmount,
+      );
+      if (!disposedInventory.ok) return disposedInventory;
+      return ok({
+        ...envelope,
+        kind: "building-destroyed",
+        entityId: entityId.value,
+        disposedInventory: disposedInventory.value,
+      });
+    }
+    case "repair-progressed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const structureId = parseEntityId(input.structureId, "structureId");
+      if (!structureId.ok) return structureId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "repair-progressed",
+        entityId: entityId.value,
+        structureId: structureId.value,
+        resource: resource.value,
+        amount: amount.value,
+      });
+    }
+    case "building-repaired": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      return ok({
+        ...envelope,
+        kind: "building-repaired",
+        entityId: entityId.value,
+      });
+    }
+    case "worship-performed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const deity = parseEntityId(input.deity, "deity");
+      if (!deity.ok) return deity;
+      const offering =
+        input.offering === undefined
+          ? ok<ResourceAmount | undefined>(undefined)
+          : parseResourceAmount(input.offering, "offering");
+      if (!offering.ok) return offering;
+      const favorEffect = parseString(input.favorEffect, "favorEffect");
+      if (!favorEffect.ok) return favorEffect;
+      const favorExpiresAtTick = parseNonNegativeInteger(
+        input.favorExpiresAtTick,
+        "favorExpiresAtTick",
+      );
+      if (!favorExpiresAtTick.ok) return favorExpiresAtTick;
+      return ok({
+        ...envelope,
+        kind: "worship-performed",
+        entityId: entityId.value,
+        deity: deity.value,
+        ...(offering.value === undefined ? {} : { offering: offering.value }),
+        favorEffect: favorEffect.value,
+        favorExpiresAtTick: favorExpiresAtTick.value,
+      });
+    }
+    case "income-earned": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const buildingId = parseEntityId(input.buildingId, "buildingId");
+      if (!buildingId.ok) return buildingId;
+      const amount = parseNonNegativeNumber(input.amount, "amount");
+      if (!amount.ok) return amount;
+      return ok({
+        ...envelope,
+        kind: "income-earned",
+        entityId: entityId.value,
+        buildingId: buildingId.value,
+        amount: amount.value,
+      });
+    }
+    case "legend-recorded": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const legendId = parseLegendId(input.legendId, "legendId");
+      if (!legendId.ok) return legendId;
+      const assertion = parseString(input.assertion, "assertion");
+      if (!assertion.ok) return assertion;
+      const linkedEventIdRaw = parseOptionalString(
+        input.linkedEventId,
+        "linkedEventId",
+      );
+      if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
+      const verified = parseBoolean(input.verified, "verified");
+      if (!verified.ok) return verified;
+      if (verified.value !== (linkedEventIdRaw.value !== undefined)) {
+        return fail(
+          "verified",
+          "verified must equal whether linkedEventId is present",
+        );
+      }
+      return ok({
+        ...envelope,
+        kind: "legend-recorded",
+        entityId: entityId.value,
+        legendId: legendId.value,
+        assertion: assertion.value,
+        ...(linkedEventIdRaw.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventIdRaw.value as EventId }),
+        verified: verified.value,
       });
     }
     default:

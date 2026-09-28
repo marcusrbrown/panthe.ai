@@ -16,6 +16,7 @@ import {
   type Brand,
   type EntityId,
   type EntityRevision,
+  type EventId,
   fail,
   idFactory,
   idParser,
@@ -25,6 +26,7 @@ import {
   parseArray,
   parseEntityId,
   parseEntityRevision,
+  parseEventId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseResourceAmount,
@@ -182,6 +184,20 @@ export interface ClaimProposal extends ProposalBase {
   readonly assertion: string;
 }
 
+/**
+ * A narrative record, distinct from a claim: it commits regardless of
+ * whether the assertion is true, since it records that someone told the
+ * story -- never that the story is fact. Linking it to a committed event
+ * marks it verified; leaving `linkedEventId` absent records it as a rumor.
+ * A second, disputed telling of the same event is simply another legend,
+ * never a replacement for the first.
+ */
+export interface LegendProposal extends ProposalBase {
+  readonly kind: "legend";
+  readonly assertion: string;
+  readonly linkedEventId?: EventId;
+}
+
 export type Proposal =
   | MoveProposal
   | RealmTransitionProposal
@@ -192,7 +208,8 @@ export type Proposal =
   | StrikeProposal
   | RepairProposal
   | WorshipProposal
-  | ClaimProposal;
+  | ClaimProposal
+  | LegendProposal;
 
 export function parseProposal(input: unknown): ParseResult<Proposal> {
   if (!isRecord(input)) {
@@ -358,6 +375,23 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       const assertion = parseString(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       return ok({ ...base, kind: "claim", assertion: assertion.value });
+    }
+    case "legend": {
+      const assertion = parseString(input.assertion, "assertion");
+      if (!assertion.ok) return assertion;
+      const linkedEventId =
+        input.linkedEventId === undefined
+          ? ok<EventId | undefined>(undefined)
+          : parseEventId(input.linkedEventId, "linkedEventId");
+      if (!linkedEventId.ok) return linkedEventId;
+      return ok({
+        ...base,
+        kind: "legend",
+        assertion: assertion.value,
+        ...(linkedEventId.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventId.value }),
+      });
     }
     default:
       return fail(

@@ -1069,7 +1069,7 @@ describe("applyLiveTick: an external proposal takes its actor's slot for the tic
     }
   });
 
-  test("under the cap, an external claim is admitted ahead of routines and recorded as a rejected claim, not over-limit", () => {
+  test("under the cap, an external claim is recorded as a rejected claim, never over-limit, and costs its actor's routine nothing", () => {
     const claim = externalProposal("woodcutter", {
       kind: "claim",
       assertion: "I own the old oak",
@@ -1079,6 +1079,77 @@ describe("applyLiveTick: an external proposal takes its actor's slot for the tic
       expect(
         getProposalOutcomeByProposalId(run.store.db, claim.id),
       ).toMatchObject({ outcome: "rejected", reason: "unauthorized-claim" });
+      // The one slot went to the woodcutter's routine, as if no claim existed.
+      expect(
+        getProposalOutcomeByProposalId(
+          run.store.db,
+          run.routineOf("woodcutter").id,
+        ),
+      ).toMatchObject({ outcome: "committed" });
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("a claim beside an external non-claim under cap 1: the non-claim commits, the claim is a rejected claim, and the claim used none of the capacity", () => {
+    const worshipByFarmer = externalProposal("farmer", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1 },
+    });
+    const claim = externalProposal("woodcutter", {
+      kind: "claim",
+      assertion: "I own the old oak",
+    });
+    const run = runLiveTick([worshipByFarmer, claim], {
+      maxProposalsPerTick: 1,
+    });
+    try {
+      const outcomeOf = (id: QueuedProposal["id"]) =>
+        getProposalOutcomeByProposalId(run.store.db, id);
+      expect(outcomeOf(worshipByFarmer.id)).toMatchObject({
+        outcome: "committed",
+      });
+      expect(outcomeOf(claim.id)).toMatchObject({
+        outcome: "rejected",
+        reason: "unauthorized-claim",
+      });
+      // The worship took the tick's one non-claim slot, so the woodcutter's
+      // routine is over the limit because of the worship, not the claim.
+      expect(outcomeOf(run.routineOf("woodcutter").id)).toMatchObject({
+        reason: "over-limit",
+      });
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("a claim beside an external non-claim with room for both: nothing is lost", () => {
+    const worshipByFarmer = externalProposal("farmer", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1 },
+    });
+    const claim = externalProposal("woodcutter", {
+      kind: "claim",
+      assertion: "I own the old oak",
+    });
+    const run = runLiveTick([worshipByFarmer, claim], {
+      maxProposalsPerTick: 2,
+    });
+    try {
+      const outcomeOf = (id: QueuedProposal["id"]) =>
+        getProposalOutcomeByProposalId(run.store.db, id);
+      expect(outcomeOf(worshipByFarmer.id)).toMatchObject({
+        outcome: "committed",
+      });
+      expect(outcomeOf(claim.id)).toMatchObject({
+        reason: "unauthorized-claim",
+      });
+      expect(outcomeOf(run.routineOf("woodcutter").id)).toMatchObject({
+        outcome: "committed",
+      });
+      expect(outcomeOf(run.routineOf("farmer").id)).toBeUndefined();
     } finally {
       run.dispose();
     }

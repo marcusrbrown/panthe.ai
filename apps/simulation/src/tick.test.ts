@@ -127,6 +127,39 @@ test("stepWorldTick admits up to the cap from the world's own authored rules and
   expect(uncappedOutcome.overflow).toHaveLength(0);
 });
 
+test("stepWorldTick counts claims against their own cap, so a claim never uses a slot a routine needs and its rejection is never over-limit", () => {
+  const state = loadGreekWorldState();
+  const routine = buildRoutineQueue(state);
+  const [woodcutterRoutine, farmerRoutine] = routine;
+  if (!woodcutterRoutine || !farmerRoutine) throw new Error("two routines");
+  const claim = manualProposal("woodcutter", {
+    kind: "claim",
+    assertion: "I own the old oak",
+  });
+  const secondClaim = manualProposal("farmer", {
+    kind: "claim",
+    assertion: "I own the shop",
+  });
+  const cappedState = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(cappedState, createPrng(1), [
+    claim,
+    secondClaim,
+    woodcutterRoutine,
+    farmerRoutine,
+  ]);
+
+  expect(outcome.admitted).toEqual([claim, woodcutterRoutine]);
+  expect(outcome.overflow).toEqual([secondClaim, farmerRoutine]);
+  expect(outcome.result.rejected.map((entry) => entry.reason)).toContain(
+    "unauthorized-claim",
+  );
+  expect(outcome.result.committed).toHaveLength(1);
+});
+
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
   const storeDir = tempDir("panthea-sim-tick-");
   try {

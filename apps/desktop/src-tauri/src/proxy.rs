@@ -655,6 +655,74 @@ mod tests {
     }
 
     #[test]
+    fn a_replay_on_subscribe_then_an_identical_poll_is_not_forwarded_and_a_changed_poll_is() {
+        let mut lifecycle = Lifecycle {
+            launch_id: 1,
+            ..Default::default()
+        };
+        // Polled before any subscriber: cached, not yet forwarded.
+        let cached = polled(5, 10, "running");
+        apply_frame(&mut lifecycle, 1, cached.clone());
+        assert_eq!(lifecycle.last_frame, None);
+
+        // Subscribing replays the cache and marks it as the last forwarded frame.
+        let (channel, delivered) = recording_channel();
+        apply_subscribe(&mut lifecycle, channel);
+        assert_eq!(
+            *delivered.lock().expect("delivered mutex poisoned"),
+            vec![cached.clone()]
+        );
+        assert_eq!(lifecycle.last_frame, extract_frame_key(&cached));
+        assert_eq!(lifecycle.last_frame_body, Some(cached.clone()));
+
+        // The next poll returns the very same frame: nothing is sent, and the
+        // last-forwarded and cached state are exactly as the replay left them.
+        apply_frame(&mut lifecycle, 1, cached.clone());
+        assert_eq!(delivered.lock().expect("delivered mutex poisoned").len(), 1);
+        assert_eq!(lifecycle.last_frame, extract_frame_key(&cached));
+        assert_eq!(lifecycle.last_frame_body, Some(cached.clone()));
+
+        // A poll that differs only by tick is forwarded and becomes the new baseline.
+        let advanced = polled(5, 11, "running");
+        apply_frame(&mut lifecycle, 1, advanced.clone());
+        assert_eq!(
+            *delivered.lock().expect("delivered mutex poisoned"),
+            vec![cached, advanced.clone()]
+        );
+        assert_eq!(lifecycle.last_frame, extract_frame_key(&advanced));
+        assert_eq!(lifecycle.last_frame_body, Some(advanced));
+    }
+
+    #[test]
+    fn apply_frame_signals_a_tray_refresh_for_a_reason_change_with_an_unchanged_status_only() {
+        let (mut lifecycle, delivered) = subscribed();
+        let mut disk_full = polled(5, 10, "degraded");
+        disk_full["degradedReason"] = serde_json::json!("disk-full");
+        let mut store_error = polled(5, 10, "degraded");
+        store_error["degradedReason"] = serde_json::json!("store-error");
+
+        // The first degraded frame changes the status: the tray refreshes.
+        assert!(apply_frame(&mut lifecycle, 1, disk_full.clone()));
+        // Same status, new reason: the tray refreshes, and the frame is forwarded.
+        assert!(apply_frame(&mut lifecycle, 1, store_error.clone()));
+        assert_eq!(
+            lifecycle.world.degraded_reason.as_deref(),
+            Some("store-error")
+        );
+        // The identical frame again: no tray refresh, and nothing sent.
+        assert!(!apply_frame(&mut lifecycle, 1, store_error.clone()));
+        // A tick-only change forwards the frame but leaves the tray alone.
+        let mut later = store_error.clone();
+        later["state"]["tick"] = serde_json::json!(11);
+        assert!(!apply_frame(&mut lifecycle, 1, later.clone()));
+
+        assert_eq!(
+            *delivered.lock().expect("delivered mutex poisoned"),
+            vec![disk_full, store_error, later]
+        );
+    }
+
+    #[test]
     fn a_frame_that_finishes_after_its_launch_ends_does_not_repopulate_state() {
         let mut lifecycle = Lifecycle::default();
         let launch_id = begin_spawn(&mut lifecycle).expect("spawn allowed");

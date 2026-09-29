@@ -120,8 +120,8 @@ test("a scripted reply becomes a valid proposal the world commits, and the reque
     result.intent,
     "fixture",
   );
-  expect(built.ok).toBe(true);
-  if (!built.ok) return;
+  expect(built.ok && built.kind).toBe("proposal");
+  if (!built.ok || built.kind !== "proposal") return;
   expect(built.proposal).toMatchObject({
     kind: "strike",
     target: "the-tavern",
@@ -180,4 +180,25 @@ test("a hallucinated target on the first reply is retried, and the corrected rep
     target: "the-tavern",
     power: 2,
   });
+});
+
+test("a scripted wait comes out of the router as a wait: nothing to journal, no proposal", async () => {
+  const stub = startStub('{"action":"wait"}');
+  const { snapshot } = zeusAtTavern();
+
+  const result = await routerFor(stub).route(
+    "zeus",
+    buildGodContext(zeus, snapshot),
+    godIntentSchema(zeus, snapshot),
+  );
+  expect(result.kind).toBe("intent");
+  if (result.kind !== "intent") return;
+
+  const built = buildModelProposal(
+    id("zeus"),
+    snapshot,
+    result.intent,
+    "fixture",
+  );
+  expect(built).toEqual({ ok: true, kind: "wait" });
 });

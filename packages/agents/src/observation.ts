@@ -17,14 +17,21 @@ import {
   type ProposalSource,
 } from "@panthea/contracts";
 import type { PerceptionSnapshot } from "@panthea/world";
-import type { GodIntent } from "./context";
+import type { ParsedGodIntent } from "./context";
 
+/**
+ * What a parsed intent becomes. Discriminated on `kind`, so a caller must
+ * narrow to `"proposal"` before it can journal anything: a `wait` carries no
+ * proposal and no observation, and a refusal carries neither.
+ */
 export type ModelProposalResult =
   | {
       readonly ok: true;
+      readonly kind: "proposal";
       readonly observation: ObservationRecord;
       readonly proposal: Proposal;
     }
+  | { readonly ok: true; readonly kind: "wait" }
   | { readonly ok: false; readonly message: string };
 
 const refuse = (message: string): ModelProposalResult => ({
@@ -53,13 +60,16 @@ export function snapshotFacts(snapshot: PerceptionSnapshot): Set<string> {
 
 /**
  * Builds the observation and proposal for `intent`, made by `actorId` from
- * `snapshot`. `source` is the proposal source the service stamps; the model
- * never supplies it.
+ * `snapshot`. `intent` must come from `godIntentSchema`'s parse, which is the
+ * only thing that checks the action and strike power; this builder re-checks
+ * that every target is in `snapshot`, since the intent may have been parsed
+ * against an older one. `source` is the proposal source the service stamps;
+ * the model never supplies it.
  */
 export function buildModelProposal(
   actorId: EntityId,
   snapshot: PerceptionSnapshot,
-  intent: GodIntent,
+  intent: ParsedGodIntent,
   source: ProposalSource,
 ): ModelProposalResult {
   if (snapshot.observer !== actorId) {
@@ -67,6 +77,9 @@ export function buildModelProposal(
       `the snapshot was taken by ${snapshot.observer}, not ${actorId}`,
     );
   }
+
+  // A wait changes nothing and claims nothing: no observation, no proposal.
+  if (intent.action === "wait") return { ok: true, kind: "wait" };
 
   const factsRead = [`actor:${actorId}.inventory`, `actor:${actorId}.location`];
   const expectedRevisions: EntityRevision[] = [
@@ -160,5 +173,5 @@ export function buildModelProposal(
     factsRead,
     source,
   };
-  return { ok: true, observation, proposal };
+  return { ok: true, kind: "proposal", observation, proposal };
 }

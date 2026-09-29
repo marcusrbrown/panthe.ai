@@ -11,7 +11,13 @@
 // returns; the rest of this module filters by that set and already carries a
 // `locationId` on everything it reports.
 
-import type { EntityId, ResourceAmount, WorldEvent } from "@panthea/contracts";
+import {
+  type EntityId,
+  type EventId,
+  eventSubjects,
+  type ResourceAmount,
+  type WorldEvent,
+} from "@panthea/contracts";
 import { outgoingEdges } from "./geography";
 import {
   type ActorState,
@@ -51,6 +57,7 @@ export interface PerceivedBuilding {
   readonly name: string;
   readonly status: BuildingState["status"];
   readonly combustible: boolean;
+  /** The owner, only when the observer perceives the owner too (itself or a co-located actor). */
   readonly owner?: EntityId;
   readonly revision: number;
 }
@@ -61,6 +68,22 @@ export interface PerceivedExit {
   readonly name: string;
   readonly realm: string;
   readonly transport: string;
+}
+
+/**
+ * An event as an observer knows it: what happened and to whom, never the raw
+ * payload. `subjects` holds only ids the snapshot itself contains (the
+ * observer, co-located actors, buildings there, its location, its exits), so
+ * an event at a visible building cannot name an owner or counterparty who is
+ * elsewhere. `assertion` is a legend's spoken text; a legend's own link to
+ * another event is dropped, since that event may not have been perceived.
+ */
+export interface PerceivedEvent {
+  readonly id: EventId;
+  readonly kind: WorldEvent["kind"];
+  readonly sequence: number;
+  readonly subjects: readonly EntityId[];
+  readonly assertion?: string;
 }
 
 export interface PerceptionSnapshot {
@@ -79,7 +102,7 @@ export interface PerceptionSnapshot {
   readonly actors: readonly PerceivedActor[];
   readonly buildings: readonly PerceivedBuilding[];
   /** Perceived events, oldest first. */
-  readonly events: readonly WorldEvent[];
+  readonly events: readonly PerceivedEvent[];
 }
 
 /**
@@ -169,6 +192,19 @@ function eventLocation(
   }
 }
 
+function perceivedEvent(
+  event: WorldEvent,
+  known: ReadonlySet<EntityId>,
+): PerceivedEvent {
+  return {
+    id: event.id,
+    kind: event.kind,
+    sequence: event.sequence,
+    subjects: eventSubjects(event).filter((subject) => known.has(subject)),
+    ...(event.kind === "legend-recorded" ? { assertion: event.assertion } : {}),
+  };
+}
+
 function sortedInventory(
   inventory: ReadonlyMap<string, number>,
 ): readonly ResourceAmount[] {
@@ -230,28 +266,48 @@ export function perceive(
   }
   actors.sort(compareIds);
 
+  const seenActors = new Set<EntityId>([
+    actorId,
+    ...actors.map((other) => other.id),
+  ]);
   const buildings: PerceivedBuilding[] = [];
   for (const building of state.buildings.values()) {
     if (!locations.has(building.locationId)) continue;
+    const owner =
+      building.owner !== undefined && seenActors.has(building.owner)
+        ? building.owner
+        : undefined;
     buildings.push({
       id: building.id,
       locationId: building.locationId,
       name: building.name,
       status: building.status,
       combustible: building.combustible,
-      ...(building.owner === undefined ? {} : { owner: building.owner }),
+      ...(owner === undefined ? {} : { owner }),
       revision: building.revision,
     });
   }
   buildings.sort(compareIds);
 
+  // Ids the snapshot contains: the only ids an event may name.
+  const known = new Set<EntityId>([
+    actorId,
+    here.id,
+    ...exits.map((exit) => exit.to),
+    ...actors.map((other) => other.id),
+    ...buildings.map((building) => building.id),
+  ]);
+
+  // Filter to what is perceived before capping, so remote events never
+  // push older local ones out of the window.
   const events = [...recentEvents]
     .sort((a, b) => a.sequence - b.sequence)
     .filter((event) => {
       const at = eventLocation(state, event, recentEvents);
       return at !== undefined && locations.has(at);
     })
-    .slice(-MAX_PERCEIVED_EVENTS);
+    .slice(-MAX_PERCEIVED_EVENTS)
+    .map((event) => perceivedEvent(event, known));
 
   return {
     observer: actorId,

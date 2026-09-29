@@ -8,9 +8,11 @@ import {
 import {
   createInitialWorldState,
   getActor,
+  getBuilding,
   toEntityId,
   type WorldState,
   withActor,
+  withBuilding,
 } from "./state";
 
 function fixtureState(): WorldState {
@@ -133,6 +135,27 @@ function actorAt(
   if (!actor) throw new Error(`fixture has no ${actorId}`);
   return withActor(state, { ...actor, locationId: id(locationId) });
 }
+
+function ownedBy(
+  state: WorldState,
+  buildingId: string,
+  owner: string,
+): WorldState {
+  const building = getBuilding(state, id(buildingId));
+  if (!building) throw new Error(`fixture has no ${buildingId}`);
+  return withBuilding(state, { ...building, owner: id(owner) });
+}
+
+const income = (owner: string, building: string, sequence?: number) =>
+  event(
+    {
+      kind: "income-earned",
+      entityId: owner,
+      buildingId: building,
+      amount: 1,
+    },
+    sequence,
+  );
 
 const ids = (items: readonly { readonly id: string }[]) =>
   items.map((item) => item.id).sort();
@@ -275,4 +298,132 @@ test("the locations an actor perceives are its own location alone until a sensin
   const zeus = getActor(state, id("zeus"));
   if (!zeus) throw new Error("fixture has no zeus");
   expect([...perceivedLocations(state, zeus)]).toEqual([id("tavern")]);
+});
+
+test("a perceived event exposes only its id, kind, sequence, and subjects, never the raw payload", () => {
+  const snapshot = perceive(fixtureState(), id("zeus"), [
+    gathered("farmer", 30),
+  ]);
+  const [seen] = snapshot?.events ?? [];
+  expect(seen as unknown).toEqual({
+    id: "evt-30",
+    kind: "resource-gathered",
+    sequence: 30,
+    subjects: ["farmer"],
+  });
+  expect(JSON.stringify(seen)).not.toContain("wood");
+});
+
+test("an income event at a perceived building does not name an owner who is elsewhere; positive control: co-located, it does", () => {
+  const events = [income("woodcutter", "the-tavern", 40)];
+
+  // The woodcutter owns the tavern house but stands in the square.
+  const remoteOwner = ownedBy(fixtureState(), "the-tavern", "woodcutter");
+  const apart = perceive(remoteOwner, id("zeus"), events);
+  expect(apart?.events).toHaveLength(1);
+  expect(apart?.events[0]?.subjects).toEqual([id("the-tavern")]);
+  expect(apart?.buildings[0]?.owner).toBeUndefined();
+  expect(JSON.stringify(apart)).not.toContain("woodcutter");
+
+  // Positive control: the same event with the owner standing in the tavern.
+  const together = perceive(
+    actorAt(remoteOwner, "woodcutter", "tavern"),
+    id("zeus"),
+    events,
+  );
+  expect(together?.events[0]?.subjects).toEqual([
+    id("woodcutter"),
+    id("the-tavern"),
+  ]);
+  expect(together?.buildings[0]?.owner).toBe(id("woodcutter"));
+});
+
+test("the observer itself, the location, and exits stay named as event subjects", () => {
+  // Zeus gathers, then moves in from the square.
+  const events = [
+    gathered("zeus", 50),
+    moved("farmer", "tavern", 51),
+    event({ kind: "worship-performed", entityId: "farmer", deity: "zeus" }, 52),
+  ];
+  const seen = perceive(fixtureState(), id("zeus"), events)?.events ?? [];
+  expect(seen.map((e) => e.subjects)).toEqual([
+    [id("zeus")],
+    [id("farmer"), id("tavern")],
+    [id("farmer"), id("zeus")],
+  ]);
+});
+
+test("a legend keeps its assertion but drops a linked event the observer did not perceive", () => {
+  const events = [
+    event(
+      {
+        kind: "legend-recorded",
+        entityId: "farmer",
+        assertion: "The oak burned.",
+        linkedEventId: "evt-999",
+      },
+      60,
+    ),
+  ];
+  const [seen] = perceive(fixtureState(), id("zeus"), events)?.events ?? [];
+  expect(seen as unknown).toEqual({
+    id: "evt-60",
+    kind: "legend-recorded",
+    sequence: 60,
+    subjects: ["farmer"],
+    assertion: "The oak burned.",
+  });
+});
+
+test("a realm transition is perceived at its destination and not from outside", () => {
+  const events = [
+    event(
+      {
+        kind: "realm-transitioned",
+        entityId: "farmer",
+        to: "olympus-gate",
+        via: "square",
+      },
+      70,
+    ),
+  ];
+  // The farmer has arrived at the gate; Zeus is there too.
+  const arrived = actorAt(
+    actorAt(fixtureState(), "farmer", "olympus-gate"),
+    "zeus",
+    "olympus-gate",
+  );
+  const destination = perceive(arrived, id("zeus"), events);
+  expect(destination?.events.map((e) => e.kind)).toEqual([
+    "realm-transitioned",
+  ]);
+  // The origin square is an exit of the gate, so it may be named.
+  expect(destination?.events[0]?.subjects).toEqual([
+    id("farmer"),
+    id("olympus-gate"),
+    id("square"),
+  ]);
+
+  // Zeus stays in the tavern: he perceives nothing of it.
+  const outside = perceive(
+    actorAt(fixtureState(), "farmer", "olympus-gate"),
+    id("zeus"),
+    events,
+  );
+  expect(outside?.events).toEqual([]);
+  expect(JSON.stringify(outside)).not.toContain("olympus-gate");
+});
+
+test("the cap keeps the newest perceived events: remote events never crowd out older local ones", () => {
+  const local = Array.from({ length: 5 }, (_, index) =>
+    ignited("the-tavern", 100 + index),
+  );
+  const remote = Array.from({ length: MAX_PERCEIVED_EVENTS + 2 }, (_, index) =>
+    ignited("old-oak", 200 + index),
+  );
+  // Unsorted on purpose: the window order is the caller's.
+  const snapshot = perceive(fixtureState(), id("zeus"), [...remote, ...local]);
+  expect(snapshot?.events.map((e) => e.sequence)).toEqual([
+    100, 101, 102, 103, 104,
+  ]);
 });

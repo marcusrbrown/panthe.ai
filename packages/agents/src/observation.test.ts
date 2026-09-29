@@ -10,11 +10,21 @@ import {
   submitProposal,
   toEntityId,
   type WorldState,
+  withActor,
   withBuilding,
 } from "@panthea/world";
-import type { GodIntent } from "./context";
-import { buildModelProposal, snapshotFacts } from "./observation";
-import { actorAt, committedEvent, greekState } from "./test-fixtures";
+import { godIntentSchema, type ParsedGodIntent } from "./context";
+import {
+  buildModelProposal,
+  type ModelProposalResult,
+  snapshotFacts,
+} from "./observation";
+import {
+  actorAt,
+  committedEvent,
+  godProfile,
+  greekState,
+} from "./test-fixtures";
 
 const id = toEntityId;
 
@@ -27,21 +37,35 @@ function snapshotAt(state: WorldState, actor = "zeus"): PerceptionSnapshot {
 /** Zeus at the tavern, where the-tavern stands. */
 const tavernState = () => actorAt(greekState(), "zeus", "tavern");
 
+/** What a model would answer, parsed the only way an intent can be: through the god's schema against the snapshot. */
+function parsed(
+  snapshot: PerceptionSnapshot,
+  raw: Record<string, unknown>,
+  god = "zeus",
+): ParsedGodIntent {
+  const result = godIntentSchema(godProfile(god), snapshot).parse(raw);
+  if (!result.ok) throw new Error(`${result.path}: ${result.message}`);
+  return result.value;
+}
+
 function build(
   snapshot: PerceptionSnapshot,
-  intent: GodIntent,
+  raw: Record<string, unknown>,
   actor = "zeus",
 ) {
-  const result = buildModelProposal(id(actor), snapshot, intent, "fixture");
-  if (!result.ok) throw new Error(result.message);
+  const result = buildModelProposal(
+    id(actor),
+    snapshot,
+    parsed(snapshot, raw, actor),
+    "fixture",
+  );
+  if (!result.ok || result.kind !== "proposal") {
+    throw new Error(`expected a proposal, got ${JSON.stringify(result)}`);
+  }
   return result;
 }
 
-const strikeTavern: GodIntent = {
-  action: "strike",
-  target: id("the-tavern"),
-  power: 3,
-};
+const strikeTavern = { action: "strike", target: "the-tavern", power: 3 };
 
 const revisionsOf = (proposal: {
   expectedRevisions: readonly { entityId: string; revision: number }[];
@@ -77,7 +101,7 @@ test("a strike proposal is built by the service: actor, source, observation id, 
 
 test("a move and a legend name only the actor and its location; a realm transition takes its via from the location", () => {
   const snapshot = snapshotAt(tavernState());
-  const move = build(snapshot, { action: "move", to: id("town-square") });
+  const move = build(snapshot, { action: "move", to: "town-square" });
   expect(move.proposal).toMatchObject({
     kind: "move",
     to: "town-square",
@@ -95,7 +119,7 @@ test("a move and a legend name only the actor and its location; a realm transiti
   const atMountain = snapshotAt(actorAt(greekState(), "zeus", "mountain-path"));
   const transition = build(atMountain, {
     action: "realm-transition",
-    to: id("olympus-gate"),
+    to: "olympus-gate",
   });
   expect(transition.proposal).toMatchObject({
     kind: "realm-transition",
@@ -142,18 +166,50 @@ test("each proposal gets a fresh observation id", () => {
 
 // --- Refusal before journaling ------------------------------------------------------
 
-test("an intent whose target is outside the snapshot is refused", () => {
-  const snapshot = snapshotAt(tavernState());
-  const outside: GodIntent[] = [
-    { action: "strike", target: id("old-oak"), power: 1 },
-    { action: "move", to: id("great-hall") },
-    { action: "realm-transition", to: id("olympus-gate") },
-    { action: "legend", assertion: "x", linkedEventId: "evt-99" as never },
+test("an intent parsed against another snapshot is refused when its target is not in this one", () => {
+  // Parsed where the oak and the great hall are in reach, built against the tavern.
+  const elsewhere = snapshotAt(actorAt(greekState(), "zeus", "town-square"));
+  const tavern = snapshotAt(tavernState());
+  const stale: Record<string, unknown>[] = [
+    { action: "strike", target: "old-oak", power: 1 },
+    { action: "move", to: "shop" },
   ];
-  for (const intent of outside) {
-    const result = buildModelProposal(id("zeus"), snapshot, intent, "fixture");
+  for (const raw of stale) {
+    const result = buildModelProposal(
+      id("zeus"),
+      tavern,
+      parsed(elsewhere, raw),
+      "fixture",
+    );
     expect(result.ok).toBe(false);
   }
+
+  const mountain = snapshotAt(actorAt(greekState(), "zeus", "mountain-path"));
+  const transition = buildModelProposal(
+    id("zeus"),
+    tavern,
+    parsed(mountain, { action: "realm-transition", to: "olympus-gate" }),
+    "fixture",
+  );
+  expect(transition.ok).toBe(false);
+
+  const event = committedEvent({
+    kind: "building-ignited",
+    entityId: "the-tavern",
+  });
+  const withEvent = perceive(tavernState(), id("zeus"), [event]);
+  if (!withEvent) throw new Error("no snapshot");
+  const linked = buildModelProposal(
+    id("zeus"),
+    tavern,
+    parsed(withEvent, {
+      action: "legend",
+      assertion: "x",
+      linkedEventId: event.id,
+    }),
+    "fixture",
+  );
+  expect(linked.ok).toBe(false);
 });
 
 test("a snapshot taken by another actor cannot back the proposal", () => {
@@ -161,10 +217,72 @@ test("a snapshot taken by another actor cannot back the proposal", () => {
   const result = buildModelProposal(
     id("hera"),
     snapshot,
-    strikeTavern,
+    parsed(snapshot, strikeTavern),
     "fixture",
   );
   expect(result.ok).toBe(false);
+});
+
+// --- wait -------------------------------------------------------------------------
+
+test("a wait builds no proposal and no observation, so nothing can be journaled", () => {
+  const snapshot = snapshotAt(tavernState());
+  const result = buildModelProposal(
+    id("zeus"),
+    snapshot,
+    parsed(snapshot, { action: "wait" }),
+    "fixture",
+  );
+  expect(result).toEqual({ ok: true, kind: "wait" });
+  expect("proposal" in result).toBe(false);
+  expect("observation" in result).toBe(false);
+});
+
+test("a wait from another actor's snapshot is still refused", () => {
+  const snapshot = snapshotAt(tavernState());
+  const result = buildModelProposal(
+    id("hera"),
+    snapshot,
+    parsed(snapshot, { action: "wait" }),
+    "fixture",
+  );
+  expect(result.ok).toBe(false);
+});
+
+test("the result is a discriminated union: a wait cannot be read as a proposal", () => {
+  const snapshot = snapshotAt(tavernState());
+  const result: ModelProposalResult = buildModelProposal(
+    id("zeus"),
+    snapshot,
+    parsed(snapshot, { action: "wait" }),
+    "fixture",
+  );
+  const readsProposalWithoutNarrowing = () => {
+    if (result.ok) {
+      // @ts-expect-error `ok` alone does not narrow: a wait carries no proposal
+      return result.proposal;
+    }
+    return undefined;
+  };
+  expect(typeof readsProposalWithoutNarrowing).toBe("function");
+  if (result.ok && result.kind === "proposal") {
+    expect(result.proposal.kind).toBeDefined();
+  }
+});
+
+// --- Branded intents ----------------------------------------------------------------
+
+test("a hand-built intent cannot be passed to buildModelProposal", () => {
+  const snapshot = snapshotAt(tavernState());
+  const handBuilt = () =>
+    buildModelProposal(
+      id("zeus"),
+      snapshot,
+      // @ts-expect-error a hand-built intent skipped godIntentSchema's parse, and with it the power and availability checks
+      { action: "strike", target: id("the-tavern"), power: 999 },
+      "fixture",
+    );
+  expect(typeof handBuilt).toBe("function");
 });
 
 // --- Against the real validator --------------------------------------------------
@@ -193,7 +311,7 @@ test("the target changed after the snapshot: the proposal is rejected stale-targ
   // Hera damages the tavern first, through the real tick.
   const heraStrike = build(
     snapshotAt(actorAt(state, "hera", "tavern"), "hera"),
-    { action: "strike", target: id("the-tavern"), power: 1 },
+    { action: "strike", target: "the-tavern", power: 1 },
     "hera",
   ).proposal;
   const afterHera = runProposal(actorAt(state, "hera", "tavern"), heraStrike);
@@ -263,4 +381,30 @@ test("a building's revision bump alone makes the proposal stale", () => {
   expect(runProposal(bumped, proposal).rejected[0]?.reason).toBe(
     "stale-target",
   );
+});
+
+test("a model-built realm transition commits through the real tick; positive control for moving between realms", () => {
+  // The authored pack gives its deities no capabilities, and olympus-gate
+  // requires `divine`, so the fixture grants it: what is under test is the
+  // proposal the builder makes, not the pack's capability content.
+  const plain = actorAt(greekState(), "zeus", "mountain-path");
+  const zeus = getActor(plain, id("zeus"));
+  if (!zeus) throw new Error("no zeus");
+  const state = withActor(plain, { ...zeus, capabilities: ["divine"] });
+  const { proposal } = build(snapshotAt(state), {
+    action: "realm-transition",
+    to: "olympus-gate",
+  });
+  expect(proposal).toMatchObject({
+    kind: "realm-transition",
+    via: "mountain-path",
+  });
+
+  const tick = runProposal(state, proposal);
+  expect(tick.rejected).toEqual([]);
+  expect(tick.committed).toHaveLength(1);
+  expect(tick.events.map((event) => event.kind)).toContain(
+    "realm-transitioned",
+  );
+  expect(getActor(tick.state, id("zeus"))?.locationId).toBe(id("olympus-gate"));
 });

@@ -9,8 +9,8 @@
 // invalid-output and repairs it or falls back.
 
 import type { GodAbility, GodProfile } from "@panthea/content";
-import { type EntityId, type EventId, eventSubjects } from "@panthea/contracts";
-import type { PerceptionSnapshot } from "@panthea/world";
+import type { Brand, EntityId, EventId } from "@panthea/contracts";
+import type { PerceivedEvent, PerceptionSnapshot } from "@panthea/world";
 import type { ParseResult } from "./config";
 import type { IntentSchema, RouteContext } from "./router";
 
@@ -20,6 +20,7 @@ export const GOD_INTENT_ACTIONS = [
   "realm-transition",
   "strike",
   "legend",
+  "wait",
 ] as const;
 export type GodIntentAction = (typeof GOD_INTENT_ACTIONS)[number];
 
@@ -36,7 +37,17 @@ export type GodIntent =
       readonly action: "legend";
       readonly assertion: string;
       readonly linkedEventId?: EventId;
-    };
+    }
+  /** Do nothing this turn. Always allowed; nothing is journaled. */
+  | { readonly action: "wait" };
+
+/**
+ * A god intent that `godIntentSchema`'s parse produced: its action is one the
+ * god can take, and its targets and strike power passed the snapshot's checks.
+ * Nothing else can make one, so `buildModelProposal` cannot be handed an
+ * intent that skipped them.
+ */
+export type ParsedGodIntent = Brand<GodIntent, "ParsedGodIntent">;
 
 export const MAX_ASSERTION_LENGTH = 280;
 
@@ -109,13 +120,15 @@ function availableActions(offer: Offer): readonly GodIntentAction[] {
   if (offer.transitions.length > 0) actions.push("realm-transition");
   if (offer.strikeCap >= 1) actions.push("strike");
   if (offer.canLegend) actions.push("legend");
+  actions.push("wait");
   return actions;
 }
 
 /**
  * The actions this god can take right now: its movement options and the
- * abilities it can afford, given what it perceives. Ordered movement first,
- * then the profile's abilities. Empty means there is nothing to ask it.
+ * abilities it can afford, given what it perceives, and waiting, which is
+ * always available. Ordered movement first, then the profile's abilities,
+ * then waiting.
  */
 export function godAvailableActions(
   profile: GodProfile,
@@ -126,6 +139,7 @@ export function godAvailableActions(
     "move",
     "realm-transition",
     ...profile.abilities.map((ability) => ability.action),
+    "wait",
   ];
   return [...new Set(order)].filter(
     (action): action is GodIntentAction =>
@@ -245,6 +259,8 @@ function parseIntent(
           }
         : linkedEventId;
     }
+    case "wait":
+      return { ok: true, value: { action: "wait" } };
   }
 }
 
@@ -256,7 +272,7 @@ function parseIntent(
 export function godIntentSchema(
   profile: GodProfile,
   snapshot: PerceptionSnapshot,
-): IntentSchema<GodIntent> {
+): IntentSchema<ParsedGodIntent> {
   const offer = offerFor(profile, snapshot);
   const actions = godAvailableActions(profile, snapshot);
 
@@ -291,16 +307,22 @@ export function godIntentSchema(
       required: ["action"],
       additionalProperties: false,
     },
-    parse: (candidate) => parseIntent(offer, actions, candidate),
+    // The one place an intent is branded: only a candidate that passed every
+    // check above becomes a ParsedGodIntent.
+    parse: (candidate) => {
+      const parsed = parseIntent(offer, actions, candidate);
+      return parsed.ok
+        ? { ok: true, value: parsed.value as ParsedGodIntent }
+        : parsed;
+    },
   };
 }
 
 // --- The prompt ------------------------------------------------------------------
 
-function describeEvent(event: PerceptionSnapshot["events"][number]): string {
-  const subjects = eventSubjects(event).join(", ");
-  const detail =
-    event.kind === "legend-recorded" ? `: "${event.assertion}"` : "";
+function describeEvent(event: PerceivedEvent): string {
+  const subjects = event.subjects.join(", ");
+  const detail = event.assertion === undefined ? "" : `: "${event.assertion}"`;
   return `- [${event.id}] ${event.kind} (${subjects})${detail}`;
 }
 
@@ -349,6 +371,7 @@ export function buildGodContext(
     "Your powers:",
     ...abilities,
     'You may also move to a neighboring place (action "move"), or cross to another realm where a passage leads (action "realm-transition").',
+    'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");
 

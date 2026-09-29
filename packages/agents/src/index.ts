@@ -18,7 +18,7 @@ export {
   parseRoutingConfig,
   planRoute,
 } from "./config";
-export type { GodIntent, GodIntentAction } from "./context";
+export type { GodIntent, GodIntentAction, ParsedGodIntent } from "./context";
 export {
   buildGodContext,
   GOD_INTENT_ACTIONS,

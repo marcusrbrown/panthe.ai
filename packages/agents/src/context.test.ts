@@ -4,8 +4,10 @@ import { type PerceptionSnapshot, perceive, toEntityId } from "@panthea/world";
 import {
   buildGodContext,
   GOD_INTENT_ACTIONS,
+  type GodIntent,
   godAvailableActions,
   godIntentSchema,
+  type ParsedGodIntent,
 } from "./context";
 import {
   actorAt,
@@ -71,7 +73,10 @@ test("a valid legend parses, with and without a linked event from the snapshot",
   const schema = godIntentSchema(zeus, snapshotOf("zeus", "tavern", [event]));
 
   expect(
-    schema.parse({ action: "legend", assertion: "Fire took it." }),
+    schema.parse({
+      action: "legend",
+      assertion: "Fire took it.",
+    }) as unknown,
   ).toEqual({
     ok: true,
     value: { action: "legend", assertion: "Fire took it." },
@@ -81,7 +86,7 @@ test("a valid legend parses, with and without a linked event from the snapshot",
       action: "legend",
       assertion: "Fire took it.",
       linkedEventId: event.id,
-    }),
+    }) as unknown,
   ).toEqual({
     ok: true,
     value: {
@@ -147,17 +152,20 @@ test("the schema offers exactly the god's ability actions that can be used here 
     "move",
     "strike",
     "legend",
+    "wait",
   ]);
   const atMountain = snapshotOf("zeus", "mountain-path");
   expect(properties(godIntentSchema(zeus, atMountain)).action?.enum).toEqual([
     "move",
     "realm-transition",
     "legend",
+    "wait",
   ]);
   expect(godAvailableActions(zeus, atMountain)).toEqual([
     "move",
     "realm-transition",
     "legend",
+    "wait",
   ]);
 });
 
@@ -337,4 +345,97 @@ test("each god's context speaks in that god's own voice and drives", () => {
   expect(text).not.toContain("Thunderbolt");
   // Zeus stands in the hall with her.
   expect(text).toContain("zeus");
+});
+
+// --- wait ---------------------------------------------------------------------
+
+test("wait parses and is always offered, even with nothing else to do", () => {
+  const schema = godIntentSchema(zeus, atTavern());
+  expect(schema.parse({ action: "wait" }) as unknown).toEqual({
+    ok: true,
+    value: { action: "wait" },
+  });
+
+  // No divinity, no legend ability, no exits: only waiting is left.
+  const spent = snapshotOf("zeus", "tavern", [], (state) =>
+    actorHolding(state, "zeus", "divinity", 0),
+  );
+  const bare: GodProfile = { ...zeus, abilities: [] };
+  const stuck = godIntentSchema(bare, spent);
+  expect(properties(stuck).action?.enum).toContain("wait");
+  expect(godAvailableActions(bare, spent)).toContain("wait");
+  expect(stuck.parse({ action: "wait" }).ok).toBe(true);
+});
+
+test("the prompt tells the god that waiting is allowed", () => {
+  const context = buildGodContext(zeus, atTavern());
+  expect(context.instructions).toMatch(/wait/i);
+  expect(context.instructions).toContain('action "wait"');
+});
+
+// --- Branded intents -----------------------------------------------------------
+
+test("only the schema's parse produces a ParsedGodIntent; a hand-built one does not compile", () => {
+  const parsed = godIntentSchema(zeus, atTavern()).parse({ action: "wait" });
+  if (!parsed.ok) throw new Error(parsed.message);
+  const fromParse: ParsedGodIntent = parsed.value;
+  expect(fromParse.action).toBe("wait");
+
+  const handBuilt: GodIntent = { action: "wait" };
+  // @ts-expect-error a plain GodIntent has not been through godIntentSchema's parse
+  const notParsed: ParsedGodIntent = handBuilt;
+  expect(notParsed as unknown).toBe(handBuilt);
+});
+
+// --- Perceived events in the schema and the prompt ------------------------------------
+
+test("the linkedEventId enum lists only perceived event ids, and is absent when none are perceived", () => {
+  const local = committedEvent({
+    kind: "building-ignited",
+    entityId: "the-tavern",
+  });
+  const remote = committedEvent({
+    kind: "building-ignited",
+    entityId: "old-oak",
+  });
+
+  const some = godIntentSchema(
+    zeus,
+    snapshotOf("zeus", "tavern", [remote, local]),
+  );
+  const linked = (
+    some.jsonSchema as { properties: Record<string, { enum?: string[] }> }
+  ).properties.linkedEventId;
+  expect(linked?.enum).toEqual([local.id]);
+  expect(linked?.enum).not.toContain(remote.id);
+
+  const none = godIntentSchema(zeus, snapshotOf("zeus", "tavern", [remote]));
+  expect(properties(none).linkedEventId).toBeUndefined();
+});
+
+test("an income event at a visible building does not put a remote owner in the prompt; positive control: co-located, it does", () => {
+  // The farmer owns the tavern and works in the square.
+  const income = committedEvent({
+    kind: "income-earned",
+    entityId: "farmer",
+    buildingId: "the-tavern",
+    amount: 1,
+  });
+  const apart = buildGodContext(zeus, snapshotOf("zeus", "tavern", [income]));
+  const apartText = `${apart.instructions}\n${apart.prompt}`;
+  expect(apartText).toContain("income-earned");
+  expect(apartText).toContain("the-tavern");
+  expect(apartText).not.toContain("farmer");
+
+  const together = buildGodContext(
+    zeus,
+    snapshotOf("zeus", "tavern", [income], (state) =>
+      actorAt(state, "farmer", "tavern"),
+    ),
+  );
+  const line = (text: string) =>
+    text.split("\n").find((row) => row.includes("income-earned")) ?? "";
+  // The event line itself names the owner, not merely the actor list.
+  expect(line(together.prompt)).toContain("farmer");
+  expect(line(apart.prompt)).not.toContain("farmer");
 });

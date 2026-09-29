@@ -13,7 +13,11 @@
 // through the same `parseGodProfiles` the directory loader uses; a new god
 // file needs one import and one list entry here.
 
-import { type GodProfile, parseGodProfiles } from "@panthea/content";
+import {
+  type GodProfile,
+  type LabeledProfileInput,
+  parseGodProfiles,
+} from "@panthea/content";
 import {
   type ContentPack,
   isRecord,
@@ -52,15 +56,18 @@ export function loadEmbeddedGreekWorldPack(): ParseResult<ContentPack> {
   return parseContentPack(merged);
 }
 
-/** Parses the embedded god profiles against `pack`. Never touches the filesystem. */
+export const EMBEDDED_GOD_PROFILE_FILES: readonly LabeledProfileInput[] = [
+  { label: "hera.json", value: heraFile },
+  { label: "zeus.json", value: zeusFile },
+];
+
+/**
+ * Parses the embedded god profiles (or `files`, so a test can inject a bad
+ * one) against `pack`. Never touches the filesystem.
+ */
 export function loadEmbeddedGreekGodProfiles(
   pack: ContentPack,
+  files: readonly LabeledProfileInput[] = EMBEDDED_GOD_PROFILE_FILES,
 ): ParseResult<readonly GodProfile[]> {
-  return parseGodProfiles(
-    [
-      { label: "hera.json", value: heraFile },
-      { label: "zeus.json", value: zeusFile },
-    ],
-    pack.inhabitants,
-  );
+  return parseGodProfiles(files, pack.inhabitants);
 }

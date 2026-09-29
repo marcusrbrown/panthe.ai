@@ -7,6 +7,7 @@
 // packages/persistence never imports packages/world; this file is the
 // only place both are imported together.
 
+import type { LabeledProfileInput } from "@panthea/content";
 import type {
   ClockRow,
   ProjectionCodec,
@@ -24,6 +25,7 @@ import {
   type WorldState,
 } from "@panthea/world";
 import {
+  EMBEDDED_GOD_PROFILE_FILES,
   loadEmbeddedGreekGodProfiles,
   loadEmbeddedGreekWorldPack,
 } from "./greek-world-pack";
@@ -37,14 +39,16 @@ import {
  * parsed against the pack too, so a profile that no longer matches a deity
  * inhabitant stops startup.
  */
-export function loadGreekWorldState(): WorldState {
+export function loadGreekWorldState(
+  godProfileFiles: readonly LabeledProfileInput[] = EMBEDDED_GOD_PROFILE_FILES,
+): WorldState {
   const result = loadEmbeddedGreekWorldPack();
   if (!result.ok) {
     throw new Error(
       `world-store: failed to parse the embedded Greek content pack (${result.path}): ${result.message}`,
     );
   }
-  const gods = loadEmbeddedGreekGodProfiles(result.value);
+  const gods = loadEmbeddedGreekGodProfiles(result.value, godProfileFiles);
   if (!gods.ok) {
     throw new Error(
       `world-store: failed to parse the embedded Greek god profiles (${gods.path}): ${gods.message}`,

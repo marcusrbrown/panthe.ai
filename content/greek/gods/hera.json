@@ -91,13 +91,12 @@
       "statement": "Hera is the daughter of Cronus and Rhea, sister and wife of Zeus, and queen of the immortals, honored by all the gods on Olympus.",
       "cites": [
         { "source": "theogony", "locator": "lines 453-458" },
-        { "source": "hymn-12-hera", "locator": "lines 1-5" },
-        { "source": "iliad", "locator": "book 4, lines 58-61" }
+        { "source": "hymn-12-hera", "locator": "lines 1-5" }
       ]
     },
     {
       "id": "marriage-and-childbirth",
-      "statement": "Hera bore Hebe, Ares, and Eileithyia to Zeus, and the Eileithyiai who send the pangs of childbirth are called her daughters.",
+      "statement": "In Hesiod, Hera bears Hebe, Ares, and Eileithyia to Zeus; in the Iliad, the Eileithyiai, who send the pangs of childbirth, are called Hera's daughters.",
       "cites": [
         { "source": "theogony", "locator": "lines 921-923" },
         { "source": "iliad", "locator": "book 11, lines 270-271" },
@@ -110,26 +109,24 @@
       "cites": [{ "source": "iliad", "locator": "book 4, lines 51-52" }]
     },
     {
-      "id": "resents-the-affairs",
-      "statement": "Hera resents Zeus's secret counsels and his lovers; he lists Semele, Alcmene, Danae, and Leto among the women he has desired.",
-      "cites": [
-        { "source": "iliad", "locator": "book 1, lines 536-543" },
-        { "source": "iliad", "locator": "book 14, lines 315-328" }
-      ]
+      "id": "resents-secrecy",
+      "statement": "Hera reproaches Zeus for deciding matters in secret, apart from her, and never being willing to tell her what he intends.",
+      "cites": [{ "source": "iliad", "locator": "book 1, lines 536-543" }]
     },
     {
       "id": "anger-over-athena",
-      "statement": "Angry that Zeus bore Athena from his own head, Hera bore Hephaestus without him; in the Hymn to Apollo she also bears the monster Typhaon in her anger.",
+      "statement": "After Zeus bears Athena from his own head, Hera bears Hephaestus without union with Zeus and quarrels furiously with her husband (Hesiod); in the Hymn to Apollo she rages that Zeus bore Athena apart from her, prays for a child as strong as he, and bears the monster Typhaon.",
       "cites": [
-        { "source": "theogony", "locator": "lines 927-929" },
+        { "source": "theogony", "locator": "lines 924-929" },
         { "source": "hymn-3-apollo", "locator": "lines 305-355" }
       ]
     },
     {
       "id": "outwits-zeus",
-      "statement": "Hera can deceive Zeus: she lulls him to sleep while the battle turns, and she once tricked him into an oath that made Eurystheus, not Heracles, ruler.",
+      "statement": "Hera outwits Zeus: he falls asleep in her arms on Mount Ida, which he later calls her trick and deception, and she once tricked him into an oath that made Eurystheus, not Heracles, ruler.",
       "cites": [
         { "source": "iliad", "locator": "book 14, lines 153-353" },
+        { "source": "iliad", "locator": "book 15, lines 14-33" },
         { "source": "iliad", "locator": "book 19, lines 95-133" }
       ]
     },
@@ -140,11 +137,13 @@
     },
     {
       "id": "persecutes-heracles",
-      "statement": "Hera's wrath pursues Heracles, Zeus's son by Alcmene: she sends serpents to his cradle, drives him mad, and sends a storm against him at sea.",
+      "statement": "Hera's wrath pursues Heracles, Zeus's son by Alcmene: the Iliad names her storm against him at sea and her wrath that brought him down; Apollodorus adds serpents sent to his cradle, madness, and the same storm after Troy.",
       "cites": [
         { "source": "iliad", "locator": "book 15, lines 14-33" },
         { "source": "iliad", "locator": "book 18, lines 117-119" },
-        { "source": "apollodorus", "locator": "2.4.8-2.4.12" }
+        { "source": "apollodorus", "locator": "2.4.8" },
+        { "source": "apollodorus", "locator": "2.4.12" },
+        { "source": "apollodorus", "locator": "2.7.1" }
       ]
     },
     {
@@ -176,10 +175,14 @@
     },
     {
       "id": "when-hera-turns-on-heracles",
-      "note": "Different tellings place her hostility to Heracles at different points in his life: serpents in the cradle and madness in Apollodorus, a storm after the sack of Troy in the Iliad. This profile treats them as one long grudge.",
+      "note": "The Iliad gives Hera's storm after Troy, her trick that delayed his birth in Eurystheus's favor, and her wrath at his death; Apollodorus adds serpents in the cradle and madness. The accounts pick different episodes, so whether they are one grudge is left open; this profile treats them as one long grudge.",
       "cites": [
         { "source": "iliad", "locator": "book 15, lines 14-33" },
-        { "source": "apollodorus", "locator": "2.4.8-2.4.12" }
+        { "source": "iliad", "locator": "book 18, lines 117-119" },
+        { "source": "iliad", "locator": "book 19, lines 95-133" },
+        { "source": "apollodorus", "locator": "2.4.8" },
+        { "source": "apollodorus", "locator": "2.4.12" },
+        { "source": "apollodorus", "locator": "2.7.1" }
       ]
     }
   ],

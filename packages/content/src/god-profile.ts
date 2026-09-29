@@ -472,6 +472,12 @@ export function parseGodProfiles(
     }
     seen.add(profile.id);
     for (const [index, relationship] of profile.relationships.entries()) {
+      if (relationship.target === profile.id) {
+        return fail(
+          `${label}.relationships[${index}].target`,
+          `relationship targets the profile's own god (${profile.id}); a god has no relationship with itself`,
+        );
+      }
       if (!byId.has(relationship.target)) {
         return fail(
           `${label}.relationships[${index}].target`,

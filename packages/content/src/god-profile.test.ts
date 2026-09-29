@@ -269,6 +269,23 @@ test("a relationship disposition outside -1..1 is rejected", () => {
     }),
   );
   expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("zeus.json.relationships[0].disposition");
+    expect(result.message).toContain("from -1 to 1");
+  }
+});
+
+test("a relationship targeting the profile's own god is rejected", () => {
+  const result = parseOne(
+    mutate((profile) => {
+      (profile.relationships as Record<string, unknown>[])[0].target = "zeus";
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("zeus.json.relationships[0].target");
+    expect(result.message).toContain("itself");
+  }
 });
 
 test("an unsupported schema version is rejected", () => {

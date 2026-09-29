@@ -179,7 +179,7 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - **Fire carries its initiating cause.** Ignition records the initiating event; spread records the source building's ignition; burn and destruction carry that chain. Cause is stored when the fire starts, never inferred later.
 - **Keys live in Keychain.** The shell reads a configured endpoint's key and passes it to the sidecar at spawn with the launch token; changing it restarts the sidecar. Keys stay out of config, prompts, saves, trace, and logs.
 - **Model-request payloads are bounded and pruned.** Trace rows keep bounded prompt and output text for evaluation and episode review, pruned after seven days (defaults.md); digests and metadata stay with the world history.
-- **Offline drops non-local endpoints.** Each endpoint is marked local or not; offline mode removes non-local ones from assignment and fallback before any adapter is built. Model ids are always provider instances, never bare strings.
+- **Offline drops non-local endpoints, judged by URL.** An endpoint is local when its URL host is a loopback address, `localhost`, a private LAN address (10/8, 172.16/12, 192.168/16, IPv6 unique-local or link-local), or a `*.local` name; any other host is non-local. There is no editable flag. Offline mode removes non-local endpoints from assignment and fallback before any adapter is built, and adapters do not follow redirects. Model ids are always provider instances, never bare strings.
 - **Local routing uses `@ai-sdk/openai-compatible` against Ollama `/v1`** with a derived `llama3.2:3b` 4K model (`parallel=1` stays a server setting), and the promoted repair pass. The production chain is operator-configured per role. Every endpoint uses the same OpenAI-compatible adapter and repair pass; no tier or order is built in.
 - **A model outage never stops ticks.** `model-degraded` is a new status distinct from `store-error` and `disk-full`; routines and the director keep running. It shows through the existing status display with wording that separates it from a halting world failure and from intentional offline mode.
 - **Two gates decide whether M2 works.** After the slice, the owner rates real-inference Zeus and Hera episodes and chooses continue, tune, or replan before the other five gods are built. At exit, the unattended run must meet starting thresholds (Unit 13), revisited after the slice measurements. A failed run is kept as tuning evidence but does not pass.
@@ -258,7 +258,7 @@ sequenceDiagram
 
 **Approach:**
 - Promote the repair pass and adapter shape from `tools/probes/provider-matrix`; production must not import probe code.
-- Role config assigns an endpoint and model per role plus an operator-ordered fallback list; endpoints are marked local or not, and offline mode drops non-local ones before construction.
+- Role config assigns an endpoint and model per role plus an operator-ordered fallback list; locality is derived from each endpoint's URL, and offline mode drops non-local ones before construction.
 - Bounded retries with production backoff; per-turn and total-chain timeouts via v7 `timeout` plus `abortSignal`.
 - The router returns a discriminated result: intent, or exhausted with per-step reasons.
 - Adding `ai` and `@ai-sdk/openai-compatible` to a production package changes the lockfile; ask the owner before the dependency lands.
@@ -272,6 +272,7 @@ sequenceDiagram
 - Edge: malformed JSON repaired into a valid intent; unrepairable output falls to the next step.
 - Error: first step times out, second succeeds; all steps fail returns exhausted with each reason.
 - Offline: a fallback list containing a non-local endpoint (scripted; no real hosted call) in offline mode never constructs that endpoint's adapter (constructor spy) and never reads a key.
+- Locality: loopback, `localhost`, private LAN, and `*.local` URLs are local; a public hostname or public IP is not, whatever the config says; a redirect from a local endpoint is refused.
 - Positive control for the offline claim: the same list online constructs the non-local endpoint's adapter once.
 - Integration: against a live local Ollama (skipped when absent, reported), one call returns a schema-valid intent.
 
@@ -307,7 +308,7 @@ sequenceDiagram
 
 - [ ] **Unit 3: Minimal settings view and endpoint keys**
 
-**Goal:** an endpoint list (base URL, model, local flag), per-role assignment and fallback order, persisted outside world saves; a write-only command stores an endpoint key in Keychain; the shell reads it at sidecar spawn and passes it with the launch token.
+**Goal:** an endpoint list (base URL, model), per-role assignment and fallback order, persisted outside world saves; a write-only command stores an endpoint key in Keychain; the shell reads it at sidecar spawn and passes it with the launch token.
 
 **Requirements:** R6, R7
 
@@ -321,7 +322,7 @@ sequenceDiagram
 - Test: alongside each change
 
 **Approach:**
-- Endpoint config (base URL, model, local flag), per-role assignment, and fallback order persist outside world saves and contain no keys.
+- Endpoint config (base URL, model), per-role assignment, and fallback order persist outside world saves and contain no keys.
 - A write-only command stores an endpoint's key in the Keychain; the shell reads it at sidecar spawn and passes it with the launch token. Changing a key restarts the sidecar.
 - Adding a Keychain crate changes `Cargo.lock`; ask the owner before it lands.
 - Designer owns layout, interaction, and wording. States to cover: endpoint reachable or unreachable, a role with no model or an unavailable model, key saved or missing, and where changes apply (a key change restarts the sidecar).
@@ -335,6 +336,7 @@ sequenceDiagram
 - Offline mode drops a non-local endpoint.
 - An unreachable endpoint shows its state and gods idle with `model-degraded`.
 - Config survives restart and is not in exports; the key is not in config or exports.
+- Sentinel key: a planted key sent through the shell, the sidecar, and a scripted provider never appears in prompts, trace rows, the journal, or sidecar logs (AGENTS.md credential rule).
 
 **Verification:** tests; `bun run check`; cargo fmt and clippy; window-cropped screenshots; one manual run with a role pointed at Go, recorded as a note (not an evidence gate).
 

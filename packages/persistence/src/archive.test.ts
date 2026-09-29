@@ -34,6 +34,7 @@ import {
   closeStore,
   commitTick,
   getCurrentSequence,
+  listEvents,
   openStore,
   type ProjectionCodec,
   type ProjectionReducers,
@@ -1350,6 +1351,37 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpProgress(imported.db)).toEqual(progress);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a backlog whose start sequence equals the archive's last event sequence imports: a discard-only or pause-ended backlog commits no events, and it reports no outcomes", () => {
+    // Hand-built: this package cannot run catch-up. The row is what a
+    // discard-only backlog (or one ended by a pause before any chunk) leaves:
+    // time discarded, nothing applied, start_sequence at the last event.
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const lastSequence = getCurrentSequence(store.db);
+    const discardOnly = {
+      appliedMs: 0,
+      discardedMs: 7_200_000,
+      startSequence: lastSequence,
+    };
+    writeCatchUpProgress(store.db, discardOnly);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)).toEqual(discardOnly);
+    // The summary's outcomes are the events after start_sequence: none.
+    expect(
+      listEvents(imported.db, { fromSequence: discardOnly.startSequence }),
+    ).toEqual([]);
     closeStore(imported);
     closeStore(store);
   });

@@ -348,3 +348,48 @@ describe("events no proposal committed", () => {
     });
   });
 });
+
+describe("a proposal refused for an observation conflict", () => {
+  test("its chain shows the proposal and its rejection but no observation hop: the id resolves to different evidence than the proposal cited", () => {
+    const recorded: ObservationRecord = {
+      schemaVersion: 1,
+      id: createObservationId(),
+      observer: createEntityId(),
+      stateRevision: 0,
+      factsRead: ["what the first proposal saw"],
+      source: "fixture",
+    };
+    recordObservation(db, recorded);
+    const proposalId = createProposalId();
+    recordProposalOutcome(db, {
+      proposalId,
+      observationId: recorded.id,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      proposal: {
+        schemaVersion: 1,
+        actor: createEntityId(),
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        observationId: recorded.id,
+        kind: "move",
+        to: createEntityId(),
+      },
+      outcome: "rejected",
+      reason: "observation-conflict",
+    });
+
+    const result = followProposal(db, eventSource, proposalId);
+
+    expect(result.found).toBe(true);
+    expect(result.steps.map((step) => step.step)).toEqual([
+      "proposal",
+      "validation",
+    ]);
+    expect(result.steps[1]).toMatchObject({
+      outcome: "rejected",
+      reason: "observation-conflict",
+    });
+  });
+});

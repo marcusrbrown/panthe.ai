@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -83,6 +83,12 @@ export function createSchema(db: Database): void {
         CHECK ((consumed_tick IS NULL) = (outcome IS NULL)),
         CHECK ((outcome IS 'rejected') = (reason IS NOT NULL))
       ) STRICT
+    `);
+    // Finds the journaled proposals citing an observation id, so intake can
+    // refuse a changed observation under a used id.
+    db.exec(`
+      CREATE INDEX idx_external_proposals_observation_id
+      ON external_proposals (json_extract(observation, '$.id'))
     `);
     // Serves each tick's pending read (unconsumed, target reached, in input
     // order) without walking the consumed history, which is never pruned.

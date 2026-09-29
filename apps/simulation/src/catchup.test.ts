@@ -17,7 +17,7 @@ import {
   readLiveProjections,
   readPrngState,
 } from "@panthea/persistence";
-import { ensureTraceSchema } from "@panthea/telemetry";
+import { ensureTraceSchema, recordObservation } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
 import { refreshStatusAfterCatchUp } from "./index";
@@ -953,3 +953,38 @@ test("an archive exported mid-backlog, imported, and resumed reports the same su
     rmSync(slotsDir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("a journaled proposal whose observation id is bound to different content is refused in its catch-up chunk with an explicit outcome: the chunk commits, and the entry is consumed as rejected", async () => {
+  const backlog = openBacklog("panthea-sim-catchup-observation-conflict-");
+  try {
+    const entry = strikeEntry("oc");
+    backlog.withDb((db) => {
+      // The trace already binds this observation id to other content, as a
+      // recorded observation from before would.
+      ensureTraceSchema(db);
+      recordObservation(db, {
+        ...entry.observation,
+        factsRead: ["what the earlier proposal saw"],
+      } as never);
+      insertExternalProposal(db, entry);
+    });
+
+    const result = await backlog.run(backlog.startCursor + 60_000);
+
+    expect(result.degraded).toBeUndefined();
+    expect(backlog.clock().tick).toBe(60);
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, entry.proposalId)).toMatchObject({
+        consumedTick: 1,
+        outcome: { status: "rejected", reason: "observation-conflict" },
+      });
+      expect(
+        listEvents(db).some(
+          (event) => String(event.correlationId) === entry.observation.id,
+        ),
+      ).toBe(false);
+    });
+  } finally {
+    backlog.dispose();
+  }
+});

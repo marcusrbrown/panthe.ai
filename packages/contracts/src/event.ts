@@ -9,7 +9,6 @@ import {
   type EventId,
   fail,
   isRecord,
-  type LegendId,
   ok,
   type ParseResult,
   parseArray,
@@ -19,7 +18,6 @@ import {
   parseEntityId,
   parseEventId,
   parseFiniteNumber,
-  parseLegendId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalString,
@@ -135,18 +133,18 @@ export interface IncomeEarnedEvent extends EventEnvelope {
 }
 
 /**
- * Records that a narrative was told, never that it is fact: `verified` is
- * exactly whether `linkedEventId` is present, so a rumor and a linked,
- * verified telling of the same happening are distinguished by this event
- * alone -- no separate lookup required.
+ * Records that a narrative was told, never that it is true. `entityId` is
+ * the narrator; `assertion` is their free-form, possibly false story.
+ * `linkedEventId`, when present, is the narrator's cited evidence: an event
+ * that exists in the log, and nothing more. The world does not judge whether
+ * that event supports the assertion, so a link makes a legend "event-linked",
+ * never certified. The legend's own identity is the identity of this event.
  */
 export interface LegendRecordedEvent extends EventEnvelope {
   readonly kind: "legend-recorded";
   readonly entityId: EntityId;
-  readonly legendId: LegendId;
   readonly assertion: string;
   readonly linkedEventId?: EventId;
-  readonly verified: boolean;
 }
 
 export type WorldEvent =
@@ -488,8 +486,6 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     case "legend-recorded": {
       const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
-      const legendId = parseLegendId(input.legendId, "legendId");
-      if (!legendId.ok) return legendId;
       const assertion = parseString(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       const linkedEventIdRaw = parseOptionalString(
@@ -497,24 +493,14 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         "linkedEventId",
       );
       if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
-      const verified = parseBoolean(input.verified, "verified");
-      if (!verified.ok) return verified;
-      if (verified.value !== (linkedEventIdRaw.value !== undefined)) {
-        return fail(
-          "verified",
-          "verified must equal whether linkedEventId is present",
-        );
-      }
       return ok({
         ...envelope,
         kind: "legend-recorded",
         entityId: entityId.value,
-        legendId: legendId.value,
         assertion: assertion.value,
         ...(linkedEventIdRaw.value === undefined
           ? {}
           : { linkedEventId: linkedEventIdRaw.value as EventId }),
-        verified: verified.value,
       });
     }
     default:

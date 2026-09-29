@@ -120,12 +120,54 @@ describe("recordObservation / getObservation", () => {
     expect(fetched?.record).toEqual(record);
   });
 
-  test("idempotent: recording the same observation ID twice keeps the first row", () => {
+  test("exact reuse of an observation id is allowed, whatever the key order, and reports the record as already there", () => {
+    const record = makeObservation();
+    expect(recordObservation(db, record)).toEqual({ kind: "recorded" });
+
+    const reordered = {
+      source: record.source,
+      factsRead: [...record.factsRead],
+      stateRevision: record.stateRevision,
+      observer: record.observer,
+      id: record.id,
+      schemaVersion: record.schemaVersion,
+    } as ObservationRecord;
+
+    expect(recordObservation(db, reordered)).toEqual({ kind: "same" });
+    expect(
+      (
+        db.query("SELECT COUNT(*) AS n FROM trace_observations").get() as {
+          n: number;
+        }
+      ).n,
+    ).toBe(1);
+  });
+
+  test("conflicting reuse of an observation id is reported, never thrown, and never overwrites the recorded evidence", () => {
     const record = makeObservation();
     recordObservation(db, record);
-    recordObservation(db, { ...record, factsRead: ["different"] });
-    const fetched = getObservation(db, record.id);
-    expect(fetched?.record.factsRead).toEqual(["fact-1"]);
+
+    const conflicting = {
+      ...record,
+      factsRead: ["different"],
+      stateRevision: 9,
+    };
+    const result = recordObservation(db, conflicting);
+
+    expect(result.kind).toBe("conflict");
+    if (result.kind === "conflict") {
+      expect(result.recorded).toEqual(record);
+    }
+    expect(getObservation(db, record.id)?.record).toEqual(record);
+  });
+
+  test("a conflicting reuse differing only in provenance is still a conflict", () => {
+    const record = makeObservation();
+    recordObservation(db, record);
+
+    expect(recordObservation(db, { ...record, source: "routine" }).kind).toBe(
+      "conflict",
+    );
   });
 
   test("returns undefined for an unknown ID", () => {

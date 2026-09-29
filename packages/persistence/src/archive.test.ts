@@ -503,6 +503,25 @@ describe("importArchive: version mismatch", () => {
     closeStore(store);
   });
 
+  test("error path: a version 4 archive is rejected as incompatible-version, never imported; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET sqlite_schema_version = 4");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
   test("error path: a version 2 archive is rejected as incompatible-version, never imported; no slot is created", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);

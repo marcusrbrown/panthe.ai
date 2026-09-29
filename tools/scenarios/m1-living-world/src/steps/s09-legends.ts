@@ -1,9 +1,12 @@
-// S9: a legend about a committed event is verified, one with no link is a
-// rumor, and a legend linking an unknown event is refused at intake.
+// S9: a legend that cites a committed event is event-linked (an evidence
+// link, never certification of its prose), one with no link is unlinked, a
+// legend citing an unrelated event is recorded just the same, and a legend
+// linking an unknown event is refused at intake.
 
+import legendLinked from "../fixtures/legend-linked.json";
 import legendRumor from "../fixtures/legend-rumor.json";
 import legendUnknownLink from "../fixtures/legend-unknown-link.json";
-import legendVerified from "../fixtures/legend-verified.json";
+import legendUnrelatedLink from "../fixtures/legend-unrelated-link.json";
 import { check } from "../helpers";
 import {
   fmt,
@@ -26,10 +29,10 @@ export async function stepLegends(
   await recorder.run(
     "S9",
     "Legends",
-    "A legend a mortal tells about a committed event is verified, one told with no link is a rumor, both are attributed to their narrators and are records rather than facts, and a legend linking an unknown event is refused at intake.",
+    "A legend that cites a committed event is recorded event-linked, one told with no link is recorded unlinked, and a legend citing an unrelated event is recorded the same way: the world keeps the narrator's assertion and their evidence link, attributed, and certifies none of it (no verified flag exists). A legend linking an unknown event is refused at intake.",
     async (step) => {
       // Different narrators, so both commit in the same tick.
-      const linked = await postFixture(story, legendVerified, {
+      const linked = await postFixture(story, legendLinked, {
         "$event:ignited": strike.ignitedEventId,
       });
       const rumor = await postFixture(story, legendRumor);
@@ -65,19 +68,46 @@ export async function stepLegends(
         );
         return found[0];
       };
-      const verifiedEvent = legendEvent(linkedOutcome);
-      const rumorEvent = legendEvent(rumorOutcome);
+      const linkedEvent = legendEvent(linkedOutcome);
+      const unlinkedEvent = legendEvent(rumorOutcome);
       check(
-        verifiedEvent.payload.verified === true &&
-          verifiedEvent.payload.linkedEventId === strike.ignitedEventId,
-        "a legend linked to the strike's ignition is verified",
-        fmt(verifiedEvent.payload),
+        linkedEvent.payload.linkedEventId === strike.ignitedEventId &&
+          !("verified" in linkedEvent.payload),
+        "a legend citing the strike's ignition carries that evidence link and no truth flag",
+        fmt(linkedEvent.payload),
       );
       check(
-        rumorEvent.payload.verified === false &&
-          rumorEvent.payload.linkedEventId === undefined,
-        "a legend with no link is a rumor",
-        fmt(rumorEvent.payload),
+        unlinkedEvent.payload.linkedEventId === undefined &&
+          !("verified" in unlinkedEvent.payload),
+        "a legend with no link carries none and no truth flag",
+        fmt(unlinkedEvent.payload),
+      );
+
+      // Zeus (no routine) tells a story the cited event does not support.
+      const unrelated = await postFixture(story, legendUnrelatedLink, {
+        "$event:ignited": strike.ignitedEventId,
+      });
+      check(
+        unrelated.status === 202,
+        "a legend citing an unrelated committed event is accepted at intake",
+        `${unrelated.status} ${fmt(unrelated.body)}`,
+      );
+      const unrelatedOutcome = await outcomeOf(
+        story,
+        unrelated.proposalId,
+        "the unrelated-link legend's outcome is recorded",
+      );
+      check(
+        unrelatedOutcome.outcome === "committed",
+        "the world records a legend whose cited event does not support its prose: it judges evidence links, not truth",
+        `${unrelatedOutcome.outcome} ${unrelatedOutcome.reason}`,
+      );
+      const unrelatedEvent = legendEvent(unrelatedOutcome);
+      check(
+        unrelatedEvent.payload.linkedEventId === strike.ignitedEventId &&
+          !("verified" in unrelatedEvent.payload),
+        "the unrelated citation is recorded as a link, never certified",
+        fmt(unrelatedEvent.payload),
       );
 
       const unknown = await postFixture(story, legendUnknownLink);
@@ -104,25 +134,38 @@ export async function stepLegends(
       const { state } = await readFrame(story.sidecar);
       const legends = [...state.legends.values()];
       check(
-        legends.length === 2 &&
-          legends.filter((legend) => legend.verified).length === 1,
-        "the world holds one verified legend and one rumor, and none for the refused one",
+        legends.length === 3 &&
+          legends.filter((legend) => legend.linkedEventId !== undefined)
+            .length === 2 &&
+          legends.every((legend) => !("verified" in legend)),
+        "the world holds two event-linked legends and one unlinked one, none carrying a truth flag, and none for the refused one",
         fmt(
           legends.map((legend) => [
             legend.assertion.slice(0, 20),
-            legend.verified,
+            legend.linkedEventId,
           ]),
         ),
       );
-      const narratorOf = (verified: boolean) =>
-        legends.find((legend) => legend.verified === verified)?.narrator;
+      const narratorOf = (linked: boolean, unrelatedTale: boolean) =>
+        legends.find(
+          (legend) =>
+            (legend.linkedEventId !== undefined) === linked &&
+            legend.assertion.startsWith("Zeus destroyed") === unrelatedTale,
+        )?.narrator;
       check(
-        narratorOf(true) === "woodcutter" && narratorOf(false) === "farmer",
-        "each legend is attributed to the mortal who told it",
-        fmt(legends.map((legend) => [legend.narrator, legend.verified])),
+        narratorOf(true, false) === "woodcutter" &&
+          narratorOf(false, false) === "farmer" &&
+          narratorOf(true, true) === "zeus",
+        "each legend is attributed to the actor who told it",
+        fmt(legends.map((legend) => [legend.narrator, legend.linkedEventId])),
+      );
+      check(
+        new Set(legends.map((legend) => legend.id)).size === legends.length,
+        "each telling has its own identity",
+        fmt(legends.map((legend) => legend.id)),
       );
       step.done(
-        `verified legend by the woodcutter at sequence ${verifiedEvent.sequence} links ${strike.ignitedEventId.slice(0, 14)}; rumor by the farmer at sequence ${rumorEvent.sequence} has no link; both committed although both narrators have routines; unknown link refused (${unknown.status}) with no record; legends in world state: ${legends.length}`,
+        `event-linked legend by the woodcutter at sequence ${linkedEvent.sequence} cites ${strike.ignitedEventId.slice(0, 14)}; unlinked legend by the farmer at sequence ${unlinkedEvent.sequence}; zeus's legend citing the same event for an unrelated tale at sequence ${unrelatedEvent.sequence} recorded event-linked, uncertified; both mortal tellings committed although both narrators have routines; unknown link refused (${unknown.status}) with no record; legends in world state: ${legends.length}, all distinct, none with a truth flag`,
         [{ name: "legends held", unit: "count", value: legends.length }],
       );
     },

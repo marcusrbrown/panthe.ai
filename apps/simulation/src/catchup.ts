@@ -42,6 +42,7 @@ import {
   type QueuedProposal,
   readPendingExternalQueue,
   recordOperatorEvent,
+  screenObservations,
   stepWorldTick,
   type TickDeps,
   type WorldTickOutcome,
@@ -277,17 +278,36 @@ export async function runCatchUp(
 
     let workingState = committedState;
     let workingPrng = committedPrng;
-    let workingQueue: readonly QueuedProposal[] = mergeTickQueue(
-      buildRoutineQueue(workingState),
-      pending,
-    );
+    // The first tick's queue holds the journaled proposals. One whose
+    // observation id is bound to different content is refused with an
+    // explicit outcome here, before the chunk commits, never thrown inside it.
+    let screened: ReturnType<typeof screenObservations>;
+    try {
+      screened = screenObservations(
+        deps.traceDb,
+        mergeTickQueue(buildRoutineQueue(workingState), pending),
+      );
+    } catch (error) {
+      return {
+        summary: committedSummary(),
+        state: committedState,
+        prng: committedPrng,
+        degraded: {
+          reason: "store-error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+    let workingQueue: readonly QueuedProposal[] = screened.runnable;
     const chunkOutcomes: WorldTickOutcome[] = [];
     let chunkEvents: WorldEvent[] = [];
 
     for (let i = 0; i < ticksThisChunk; i += 1) {
-      const outcome = stepWorldTick(workingState, workingPrng, workingQueue, {
+      const stepped = stepWorldTick(workingState, workingPrng, workingQueue, {
         approximate: true,
       });
+      const outcome: WorldTickOutcome =
+        i === 0 ? { ...stepped, refused: screened.refused } : stepped;
       chunkOutcomes.push(outcome);
       chunkEvents = [...chunkEvents, ...outcome.result.events];
       workingState = outcome.result.state;

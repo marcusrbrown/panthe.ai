@@ -29,6 +29,7 @@ export const REJECTION_REASON_CODES = [
   "unauthorized-claim",
   "counterparty-declined",
   "over-limit",
+  "observation-conflict",
 ] as const;
 
 export type RejectionReasonCode = (typeof REJECTION_REASON_CODES)[number];

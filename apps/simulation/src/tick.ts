@@ -19,6 +19,7 @@ import type {
   WorldEvent,
 } from "@panthea/contracts";
 import {
+  canonicalJson,
   createObservationId,
   parseObservationRecord,
   parseProposal,
@@ -34,6 +35,7 @@ import {
 } from "@panthea/persistence";
 import {
   createProposalId,
+  getObservation,
   type ProposalId,
   parseProposalId,
   recordObservation,
@@ -176,6 +178,40 @@ export interface WorldTickOutcome {
   readonly result: ReturnType<typeof runTick>;
   readonly admitted: readonly QueuedProposal[];
   readonly overflow: readonly QueuedProposal[];
+  /** Proposals that cited an observation id already bound to different content. They never reached the world; each gets a terminal `observation-conflict` rejection. */
+  readonly refused: readonly QueuedProposal[];
+}
+
+/**
+ * Splits `queue` into what may run and what must be refused because its
+ * observation id is already bound to different content, either in the trace
+ * or by an earlier proposal in this same queue. Several proposals citing one
+ * unchanged observation all pass. This runs before the tick, outside the
+ * commit transaction, so a conflict becomes an explicit outcome instead of a
+ * throw that would roll the tick back to repeat forever.
+ */
+export function screenObservations(
+  traceDb: Database,
+  queue: readonly QueuedProposal[],
+): { runnable: QueuedProposal[]; refused: QueuedProposal[] } {
+  const runnable: QueuedProposal[] = [];
+  const refused: QueuedProposal[] = [];
+  const claimedInQueue = new Map<string, string>();
+  for (const queued of queue) {
+    const content = canonicalJson(queued.observation);
+    const id = String(queued.observation.id);
+    const recorded = getObservation(traceDb, queued.observation.id);
+    const boundTo = recorded
+      ? canonicalJson(recorded.record)
+      : claimedInQueue.get(id);
+    if (boundTo !== undefined && boundTo !== content) {
+      refused.push(queued);
+      continue;
+    }
+    claimedInQueue.set(id, boundTo ?? content);
+    runnable.push(queued);
+  }
+  return { runnable, refused };
 }
 
 /**
@@ -232,7 +268,7 @@ export function stepWorldTick(
     admitted.map((queued) => queued.proposal),
     { elapsedMs: options.elapsedMs, approximate: options.approximate },
   );
-  return { result, admitted, overflow };
+  return { result, admitted, overflow, refused: [] };
 }
 
 export type CommitOutcome =
@@ -325,8 +361,29 @@ export function traceWorldTick(
   /** How each proposal ended this tick, for the journal rows of the external ones. */
   const terminal = new Map<ProposalId, ExternalProposalOutcome>();
 
+  // `screenObservations` already refused any proposal whose observation id is
+  // bound to different content, so these can only be new or exact reuse; the
+  // result is deliberately not inspected, and a conflict must never throw here.
   for (const queued of outcome.admitted) {
     recordObservation(traceDb, queued.observation);
+  }
+  for (const queued of outcome.refused) {
+    // Its own observation is not recorded: the id already means something
+    // else. The outcome names the refusal, and the trace shows no
+    // observation hop for it.
+    recordProposalOutcome(traceDb, {
+      proposalId: queued.id,
+      observationId: queued.observation.id,
+      correlationId: toCorrelationId(String(queued.observation.id)),
+      causationId: toCausationId(String(queued.observation.id)),
+      proposal: queued.proposal,
+      outcome: "rejected",
+      reason: "observation-conflict",
+    });
+    terminal.set(queued.id, {
+      status: "rejected",
+      reason: "observation-conflict",
+    });
   }
   for (const queued of outcome.overflow) {
     recordObservation(traceDb, queued.observation);
@@ -376,7 +433,11 @@ export function traceWorldTick(
   // Every external proposal this tick took, committed, rejected, or over the
   // limit, now has its terminal outcome above; consume it, with that outcome
   // on its journal row, in the same transaction so it can never run again.
-  for (const queued of [...outcome.admitted, ...outcome.overflow]) {
+  for (const queued of [
+    ...outcome.admitted,
+    ...outcome.overflow,
+    ...outcome.refused,
+  ]) {
     if (!queued.external) {
       continue;
     }
@@ -420,10 +481,26 @@ export function applyOneTick(
     readonly approximate?: boolean;
   },
 ): TickStepResult {
-  const outcome = stepWorldTick(state, prng, queue, {
-    elapsedMs: commit.elapsedMs,
-    approximate: commit.approximate,
-  });
+  let screened: ReturnType<typeof screenObservations>;
+  try {
+    screened = screenObservations(deps.traceDb, queue);
+  } catch (error) {
+    // The trace could not be read: a store failure like any other, reported
+    // rather than thrown.
+    return {
+      kind: "store-error",
+      reason: classifyStoreError(error),
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const { runnable, refused } = screened;
+  const outcome: WorldTickOutcome = {
+    ...stepWorldTick(state, prng, runnable, {
+      elapsedMs: commit.elapsedMs,
+      approximate: commit.approximate,
+    }),
+    refused,
+  };
   const committed = commitWorldTick(
     deps,
     outcome.result.events,

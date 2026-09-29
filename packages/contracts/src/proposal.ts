@@ -187,10 +187,11 @@ export interface ClaimProposal extends ProposalBase {
 /**
  * A narrative record, distinct from a claim: it commits regardless of
  * whether the assertion is true, since it records that someone told the
- * story -- never that the story is fact. Linking it to a committed event
- * marks it verified; leaving `linkedEventId` absent records it as a rumor.
- * A second, disputed telling of the same event is simply another legend,
- * never a replacement for the first.
+ * story -- never that the story is fact. `linkedEventId` cites an event
+ * that exists in the log as the narrator's evidence; the world does not
+ * judge whether it supports the story, so it makes the legend event-linked,
+ * never certified. A second, disputed telling of the same event is simply
+ * another legend, never a replacement for the first.
  */
 export interface LegendProposal extends ProposalBase {
   readonly kind: "legend";

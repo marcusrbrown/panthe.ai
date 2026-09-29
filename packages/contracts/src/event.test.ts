@@ -308,76 +308,50 @@ test("a valid income-earned event parses", () => {
   }
 });
 
-test("a legend-recorded event claiming verified without a linkedEventId is rejected", () => {
-  const result = parseEvent(
+test("a legend-recorded event carries an attributed assertion and, optionally, an evidence link -- and no truth flag", () => {
+  const unlinked = parseEvent(
     envelope({
       kind: "legend-recorded",
       entityId: "bard",
-      legendId: "legend-1",
       assertion: "Zeus struck down the old oak",
-      verified: true,
     }),
   );
-  expect(result.ok).toBe(false);
-});
-
-test("a legend-recorded event with a linkedEventId claiming unverified is rejected", () => {
-  const result = parseEvent(
-    envelope({
-      kind: "legend-recorded",
+  expect(unlinked.ok).toBe(true);
+  if (unlinked.ok && unlinked.value.kind === "legend-recorded") {
+    expect(unlinked.value).toMatchObject({
       entityId: "bard",
-      legendId: "legend-1",
       assertion: "Zeus struck down the old oak",
-      linkedEventId: "evt-9",
-      verified: false,
-    }),
-  );
-  expect(result.ok).toBe(false);
-});
-
-test("a valid legend-recorded event parses, unlinked and unverified", () => {
-  const result = parseEvent(
-    envelope({
-      kind: "legend-recorded",
-      entityId: "bard",
-      legendId: "legend-1",
-      assertion: "Zeus struck down the old oak",
-      verified: false,
-    }),
-  );
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.value).toMatchObject({
-      kind: "legend-recorded",
-      entityId: "bard",
-      legendId: "legend-1",
-      assertion: "Zeus struck down the old oak",
-      verified: false,
     });
-    if (result.value.kind === "legend-recorded") {
-      expect(result.value.linkedEventId).toBeUndefined();
-    }
+    expect(unlinked.value.linkedEventId).toBeUndefined();
+    expect("verified" in unlinked.value).toBe(false);
+    expect("legendId" in unlinked.value).toBe(false);
+  }
+
+  const linked = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "bard",
+      assertion: "Zeus destroyed the entire Underworld",
+      linkedEventId: "evt-9",
+    }),
+  );
+  expect(linked.ok).toBe(true);
+  if (linked.ok && linked.value.kind === "legend-recorded") {
+    expect(String(linked.value.linkedEventId)).toBe("evt-9");
+    expect("verified" in linked.value).toBe(false);
   }
 });
 
-test("a valid legend-recorded event parses, linked and verified", () => {
+test("a legend-recorded event with a non-string linkedEventId is rejected", () => {
   const result = parseEvent(
     envelope({
       kind: "legend-recorded",
       entityId: "bard",
-      legendId: "legend-1",
       assertion: "Zeus struck down the old oak",
-      linkedEventId: "evt-9",
-      verified: true,
+      linkedEventId: 9,
     }),
   );
-  expect(result.ok).toBe(true);
-  if (result.ok) {
-    expect(result.value).toMatchObject({ verified: true });
-    if (result.value.kind === "legend-recorded") {
-      expect(String(result.value.linkedEventId)).toBe("evt-9");
-    }
-  }
+  expect(result.ok).toBe(false);
 });
 
 function subjectsOf(event: WorldEvent): readonly string[] {

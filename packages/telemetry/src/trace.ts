@@ -18,19 +18,21 @@
 // `idParser`/`idFactory` helpers rather than editing packages/contracts.
 
 import type { Database } from "bun:sqlite";
-import type {
-  Brand,
-  CausationId,
-  CorrelationId,
-  EventId,
-  ObservationId,
-  ObservationRecord,
-  Proposal,
-  RejectionReasonCode,
-  SessionId,
-  WorldEvent,
+import {
+  type Brand,
+  type CausationId,
+  type CorrelationId,
+  canonicalJson,
+  type EventId,
+  idFactory,
+  idParser,
+  type ObservationId,
+  type ObservationRecord,
+  type Proposal,
+  type RejectionReasonCode,
+  type SessionId,
+  type WorldEvent,
 } from "@panthea/contracts";
-import { idFactory, idParser } from "@panthea/contracts";
 
 export type ProposalId = Brand<string, "ProposalId">;
 export const parseProposalId = idParser<"ProposalId">();
@@ -90,13 +92,36 @@ export function ensureTraceSchema(db: Database): void {
   `);
 }
 
+export type RecordObservationResult =
+  /** A new observation was recorded. */
+  | { readonly kind: "recorded" }
+  /** The id was already recorded with exactly this content; nothing changed. */
+  | { readonly kind: "same" }
+  /** The id was already recorded with different content; nothing changed, and `recorded` is what the trace still holds. */
+  | { readonly kind: "conflict"; readonly recorded: ObservationRecord };
+
+/**
+ * Records an observation. An observation id binds to one content, forever:
+ * recording the same content again is a no-op (several proposals may cite
+ * one unchanged observation), and recording different content under a used
+ * id changes nothing and reports a conflict. It never throws for a
+ * conflict, because callers run inside a tick transaction where a throw
+ * would roll the tick back to be repeated; callers screen for conflicts
+ * before the tick and refuse the proposal with an explicit outcome.
+ */
 export function recordObservation(
   db: Database,
   record: ObservationRecord,
   now: number = Date.now(),
-): void {
+): RecordObservationResult {
+  const existing = getObservation(db, record.id);
+  if (existing) {
+    return canonicalJson(existing.record) === canonicalJson(record)
+      ? { kind: "same" }
+      : { kind: "conflict", recorded: existing.record };
+  }
   db.run(
-    `INSERT OR IGNORE INTO trace_observations
+    `INSERT INTO trace_observations
        (id, observer, state_revision, source, recorded_at, payload)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
@@ -108,6 +133,7 @@ export function recordObservation(
       JSON.stringify(record),
     ],
   );
+  return { kind: "recorded" };
 }
 
 export interface ObservationEntry {

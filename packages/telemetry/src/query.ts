@@ -72,7 +72,12 @@ function eventSteps(
  */
 function causeSteps(db: Database, outcome: ProposalOutcomeRow): TraceStep[] {
   const steps: TraceStep[] = [];
-  const observation = getObservation(db, outcome.observationId);
+  // A proposal refused for an observation conflict cited an id that is bound
+  // to different evidence; showing that record would misattribute it.
+  const observation =
+    outcome.reason === "observation-conflict"
+      ? undefined
+      : getObservation(db, outcome.observationId);
   if (observation) {
     steps.push({ step: "observation", record: observation.record });
   }

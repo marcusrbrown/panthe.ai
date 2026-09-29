@@ -550,14 +550,6 @@ function parseLegendRecord(
     `${path}.linkedEventId`,
   );
   if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
-  const verified = parseBoolean(value.verified, `${path}.verified`);
-  if (!verified.ok) return verified;
-  if (verified.value !== (linkedEventIdRaw.value !== undefined)) {
-    return fail(
-      `${path}.verified`,
-      "verified must equal whether linkedEventId is present",
-    );
-  }
   return ok({
     id: id.value,
     narrator: narrator.value,
@@ -565,7 +557,6 @@ function parseLegendRecord(
     ...(linkedEventIdRaw.value === undefined
       ? {}
       : { linkedEventId: linkedEventIdRaw.value as EventId }),
-    verified: verified.value,
   });
 }
 

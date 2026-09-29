@@ -34,6 +34,7 @@ import missingObservation from "./fixtures/missing-observation.json";
 import repair from "./fixtures/repair.json";
 import staleStrike from "./fixtures/stale-strike.json";
 import strike from "./fixtures/strike.json";
+import strikeTree from "./fixtures/strike-tree.json";
 import worship from "./fixtures/worship.json";
 import {
   catchUpIdentity,
@@ -108,6 +109,8 @@ interface Story {
     strikeSequence?: number;
     staleObservationId?: string;
     staleProposalId?: string;
+    oakDamagedEventId?: string;
+    oakSessionId?: string;
     worshipProposalId?: string;
     worshipEventId?: string;
     worshipSessionId?: string;
@@ -330,6 +333,7 @@ export async function runStory(
   try {
     await stepSeed(recorder, story);
     await stepUnattended(recorder, story);
+    await stepTreeStrike(recorder, story);
     await stepStrike(recorder, story);
     await stepFire(recorder, story);
     await stepLostService(recorder, story);
@@ -477,9 +481,141 @@ async function stepUnattended(recorder: Recorder, story: Story): Promise<void> {
   );
 }
 
-async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
+async function stepTreeStrike(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
     "S3",
+    "Strike a tree",
+    "A fixture strike below the ignition threshold damages the old oak, a tree: the committed events are a divinity spend and a building-damaged event on the oak, both caused by the strike's observation and walkable through the trace; the oak's status changes from operational to damaged in world state, and it is not burning.",
+    async (step) => {
+      const before = (await readFrame(story.sidecar)).state;
+      const oak = building(before, "old-oak");
+      const zeusBefore = amountOf(actor(before, "zeus").inventory, "divinity");
+      const threshold = before.rules.fireBalance.igniteThreshold ?? 0;
+      const power = 1;
+      check(
+        oak.status === "operational" && oak.combustible && power < threshold,
+        "the oak starts operational and combustible, and the strike is below the ignition threshold",
+        `${oak.status}, combustible ${oak.combustible}, power ${power}, threshold ${threshold}`,
+      );
+
+      const posted = await postFixture(story, strikeTree, {
+        "$revision:old-oak": oak.revision,
+      });
+      check(
+        posted.status === 202,
+        "the tree strike is accepted",
+        `${posted.status} ${fmt(posted.body)}`,
+      );
+      const outcome = await outcomeOf(
+        story,
+        posted.proposalId,
+        "the tree strike's outcome is recorded in the trace",
+      );
+      check(
+        outcome.outcome === "committed",
+        "the tree strike commits",
+        `${outcome.outcome} ${outcome.reason}`,
+      );
+      const caused = eventsOf(story).filter(
+        (event) => event.correlationId === posted.observationId,
+      );
+      check(
+        caused.map((event) => event.kind).join() ===
+          "resource-consumed,building-damaged",
+        "the strike's observation caused exactly a divinity spend and damage",
+        caused.map((event) => event.kind).join(),
+      );
+      const [spend, damaged] = caused;
+      check(
+        spend !== undefined &&
+          damaged !== undefined &&
+          outcome.eventIds.join() === [spend.id, damaged.id].join(),
+        "the trace lists both events the strike committed, in order",
+        outcome.eventIds.join(),
+      );
+      check(
+        spend.payload.resource === "divinity" && spend.payload.amount === power,
+        `the strike spends ${power} divinity`,
+        fmt(spend.payload),
+      );
+      check(
+        damaged.payload.entityId === "old-oak" &&
+          damaged.payload.amount === power,
+        "the damage names the old oak and the strike's power",
+        fmt(damaged.payload),
+      );
+
+      const chain = (
+        await getJson(
+          story.sidecar,
+          `/trace/event?id=${encodeURIComponent(damaged.id)}`,
+        )
+      ).result.steps;
+      const [observation, proposal, validation, event, projection] = chain;
+      check(
+        observation?.step === "observation" &&
+          observation.record.id === posted.observationId &&
+          observation.record.source === "fixture" &&
+          proposal?.step === "proposal" &&
+          proposal.proposalId === posted.proposalId &&
+          proposal.record.kind === "strike" &&
+          proposal.record.target === "old-oak" &&
+          validation?.step === "validation" &&
+          validation.outcome === "committed" &&
+          event?.step === "event" &&
+          event.eventId === damaged.id &&
+          projection?.step === "projection-change" &&
+          projection.revision === damaged.sequence,
+        "the damage traces to the tree strike: observation, proposal, validation, event, projection change",
+        chain.map((entry) => entry.step).join(" -> "),
+      );
+
+      const after = await waitFor(
+        "the damage appears in the committed frame",
+        async () => {
+          const latest = await readFrame(story.sidecar);
+          return latest.frame.sequence >= damaged.sequence ? latest : undefined;
+        },
+        { timeoutMs: 5000, intervalMs: 50 },
+      );
+      const oakAfter = building(after.state, "old-oak");
+      check(
+        oakAfter.status === "damaged" &&
+          oakAfter.revision === oak.revision + 1 &&
+          oakAfter.fireIntensity === undefined,
+        "the oak is damaged, not burning, and its revision advanced by the strike",
+        fmt([oakAfter.status, oakAfter.revision, oakAfter.fireIntensity]),
+      );
+      const zeusAfter = amountOf(
+        actor(after.state, "zeus").inventory,
+        "divinity",
+      );
+      check(
+        zeusAfter === zeusBefore - power,
+        "zeus's divinity dropped by exactly the power spent",
+        `${zeusBefore} -> ${zeusAfter}`,
+      );
+
+      story.memo.oakDamagedEventId = damaged.id;
+      story.memo.oakSessionId = after.frame.sessionId;
+      step.done(
+        `strike of power ${power} (ignition threshold ${threshold}) at sequences ${spend.sequence}-${damaged.sequence}: old oak ${oak.status} -> ${oakAfter.status} (revision ${oak.revision} -> ${oakAfter.revision}); divinity ${zeusBefore} -> ${zeusAfter}; trace chain ${chain.map((entry) => entry.step).join(" -> ")}`,
+        [
+          { name: "divinity spent", unit: "divinity", value: power },
+          {
+            name: "oak revision change",
+            unit: "revisions",
+            value: oakAfter.revision - oak.revision,
+          },
+        ],
+      );
+    },
+  );
+}
+
+async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
+  await recorder.run(
+    "S4",
     "Strike",
     "A deity's fixture strike commits through the validator: divinity is spent and the combustible tavern ignites, both caused by the strike's observation.",
     async (step) => {
@@ -586,7 +722,7 @@ async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
 
 async function stepFire(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S4",
+    "S5",
     "Fire",
     "Fire burns on its own after ignition for the authored number of ticks, destroys the tavern, and disposes its goods through a declared sink; a non-combustible building never ignites.",
     async (step) => {
@@ -665,7 +801,7 @@ async function stepLostService(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S5",
+    "S6",
     "Lost service",
     "A burning and then destroyed tavern offers no services and earns no income while the untouched shop keeps earning. The operator pauses the world once the tavern is down.",
     async (step) => {
@@ -755,7 +891,7 @@ async function stepLostService(
 
 async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S6",
+    "S7",
     "Repair",
     "A fixture repair by an actor holding planks, accepted while the world is paused, stays pending until ticking resumes and then commits, taking the actor's slot from its routine. Repair spends exactly the authored cost in planks; service and income return and the goods lost in the fire stay lost.",
     async (step) => {
@@ -956,7 +1092,7 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
 
 async function stepWorship(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S7",
+    "S8",
     "Worship and favor",
     "A fixture worship by a mortal with a routine commits (its routine yields the slot): the deity's divinity rises by the authored gain, the worshiper holds a favor with its source and duration, the favor raises the worshiper's gather yield while it lasts, and the yield returns to normal once it expires.",
     async (step) => {
@@ -1120,7 +1256,7 @@ async function stepWorship(recorder: Recorder, story: Story): Promise<void> {
 
 async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S8",
+    "S9",
     "Legends",
     "A legend a mortal tells about a committed event is verified, one told with no link is a rumor, both are attributed to their narrators and are records rather than facts, and a legend linking an unknown event is refused at intake.",
     async (step) => {
@@ -1227,7 +1363,7 @@ async function stepBadProposals(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S9",
+    "S10",
     "Malformed, false, and stale proposals",
     "Malformed input is refused at intake with no journal entry and no record; a false claim and a stale proposal are journaled and recorded as rejections with a reason code; none of them changes the world.",
     async (step) => {
@@ -1356,7 +1492,7 @@ async function stepPauseAcrossRestart(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S10",
+    "S11",
     "Pause across restart",
     "A paused world commits nothing, stays paused through a clean restart, and the paused wall time never becomes catch-up when it resumes.",
     async (step) => {
@@ -1474,7 +1610,7 @@ async function stepJournalKill(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S11",
+    "S12",
     "Durable proposal across a kill",
     "A proposal accepted over /proposals and then SIGKILLed before any tick is still in the journal on restart, runs exactly once on a catch-up tick with a recorded outcome, and a retry of its proposalId reports that outcome without running it again.",
     async (step) => {
@@ -1645,7 +1781,7 @@ async function stepKillMidCatchUp(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S12",
+    "S13",
     "Kill mid catch-up past the cap",
     "After a three hour sleep, catch-up discards the excess over the one-hour cap in its own commit before any chunk. A SIGKILL partway through and a restart then apply the rest of the capped backlog once: the restarted frame's summary reports the whole backlog, and ticks since the discard equal whole seconds of cursor advance.",
     async (step) => {
@@ -1835,7 +1971,7 @@ async function stepKillMidCatchUp(
 
 async function stepArchives(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S13",
+    "S14",
     "Export, corrupt copy, import, restore",
     "An export imports into a new slot; a copy with one changed byte is rejected and creates no slot; restoring the snapshot makes a branch slot holding the same history and the same proposal journal (ids, order, terminal outcomes) up to the snapshot while the active world is untouched.",
     async (step) => {
@@ -2085,9 +2221,9 @@ async function stepClientReceipts(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S14",
+    "S15",
     "Headless client receipts",
-    "The client receipts only events it placed in the viewed realm: every stored receipt was sent by the client, none is for an undrawn kind, the strike, the fire, the worship, and a routine trade were receipted in the session they happened in, and a client viewing another realm sends none.",
+    "The client receipts only events it placed in the viewed realm: every stored receipt was sent by the client, none is for an undrawn kind, the tree strike's damage, the tavern strike, the fire, the worship, and a routine trade were receipted in the session they happened in, and a client viewing another realm sends none.",
     async (step) => {
       const [mortal] = story.clients;
       check(mortal !== undefined, "the mortal-realm client exists", "missing");
@@ -2160,6 +2296,12 @@ async function stepClientReceipts(
         fmt([...storedKinds]),
       );
       check(
+        receiptFor(story.memo.oakDamagedEventId)?.sessionId ===
+          story.memo.oakSessionId,
+        "the tree's damage was receipted in the session it happened in",
+        fmt(receiptFor(story.memo.oakDamagedEventId)),
+      );
+      check(
         receiptFor(story.memo.worshipEventId)?.sessionId ===
           story.memo.worshipSessionId,
         "the worship was receipted in the session it happened in",
@@ -2207,7 +2349,7 @@ async function stepClientReceipts(
         ]),
       );
       step.done(
-        `${stored.length} receipts stored by the mortal-realm client (${fmt(kindCounts)}); ignition, destruction, worship, and trades receipted; underworld client received frames and sent 0; relay errors during restarts ${relayErrors}`,
+        `${stored.length} receipts stored by the mortal-realm client (${fmt(kindCounts)}); oak damage, ignition, destruction, worship, and trades receipted; underworld client received frames and sent 0; relay errors during restarts ${relayErrors}`,
         [
           { name: "receipts stored", unit: "count", value: stored.length },
           {
@@ -2223,7 +2365,7 @@ async function stepClientReceipts(
 
 async function stepTrace(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S15",
+    "S16",
     "Trace",
     "Every chain is walkable from the identifiers the producer used: a rejected proposal ends at its rejection, a routine trade and a worship reach the presentation receipt the client sent, and the strike's own ignition walks observation, proposal, validation, event, projection change, and the client's presentation receipt.",
     async (step) => {

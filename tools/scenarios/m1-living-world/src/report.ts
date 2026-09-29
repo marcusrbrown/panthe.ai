@@ -95,7 +95,7 @@ const NOT_COVERED = `- **The packaged desktop app and the view.** No Tauri, no r
   next frame loses that summary. None is provoked here.
 - **Time between a kill and its restart.** The cap bounds the remaining
   backlog, so seconds that pass while the service is down are new gap, applied
-  once on top of the capped total. S12 measures that extra (0 s in the recorded
+  once on top of the capped total. S13 measures that extra (0 s in the recorded
   run) and bounds it by the measured downtime; it does not assert an exact total
   of one cap.
 - **M2 and later.** No model proposals, memory, or generated behaviors; the

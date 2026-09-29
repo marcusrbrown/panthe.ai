@@ -427,3 +427,30 @@ test("the cap keeps the newest perceived events: remote events never crowd out o
     100, 101, 102, 103, 104,
   ]);
 });
+
+test("the snapshot carries the observer's capabilities and each exit's required capability", () => {
+  const plain = perceive(fixtureState(), id("zeus"));
+  expect(plain?.self.capabilities).toEqual([]);
+
+  // The square's exit to the gate is a restricted place in this fixture.
+  const state = fixtureState();
+  const gate = state.locations.get(id("olympus-gate"));
+  if (!gate) throw new Error("fixture has no gate");
+  const locations = new Map(state.locations).set(id("olympus-gate"), {
+    ...gate,
+    requiredCapability: "divine",
+  });
+  const restricted = { ...actorAt(state, "zeus", "square"), locations };
+  const seen = perceive(restricted, id("zeus"));
+  expect(seen?.exits.find((e) => e.to === id("olympus-gate"))).toMatchObject({
+    requiredCapability: "divine",
+  });
+  expect(seen?.exits.find((e) => e.to === id("tavern"))).not.toHaveProperty(
+    "requiredCapability",
+  );
+
+  const zeus = getActor(restricted, id("zeus"));
+  if (!zeus) throw new Error("no zeus");
+  const blessed = withActor(restricted, { ...zeus, capabilities: ["divine"] });
+  expect(perceive(blessed, id("zeus"))?.self.capabilities).toEqual(["divine"]);
+});

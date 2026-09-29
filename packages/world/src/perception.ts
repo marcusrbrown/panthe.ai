@@ -41,6 +41,8 @@ export interface PerceivedSelf {
   readonly inventory: readonly ResourceAmount[];
   /** The `divinity` held: what a strike spends. */
   readonly divinity: number;
+  /** Capabilities the world grants this actor; a restricted exit needs one. */
+  readonly capabilities: readonly string[];
 }
 
 /** Another actor as seen from outside: identity, place, and revision. Its goods are not seen. */
@@ -68,6 +70,8 @@ export interface PerceivedExit {
   readonly name: string;
   readonly realm: string;
   readonly transport: string;
+  /** The capability the destination requires; absent when it is open to all. */
+  readonly requiredCapability?: string;
 }
 
 /**
@@ -249,6 +253,9 @@ export function perceive(
       name: destination.name,
       realm: destination.realm,
       transport: edge.transport,
+      ...(destination.requiredCapability === undefined
+        ? {}
+        : { requiredCapability: destination.requiredCapability }),
     });
   }
   exits.sort((a, b) => (a.to < b.to ? -1 : a.to > b.to ? 1 : 0));
@@ -319,6 +326,7 @@ export function perceive(
       isDeity: actor.isDeity === true,
       inventory: sortedInventory(actor.inventory),
       divinity: actor.inventory.get(DIVINE_CAPACITY_RESOURCE) ?? 0,
+      capabilities: actor.capabilities,
     },
     location: {
       id: here.id,

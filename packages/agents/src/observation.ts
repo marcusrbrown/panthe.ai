@@ -24,6 +24,9 @@ import type { ParsedGodIntent } from "./context";
  * narrow to `"proposal"` before it can journal anything: a `wait` carries no
  * proposal and no observation, and a refusal carries neither.
  */
+/** The proposal source of every model-built proposal. */
+const MODEL_SOURCE: ProposalSource = "model";
+
 export type ModelProposalResult =
   | {
       readonly ok: true;
@@ -63,14 +66,13 @@ export function snapshotFacts(snapshot: PerceptionSnapshot): Set<string> {
  * `snapshot`. `intent` must come from `godIntentSchema`'s parse, which is the
  * only thing that checks the action and strike power; this builder re-checks
  * that every target is in `snapshot`, since the intent may have been parsed
- * against an older one. `source` is the proposal source the service stamps;
- * the model never supplies it.
+ * against an older one. The service stamps the `model` source on
+ * both records; neither the model nor the caller chooses it.
  */
 export function buildModelProposal(
   actorId: EntityId,
   snapshot: PerceptionSnapshot,
   intent: ParsedGodIntent,
-  source: ProposalSource,
 ): ModelProposalResult {
   if (snapshot.observer !== actorId) {
     return refuse(
@@ -91,7 +93,7 @@ export function buildModelProposal(
     schemaVersion: 1,
     actor: actorId,
     expectedRevisions,
-    source,
+    source: MODEL_SOURCE,
     observationId,
   };
 
@@ -171,7 +173,7 @@ export function buildModelProposal(
     observer: actorId,
     stateRevision: snapshot.stateRevision,
     factsRead,
-    source,
+    source: MODEL_SOURCE,
   };
   return { ok: true, kind: "proposal", observation, proposal };
 }

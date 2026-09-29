@@ -10,7 +10,12 @@
 
 import type { GodAbility, GodProfile } from "@panthea/content";
 import type { Brand, EntityId, EventId } from "@panthea/contracts";
-import type { PerceivedEvent, PerceptionSnapshot } from "@panthea/world";
+import {
+  hasCapability,
+  type PerceivedEvent,
+  type PerceivedExit,
+  type PerceptionSnapshot,
+} from "@panthea/world";
 import type { ParseResult } from "./config";
 import type { IntentSchema, RouteContext } from "./router";
 
@@ -63,16 +68,23 @@ function abilityFor(
   return profile.abilities.find((ability) => ability.action === action);
 }
 
-/** Destinations of an ordinary move: exits within the observer's own realm. */
+/** Exits the god can actually take: the world refuses a move or transition to a place whose required capability the actor lacks (`hasCapability`, the rule validate.ts applies). */
+function usableExits(snapshot: PerceptionSnapshot): readonly PerceivedExit[] {
+  return snapshot.exits.filter((exit) =>
+    hasCapability(snapshot.self.capabilities, exit.requiredCapability),
+  );
+}
+
+/** Destinations of an ordinary move: usable exits within the observer's own realm. */
 function moveTargets(snapshot: PerceptionSnapshot): readonly EntityId[] {
-  return snapshot.exits
+  return usableExits(snapshot)
     .filter((exit) => exit.realm === snapshot.location.realm)
     .map((exit) => exit.to);
 }
 
 /** Destinations of a realm transition: exits over a transport that lead to another realm. */
 function transitionTargets(snapshot: PerceptionSnapshot): readonly EntityId[] {
-  return snapshot.exits
+  return usableExits(snapshot)
     .filter(
       (exit) =>
         exit.transport !== "path" && exit.realm !== snapshot.location.realm,
@@ -402,9 +414,9 @@ export function buildGodContext(
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
     "Ways out:",
-    ...(snapshot.exits.length === 0
+    ...(usableExits(snapshot).length === 0
       ? ["- none"]
-      : snapshot.exits.map(
+      : usableExits(snapshot).map(
           (exit) =>
             `- ${exit.name} [${exit.to}], ${exit.realm} realm, by ${exit.transport}`,
         )),

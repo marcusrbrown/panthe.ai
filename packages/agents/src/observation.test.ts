@@ -10,7 +10,6 @@ import {
   submitProposal,
   toEntityId,
   type WorldState,
-  withActor,
   withBuilding,
 } from "@panthea/world";
 import { godIntentSchema, type ParsedGodIntent } from "./context";
@@ -21,6 +20,7 @@ import {
 } from "./observation";
 import {
   actorAt,
+  actorCapable,
   committedEvent,
   godProfile,
   greekState,
@@ -33,6 +33,14 @@ function snapshotAt(state: WorldState, actor = "zeus"): PerceptionSnapshot {
   if (!snapshot) throw new Error(`${actor} perceives nothing`);
   return snapshot;
 }
+
+/** Zeus on the mountain path with `divine`, which the authored pack grants no deity: what is under test is the builder, not the pack's capability content. */
+const divineAtMountain = () =>
+  actorCapable(
+    actorAt(greekState(), "zeus", "mountain-path"),
+    "zeus",
+    "divine",
+  );
 
 /** Zeus at the tavern, where the-tavern stands. */
 const tavernState = () => actorAt(greekState(), "zeus", "tavern");
@@ -57,7 +65,6 @@ function build(
     id(actor),
     snapshot,
     parsed(snapshot, raw, actor),
-    "fixture",
   );
   if (!result.ok || result.kind !== "proposal") {
     throw new Error(`expected a proposal, got ${JSON.stringify(result)}`);
@@ -85,18 +92,26 @@ test("a strike proposal is built by the service: actor, source, observation id, 
     target: "the-tavern",
     power: 3,
     targets: ["the-tavern"],
-    source: "fixture",
+    source: "model",
     observationId: observation.id,
   });
   expect(observation).toMatchObject({
     schemaVersion: 1,
     observer: "zeus",
     stateRevision: snapshot.stateRevision,
-    source: "fixture",
+    source: "model",
   });
   expect(revisionsOf(proposal)).toEqual(["tavern@0", "the-tavern@0", "zeus@0"]);
   // The wire parser accepts what the builder produced.
   expect(submitProposal(proposal).ok).toBe(true);
+});
+
+test('the service stamps source "model" on both the proposal and its observation; the caller cannot choose it', () => {
+  const snapshot = snapshotAt(tavernState());
+  const { observation, proposal } = build(snapshot, strikeTavern);
+  expect(proposal.source).toBe("model");
+  expect(observation.source).toBe("model");
+  expect(buildModelProposal.length).toBe(3);
 });
 
 test("a move and a legend name only the actor and its location; a realm transition takes its via from the location", () => {
@@ -116,7 +131,7 @@ test("a move and a legend name only the actor and its location; a realm transiti
   });
   expect(revisionsOf(legend.proposal)).toEqual(["tavern@0", "zeus@0"]);
 
-  const atMountain = snapshotAt(actorAt(greekState(), "zeus", "mountain-path"));
+  const atMountain = snapshotAt(divineAtMountain());
   const transition = build(atMountain, {
     action: "realm-transition",
     to: "olympus-gate",
@@ -179,17 +194,15 @@ test("an intent parsed against another snapshot is refused when its target is no
       id("zeus"),
       tavern,
       parsed(elsewhere, raw),
-      "fixture",
     );
     expect(result.ok).toBe(false);
   }
 
-  const mountain = snapshotAt(actorAt(greekState(), "zeus", "mountain-path"));
+  const mountain = snapshotAt(divineAtMountain());
   const transition = buildModelProposal(
     id("zeus"),
     tavern,
     parsed(mountain, { action: "realm-transition", to: "olympus-gate" }),
-    "fixture",
   );
   expect(transition.ok).toBe(false);
 
@@ -207,7 +220,6 @@ test("an intent parsed against another snapshot is refused when its target is no
       assertion: "x",
       linkedEventId: event.id,
     }),
-    "fixture",
   );
   expect(linked.ok).toBe(false);
 });
@@ -218,7 +230,6 @@ test("a snapshot taken by another actor cannot back the proposal", () => {
     id("hera"),
     snapshot,
     parsed(snapshot, strikeTavern),
-    "fixture",
   );
   expect(result.ok).toBe(false);
 });
@@ -231,7 +242,6 @@ test("a wait builds no proposal and no observation, so nothing can be journaled"
     id("zeus"),
     snapshot,
     parsed(snapshot, { action: "wait" }),
-    "fixture",
   );
   expect(result).toEqual({ ok: true, kind: "wait" });
   expect("proposal" in result).toBe(false);
@@ -244,7 +254,6 @@ test("a wait from another actor's snapshot is still refused", () => {
     id("hera"),
     snapshot,
     parsed(snapshot, { action: "wait" }),
-    "fixture",
   );
   expect(result.ok).toBe(false);
 });
@@ -255,7 +264,6 @@ test("the result is a discriminated union: a wait cannot be read as a proposal",
     id("zeus"),
     snapshot,
     parsed(snapshot, { action: "wait" }),
-    "fixture",
   );
   const readsProposalWithoutNarrowing = () => {
     if (result.ok) {
@@ -280,7 +288,6 @@ test("a hand-built intent cannot be passed to buildModelProposal", () => {
       snapshot,
       // @ts-expect-error a hand-built intent skipped godIntentSchema's parse, and with it the power and availability checks
       { action: "strike", target: id("the-tavern"), power: 999 },
-      "fixture",
     );
   expect(typeof handBuilt).toBe("function");
 });
@@ -384,13 +391,7 @@ test("a building's revision bump alone makes the proposal stale", () => {
 });
 
 test("a model-built realm transition commits through the real tick; positive control for moving between realms", () => {
-  // The authored pack gives its deities no capabilities, and olympus-gate
-  // requires `divine`, so the fixture grants it: what is under test is the
-  // proposal the builder makes, not the pack's capability content.
-  const plain = actorAt(greekState(), "zeus", "mountain-path");
-  const zeus = getActor(plain, id("zeus"));
-  if (!zeus) throw new Error("no zeus");
-  const state = withActor(plain, { ...zeus, capabilities: ["divine"] });
+  const state = divineAtMountain();
   const { proposal } = build(snapshotAt(state), {
     action: "realm-transition",
     to: "olympus-gate",

@@ -114,12 +114,7 @@ test("a scripted reply becomes a valid proposal the world commits, and the reque
   expect(result.kind).toBe("intent");
   if (result.kind !== "intent") return;
 
-  const built = buildModelProposal(
-    id("zeus"),
-    snapshot,
-    result.intent,
-    "fixture",
-  );
+  const built = buildModelProposal(id("zeus"), snapshot, result.intent);
   expect(built.ok && built.kind).toBe("proposal");
   if (!built.ok || built.kind !== "proposal") return;
   expect(built.proposal).toMatchObject({
@@ -194,11 +189,6 @@ test("a scripted wait comes out of the router as a wait: nothing to journal, no 
   expect(result.kind).toBe("intent");
   if (result.kind !== "intent") return;
 
-  const built = buildModelProposal(
-    id("zeus"),
-    snapshot,
-    result.intent,
-    "fixture",
-  );
+  const built = buildModelProposal(id("zeus"), snapshot, result.intent);
   expect(built).toEqual({ ok: true, kind: "wait" });
 });

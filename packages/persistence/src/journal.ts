@@ -10,17 +10,37 @@
 // packages/contracts own what they mean.
 
 import type { Database } from "bun:sqlite";
+import type { RejectionReasonCode } from "@panthea/contracts";
 
-export interface ExternalProposalEntry {
+/** How a consumed proposal ended. A rejection always carries the reason code the world gave. */
+export type ExternalProposalOutcome =
+  | { readonly status: "committed" }
+  | { readonly status: "rejected"; readonly reason: RejectionReasonCode };
+
+interface ExternalProposalBase {
   readonly inputOrder: number;
   readonly proposalId: string;
   /** The first tick allowed to run this entry: the tick after the persisted clock when it was accepted. */
   readonly targetTick: number;
   readonly proposal: unknown;
   readonly observation: unknown;
-  /** The tick that consumed this entry, or `undefined` while it is pending. */
-  readonly consumedTick: number | undefined;
 }
+
+/** Accepted and waiting for a tick. */
+export interface PendingExternalProposal extends ExternalProposalBase {
+  readonly consumedTick: undefined;
+  readonly outcome: undefined;
+}
+
+/** Run by `consumedTick`, which recorded its terminal outcome on the row. */
+export interface ConsumedExternalProposal extends ExternalProposalBase {
+  readonly consumedTick: number;
+  readonly outcome: ExternalProposalOutcome;
+}
+
+export type ExternalProposalEntry =
+  | PendingExternalProposal
+  | ConsumedExternalProposal;
 
 export interface NewExternalProposal {
   readonly proposalId: string;
@@ -43,16 +63,29 @@ interface JournalRow {
   proposal: string;
   observation: string;
   consumed_tick: number | null;
+  outcome: "committed" | "rejected" | null;
+  reason: string | null;
 }
 
 function decode(row: JournalRow): ExternalProposalEntry {
-  return {
+  const base = {
     inputOrder: row.input_order,
     proposalId: row.proposal_id,
     targetTick: row.target_tick,
     proposal: JSON.parse(row.proposal) as unknown,
     observation: JSON.parse(row.observation) as unknown,
-    consumedTick: row.consumed_tick ?? undefined,
+  };
+  // The schema guarantees consumed_tick and outcome are set together.
+  if (row.consumed_tick === null || row.outcome === null) {
+    return { ...base, consumedTick: undefined, outcome: undefined };
+  }
+  return {
+    ...base,
+    consumedTick: row.consumed_tick,
+    outcome:
+      row.outcome === "rejected"
+        ? { status: "rejected", reason: row.reason as RejectionReasonCode }
+        : { status: "committed" },
   };
 }
 
@@ -168,18 +201,26 @@ export function listExternalProposals(
 }
 
 /**
- * Marks a pending entry consumed by `tick`. Call inside the consuming tick's
- * `onCommitted`, so it commits or rolls back with that tick. Throws when the
- * entry is unknown or already consumed: an entry runs at most once.
+ * Marks a pending entry consumed by `tick`, with its terminal `outcome`, in
+ * one write. Call inside the consuming tick's `onCommitted`, so it commits or
+ * rolls back with that tick. Throws when the entry is unknown or already
+ * consumed: an entry runs at most once.
  */
 export function markExternalProposalConsumed(
   db: Database,
   proposalId: string,
   tick: number,
+  outcome: ExternalProposalOutcome,
 ): void {
   const result = db.run(
-    "UPDATE external_proposals SET consumed_tick = ? WHERE proposal_id = ? AND consumed_tick IS NULL",
-    [tick, proposalId],
+    `UPDATE external_proposals SET consumed_tick = ?, outcome = ?, reason = ?
+     WHERE proposal_id = ? AND consumed_tick IS NULL`,
+    [
+      tick,
+      outcome.status,
+      outcome.status === "rejected" ? outcome.reason : null,
+      proposalId,
+    ],
   );
   if (result.changes !== 1) {
     throw new Error(

@@ -1073,12 +1073,20 @@ describe("the external proposal journal in an archive", () => {
     insertExternalProposal(store.db, journalEntry("a"));
     insertExternalProposal(store.db, journalEntry("b"));
     insertExternalProposal(store.db, journalEntry("c"));
-    // "a" was accepted before the store's three ticks and consumed by the
-    // last of them; "b" and "c" were accepted after and are still pending.
+    insertExternalProposal(store.db, journalEntry("d"));
+    // "a" (committed) and "d" (rejected) were accepted before the store's
+    // three ticks and consumed by them; "b" and "c" were accepted after and
+    // are still pending.
     store.db.run(
-      "UPDATE external_proposals SET target_tick = 1 WHERE proposal_id = 'proposal-a'",
+      "UPDATE external_proposals SET target_tick = 1 WHERE proposal_id IN ('proposal-a', 'proposal-d')",
     );
-    markExternalProposalConsumed(store.db, "proposal-a", 3);
+    markExternalProposalConsumed(store.db, "proposal-a", 3, {
+      status: "committed",
+    });
+    markExternalProposalConsumed(store.db, "proposal-d", 2, {
+      status: "rejected",
+      reason: "busy-actor",
+    });
     return store;
   }
 
@@ -1107,6 +1115,15 @@ describe("the external proposal journal in an archive", () => {
       ["proposal-a", 1, 3],
       ["proposal-b", 2, undefined],
       ["proposal-c", 3, undefined],
+      ["proposal-d", 4, 2],
+    ]);
+    expect(
+      listExternalProposals(imported.db).map((entry) => entry.outcome),
+    ).toEqual([
+      { status: "committed" },
+      undefined,
+      undefined,
+      { status: "rejected", reason: "busy-actor" },
     ]);
     closeStore(imported);
     closeStore(store);
@@ -1123,9 +1140,9 @@ describe("the external proposal journal in an archive", () => {
     );
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
-    const next = insertExternalProposal(imported.db, journalEntry("d"));
+    const next = insertExternalProposal(imported.db, journalEntry("e"));
 
-    expect(next.entry.inputOrder).toBe(4);
+    expect(next.entry.inputOrder).toBe(5);
     closeStore(imported);
     closeStore(store);
   });
@@ -1194,6 +1211,61 @@ describe("the external proposal journal in an archive", () => {
     expectRejected(
       () => importArchive(archivePath, slotsDir, projectionCodec),
       "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  /** Rewrites one journal row in an exported archive, past the schema's own CHECKs, and rehashes it. */
+  function corruptOutcome(archivePath: string, set: string): void {
+    const db = new Database(archivePath);
+    db.exec("PRAGMA ignore_check_constraints = ON");
+    db.run(
+      `UPDATE external_proposals SET ${set} WHERE proposal_id = 'proposal-d'`,
+    );
+    db.close();
+    rehash(archivePath);
+  }
+
+  test.each([
+    ["a consumed entry with no outcome", "outcome = NULL, reason = NULL"],
+    ["a pending entry that has an outcome", "consumed_tick = NULL"],
+    ["a committed entry that has a reason", "outcome = 'committed'"],
+    ["a rejected entry with no reason", "reason = NULL"],
+    ["a rejected entry with an unknown reason", "reason = 'because'"],
+    ["an outcome that is neither committed nor rejected", "outcome = 'lost'"],
+  ])(
+    "a rehashed archive with %s is rejected as corrupt; no slot is created",
+    (_label, set) => {
+      const store = storeWithJournal(join(dir, "world.sqlite"));
+      const archivePath = join(dir, "archive.sqlite");
+      exportArchive(store, archivePath);
+      corruptOutcome(archivePath, set);
+
+      const slotsDir = join(dir, "slots");
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, projectionCodec),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    },
+  );
+
+  test("the content hash covers the outcome: changing it without rehashing is rejected; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET reason = 'stale-target' WHERE proposal_id = 'proposal-d'",
+    );
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
       slotsDir,
     );
     closeStore(store);

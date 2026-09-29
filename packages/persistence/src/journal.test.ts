@@ -66,6 +66,8 @@ function advance(store: Store, tick: number, onCommitted?: () => void): void {
   });
 }
 
+const COMMITTED = { status: "committed" } as const;
+
 const entry = (id: string, extra: Record<string, unknown> = {}) => ({
   proposalId: id,
   proposal: { kind: "strike", target: "the-tavern", power: 3, ...extra },
@@ -146,7 +148,7 @@ describe("insertExternalProposal", () => {
   test("a retry of a consumed entry is still the existing entry, not a new one", () => {
     const store = openStore(dbPath, reducer);
     insertExternalProposal(store.db, entry("proposal-a"));
-    markExternalProposalConsumed(store.db, "proposal-a", 1);
+    markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
 
     const retry = insertExternalProposal(store.db, entry("proposal-a"));
 
@@ -199,7 +201,7 @@ describe("readPendingExternalProposals", () => {
     const store = openStore(dbPath, reducer);
     insertExternalProposal(store.db, entry("proposal-a"));
     insertExternalProposal(store.db, entry("proposal-b"));
-    markExternalProposalConsumed(store.db, "proposal-a", 1);
+    markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
 
     expect(
       readPendingExternalProposals(store.db, 5).map((row) => row.proposalId),
@@ -209,17 +211,94 @@ describe("readPendingExternalProposals", () => {
   });
 });
 
+describe("a consumed entry's terminal outcome", () => {
+  test("is stored on the row with the consuming tick and read back, committed or rejected with its reason", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(store.db, entry("proposal-a"));
+    insertExternalProposal(store.db, entry("proposal-b"));
+    insertExternalProposal(store.db, entry("proposal-c"));
+    markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
+    markExternalProposalConsumed(store.db, "proposal-b", 1, {
+      status: "rejected",
+      reason: "stale-target",
+    });
+    closeStore(store);
+
+    const reopened = openStore(dbPath, reducer);
+    expect(getExternalProposal(reopened.db, "proposal-a")).toMatchObject({
+      consumedTick: 1,
+      outcome: { status: "committed" },
+    });
+    expect(getExternalProposal(reopened.db, "proposal-b")).toMatchObject({
+      consumedTick: 1,
+      outcome: { status: "rejected", reason: "stale-target" },
+    });
+    const pending = getExternalProposal(reopened.db, "proposal-c");
+    expect(pending?.consumedTick).toBeUndefined();
+    expect(pending?.outcome).toBeUndefined();
+    closeStore(reopened);
+  });
+
+  test("a tick that rolls back leaves the row pending with no outcome", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(store.db, entry("proposal-a"));
+
+    expect(() =>
+      advance(store, 1, () => {
+        markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
+        throw new Error("fail after consuming");
+      }),
+    ).toThrow();
+
+    const row = getExternalProposal(store.db, "proposal-a");
+    expect(row?.consumedTick).toBeUndefined();
+    expect(row?.outcome).toBeUndefined();
+    closeStore(store);
+  });
+
+  test("the schema forbids a consumed row without an outcome, an outcome on a pending row, and a reason unless rejected", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(store.db, entry("proposal-a"));
+    const run = (sql: string) => () => store.db.run(sql);
+
+    expect(
+      run(
+        "UPDATE external_proposals SET consumed_tick = 1 WHERE proposal_id = 'proposal-a'",
+      ),
+    ).toThrow();
+    expect(
+      run(
+        "UPDATE external_proposals SET outcome = 'committed' WHERE proposal_id = 'proposal-a'",
+      ),
+    ).toThrow();
+    expect(
+      run(
+        "UPDATE external_proposals SET consumed_tick = 1, outcome = 'committed', reason = 'stale-target' WHERE proposal_id = 'proposal-a'",
+      ),
+    ).toThrow();
+    expect(
+      run(
+        "UPDATE external_proposals SET consumed_tick = 1, outcome = 'rejected' WHERE proposal_id = 'proposal-a'",
+      ),
+    ).toThrow();
+    expect(
+      getExternalProposal(store.db, "proposal-a")?.outcome,
+    ).toBeUndefined();
+    closeStore(store);
+  });
+});
+
 describe("markExternalProposalConsumed", () => {
   test("consuming an entry twice, or an unknown one, throws rather than letting it run again", () => {
     const store = openStore(dbPath, reducer);
     insertExternalProposal(store.db, entry("proposal-a"));
-    markExternalProposalConsumed(store.db, "proposal-a", 1);
+    markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
 
     expect(() =>
-      markExternalProposalConsumed(store.db, "proposal-a", 2),
+      markExternalProposalConsumed(store.db, "proposal-a", 2, COMMITTED),
     ).toThrow(/already consumed|not pending/);
     expect(() =>
-      markExternalProposalConsumed(store.db, "proposal-missing", 2),
+      markExternalProposalConsumed(store.db, "proposal-missing", 2, COMMITTED),
     ).toThrow(/not pending|unknown/);
     expect(getExternalProposal(store.db, "proposal-a")?.consumedTick).toBe(1);
     closeStore(store);
@@ -231,7 +310,7 @@ describe("markExternalProposalConsumed", () => {
 
     expect(() =>
       advance(store, 1, () => {
-        markExternalProposalConsumed(store.db, "proposal-a", 1);
+        markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
         throw new Error("fail after consuming");
       }),
     ).toThrow();
@@ -246,7 +325,7 @@ describe("markExternalProposalConsumed", () => {
     const store = openStore(dbPath, reducer);
     insertExternalProposal(store.db, entry("proposal-a"));
     advance(store, 1, () =>
-      markExternalProposalConsumed(store.db, "proposal-a", 1),
+      markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED),
     );
     closeStore(store);
 
@@ -263,7 +342,7 @@ test("rebuilding projections from the event log leaves the journal untouched", (
   const store = openStore(dbPath, reducer);
   insertExternalProposal(store.db, entry("proposal-a"));
   insertExternalProposal(store.db, entry("proposal-b"));
-  markExternalProposalConsumed(store.db, "proposal-a", 1);
+  markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
   advance(store, 1);
   const before = JSON.stringify(
     store.db

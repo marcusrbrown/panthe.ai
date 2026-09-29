@@ -24,6 +24,7 @@ import {
   parseProposal,
 } from "@panthea/contracts";
 import {
+  type ExternalProposalOutcome,
   getEventRow,
   markExternalProposalConsumed,
   type ProjectionReducers,
@@ -323,6 +324,8 @@ export function traceWorldTick(
   const byProposal = new Map(
     outcome.admitted.map((queued) => [queued.proposal, queued] as const),
   );
+  /** How each proposal ended this tick, for the journal rows of the external ones. */
+  const terminal = new Map<ProposalId, ExternalProposalOutcome>();
 
   for (const queued of outcome.admitted) {
     recordObservation(traceDb, queued.observation);
@@ -338,6 +341,7 @@ export function traceWorldTick(
       outcome: "rejected",
       reason: "over-limit",
     });
+    terminal.set(queued.id, { status: "rejected", reason: "over-limit" });
   }
   for (const record of outcome.result.committed) {
     const queued = byProposal.get(record.proposal);
@@ -353,6 +357,7 @@ export function traceWorldTick(
       outcome: "committed",
       eventIds: record.events.map((event) => event.id),
     });
+    terminal.set(queued.id, { status: "committed" });
   }
   for (const record of outcome.result.rejected) {
     const queued = byProposal.get(record.proposal);
@@ -368,18 +373,25 @@ export function traceWorldTick(
       outcome: "rejected",
       reason: record.reason,
     });
+    terminal.set(queued.id, { status: "rejected", reason: record.reason });
   }
   // Every external proposal this tick took, committed, rejected, or over the
-  // limit, now has its terminal outcome above; consume it in the same
-  // transaction so it can never run again.
+  // limit, now has its terminal outcome above; consume it, with that outcome
+  // on its journal row, in the same transaction so it can never run again.
   for (const queued of [...outcome.admitted, ...outcome.overflow]) {
-    if (queued.external) {
-      markExternalProposalConsumed(
-        traceDb,
-        queued.id,
-        outcome.result.state.tick,
-      );
+    if (!queued.external) {
+      continue;
     }
+    const ended = terminal.get(queued.id);
+    if (!ended) {
+      throw new Error(`proposal ${queued.id} ended the tick with no outcome`);
+    }
+    markExternalProposalConsumed(
+      traceDb,
+      queued.id,
+      outcome.result.state.tick,
+      ended,
+    );
   }
 }
 

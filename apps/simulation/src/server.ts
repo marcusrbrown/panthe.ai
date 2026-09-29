@@ -44,7 +44,6 @@ import {
   followEvent,
   followProposal,
   getProposalOutcomeByProposalId,
-  type ProposalId,
   parseProposalId,
   recordReceipt,
   UnknownEventError,
@@ -566,9 +565,9 @@ export function createSimulationServer(
     return jsonResponse({ ok: true });
   }
 
-  /** The journaled status of a proposal: pending, or the terminal outcome the trace recorded. A consumed entry with no outcome is corruption. */
+  /** The journaled status of a proposal: pending, or the terminal outcome recorded on its own row. */
   function journalStatus(entry: ExternalProposalEntry): Response {
-    if (entry.consumedTick === undefined) {
+    if (entry.outcome === undefined) {
       return jsonResponse(
         {
           ok: true,
@@ -579,25 +578,14 @@ export function createSimulationServer(
         202,
       );
     }
-    const outcome = getProposalOutcomeByProposalId(
-      traceDb,
-      entry.proposalId as ProposalId,
-    );
-    if (!outcome) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: `proposal ${entry.proposalId} was consumed at tick ${entry.consumedTick} but has no recorded outcome`,
-        },
-        500,
-      );
-    }
     return jsonResponse({
       ok: true,
       queued: false,
       proposalId: entry.proposalId,
-      status: outcome.outcome,
-      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      status: entry.outcome.status,
+      ...(entry.outcome.status === "rejected"
+        ? { reason: entry.outcome.reason }
+        : {}),
     });
   }
 

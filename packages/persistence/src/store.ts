@@ -75,7 +75,13 @@ export function createSchema(db: Database): void {
         target_tick INTEGER NOT NULL,
         proposal TEXT NOT NULL,
         observation TEXT NOT NULL,
-        consumed_tick INTEGER
+        consumed_tick INTEGER,
+        outcome TEXT CHECK (outcome IN ('committed', 'rejected')),
+        reason TEXT,
+        -- A row is pending (no consuming tick, no outcome) or consumed with
+        -- its terminal outcome; a rejection always names its reason.
+        CHECK ((consumed_tick IS NULL) = (outcome IS NULL)),
+        CHECK ((outcome IS 'rejected') = (reason IS NOT NULL))
       ) STRICT
     `);
     // Serves each tick's pending read (unconsumed, target reached, in input

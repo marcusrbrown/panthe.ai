@@ -392,9 +392,9 @@ describe("a tick that fails to commit", () => {
       };
       expect(tick(world, failing)).toBe("failed");
 
-      expect(
-        getExternalProposal(world.store.db, body.proposalId)?.consumedTick,
-      ).toBeUndefined();
+      const pending = getExternalProposal(world.store.db, body.proposalId);
+      expect(pending?.consumedTick).toBeUndefined();
+      expect(pending?.outcome).toBeUndefined();
       expect(outcomeOf(world, body.proposalId)).toBeUndefined();
       expect(listEvents(world.store.db)).toEqual([]);
 
@@ -514,27 +514,6 @@ describe("retrying a proposal", () => {
       shutDown(world);
     }
   });
-
-  test("a consumed entry with no recorded outcome is corruption: the retry is an error and nothing runs again", async () => {
-    const world = openWorld(join(dir, "world.sqlite"));
-    startServer(world);
-    try {
-      const body = strike();
-      await post(world, body);
-      world.store.db.run(
-        "UPDATE external_proposals SET consumed_tick = 1 WHERE proposal_id = ?",
-        [body.proposalId],
-      );
-
-      const retry = await post(world, body);
-
-      expect(retry.status).toBe(500);
-      tick(world);
-      expect(eventsCausedBy(world, body.observation.id)).toEqual([]);
-    } finally {
-      shutDown(world);
-    }
-  });
 });
 
 describe("terminal outcomes", () => {
@@ -620,6 +599,54 @@ describe("terminal outcomes", () => {
 });
 
 describe("a restored branch", () => {
+  test("a retry of a consumed proposal reports its original terminal status, committed or rejected with its reason, though archives carry no trace", async () => {
+    const source = openWorld(join(dir, "world.sqlite"));
+    startServer(source);
+    const committed = strike();
+    const stale = envelope("farmer", {
+      kind: "strike",
+      target: "agora-shop",
+      power: 1,
+      expectedRevisions: [{ entityId: "agora-shop", revision: 999_999 }],
+    });
+    await post(source, committed);
+    await post(source, stale);
+    tick(source);
+    const archivePath = join(dir, "snapshot.sqlite");
+    exportArchive(source.store, archivePath);
+    shutDown(source);
+
+    const slot = importWorldArchive(
+      archivePath,
+      join(dir, "slots"),
+      createWorldProjectionReducers(loadGreekWorldState()).codec,
+    );
+    // Reopened from the imported file alone: no trace rows came with it.
+    const branch = openWorld(join(slot.slotPath, "world.sqlite"));
+    startServer(branch);
+    try {
+      expect(outcomeOf(branch, committed.proposalId)).toBeUndefined();
+
+      const committedRetry = await post(branch, committed);
+      expect(committedRetry.status).toBe(200);
+      expect(await committedRetry.json()).toMatchObject({
+        ok: true,
+        queued: false,
+        proposalId: committed.proposalId,
+        status: "committed",
+      });
+
+      const rejectedRetry = await post(branch, stale);
+      expect(rejectedRetry.status).toBe(200);
+      expect(await rejectedRetry.json()).toMatchObject({
+        status: "rejected",
+        reason: "stale-target",
+      });
+    } finally {
+      shutDown(branch);
+    }
+  });
+
   test("executes the pending entries the snapshot held, once, and leaves consumed ones alone", async () => {
     const storePath = join(dir, "world.sqlite");
     const source = openWorld(storePath);

@@ -229,10 +229,23 @@ export function ClientSurface({
       </header>
 
       {view?.status === "degraded" && (
-        <div className="status-banner degraded-banner" role="status">
+        <div
+          className={`status-banner ${
+            view.degradedReason === "model-degraded"
+              ? "model-degraded-banner"
+              : "degraded-banner"
+          }`}
+          role="status"
+        >
           <span className="status-dot" />
-          <strong>World degraded</strong>
-          <span>{view.degradedReason ?? "Service is recovering"}</span>
+          {view.degradedReason === "model-degraded" ? (
+            <strong>Models unavailable — world running</strong>
+          ) : (
+            <>
+              <strong>World degraded</strong>
+              <span>{view.degradedReason ?? "Service is recovering"}</span>
+            </>
+          )}
         </div>
       )}
       {view?.status === "paused" && (
@@ -296,7 +309,8 @@ export function ClientSurface({
               <span className="scene-state-dot" />
               {view?.status === "paused"
                 ? "Paused"
-                : view?.status === "degraded"
+                : view?.status === "degraded" &&
+                    view.degradedReason !== "model-degraded"
                   ? "Degraded"
                   : "Live"}
             </div>

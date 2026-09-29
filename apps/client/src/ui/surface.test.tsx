@@ -215,3 +215,58 @@ test("degraded status remains visible until a later frame clears it", () => {
   expect(degradedHtml).toContain("disk-full");
   expect(runningHtml).not.toContain("disk-full");
 });
+
+test("model degradation says models are unavailable while the world runs", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface
+      view={view({ status: "degraded", degradedReason: "model-degraded" })}
+      observation={{ kind: "idle" }}
+    />,
+  );
+
+  expect(html).toContain("Models unavailable — world running");
+  expect(html).not.toContain("World degraded");
+  expect(html).toContain('role="status"');
+  expect(html).not.toContain(">Degraded</div>");
+});
+
+test("store errors retain the halting degraded treatment", () => {
+  const html = renderToStaticMarkup(
+    <ClientSurface
+      view={view({ status: "degraded", degradedReason: "store-error" })}
+      observation={{ kind: "idle" }}
+    />,
+  );
+
+  expect(html).toContain("World degraded");
+  expect(html).toContain("store-error");
+});
+
+test("successive model-degraded frames keep the banner as ticks and sequence advance", () => {
+  const frames = [
+    view({
+      sequence: 4,
+      tick: 6,
+      status: "degraded",
+      degradedReason: "model-degraded",
+    }),
+    view({
+      sequence: 5,
+      tick: 7,
+      status: "degraded",
+      degradedReason: "model-degraded",
+    }),
+  ];
+  const html = frames.map((frame) =>
+    renderToStaticMarkup(
+      <ClientSurface view={frame} observation={{ kind: "idle" }} />,
+    ),
+  );
+
+  expect(html[0]).toContain("Models unavailable — world running");
+  expect(html[0]).toContain("Tick 6");
+  expect(html[0]).toContain("Event 4");
+  expect(html[1]).toContain("Models unavailable — world running");
+  expect(html[1]).toContain("Tick 7");
+  expect(html[1]).toContain("Event 5");
+});

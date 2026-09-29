@@ -52,7 +52,9 @@ const CONTROL_SABOTAGE: Readonly<Record<ControlName, string>> = {
   archive:
     'The harness skips the byte change, so the "corrupted" copy is a clean export and importing it must be refused.',
   "catch-up":
-    "After the kill, the harness rewinds the persisted cursor to the start of the sleep, so the restart replays time the committed chunks already applied.",
+    "After the kill, the harness rewinds the persisted cursor to where the chunks began, so the restart replays time the committed chunks already applied.",
+  journal:
+    "After the kill, the harness deletes the accepted proposal from the journal, as if the service had kept it only in memory, so nothing consumes it after the restart.",
 };
 
 /** Runs the story again in a child process with a control enabled, and reports how it ended. */

@@ -2,15 +2,15 @@
   "observation": {
     "schemaVersion": 1,
     "id": "$observationId",
-    "observer": "zeus",
+    "observer": "$actor",
     "stateRevision": "$sequence",
-    "factsRead": ["actor:zeus.inventory", "building:the-tavern.status"],
+    "factsRead": ["repairer.inventory", "building:the-tavern.status"],
     "source": "fixture"
   },
   "proposal": {
     "schemaVersion": 1,
     "kind": "repair",
-    "actor": "zeus",
+    "actor": "$actor",
     "structure": "the-tavern",
     "targets": ["the-tavern"],
     "expectedRevisions": [],

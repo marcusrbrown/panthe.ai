@@ -2,17 +2,17 @@
   "observation": {
     "schemaVersion": 1,
     "id": "$observationId",
-    "observer": "farmer",
+    "observer": "woodcutter",
     "stateRevision": "$sequence",
-    "factsRead": [],
+    "factsRead": ["actor:woodcutter.piety"],
     "source": "fixture"
   },
   "proposal": {
     "schemaVersion": 1,
-    "kind": "legend",
-    "actor": "farmer",
-    "assertion": "It is said the woodcutter set the tavern alight for the insurance.",
-    "targets": [],
+    "kind": "worship",
+    "actor": "woodcutter",
+    "deity": "zeus",
+    "targets": ["zeus"],
     "expectedRevisions": [],
     "source": "fixture",
     "observationId": "$observationId"

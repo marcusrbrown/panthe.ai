@@ -2,7 +2,7 @@
   "observation": {
     "schemaVersion": 1,
     "id": "$observationId",
-    "observer": "zeus",
+    "observer": "farmer",
     "stateRevision": "$sequence",
     "factsRead": [],
     "source": "fixture"
@@ -10,7 +10,7 @@
   "proposal": {
     "schemaVersion": 1,
     "kind": "legend",
-    "actor": "zeus",
+    "actor": "farmer",
     "assertion": "The gods themselves sent a sign.",
     "linkedEventId": "event-that-never-happened",
     "targets": [],

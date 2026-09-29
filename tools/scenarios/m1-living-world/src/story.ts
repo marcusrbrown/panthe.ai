@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createObservationId, parseSyncFrame } from "@panthea/contracts";
-import type { FollowResult } from "@panthea/telemetry";
+import { createProposalId, type FollowResult } from "@panthea/telemetry";
 import {
   decode,
   effectiveServices,
@@ -25,6 +25,7 @@ import {
 } from "@panthea/world";
 import { createHeadlessClient, type HeadlessClient } from "./client";
 import claimFalse from "./fixtures/claim-false.json";
+import legendJournal from "./fixtures/legend-journal.json";
 import legendRumor from "./fixtures/legend-rumor.json";
 import legendUnknownLink from "./fixtures/legend-unknown-link.json";
 import legendVerified from "./fixtures/legend-verified.json";
@@ -33,6 +34,7 @@ import missingObservation from "./fixtures/missing-observation.json";
 import repair from "./fixtures/repair.json";
 import staleStrike from "./fixtures/stale-strike.json";
 import strike from "./fixtures/strike.json";
+import worship from "./fixtures/worship.json";
 import {
   catchUpIdentity,
   check,
@@ -57,18 +59,24 @@ import {
   type EventRow,
   hashEventPrefix,
   integrityCheck,
+  operatorObservationExists,
+  readCatchUpProgressRow,
   readClockRow,
   readEventRows,
+  readJournal,
   readMaxSequence,
   readObservationSources,
-  readOutcomesForObservation,
   readReceiptsWithKinds,
   slotStorePath,
   withWorldDb,
 } from "./world-db";
 
-export type ControlName = "archive" | "catch-up";
-export const CONTROL_NAMES: readonly ControlName[] = ["archive", "catch-up"];
+export type ControlName = "archive" | "catch-up" | "journal";
+export const CONTROL_NAMES: readonly ControlName[] = [
+  "archive",
+  "catch-up",
+  "journal",
+];
 
 export interface StoryOptions {
   readonly control?: ControlName;
@@ -100,14 +108,18 @@ interface Story {
     strikeSequence?: number;
     staleObservationId?: string;
     staleProposalId?: string;
+    worshipProposalId?: string;
+    worshipEventId?: string;
+    worshipSessionId?: string;
   };
 }
 
 type Recorder = ReturnType<typeof createStepRecorder>;
 
 const FRAME_TIMEOUT_MS = 10_000;
-/** How far back the harness moves the wall cursor: a 50-minute sleep, inside the one-hour cap. */
-const BACKDATE_MS = 3_000_000;
+/** How far back the harness moves the wall cursor: a three hour sleep, well past the one-hour catch-up cap. */
+const SLEEP_MS = 3 * 60 * 60 * 1000;
+const CATCH_UP_CAP_MS = 60 * 60 * 1000;
 const CHUNK_TICKS = 60;
 
 // --- Helpers over the running story ---------------------------------------------
@@ -174,11 +186,12 @@ const amountOf = (
 const fmt = (value: unknown): string =>
   typeof value === "string" ? value : JSON.stringify(value);
 
-/** Instantiates a fixture against the latest committed frame and posts it. */
+/** Instantiates a fixture against the latest committed frame and posts it under a fresh producer-generated proposal id. */
 async function postFixture(
   story: Story,
   template: unknown,
   extra: FixtureValues = {},
+  proposalId: string = createProposalId(),
 ) {
   const { frame } = await readFrame(story.sidecar);
   const observationId = createObservationId();
@@ -187,20 +200,77 @@ async function postFixture(
     $sequence: frame.sequence,
     ...extra,
   });
-  const response = await story.sidecar.request("POST", "/proposals", body);
-  return { observationId, status: response.status, body: response.body };
+  const envelope = { proposalId, ...(body as object) } as {
+    proposalId: string;
+    observation: unknown;
+    proposal: unknown;
+  };
+  const response = await story.sidecar.request("POST", "/proposals", envelope);
+  return {
+    proposalId,
+    observationId,
+    envelope,
+    status: response.status,
+    body: response.body,
+  };
 }
 
-async function outcomeOf(story: Story, observationId: string, why: string) {
+interface TracedOutcome {
+  readonly proposalId: string;
+  readonly outcome: "committed" | "rejected";
+  readonly reason: string | undefined;
+  /** Every event the proposal committed, in order. */
+  readonly eventIds: readonly string[];
+  readonly steps: FollowResult["steps"];
+}
+
+/** The proposal's recorded outcome as `/trace/proposal` reports it, once the tick that took it has committed. */
+async function outcomeOf(
+  story: Story,
+  proposalId: string,
+  why: string,
+): Promise<TracedOutcome> {
   return waitFor(
     why,
-    () =>
-      activeDb(story, (db) => readOutcomesForObservation(db, observationId))[0],
-    {
-      timeoutMs: FRAME_TIMEOUT_MS,
-      intervalMs: 100,
+    async () => {
+      const response = await story.sidecar.request(
+        "GET",
+        `/trace/proposal?id=${encodeURIComponent(proposalId)}`,
+      );
+      if (response.status !== 200) return undefined;
+      const { result } = response.body as { result: FollowResult };
+      if (!result.found) return undefined;
+      const validation = result.steps.find(
+        (entry) => entry.step === "validation",
+      );
+      if (validation?.step !== "validation") return undefined;
+      return {
+        proposalId,
+        outcome: validation.outcome,
+        reason: validation.reason,
+        eventIds: result.steps.flatMap((entry) =>
+          entry.step === "event" ? [entry.eventId] : [],
+        ),
+        steps: result.steps,
+      };
     },
+    { timeoutMs: FRAME_TIMEOUT_MS, intervalMs: 100 },
   );
+}
+
+/** Whether the service holds any record of `proposalId`: a journal entry or a trace chain. */
+async function knowsProposal(story: Story, proposalId: string) {
+  const journaled = activeDb(story, readJournal).some(
+    (row) => row.proposalId === proposalId,
+  );
+  const response = await story.sidecar.request(
+    "GET",
+    `/trace/proposal?id=${encodeURIComponent(proposalId)}`,
+  );
+  const traced =
+    response.status === 200 &&
+    (response.body as { result: FollowResult }).result.found;
+  return { journaled, traced };
 }
 
 async function stopClean(story: Story, why: string): Promise<void> {
@@ -264,9 +334,11 @@ export async function runStory(
     await stepFire(recorder, story);
     await stepLostService(recorder, story);
     await stepRepair(recorder, story);
+    await stepWorship(recorder, story);
     await stepLegends(recorder, story);
     await stepBadProposals(recorder, story);
     await stepPauseAcrossRestart(recorder, story);
+    await stepJournalKill(recorder, story);
     await stepKillMidCatchUp(recorder, story);
     await stepArchives(recorder, story);
     await stepClientReceipts(recorder, story);
@@ -284,9 +356,19 @@ async function stepSeed(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
     "S1",
     "Seed",
-    "A fresh data directory loads the authored Greek world across three realms with nothing committed yet.",
+    "A fresh data directory loads the authored Greek world across three realms with nothing committed yet, and its first frame carries no catch-up summary.",
     async (step) => {
+      await waitForLog(
+        story.sidecar,
+        "startup catch-up complete",
+        "the startup catch-up of the fresh world finishes",
+      );
       const { frame, state } = await readFrame(story.sidecar);
+      check(
+        frame.catchUpSummary === undefined,
+        "a fresh world's first frame has no catch-up summary",
+        fmt(frame.catchUpSummary),
+      );
       const locations = [...state.locations.values()];
       const realms = Object.fromEntries(
         [...new Set(locations.map((location) => location.realm))].map(
@@ -340,7 +422,7 @@ async function stepSeed(recorder: Recorder, story: Story): Promise<void> {
           .map(([realm, n]) => `${realm} ${n}`)
           .join(
             ", ",
-          )}), ${state.actors.size} actors, ${state.buildings.size} buildings, sequence ${frame.sequence}`,
+          )}), ${state.actors.size} actors, ${state.buildings.size} buildings, sequence ${frame.sequence}; first frame has no catch-up summary`,
         [
           {
             name: "seed locations",
@@ -354,11 +436,6 @@ async function stepSeed(recorder: Recorder, story: Story): Promise<void> {
             value: state.buildings.size,
           },
         ],
-        frame.catchUpSummary
-          ? [
-              `The fresh world's first frame already carries a catch-up summary (applied ${frame.catchUpSummary.appliedMs} ms, skipped ${frame.catchUpSummary.skippedMs} ms), which the view would show as a catch-up panel on first launch.`,
-            ]
-          : [],
       );
     },
   );
@@ -431,7 +508,7 @@ async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
       );
       const outcome = await outcomeOf(
         story,
-        posted.observationId,
+        posted.proposalId,
         "the strike's outcome is recorded in the trace",
       );
       check(
@@ -453,9 +530,9 @@ async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
       check(
         spend !== undefined &&
           ignited !== undefined &&
-          outcome.eventId === spend.id,
-        "the trace names the strike's first event",
-        `${outcome.eventId}`,
+          outcome.eventIds.join() === [spend.id, ignited.id].join(),
+        "the trace lists every event the strike committed, in order",
+        outcome.eventIds.join(),
       );
       check(
         spend.payload.resource === "divinity" && spend.payload.amount === 3,
@@ -488,7 +565,7 @@ async function stepStrike(recorder: Recorder, story: Story): Promise<void> {
       );
 
       story.memo.strikeObservationId = posted.observationId;
-      story.memo.strikeProposalId = outcome.proposalId;
+      story.memo.strikeProposalId = posted.proposalId;
       story.memo.strikeFirstEventId = spend.id;
       story.memo.strikeIgnitedEventId = ignited.id;
       story.memo.strikeSessionId = burning.latest.frame.sessionId;
@@ -590,8 +667,22 @@ async function stepLostService(
   await recorder.run(
     "S5",
     "Lost service",
-    "A destroyed tavern offers no services and earns no income while the untouched shop keeps earning.",
+    "A burning and then destroyed tavern offers no services and earns no income while the untouched shop keeps earning. The operator pauses the world once the tavern is down.",
     async (step) => {
+      const paused = await story.sidecar.request("POST", "/pause");
+      check(
+        paused.status === 200,
+        "POST /pause answers",
+        `${paused.status} ${fmt(paused.body)}`,
+      );
+      await waitFor(
+        "the frame reports paused",
+        async () =>
+          (await readFrame(story.sidecar)).frame.status === "paused"
+            ? true
+            : undefined,
+        { timeoutMs: 5000, intervalMs: 50 },
+      );
       const { state } = await readFrame(story.sidecar);
       const tavern = building(state, "the-tavern");
       check(
@@ -600,47 +691,61 @@ async function stepLostService(
         fmt(tavern.services),
       );
       check(
+        ["destroyed", "repairing"].includes(tavern.status),
+        "the tavern is down when the world is paused",
+        tavern.status,
+      );
+      check(
         effectiveServices(tavern).length === 0,
         "a destroyed tavern offers no services",
         fmt(effectiveServices(tavern)),
       );
-      const from = maxSequence(story);
-      await waitForTicks(
-        story,
-        3,
-        "three ticks pass while the tavern is destroyed",
+
+      // From ignition to destruction the tavern never earned, and the shop did.
+      const ignitedSequence = story.memo.strikeSequence ?? 0;
+      const destroyed = eventsOf(story, ignitedSequence).find(
+        (event) =>
+          event.kind === "building-destroyed" &&
+          event.payload.entityId === "the-tavern",
       );
-      const income = eventsOf(story, from + 1).filter(
-        (event) => event.kind === "income-earned",
+      check(
+        destroyed !== undefined,
+        "the destruction is on record",
+        "no building-destroyed event",
       );
-      const stillDestroyed =
-        building((await readFrame(story.sidecar)).state, "the-tavern")
-          .status === "destroyed";
-      const tavernIncome = income.filter(
+      const fireWindow = eventsOf(story, ignitedSequence).filter(
+        (event) =>
+          event.kind === "income-earned" &&
+          event.sequence <= destroyed.sequence,
+      );
+      const tavernIncome = fireWindow.filter(
         (event) => event.payload.buildingId === "the-tavern",
       ).length;
-      const shopIncome = income.filter(
+      const shopIncome = fireWindow.filter(
         (event) => event.payload.buildingId === "agora-shop",
       ).length;
-      if (stillDestroyed) {
-        check(
-          tavernIncome === 0,
-          "a destroyed tavern earns no income",
-          `${tavernIncome} income events`,
-        );
-      }
+      check(
+        tavernIncome === 0,
+        "a burning tavern earns no income",
+        `${tavernIncome} income events`,
+      );
       check(
         shopIncome > 0,
-        "the untouched shop keeps earning",
+        "the untouched shop kept earning through the fire",
         `${shopIncome} income events`,
       );
       step.done(
-        `services ${fmt(effectiveServices(tavern))} of authored ${fmt(tavern.services)}; tavern income events ${tavernIncome}, shop ${shopIncome} over the next ticks`,
+        `world paused with the tavern ${tavern.status}: services ${fmt(effectiveServices(tavern))} of authored ${fmt(tavern.services)}; from ignition to destruction tavern income events ${tavernIncome}, shop ${shopIncome}`,
         [
           {
-            name: "tavern income events while destroyed",
+            name: "tavern income events during the fire",
             unit: "count",
             value: tavernIncome,
+          },
+          {
+            name: "shop income events during the fire",
+            unit: "count",
+            value: shopIncome,
           },
         ],
       );
@@ -652,7 +757,7 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
     "S6",
     "Repair",
-    "The tavern's owner repairs it unattended, spending exactly the authored cost in planks; service and income return and the goods lost in the fire stay lost. A fixture repair by an actor with no planks is rejected and adds no progress.",
+    "A fixture repair by an actor holding planks, accepted while the world is paused, stays pending until ticking resumes and then commits, taking the actor's slot from its routine. Repair spends exactly the authored cost in planks; service and income return and the goods lost in the fire stay lost.",
     async (step) => {
       const destroyedAt = eventsOf(story).find(
         (event) =>
@@ -665,22 +770,97 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
         "no building-destroyed event",
       );
 
-      const posted = await postFixture(story, repair);
+      // The world is paused, so who holds planks is frozen while the fixture is chosen.
+      let repairer: string | undefined;
+      for (
+        let attempt = 1;
+        attempt <= 12 && repairer === undefined;
+        attempt += 1
+      ) {
+        const { state } = await readFrame(story.sidecar);
+        check(
+          ["destroyed", "repairing"].includes(
+            building(state, "the-tavern").status,
+          ),
+          "the tavern still needs repair",
+          building(state, "the-tavern").status,
+        );
+        repairer = ["farmer", "woodcutter"].find(
+          (id) => amountOf(actor(state, id).inventory, "planks") >= 1,
+        );
+        if (repairer === undefined) {
+          await story.sidecar.request("POST", "/resume");
+          await waitForTicks(
+            story,
+            1,
+            "a tick passes while nobody holds planks",
+          );
+          await story.sidecar.request("POST", "/pause");
+        }
+      }
       check(
-        posted.status === 202,
-        "the repair fixture is accepted",
+        repairer !== undefined,
+        "some actor holds planks to repair with",
+        "none within 12 ticks",
+      );
+
+      const tickWhilePaused = clockNow(story).tick;
+      const posted = await postFixture(story, repair, { $actor: repairer });
+      check(
+        posted.status === 202 &&
+          (posted.body as { status?: string }).status === "pending",
+        "the repair fixture is accepted as pending",
         `${posted.status} ${fmt(posted.body)}`,
+      );
+      await Bun.sleep(1500);
+      const retryWhilePaused = await story.sidecar.request(
+        "POST",
+        "/proposals",
+        posted.envelope,
+      );
+      check(
+        clockNow(story).tick === tickWhilePaused &&
+          (retryWhilePaused.body as { status?: string }).status === "pending",
+        "a proposal accepted while paused stays pending: no tick, and a retry reports pending",
+        `tick ${clockNow(story).tick} vs ${tickWhilePaused}, ${fmt(retryWhilePaused.body)}`,
+      );
+
+      const resumed = await story.sidecar.request("POST", "/resume");
+      check(
+        resumed.status === 200,
+        "POST /resume answers",
+        `${resumed.status} ${fmt(resumed.body)}`,
       );
       const outcome = await outcomeOf(
         story,
-        posted.observationId,
-        "the fixture repair's outcome is recorded in the trace",
+        posted.proposalId,
+        "the fixture repair's outcome is recorded once ticking resumes",
       );
       check(
-        outcome.outcome === "rejected" &&
-          outcome.reason === "insufficient-resources",
-        "a repair by an actor with no planks is rejected for insufficient resources",
+        outcome.outcome === "committed",
+        "a fixture repair by an actor holding planks commits (its routine yielded the slot)",
         `${outcome.outcome} ${outcome.reason}`,
+      );
+      const fixtureEvents = eventsOf(story).filter(
+        (event) => event.correlationId === posted.observationId,
+      );
+      check(
+        fixtureEvents[0]?.kind === "repair-progressed" &&
+          fixtureEvents[0].payload.entityId === repairer,
+        "the fixture's repair step is by the actor it named",
+        fixtureEvents.map((event) => event.kind).join(),
+      );
+      const sameTickByRoutine = eventsOf(story).filter(
+        (event) =>
+          event.payload.simTime === fixtureEvents[0]?.payload.simTime &&
+          event.payload.entityId === repairer &&
+          event.correlationId !== posted.observationId &&
+          !event.correlationId.startsWith("tick-"),
+      );
+      check(
+        sameTickByRoutine.length === 0,
+        "the repairer's routine did not also act in that tick",
+        sameTickByRoutine.map((event) => event.kind).join(),
       );
 
       const repaired = await waitFor(
@@ -711,9 +891,9 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
         fmt(progress.map((event) => event.payload.resource)),
       );
       check(
-        progress.every((event) => event.correlationId !== posted.observationId),
-        "the rejected fixture added no repair progress",
-        "fixture progress found",
+        progress.some((event) => event.correlationId === posted.observationId),
+        "the fixture contributed repair progress",
+        "no fixture progress found",
       );
       check(
         spent === cost,
@@ -760,7 +940,7 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
         Math.round((repaired.payload.simTime as number) / 1000) -
         Math.round((destroyedAt.payload.simTime as number) / 1000);
       step.done(
-        `${progress.length} repair steps spent ${spent} planks (cost ${cost}); tavern operational again ${ticksDown} ticks after destruction; fixture repair by zeus ${outcome.outcome} (${outcome.reason})`,
+        `${progress.length} repair steps spent ${spent} planks (cost ${cost}); the fixture repair by ${repairer} was accepted while paused, stayed pending through 1.5 s with no tick (a retry reported pending), and committed once resumed; tavern operational again ${ticksDown} ticks after destruction`,
         [
           { name: "planks spent on repair", unit: "planks", value: spent },
           {
@@ -774,46 +954,205 @@ async function stepRepair(recorder: Recorder, story: Story): Promise<void> {
   );
 }
 
-async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
+async function stepWorship(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
     "S7",
-    "Legends",
-    "A legend linked to a committed event is verified, an unlinked one is a rumor, both are attributed records rather than facts, and a legend linking an unknown event is refused at intake.",
+    "Worship and favor",
+    "A fixture worship by a mortal with a routine commits (its routine yields the slot): the deity's divinity rises by the authored gain, the worshiper holds a favor with its source and duration, the favor raises the worshiper's gather yield while it lasts, and the yield returns to normal once it expires.",
     async (step) => {
+      const before = (await readFrame(story.sidecar)).state;
+      const divinityBefore = amountOf(
+        actor(before, "zeus").inventory,
+        "divinity",
+      );
+
+      const posted = await postFixture(story, worship);
+      check(
+        posted.status === 202,
+        "the worship fixture is accepted",
+        `${posted.status} ${fmt(posted.body)}`,
+      );
+      const outcome = await outcomeOf(
+        story,
+        posted.proposalId,
+        "the worship outcome is recorded",
+      );
+      check(
+        outcome.outcome === "committed",
+        "a fixture worship by an actor with a routine commits",
+        `${outcome.outcome} ${outcome.reason}`,
+      );
+      const caused = eventsOf(story).filter(
+        (event) => event.correlationId === posted.observationId,
+      );
+      check(
+        caused.map((event) => event.kind).join() === "worship-performed",
+        "worship commits exactly one worship event",
+        caused.map((event) => event.kind).join(),
+      );
+      const [performed] = caused;
+      check(
+        performed !== undefined && outcome.eventIds[0] === performed.id,
+        "the trace lists the worship event",
+        outcome.eventIds.join(),
+      );
+      const worshipTick = Math.round(
+        (performed.payload.simTime as number) / 1000,
+      );
+      const routineSameTick = eventsOf(story).filter(
+        (event) =>
+          event.payload.simTime === performed.payload.simTime &&
+          event.payload.entityId === "woodcutter" &&
+          event.correlationId !== posted.observationId &&
+          !event.correlationId.startsWith("tick-"),
+      );
+      check(
+        routineSameTick.length === 0,
+        "the woodcutter's routine yielded that tick",
+        routineSameTick.map((event) => event.kind).join(),
+      );
+
+      const after = await waitFor(
+        "the worship appears in the committed frame",
+        async () => {
+          const latest = await readFrame(story.sidecar);
+          return latest.frame.sequence >= performed.sequence
+            ? latest
+            : undefined;
+        },
+        { timeoutMs: 5000, intervalMs: 50 },
+      );
+      const economy = after.state.rules.economyBalance;
+      const gain = economy.worshipCapacityGain ?? 1;
+      const duration = economy.favorDurationTicks ?? 0;
+      const bonus = economy.favorGatherBonus ?? 0;
+      const base = economy.gatherAmount ?? 0;
+      const divinityAfter = amountOf(
+        actor(after.state, "zeus").inventory,
+        "divinity",
+      );
+      check(
+        divinityAfter === divinityBefore + gain,
+        "worship raises the deity's divinity by the authored gain",
+        `${divinityBefore} -> ${divinityAfter}, gain ${gain}`,
+      );
+      const expiresAt = performed.payload.favorExpiresAtTick as number;
+      check(
+        expiresAt - worshipTick === duration,
+        "the favor lasts the authored duration",
+        `expires ${expiresAt}, granted at tick ${worshipTick}, duration ${duration}`,
+      );
+      const favor = (actor(after.state, "woodcutter").favors ?? []).find(
+        (candidate) => candidate.expiresAtTick === expiresAt,
+      );
+      check(
+        favor !== undefined &&
+          favor.source === "zeus" &&
+          favor.effect === "divine-favor",
+        "the worshiper holds the favor with zeus as its source",
+        fmt(actor(after.state, "woodcutter").favors),
+      );
+
+      const gatherTick = (event: EventRow) =>
+        Math.round((event.payload.simTime as number) / 1000);
+      const woodcutterGathers = (from: number) =>
+        eventsOf(story, from).filter(
+          (event) =>
+            event.kind === "resource-gathered" &&
+            event.payload.entityId === "woodcutter",
+        );
+      const boosted = await waitFor(
+        "the woodcutter gathers with the favor's bonus while it lasts",
+        () =>
+          woodcutterGathers(performed.sequence).find(
+            (event) =>
+              gatherTick(event) < expiresAt &&
+              event.payload.amount === base + bonus,
+          ),
+        { timeoutMs: (duration + 5) * 1000, intervalMs: 100 },
+      );
+      const plainBefore = woodcutterGathers(1).filter(
+        (event) => event.sequence < performed.sequence,
+      );
+      check(
+        plainBefore.length > 0 &&
+          plainBefore.every((event) => event.payload.amount === base),
+        "before the favor, every woodcutter gather yielded the base amount",
+        fmt(plainBefore.map((event) => event.payload.amount)),
+      );
+
+      const expired = await waitFor(
+        "the woodcutter gathers again after the favor expires",
+        () =>
+          woodcutterGathers(performed.sequence).find(
+            (event) => gatherTick(event) >= expiresAt,
+          ),
+        { timeoutMs: (duration + 15) * 1000, intervalMs: 100 },
+      );
+      check(
+        expired.payload.amount === base,
+        "after the favor expires the gather yield returns to the base amount",
+        `${expired.payload.amount} vs base ${base}`,
+      );
+
+      story.memo.worshipProposalId = posted.proposalId;
+      story.memo.worshipEventId = performed.id;
+      story.memo.worshipSessionId = after.frame.sessionId;
+      step.done(
+        `worship at sequence ${performed.sequence} (tick ${worshipTick}): divinity ${divinityBefore} -> ${divinityAfter}; favor from zeus expires at tick ${expiresAt} (${duration} ticks); gather ${base + bonus} at tick ${gatherTick(boosted)} inside the window, ${expired.payload.amount} at tick ${gatherTick(expired)} after it`,
+        [
+          {
+            name: "divinity gained from worship",
+            unit: "divinity",
+            value: divinityAfter - divinityBefore,
+          },
+          { name: "favor duration", unit: "ticks", value: duration },
+          {
+            name: "favored gather yield over base",
+            unit: "resource",
+            value: (boosted.payload.amount as number) - base,
+          },
+        ],
+      );
+    },
+  );
+}
+
+async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
+  await recorder.run(
+    "S8",
+    "Legends",
+    "A legend a mortal tells about a committed event is verified, one told with no link is a rumor, both are attributed to their narrators and are records rather than facts, and a legend linking an unknown event is refused at intake.",
+    async (step) => {
+      // Different narrators, so both commit in the same tick.
       const linked = await postFixture(story, legendVerified, {
         "$event:ignited": story.memo.strikeIgnitedEventId ?? "",
       });
+      const rumor = await postFixture(story, legendRumor);
       check(
-        linked.status === 202,
-        "the linked legend is accepted at intake",
-        `${linked.status} ${fmt(linked.body)}`,
+        linked.status === 202 && rumor.status === 202,
+        "both legends are accepted at intake",
+        `${linked.status} ${fmt(linked.body)}, ${rumor.status} ${fmt(rumor.body)}`,
       );
       const linkedOutcome = await outcomeOf(
         story,
-        linked.observationId,
+        linked.proposalId,
         "the linked legend's outcome is recorded",
-      );
-      // One narrator commits one action per tick, so the second legend waits for the first.
-      const rumor = await postFixture(story, legendRumor);
-      check(
-        rumor.status === 202,
-        "the rumor is accepted at intake",
-        `${rumor.status} ${fmt(rumor.body)}`,
       );
       const rumorOutcome = await outcomeOf(
         story,
-        rumor.observationId,
+        rumor.proposalId,
         "the rumor's outcome is recorded",
       );
       check(
         linkedOutcome.outcome === "committed" &&
           rumorOutcome.outcome === "committed",
-        "both legends commit",
+        "both legends commit, though their narrators have routines",
         `${linkedOutcome.outcome} ${linkedOutcome.reason}, ${rumorOutcome.outcome} ${rumorOutcome.reason}`,
       );
-      const legendEvent = (observationId: string) => {
-        const found = eventsOf(story).filter(
-          (event) => event.correlationId === observationId,
+      const legendEvent = (outcome: TracedOutcome) => {
+        const found = eventsOf(story).filter((event) =>
+          outcome.eventIds.includes(event.id),
         );
         check(
           found.length === 1 && found[0]?.kind === "legend-recorded",
@@ -822,8 +1161,8 @@ async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
         );
         return found[0];
       };
-      const verifiedEvent = legendEvent(linked.observationId);
-      const rumorEvent = legendEvent(rumor.observationId);
+      const verifiedEvent = legendEvent(linkedOutcome);
+      const rumorEvent = legendEvent(rumorOutcome);
       check(
         verifiedEvent.payload.verified === true &&
           verifiedEvent.payload.linkedEventId ===
@@ -845,15 +1184,15 @@ async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
         `${unknown.status} ${fmt(unknown.body)}`,
       );
       await waitForTicks(story, 2, "two ticks pass after the refused legend");
+      const known = await knowsProposal(story, unknown.proposalId);
       check(
-        activeDb(story, (db) =>
-          readOutcomesForObservation(db, unknown.observationId),
-        ).length === 0 &&
+        !known.journaled &&
+          !known.traced &&
           eventsOf(story).every(
             (event) => event.correlationId !== unknown.observationId,
           ),
-        "the refused legend leaves no outcome and no event",
-        "found a record",
+        "the refused legend leaves no journal entry, no outcome, and no event",
+        fmt(known),
       );
       const { state } = await readFrame(story.sidecar);
       const legends = [...state.legends.values()];
@@ -868,28 +1207,16 @@ async function stepLegends(recorder: Recorder, story: Story): Promise<void> {
           ]),
         ),
       );
+      const narratorOf = (verified: boolean) =>
+        legends.find((legend) => legend.verified === verified)?.narrator;
       check(
-        legends.every((legend) => legend.narrator === "zeus"),
-        "legends are attributed to their narrator",
-        fmt(legends.map((legend) => legend.narrator)),
-      );
-
-      // Measured, not asserted: what happens to a fixture proposal for a routine-driven actor.
-      const asFarmer = await postFixture(story, {
-        observation: { ...legendRumor.observation, observer: "farmer" },
-        proposal: { ...legendRumor.proposal, actor: "farmer" },
-      });
-      const farmerOutcome = await outcomeOf(
-        story,
-        asFarmer.observationId,
-        "the farmer legend's outcome is recorded",
+        narratorOf(true) === "woodcutter" && narratorOf(false) === "farmer",
+        "each legend is attributed to the mortal who told it",
+        fmt(legends.map((legend) => [legend.narrator, legend.verified])),
       );
       step.done(
-        `verified legend at sequence ${verifiedEvent.sequence} links ${story.memo.strikeIgnitedEventId?.slice(0, 14)}; rumor at sequence ${rumorEvent.sequence} has no link; unknown link refused (${unknown.status}) with no record; legends in world state: ${legends.length}`,
+        `verified legend by the woodcutter at sequence ${verifiedEvent.sequence} links ${story.memo.strikeIgnitedEventId?.slice(0, 14)}; rumor by the farmer at sequence ${rumorEvent.sequence} has no link; both committed although both narrators have routines; unknown link refused (${unknown.status}) with no record; legends in world state: ${legends.length}`,
         [{ name: "legends held", unit: "count", value: legends.length }],
-        [
-          `A rumor posted for the farmer, whose routine acts every tick, was ${farmerOutcome.outcome}${farmerOutcome.reason ? ` as ${farmerOutcome.reason}` : ""}. Routines are queued ahead of fixtures and an actor commits one action per tick, so fixtures for routine-driven actors lose to the routine. Only zeus has no routine.`,
-        ],
       );
     },
   );
@@ -900,14 +1227,15 @@ async function stepBadProposals(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S8",
+    "S9",
     "Malformed, false, and stale proposals",
-    "Malformed input is refused at intake with no record; a false claim and a stale proposal are recorded as rejections with a reason code; none of them changes the world.",
+    "Malformed input is refused at intake with no journal entry and no record; a false claim and a stale proposal are journaled and recorded as rejections with a reason code; none of them changes the world.",
     async (step) => {
       const beforeState = (await readFrame(story.sidecar)).state;
       const refused: {
         label: string;
         status: number;
+        proposalId: string;
         observationId: string;
       }[] = [];
 
@@ -921,11 +1249,11 @@ async function stepBadProposals(
         "invalid JSON is refused",
         `${invalid.status}`,
       );
-      const missing = await story.sidecar.request(
-        "POST",
-        "/proposals",
-        instantiate(missingObservation, {}),
-      );
+      const missingProposalId = createProposalId();
+      const missing = await story.sidecar.request("POST", "/proposals", {
+        proposalId: missingProposalId,
+        ...(instantiate(missingObservation, {}) as object),
+      });
       check(
         missing.status === 400,
         "a proposal without its observation wrapper is refused",
@@ -934,6 +1262,7 @@ async function stepBadProposals(
       refused.push({
         label: "missing observation",
         status: missing.status,
+        proposalId: missingProposalId,
         observationId: "obs-without-a-record",
       });
       const authority = await postFixture(story, malformedAuthority);
@@ -950,6 +1279,7 @@ async function stepBadProposals(
       refused.push({
         label: "self-declared costs",
         status: authority.status,
+        proposalId: authority.proposalId,
         observationId: authority.observationId,
       });
 
@@ -962,12 +1292,12 @@ async function stepBadProposals(
       );
       const claimOutcome = await outcomeOf(
         story,
-        claim.observationId,
+        claim.proposalId,
         "the false claim's rejection is recorded",
       );
       const staleOutcome = await outcomeOf(
         story,
-        stale.observationId,
+        stale.proposalId,
         "the stale proposal's rejection is recorded",
       );
       check(
@@ -983,16 +1313,15 @@ async function stepBadProposals(
         `${staleOutcome.outcome} ${staleOutcome.reason}`,
       );
       story.memo.staleObservationId = stale.observationId;
-      story.memo.staleProposalId = staleOutcome.proposalId;
+      story.memo.staleProposalId = stale.proposalId;
 
       await waitForTicks(story, 2, "two ticks pass after the bad proposals");
       for (const entry of refused) {
+        const known = await knowsProposal(story, entry.proposalId);
         check(
-          activeDb(story, (db) =>
-            readOutcomesForObservation(db, entry.observationId),
-          ).length === 0,
-          `a refused proposal (${entry.label}) leaves no trace outcome`,
-          "found an outcome",
+          !known.journaled && !known.traced,
+          `a refused proposal (${entry.label}) leaves no journal entry and no trace outcome`,
+          fmt(known),
         );
       }
       const events = eventsOf(story);
@@ -1027,10 +1356,12 @@ async function stepPauseAcrossRestart(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S9",
+    "S10",
     "Pause across restart",
     "A paused world commits nothing, stays paused through a clean restart, and the paused wall time never becomes catch-up when it resumes.",
     async (step) => {
+      const operatorBefore =
+        activeDb(story, readObservationSources).operator ?? 0;
       const paused = await story.sidecar.request("POST", "/pause");
       check(
         paused.status === 200,
@@ -1120,12 +1451,12 @@ async function stepPauseAcrossRestart(
       );
       const sources = activeDb(story, readObservationSources);
       check(
-        (sources.operator ?? 0) >= 2,
+        (sources.operator ?? 0) >= operatorBefore + 2,
         "the pause and resume are recorded as operator observations",
-        fmt(sources),
+        `${operatorBefore} before, ${fmt(sources)} after`,
       );
       step.done(
-        `paused at tick ${pausedClock.tick}, sequence ${pausedSequence}; unchanged through 2.5 s, a clean restart with 4 s down, and 2.5 s after; resumed: +${advanced} ticks; operator observations ${sources.operator}`,
+        `paused at tick ${pausedClock.tick}, sequence ${pausedSequence}; unchanged through 2.5 s, a clean restart with 4 s down, and 2.5 s after; resumed: +${advanced} ticks; operator observations ${operatorBefore} -> ${sources.operator}`,
         [
           {
             name: "ticks advanced after resume",
@@ -1138,68 +1469,258 @@ async function stepPauseAcrossRestart(
   );
 }
 
+async function stepJournalKill(
+  recorder: Recorder,
+  story: Story,
+): Promise<void> {
+  await recorder.run(
+    "S11",
+    "Durable proposal across a kill",
+    "A proposal accepted over /proposals and then SIGKILLed before any tick is still in the journal on restart, runs exactly once on a catch-up tick with a recorded outcome, and a retry of its proposalId reports that outcome without running it again.",
+    async (step) => {
+      let posted: Awaited<ReturnType<typeof postFixture>> | undefined;
+      let accepted: ReturnType<typeof readJournal>[number] | undefined;
+      for (
+        let attempt = 1;
+        attempt <= 3 && accepted === undefined;
+        attempt += 1
+      ) {
+        const attemptPost = await postFixture(story, legendJournal);
+        check(
+          attemptPost.status === 202 &&
+            (attemptPost.body as { status?: string }).status === "pending",
+          "the proposal is accepted as pending",
+          `${attemptPost.status} ${fmt(attemptPost.body)}`,
+        );
+        const exitCode = await story.sidecar.stop("SIGKILL");
+        check(
+          exitCode !== 0,
+          "the sidecar was killed",
+          `exit code ${exitCode}`,
+        );
+        const row = activeDb(story, readJournal).find(
+          (candidate) => candidate.proposalId === attemptPost.proposalId,
+        );
+        check(
+          row !== undefined,
+          "the accepted proposal is in the journal after the kill",
+          "no journal row: it was lost with the process",
+        );
+        if (row.consumedTick === undefined) {
+          posted = attemptPost;
+          accepted = row;
+        } else {
+          // A tick committed between the 202 and the kill; try again with a fresh proposal.
+          await story.restart();
+        }
+      }
+      check(
+        posted !== undefined && accepted !== undefined,
+        "a proposal was killed while still pending",
+        "three attempts each raced a tick",
+      );
+      const tickAtKill = clockNow(story).tick;
+      check(
+        accepted.targetTick === tickAtKill + 1,
+        "the entry targets the tick after the persisted clock",
+        `target ${accepted.targetTick}, clock tick ${tickAtKill}`,
+      );
+      const sequenceAtKill = maxSequence(story);
+
+      // The machine "slept" while the service was down: the restart's startup
+      // catch-up is what runs the proposal.
+      const path = activeStorePath(story.dataDir);
+      backdateCursor(path, clockNow(story).cursorWallMs - 2 * 60 * 1000);
+      if (story.options.control === "journal") {
+        // Positive control: a service that kept accepted proposals only in
+        // memory would have lost this one with the process.
+        const db = new Database(path);
+        try {
+          db.run("DELETE FROM external_proposals WHERE proposal_id = ?", [
+            posted.proposalId,
+          ]);
+        } finally {
+          db.close();
+        }
+      }
+      const restarted = await story.restart();
+      await waitForLog(
+        restarted,
+        "startup catch-up complete",
+        "the startup catch-up after the kill finishes",
+      );
+      const consumed = await waitFor(
+        "the accepted proposal was consumed after the restart",
+        () => {
+          const row = activeDb(story, readJournal).find(
+            (candidate) => candidate.proposalId === posted.proposalId,
+          );
+          return row?.consumedTick === undefined ? undefined : row;
+        },
+        { timeoutMs: 5000, intervalMs: 100 },
+      );
+      check(
+        consumed.consumedTick === accepted.targetTick,
+        "it ran on the first tick after the kill, a catch-up tick",
+        `consumed at ${consumed.consumedTick}, target ${accepted.targetTick}`,
+      );
+      check(
+        consumed.outcome === "committed",
+        "its journal row records the committed outcome",
+        `${consumed.outcome} ${consumed.reason}`,
+      );
+      const outcome = await outcomeOf(
+        story,
+        posted.proposalId,
+        "the proposal's outcome is recorded in the trace",
+      );
+      check(
+        outcome.outcome === "committed",
+        "the trace records it committed",
+        `${outcome.outcome} ${outcome.reason}`,
+      );
+      const caused = eventsOf(story, sequenceAtKill + 1).filter(
+        (event) => event.correlationId === posted.observationId,
+      );
+      check(
+        caused.length === 1 && caused[0]?.kind === "legend-recorded",
+        "it ran exactly once: one legend-recorded event",
+        caused.map((event) => event.kind).join(),
+      );
+      check(
+        caused[0]?.approximate === true,
+        "it ran on a catch-up tick, so its event is marked approximate",
+        `approximate ${caused[0]?.approximate}`,
+      );
+
+      const retry = await restarted.request(
+        "POST",
+        "/proposals",
+        posted.envelope,
+      );
+      check(
+        retry.status === 200 &&
+          (retry.body as { status?: string; queued?: boolean }).status ===
+            "committed" &&
+          (retry.body as { queued?: boolean }).queued === false,
+        "a retry of the same proposalId reports its recorded outcome",
+        `${retry.status} ${fmt(retry.body)}`,
+      );
+      const changed = await restarted.request("POST", "/proposals", {
+        ...posted.envelope,
+        proposal: {
+          ...(posted.envelope.proposal as object),
+          assertion: "A different tale under the same id.",
+        },
+      });
+      check(
+        changed.status === 409,
+        "the same proposalId with changed content is refused",
+        `${changed.status} ${fmt(changed.body)}`,
+      );
+      await waitForTicks(story, 2, "two ticks pass after the retries");
+      check(
+        eventsOf(story).filter(
+          (event) => event.correlationId === posted.observationId,
+        ).length === 1,
+        "the retries and later ticks did not run it again",
+        "extra events found",
+      );
+      step.done(
+        `accepted at clock tick ${tickAtKill}, SIGKILLed while pending; after restart it ran on catch-up tick ${consumed.consumedTick} (one approximate legend-recorded event), outcome ${consumed.outcome}; a retry returned ${fmt((retry.body as { status?: string }).status)}, changed content 409`,
+        [
+          {
+            name: "target tick of the killed proposal",
+            unit: "tick",
+            value: accepted.targetTick,
+          },
+        ],
+      );
+    },
+  );
+}
+
 async function stepKillMidCatchUp(
   recorder: Recorder,
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S10",
-    "Kill mid catch-up",
-    "After a long sleep and a SIGKILL partway through catch-up, restarting applies the rest of the interval once: ticks since the sleep began equal whole seconds of cursor advance, at the kill and after the second catch-up.",
+    "S12",
+    "Kill mid catch-up past the cap",
+    "After a three hour sleep, catch-up discards the excess over the one-hour cap in its own commit before any chunk. A SIGKILL partway through and a restart then apply the rest of the capped backlog once: the restarted frame's summary reports the whole backlog, and ticks since the discard equal whole seconds of cursor advance.",
     async (step) => {
       await stopClean(
         story,
         "the sidecar shuts down cleanly before the simulated sleep",
       );
       const stopped = clockNow(story);
-      const baseline = {
-        tick: stopped.tick,
-        backdatedCursorMs: stopped.cursorWallMs - BACKDATE_MS,
-      };
+      const tickBase = stopped.tick;
+      const sleepStart = stopped.cursorWallMs - SLEEP_MS;
       const sequenceBase = maxSequence(story);
       const path = activeStorePath(story.dataDir);
-      // Fault injection: the machine slept for BACKDATE_MS.
-      backdateCursor(path, baseline.backdatedCursorMs);
+      // Fault injection: the machine slept for SLEEP_MS.
+      backdateCursor(path, sleepStart);
 
       const sidecar = await story.restart();
       const watcher = new Database(path, { readonly: true });
-      let killedClock: ReturnType<typeof readClockRow>;
       let exitCode: number | null;
+      let killedAtMs: number;
       try {
-        killedClock = await waitFor(
+        await waitFor(
           "catch-up commits its first chunks",
-          () => {
-            const clock = readClockRow(watcher);
-            return clock.tick - baseline.tick >= 2 * CHUNK_TICKS
-              ? clock
-              : undefined;
-          },
+          () =>
+            readClockRow(watcher).tick - tickBase >= 2 * CHUNK_TICKS
+              ? true
+              : undefined,
           { timeoutMs: 30_000, intervalMs: 1 },
         );
         exitCode = await sidecar.stop("SIGKILL");
+        killedAtMs = Date.now();
       } finally {
         watcher.close();
       }
       check(exitCode !== 0, "the sidecar was killed", `exit code ${exitCode}`);
 
       const atKill = clockNow(story);
-      const applied = atKill.tick - baseline.tick;
-      const chunksCommitted = applied / CHUNK_TICKS;
+      const progress = activeDb(story, readCatchUpProgressRow);
       check(
-        applied >= 2 * CHUNK_TICKS &&
-          applied < BACKDATE_MS / 1000 - CHUNK_TICKS,
-        "the kill landed partway through catch-up",
-        `${applied} of about ${BACKDATE_MS / 1000} ticks applied (first sighting at ${killedClock.tick - baseline.tick})`,
+        progress !== undefined,
+        "the unfinished backlog's progress is committed",
+        "no catch_up_progress row",
+      );
+      const applied = atKill.tick - tickBase;
+      check(
+        progress.appliedMs === applied * 1000 && applied % CHUNK_TICKS === 0,
+        "the progress records exactly the whole chunks committed",
+        `${fmt(progress)} vs ${applied} ticks`,
       );
       check(
-        Number.isInteger(chunksCommitted),
-        "catch-up commits whole chunks only",
-        `${applied} ticks is ${chunksCommitted} chunks`,
+        applied < CATCH_UP_CAP_MS / 1000 - CHUNK_TICKS,
+        "the kill landed partway through the capped backlog",
+        `${applied} of ${CATCH_UP_CAP_MS / 1000} ticks applied`,
       );
+      const discarded = progress.discardedMs;
+      const expectedDiscard = SLEEP_MS - CATCH_UP_CAP_MS;
+      check(
+        discarded >= expectedDiscard && discarded < expectedDiscard + 60_000,
+        "the excess over the cap was discarded, committed before the chunks",
+        `${discarded} ms discarded, expected ${expectedDiscard} plus the seconds before the restart sampled the clock`,
+      );
+      check(
+        activeDb(story, (db) =>
+          operatorObservationExists(db, `catch-up-discard:${discarded}`),
+        ),
+        "the discard is on record as its own operator observation",
+        `no catch-up-discard:${discarded}`,
+      );
+      // After the discard the cursor sat one cap behind the moment catch-up
+      // sampled the clock; every applied second moves it and the tick together.
+      const backlogStart = sleepStart + discarded;
+      const baseline = { tick: tickBase, backdatedCursorMs: backlogStart };
       const killIdentity = catchUpIdentity(baseline, atKill);
       check(
         killIdentity.ok,
-        "at the kill, ticks equal whole seconds of cursor advance",
+        "at the kill, ticks since the discard equal whole seconds of cursor advance",
         fmt(killIdentity),
       );
       const integrity = activeDb(story, integrityCheck);
@@ -1208,35 +1729,15 @@ async function stepKillMidCatchUp(
         "the store passes integrity_check after SIGKILL",
         integrity,
       );
-      const afterKillEvents = eventsOf(story, sequenceBase + 1);
-      check(
-        afterKillEvents.length > 0 &&
-          afterKillEvents.every((event) => event.approximate),
-        "every event catch-up committed before the kill is marked approximate",
-        `${afterKillEvents.filter((event) => !event.approximate).length} exact`,
-      );
-      check(
-        maxSequence(story) ===
-          activeDb(
-            story,
-            (db) =>
-              (
-                db.query("SELECT COUNT(*) AS n FROM events").get() as {
-                  n: number;
-                }
-              ).n,
-          ),
-        "the event log is contiguous after SIGKILL",
-        "gap in sequence",
-      );
 
       if (story.options.control === "catch-up") {
         // Positive control: a store that kept the ticks but lost the cursor
-        // advance would replay the interval. The identity must notice.
-        backdateCursor(path, baseline.backdatedCursorMs);
+        // advance would replay the chunks already applied. The identity must notice.
+        backdateCursor(path, backlogStart);
       }
 
       const second = await story.restart();
+      const restartedAtMs = Date.now();
       await waitForLog(
         second,
         "startup catch-up complete",
@@ -1247,41 +1748,55 @@ async function stepKillMidCatchUp(
       const identity = catchUpIdentity(baseline, clock);
       check(
         identity.ok,
-        "after the second catch-up, ticks equal whole seconds of cursor advance (the interval was applied once)",
+        "after the second catch-up, ticks since the discard equal whole seconds of cursor advance (nothing was applied twice)",
         fmt(identity),
       );
       const summary = done.frame.catchUpSummary;
       check(
         summary !== undefined,
-        "the second catch-up published a summary",
+        "the restarted frame carries a catch-up summary",
         "none",
       );
-      const catchUpTicks =
-        chunksCommitted * CHUNK_TICKS + summary.appliedMs / 1000;
-      const liveTicks = clock.tick - baseline.tick - catchUpTicks;
+      check(
+        summary.skippedMs === discarded,
+        "the restarted summary reports the whole backlog's discard, committed before the kill",
+        `${summary.skippedMs} vs ${discarded}`,
+      );
+      // The cap bounds the remaining backlog: seconds that passed between the
+      // kill and the restart are new gap, applied once on top.
+      const extraMs = summary.appliedMs - CATCH_UP_CAP_MS;
+      const downtimeMs = restartedAtMs - killedAtMs;
+      check(
+        extraMs >= 0 && extraMs % 1000 === 0 && extraMs <= downtimeMs + 1000,
+        "the restarted summary reports the whole backlog applied: the cap plus only the seconds that passed while the service was down",
+        `applied ${summary.appliedMs} ms, cap ${CATCH_UP_CAP_MS} ms, down ${downtimeMs} ms`,
+      );
+      const liveTicks = clock.tick - tickBase - summary.appliedMs / 1000;
       check(
         liveTicks >= 0 && liveTicks <= 5,
-        "chunks before the kill plus the summary's applied time account for the catch-up",
-        `catch-up ${catchUpTicks} ticks, total ${clock.tick - baseline.tick}, live ${liveTicks}`,
+        "ticks since the discard are the summary's applied time plus a few live ticks",
+        `${clock.tick - tickBase} ticks, summary ${summary.appliedMs / 1000}, live ${liveTicks}`,
       );
       check(
-        summary.skippedMs < 1000,
-        "nothing but a sub-second remainder was skipped (the gap is inside the cap)",
-        `${summary.skippedMs} ms skipped`,
+        activeDb(story, readCatchUpProgressRow) === undefined,
+        "the backlog's progress is cleared once it completes",
+        fmt(activeDb(story, readCatchUpProgressRow)),
       );
       const catchUpEvents = eventsOf(story, sequenceBase + 1).filter(
         (event) => event.sequence <= summary.atSequence,
       );
       check(
-        catchUpEvents.every((event) => event.approximate),
+        catchUpEvents.length > 0 &&
+          catchUpEvents.every((event) => event.approximate),
         "every catch-up event is marked approximate",
         `${catchUpEvents.filter((event) => !event.approximate).length} exact`,
       );
-      const live = eventsOf(story, summary.atSequence + 1);
       check(
-        live.every((event) => !event.approximate),
+        eventsOf(story, summary.atSequence + 1).every(
+          (event) => !event.approximate,
+        ),
         "live events after catch-up are exact",
-        `${live.filter((event) => event.approximate).length} approximate`,
+        "an approximate live event",
       );
       const finalIntegrity = activeDb(story, integrityCheck);
       check(
@@ -1290,17 +1805,22 @@ async function stepKillMidCatchUp(
         finalIntegrity,
       );
       step.done(
-        `gap ${BACKDATE_MS / 1000} s; killed after ${chunksCommitted} of ${Math.ceil(BACKDATE_MS / 1000 / CHUNK_TICKS)} chunks (${applied} ticks); second catch-up applied ${summary.appliedMs / 1000} ticks; total ${clock.tick - baseline.tick} ticks = ${identity.ticksForCursorAdvance} cursor seconds; ${catchUpEvents.length} approximate events`,
+        `sleep ${SLEEP_MS / 3_600_000} h, cap ${CATCH_UP_CAP_MS / 3_600_000} h: excess ${(discarded / 3_600_000).toFixed(3)} h discarded before the chunks; killed after ${applied / CHUNK_TICKS} chunks (${applied} ticks); restarted summary applied ${summary.appliedMs / 1000} ticks (the cap plus ${extraMs / 1000} s of downtime), skipped ${(summary.skippedMs / 3_600_000).toFixed(3)} h; ${catchUpEvents.length} approximate events`,
         [
           {
             name: "chunks committed before kill",
             unit: "chunks",
-            value: chunksCommitted,
+            value: applied / CHUNK_TICKS,
           },
           {
-            name: "ticks applied by second catch-up",
+            name: "ticks applied by the whole backlog",
             unit: "ticks",
             value: summary.appliedMs / 1000,
+          },
+          {
+            name: "seconds discarded beyond the cap",
+            unit: "s",
+            value: Math.round(summary.skippedMs / 1000),
           },
           {
             name: "ticks over cursor seconds (must be 0)",
@@ -1315,9 +1835,9 @@ async function stepKillMidCatchUp(
 
 async function stepArchives(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S11",
+    "S13",
     "Export, corrupt copy, import, restore",
-    "An export imports into a new slot; a copy with one changed byte is rejected and creates no slot; restoring the snapshot makes a branch slot holding the same history up to the snapshot while the active world is untouched.",
+    "An export imports into a new slot; a copy with one changed byte is rejected and creates no slot; restoring the snapshot makes a branch slot holding the same history and the same proposal journal (ids, order, terminal outcomes) up to the snapshot while the active world is untouched.",
     async (step) => {
       const exportPath = join(story.root, "export.sqlite");
       const sequenceBefore = maxSequence(story);
@@ -1456,6 +1976,7 @@ async function stepArchives(recorder: Recorder, story: Story): Promise<void> {
           clock: readClockRow(db),
           prefix: hashEventPrefix(db, manifest.eventSequence),
           integrity: integrityCheck(db),
+          journal: readJournal(db),
         }));
       const importedView = inspect(importedSlot.slotPath);
       const branchView = inspect(branch.slotPath);
@@ -1479,6 +2000,35 @@ async function stepArchives(recorder: Recorder, story: Story): Promise<void> {
           "digest differs",
         );
       }
+      // The journal travels with the snapshot: same ids, order, and terminal
+      // outcomes for everything consumed by then; entries still pending at
+      // export may have been consumed since in the active world.
+      const activeJournal = activeDb(story, readJournal);
+      for (const [label, view] of [
+        ["imported slot", importedView],
+        ["branch slot", branchView],
+      ] as const) {
+        check(
+          view.journal.length > 0 &&
+            view.journal.length <= activeJournal.length,
+          `the ${label} carries the proposal journal`,
+          `${view.journal.length} rows of ${activeJournal.length}`,
+        );
+        for (const row of view.journal) {
+          const live = activeJournal[row.inputOrder - 1];
+          check(
+            live?.proposalId === row.proposalId &&
+              live.observationId === row.observationId &&
+              live.targetTick === row.targetTick &&
+              (row.consumedTick === undefined ||
+                (live.consumedTick === row.consumedTick &&
+                  live.outcome === row.outcome &&
+                  live.reason === row.reason)),
+            `the ${label}'s journal entry ${row.inputOrder} matches the active world's, outcome included`,
+            fmt([row, live]),
+          );
+        }
+      }
       check(
         branchView.clock.tick < clockNow(story).tick,
         "the branch is a snapshot of the past; the active world has moved on",
@@ -1501,7 +2051,7 @@ async function stepArchives(recorder: Recorder, story: Story): Promise<void> {
         "digest changed",
       );
       step.done(
-        `export at sequence ${manifest.eventSequence}; import made 1 slot; corrupted copy rejected (${rejected.status}) with no slot and no staging directory; restore made a second slot; both slots hold ${importedView.max} events matching the active history; the active world was at sequence ${activeBeforeRestore.max} before the restore and ${activeAfter.max} after`,
+        `export at sequence ${manifest.eventSequence}; import made 1 slot; corrupted copy rejected (${rejected.status}) with no slot and no staging directory; restore made a second slot; both slots hold ${importedView.max} events and ${importedView.journal.length} journal entries matching the active world; the active world was at sequence ${activeBeforeRestore.max} before the restore and ${activeAfter.max} after`,
         [
           {
             name: "exported event sequence",
@@ -1535,9 +2085,9 @@ async function stepClientReceipts(
   story: Story,
 ): Promise<void> {
   await recorder.run(
-    "S12",
+    "S14",
     "Headless client receipts",
-    "The client receipts only events it placed in the viewed realm: every stored receipt was sent by the client, none is for an undrawn kind, the strike, the fire, and a routine trade were receipted in the session they happened in, and a client viewing another realm sends none.",
+    "The client receipts only events it placed in the viewed realm: every stored receipt was sent by the client, none is for an undrawn kind, the strike, the fire, the worship, and a routine trade were receipted in the session they happened in, and a client viewing another realm sends none.",
     async (step) => {
       const [mortal] = story.clients;
       check(mortal !== undefined, "the mortal-realm client exists", "missing");
@@ -1609,6 +2159,12 @@ async function stepClientReceipts(
         "a routine trade was receipted",
         fmt([...storedKinds]),
       );
+      check(
+        receiptFor(story.memo.worshipEventId)?.sessionId ===
+          story.memo.worshipSessionId,
+        "the worship was receipted in the session it happened in",
+        fmt(receiptFor(story.memo.worshipEventId)),
+      );
 
       const underworld = createHeadlessClient(
         { kind: "location", id: "judgment-hall" },
@@ -1651,7 +2207,7 @@ async function stepClientReceipts(
         ]),
       );
       step.done(
-        `${stored.length} receipts stored by the mortal-realm client (${fmt(kindCounts)}); ignition, destruction, and trades receipted; underworld client received frames and sent 0; relay errors during restarts ${relayErrors}`,
+        `${stored.length} receipts stored by the mortal-realm client (${fmt(kindCounts)}); ignition, destruction, worship, and trades receipted; underworld client received frames and sent 0; relay errors during restarts ${relayErrors}`,
         [
           { name: "receipts stored", unit: "count", value: stored.length },
           {
@@ -1667,103 +2223,53 @@ async function stepClientReceipts(
 
 async function stepTrace(recorder: Recorder, story: Story): Promise<void> {
   await recorder.run(
-    "S13",
+    "S15",
     "Trace",
-    "The strike's chain walks observation, proposal, validation, event, and projection change with the identifiers the fixture posted; a routine trade's chain continues to the presentation receipt the client sent; a rejected proposal's chain ends at its rejection.",
+    "Every chain is walkable from the identifiers the producer used: a rejected proposal ends at its rejection, a routine trade and a worship reach the presentation receipt the client sent, and the strike's own ignition walks observation, proposal, validation, event, projection change, and the client's presentation receipt.",
     async (step) => {
       const {
         strikeFirstEventId,
         strikeIgnitedEventId,
         strikeObservationId,
         strikeProposalId,
+        strikeSessionId,
         staleProposalId,
+        worshipEventId,
+        worshipSessionId,
       } = story.memo;
       check(
         strikeFirstEventId !== undefined &&
+          strikeIgnitedEventId !== undefined &&
           strikeObservationId !== undefined &&
-          strikeProposalId !== undefined,
-        "the strike's identifiers were recorded",
+          strikeProposalId !== undefined &&
+          strikeSessionId !== undefined &&
+          staleProposalId !== undefined &&
+          worshipEventId !== undefined &&
+          worshipSessionId !== undefined,
+        "the identifiers earlier steps recorded are present",
         "missing",
       );
+      const stepNames = (steps: FollowResult["steps"]) =>
+        steps.map((entry) => entry.step).join(" -> ");
 
-      const byEvent = await getJson(
-        story.sidecar,
-        `/trace/event?id=${encodeURIComponent(strikeFirstEventId)}`,
-      );
-      const steps = byEvent.result.steps;
+      // A rejected proposal's chain ends at its rejection, with the reason.
+      const staleTrace = (
+        await getJson(
+          story.sidecar,
+          `/trace/proposal?id=${encodeURIComponent(staleProposalId)}`,
+        )
+      ).result.steps;
+      const staleValidation = staleTrace[2];
       check(
-        byEvent.result.found,
-        "the trace finds the strike's event",
-        "not found",
-      );
-      check(
-        steps
-          .map((entry) => entry.step)
-          .slice(0, 5)
-          .join() === "observation,proposal,validation,event,projection-change",
-        "the strike chain runs observation, proposal, validation, event, projection change",
-        steps.map((entry) => entry.step).join(),
-      );
-      const [observation, proposal, validation, event, projection] = steps;
-      check(
-        observation?.step === "observation" &&
-          observation.record.id === strikeObservationId &&
-          observation.record.source === "fixture" &&
-          observation.record.observer === "zeus",
-        "the chain starts at the fixture's observation by zeus",
-        fmt(observation),
-      );
-      check(
-        proposal?.step === "proposal" &&
-          proposal.proposalId === strikeProposalId &&
-          proposal.record.kind === "strike" &&
-          proposal.record.observationId === strikeObservationId,
-        "the proposal is the strike, citing that observation",
-        fmt(proposal),
-      );
-      check(
-        validation?.step === "validation" && validation.outcome === "committed",
-        "validation committed the strike",
-        fmt(validation),
-      );
-      const strikeEvent = eventsOf(story).find(
-        (row) => row.id === strikeFirstEventId,
-      );
-      check(
-        event?.step === "event" && event.eventId === strikeFirstEventId,
-        "the chain names the strike's first event",
-        fmt(event),
-      );
-      check(
-        projection?.step === "projection-change" &&
-          projection.revision === strikeEvent?.sequence,
-        "the projection change is that event's committed sequence",
-        fmt(projection),
-      );
-      const byProposal = await getJson(
-        story.sidecar,
-        `/trace/proposal?id=${encodeURIComponent(strikeProposalId)}`,
-      );
-      check(
-        fmt(byProposal.result.steps) === fmt(steps),
-        "following the strike from its proposal gives the same chain",
-        "chains differ",
+        stepNames(staleTrace) === "observation -> proposal -> validation" &&
+          staleValidation?.step === "validation" &&
+          staleValidation.outcome === "rejected" &&
+          staleValidation.reason === "stale-target",
+        "a rejected proposal's chain ends at its rejection with the reason",
+        fmt(staleTrace),
       );
 
-      const ignited = eventsOf(story).find(
-        (row) => row.id === strikeIgnitedEventId,
-      );
-      check(
-        ignited?.correlationId === strikeObservationId,
-        "the ignition event carries the strike's observation as its correlation",
-        `${ignited?.correlationId}`,
-      );
-      const viaIgnition = await getJson(
-        story.sidecar,
-        `/trace/event?id=${encodeURIComponent(strikeIgnitedEventId ?? "")}`,
-      );
-
-      // A trade is one drawn event, so its whole chain, receipt included, is reachable.
+      // A routine's trade is one drawn event: observation by a routine through its receipt.
       const presented = story.clients[0]?.presented() ?? [];
       const tradeReceipt = activeDb(story, readReceiptsWithKinds).find(
         (receipt) =>
@@ -1782,57 +2288,166 @@ async function stepTrace(recorder: Recorder, story: Story): Promise<void> {
         )
       ).result.steps;
       check(
-        tradeTrace
-          .map((entry) => entry.step)
-          .slice(0, 5)
-          .join() === "observation,proposal,validation,event,projection-change",
-        "the trade chain has the same five hops",
-        tradeTrace.map((entry) => entry.step).join(),
-      );
-      const receipt = tradeTrace[5];
-      check(
         tradeTrace[0]?.step === "observation" &&
-          tradeTrace[0].record.source === "routine",
-        "the trade chain starts at a routine's observation",
-        fmt(tradeTrace[0]),
+          tradeTrace[0].record.source === "routine" &&
+          stepNames(tradeTrace).startsWith(
+            "observation -> proposal -> validation -> event -> projection-change -> receipt",
+          ),
+        "a routine trade's chain runs from a routine's observation to its receipt",
+        stepNames(tradeTrace),
+      );
+      const tradeReceiptStep = tradeTrace.find(
+        (entry) => entry.step === "receipt",
+      );
+      check(
+        tradeReceiptStep?.step === "receipt" &&
+          tradeReceiptStep.sessionId === tradeReceipt.sessionId,
+        "the trade chain ends at the receipt the client sent",
+        fmt(tradeReceiptStep),
+      );
+
+      // The worship: a fixture proposal by a mortal, walked to its receipt.
+      const worshipTrace = (
+        await getJson(
+          story.sidecar,
+          `/trace/event?id=${encodeURIComponent(worshipEventId)}`,
+        )
+      ).result.steps;
+      const worshipObservation = worshipTrace[0];
+      const worshipReceipt = worshipTrace.find(
+        (entry) => entry.step === "receipt",
+      );
+      check(
+        worshipObservation?.step === "observation" &&
+          worshipObservation.record.source === "fixture" &&
+          worshipObservation.record.observer === "woodcutter" &&
+          stepNames(worshipTrace).startsWith(
+            "observation -> proposal -> validation -> event -> projection-change -> receipt",
+          ) &&
+          worshipReceipt?.step === "receipt" &&
+          worshipReceipt.sessionId === worshipSessionId,
+        "the worship chain runs from the fixture's observation by the woodcutter to the client's receipt",
+        stepNames(worshipTrace),
+      );
+
+      // The strike, from its proposal: every event it committed, in order.
+      const byProposal = (
+        await getJson(
+          story.sidecar,
+          `/trace/proposal?id=${encodeURIComponent(strikeProposalId)}`,
+        )
+      ).result.steps;
+      const strikeEvents = eventsOf(story).filter(
+        (row) => row.correlationId === strikeObservationId,
+      );
+      check(
+        byProposal.filter((entry) => entry.step === "event").length === 2 &&
+          strikeEvents.map((row) => row.id).join() ===
+            byProposal
+              .flatMap((entry) =>
+                entry.step === "event" ? [entry.eventId] : [],
+              )
+              .join(),
+        "following the strike from its proposal lists both events it committed, in order",
+        stepNames(byProposal),
+      );
+      const spendChain = (
+        await getJson(
+          story.sidecar,
+          `/trace/event?id=${encodeURIComponent(strikeFirstEventId)}`,
+        )
+      ).result.steps;
+      check(
+        stepNames(spendChain) ===
+          "observation -> proposal -> validation -> event -> projection-change",
+        "the divinity spend, which the client never draws, walks to its projection change and has no receipt",
+        stepNames(spendChain),
+      );
+
+      // Final assertion: the strike's ignition, observation through presentation.
+      const ignition = strikeEvents.find(
+        (row) => row.id === strikeIgnitedEventId,
+      );
+      check(
+        ignition?.kind === "building-ignited",
+        "the strike's ignition event is on record",
+        `${ignition?.kind}`,
+      );
+      const chain = (
+        await getJson(
+          story.sidecar,
+          `/trace/event?id=${encodeURIComponent(strikeIgnitedEventId)}`,
+        )
+      ).result;
+      const [observation, proposal, validation, event, projection, receipt] =
+        chain.steps;
+      check(
+        chain.found &&
+          stepNames(chain.steps).startsWith(
+            "observation -> proposal -> validation -> event -> projection-change -> receipt",
+          ),
+        "the strike's ignition chain runs observation, proposal, validation, event, projection change, presentation receipt",
+        stepNames(chain.steps),
+      );
+      check(
+        observation?.step === "observation" &&
+          observation.record.id === strikeObservationId &&
+          observation.record.source === "fixture" &&
+          observation.record.observer === "zeus",
+        "the chain starts at the strike's own observation, by zeus",
+        fmt(observation),
+      );
+      check(
+        proposal?.step === "proposal" &&
+          proposal.proposalId === strikeProposalId &&
+          proposal.record.kind === "strike" &&
+          proposal.record.observationId === strikeObservationId,
+        "the proposal is the strike the producer posted, citing that observation",
+        fmt(proposal),
+      );
+      check(
+        validation?.step === "validation" && validation.outcome === "committed",
+        "validation committed the strike",
+        fmt(validation),
+      );
+      check(
+        event?.step === "event" &&
+          event.eventId === strikeIgnitedEventId &&
+          projection?.step === "projection-change" &&
+          projection.revision === ignition.sequence,
+        "the event is the ignition and its projection change is that event's committed sequence",
+        fmt([event, projection]),
+      );
+      const storedReceipt = activeDb(story, readReceiptsWithKinds).find(
+        (row) => row.eventId === strikeIgnitedEventId,
       );
       check(
         receipt?.step === "receipt" &&
-          receipt.sessionId === tradeReceipt.sessionId &&
-          receipt.presentedAtMs > 0,
-        "the trade chain ends at the presentation receipt the client sent",
-        fmt(receipt),
+          receipt.sessionId === strikeSessionId &&
+          receipt.presentedAtMs > 0 &&
+          storedReceipt?.sessionId === strikeSessionId,
+        "the chain ends at the presentation receipt the client sent for the ignition, in the session it happened in",
+        fmt([receipt, storedReceipt]),
       );
 
-      check(
-        staleProposalId !== undefined,
-        "the stale proposal's identifier was recorded",
-        "missing",
-      );
-      const staleTrace = (
-        await getJson(
-          story.sidecar,
-          `/trace/proposal?id=${encodeURIComponent(staleProposalId)}`,
-        )
-      ).result.steps;
-      const staleValidation = staleTrace[2];
-      check(
-        staleTrace.map((entry) => entry.step).join() ===
-          "observation,proposal,validation" &&
-          staleValidation?.step === "validation" &&
-          staleValidation.outcome === "rejected" &&
-          staleValidation.reason === "stale-target",
-        "a rejected proposal's chain ends at its rejection with the reason",
-        fmt(staleTrace),
-      );
       step.done(
-        `strike chain ${steps.map((entry) => entry.step).join(" -> ")} (event ${strikeEvent?.sequence}); trade chain ${tradeTrace.map((entry) => entry.step).join(" -> ")}; stale chain ${staleTrace.map((entry) => entry.step).join(" -> ")} (${staleValidation?.step === "validation" ? staleValidation.reason : "?"})`,
+        `stale chain ${stepNames(staleTrace)} (${staleValidation?.step === "validation" ? staleValidation.reason : "?"}); trade chain and worship chain each end at the client's receipt; strike from its proposal: ${stepNames(byProposal)}; strike ignition chain ${stepNames(chain.steps)} (event sequence ${ignition.sequence}, receipt session ${receipt?.step === "receipt" ? receipt.sessionId.slice(0, 16) : "?"}...)`,
         [
-          { name: "strike chain hops", unit: "hops", value: steps.length },
-          { name: "trade chain hops", unit: "hops", value: tradeTrace.length },
-        ],
-        [
-          `The strike's chain stops at its projection change. The trace links a proposal to its first committed event only, and a strike's first event is the divinity spend, which the client never draws. The strike's ignition, which the client did receipt (S12), is tied to the strike only by its correlation id in the event log; following that event through the trace query returned found=${viaIgnition.result.found} with ${viaIgnition.result.steps.length} steps. The presentation hop is demonstrated on a routine trade, whose only event is drawn.`,
+          {
+            name: "strike ignition chain hops",
+            unit: "hops",
+            value: chain.steps.length,
+          },
+          {
+            name: "worship chain hops",
+            unit: "hops",
+            value: worshipTrace.length,
+          },
+          {
+            name: "trade chain hops",
+            unit: "hops",
+            value: tradeTrace.length,
+          },
         ],
       );
     },

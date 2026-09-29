@@ -23,14 +23,6 @@ export interface ClockRow {
   readonly simTimeMs: number;
 }
 
-export interface OutcomeRow {
-  readonly proposalId: string;
-  readonly observationId: string;
-  readonly outcome: "committed" | "rejected";
-  readonly reason: string | null;
-  readonly eventId: string | null;
-}
-
 export function activeStorePath(dataDir: string): string {
   return join(dataDir, "active", "world.sqlite");
 }
@@ -114,30 +106,6 @@ export function readMaxSequence(db: Database): number {
   return row.m ?? 0;
 }
 
-export function readOutcomesForObservation(
-  db: Database,
-  observationId: string,
-): OutcomeRow[] {
-  const rows = db
-    .query(
-      "SELECT proposal_id, observation_id, outcome, reason, event_id FROM trace_proposal_outcomes WHERE observation_id = ?",
-    )
-    .all(observationId) as {
-    proposal_id: string;
-    observation_id: string;
-    outcome: "committed" | "rejected";
-    reason: string | null;
-    event_id: string | null;
-  }[];
-  return rows.map((row) => ({
-    proposalId: row.proposal_id,
-    observationId: row.observation_id,
-    outcome: row.outcome,
-    reason: row.reason,
-    eventId: row.event_id,
-  }));
-}
-
 export function readObservationSources(db: Database): Record<string, number> {
   const rows = db
     .query(
@@ -198,4 +166,67 @@ export function backdateCursor(path: string, cursorWallMs: number): void {
   } finally {
     db.close();
   }
+}
+
+export interface JournalRow {
+  readonly inputOrder: number;
+  readonly proposalId: string;
+  readonly targetTick: number;
+  readonly consumedTick: number | undefined;
+  readonly outcome: string | undefined;
+  readonly reason: string | undefined;
+  readonly observationId: string;
+}
+
+/** The durable proposal journal (`external_proposals`, schema v3), in input order. */
+export function readJournal(db: Database): JournalRow[] {
+  const rows = db
+    .query(
+      "SELECT input_order, proposal_id, target_tick, consumed_tick, outcome, reason, observation FROM external_proposals ORDER BY input_order ASC",
+    )
+    .all() as {
+    input_order: number;
+    proposal_id: string;
+    target_tick: number;
+    consumed_tick: number | null;
+    outcome: string | null;
+    reason: string | null;
+    observation: string;
+  }[];
+  return rows.map((row) => ({
+    inputOrder: row.input_order,
+    proposalId: row.proposal_id,
+    targetTick: row.target_tick,
+    consumedTick: row.consumed_tick ?? undefined,
+    outcome: row.outcome ?? undefined,
+    reason: row.reason ?? undefined,
+    observationId: (JSON.parse(row.observation) as { id: string }).id,
+  }));
+}
+
+export interface CatchUpProgressRow {
+  readonly appliedMs: number;
+  readonly discardedMs: number;
+}
+
+/** The unfinished catch-up backlog's committed progress, or undefined when none is in progress. */
+export function readCatchUpProgressRow(
+  db: Database,
+): CatchUpProgressRow | undefined {
+  const row = db
+    .query(
+      "SELECT applied_ms, discarded_ms FROM catch_up_progress WHERE id = 1",
+    )
+    .get() as { applied_ms: number; discarded_ms: number } | null;
+  return row
+    ? { appliedMs: row.applied_ms, discardedMs: row.discarded_ms }
+    : undefined;
+}
+
+/** Whether an operator observation naming `fact` is on record (the trace stores what an operator action read). */
+export function operatorObservationExists(db: Database, fact: string): boolean {
+  const rows = db
+    .query("SELECT payload FROM trace_observations WHERE source = 'operator'")
+    .all() as { payload: string }[];
+  return rows.some((row) => row.payload.includes(fact));
 }

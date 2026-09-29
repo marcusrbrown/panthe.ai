@@ -2,7 +2,7 @@
   "observation": {
     "schemaVersion": 1,
     "id": "$observationId",
-    "observer": "farmer",
+    "observer": "zeus",
     "stateRevision": "$sequence",
     "factsRead": [],
     "source": "fixture"
@@ -10,8 +10,8 @@
   "proposal": {
     "schemaVersion": 1,
     "kind": "legend",
-    "actor": "farmer",
-    "assertion": "It is said the woodcutter set the tavern alight for the insurance.",
+    "actor": "zeus",
+    "assertion": "The gods watched the proposal survive the night.",
     "targets": [],
     "expectedRevisions": [],
     "source": "fixture",

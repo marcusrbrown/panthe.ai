@@ -10,13 +10,13 @@ date: 2026-09-29
 ## Overview
 
 M2 turns the M1 rules-driven world into a social simulation.
-The seven Greek gods decide through configured model routing (local models, plus opt-in OpenCode Go when configured and never offline), see only what they perceived, were told, or sensed through a power, and remember what happened to them.
+The seven Greek gods decide through one model router over OpenAI-compatible endpoints (M2 runs them on local models, and OpenCode Go or any other endpoint works by configuration), see only what they perceived, were told, or sensed through a power, and remember what happened to them.
 Their memories and relationships change what they do next.
 A quiet-world director adds events without undoing consequences.
 The 20 ordinary inhabitants stay on deterministic routines.
 
 The work lands in three phases: local model routing and the model trace, then a two-god causal slice with an owner-rated experience gate, then the full cast with a measured scheduler and a gated unattended outage run.
-Hosted Go, Keychain, and the settings window run alongside the slice and must land before the unattended run.
+A minimal settings view for endpoints and per-role assignment runs alongside the slice.
 
 ## Problem Frame
 
@@ -34,8 +34,8 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - R3. W06 remainder: background scheduling keeps inhabitants' action capabilities; drives produce different decisions.
 - R4. W09: transformation, grudges, alliances, and persistent consequences with provenance; unrelated identity and memory survive.
 - R5. W10: a quiet-world director proposes valid events, history attributes them, and nothing restores a catastrophe.
-- R6. P06 partial: connect an existing local server and assign models to roles through config plus a minimal settings window. The first-run download flow is deferred.
-- R7. P07: configured fallback across local and opt-in OpenCode Go, with no hosted call in offline mode.
+- R6. P06 partial: per-role endpoint and model assignment through config and a minimal settings view, local server first. The first-run download flow is deferred.
+- R7. P07: one router over OpenAI-compatible endpoints; any role can use any configured endpoint, including OpenCode Go by configuration with its key in Keychain, with an operator-ordered fallback list and non-local endpoints dropped in offline mode. M2's evidence runs use local models.
 - R8. O04 remainder: follow an event from observation through model request, validated action, outcome, relationship change, and presentation; secrets absent.
 - R9. O08 (M2 portion): the unattended one-hour trial with a provider outage and recovery on the M1 Pro, plus the M2 workload baseline for the memory-policy gate (ADR-0005).
 - Acceptance trials exercised: A02 divine consequence, A04 knowledge, A05 interruption (god proposals), A08 catch-up with pending god proposals, A13 provider failure, A15 replay without inference (god and director proposals), A16 secrets absent from the trace, and the one-hour unattended trial ([acceptance.md](../product/acceptance.md)).
@@ -81,7 +81,7 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - Rules take intent from proposals and everything else from the world; models join in M2: [authoritative-rule-validation](../solutions/best-practices/authoritative-rule-validation-2026-09-27.md).
 - Composition-root integration test with real implementations; replay from log, nothing from memory: [world-persistence-composition-broken-after-reopen](../solutions/integration-issues/world-persistence-composition-broken-after-reopen-2026-09-27.md).
 - Every negative claim gets a positive control: [end-to-end-scenario-with-positive-controls](../solutions/best-practices/end-to-end-scenario-with-positive-controls-2026-09-28.md).
-- Offline proof needs an owner-run capture with a positive control: [tcpdump-sudo-pid-resolution-offline-proof](../solutions/test-failures/tcpdump-sudo-pid-resolution-offline-proof-2026-09-27.md).
+- The M0 offline proof used a packet capture with a positive control; a capture on the production path belongs with release acceptance (A01), not M2: [tcpdump-sudo-pid-resolution-offline-proof](../solutions/test-failures/tcpdump-sudo-pid-resolution-offline-proof-2026-09-27.md).
 - Ollama RSS lives in the runner child: [ollama-runner-pid-rss-sampling](../solutions/performance-issues/ollama-runner-pid-rss-sampling-2026-09-27.md).
 - Level state in a polled frame: [catch-up-summary-lost-between-polls](../solutions/integration-issues/catch-up-summary-lost-between-polls-2026-09-28.md).
 - One lifecycle lock, no lock across an await: [lifecycle-state-one-lock-transitions](../solutions/best-practices/lifecycle-state-one-lock-transitions-2026-09-28.md).
@@ -89,7 +89,6 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 
 ### External References
 
-- `keyring` crate 3.x with `apple-native` (legacy login keychain; data-protection keychain needs a provisioning profile). Ad-hoc dev builds change signature per rebuild, so Keychain prompts recur unless dev builds are signed with a stable identity.
 - AI SDK 7 with `@ai-sdk/openai-compatible` against Ollama `/v1`: `response_format` JSON schema maps to Ollama's `format`; `/v1` cannot set `num_ctx` per request, so a derived 4K model is created from a Modelfile. Use the v7 `timeout` option with `abortSignal`. A bare string model id routes through Vercel's hosted gateway by default, so model ids are always provider instances. `generateObject` is not deprecated in v7.
 - Workspace pins: `ai@7.0.116`, `@ai-sdk/openai-compatible@3.0.57` (probe manifests); ADR-0005's `ai@7.0.93` text is stale.
 
@@ -101,7 +100,7 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
   "verdict": "extend",
   "scope": "apps/simulation, packages/{contracts,world,persistence,telemetry,content,agents}, content/greek, tools/probes/{provider-matrix,inference-baseline}, tools/scenarios, apps/desktop/src-tauri",
   "freshness": {
-    "vcs_reference": "062614f (main) plus the fix/evidence-integrity diff (PR #51)"
+    "vcs_reference": "062614f (main) plus the fix/evidence-integrity diff (PR #51); rechecked at 814dc6a, where #50 changed only apps/desktop/src-tauri/src/{proxy,state}.rs and docs, none of the candidates"
   },
   "budget": {
     "max_search_passes": 3,
@@ -138,7 +137,7 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
       "path_or_symbol": "tools/probes/provider-matrix/src/auth.ts + fallback.ts",
       "description": "probe-only OpenCode auth.json loading and hosted-first fallback order with flat 25 ms retry",
       "disposition": "insufficient",
-      "insufficiency_reason": "ADR-0005 owner decision: production credentials come only from the macOS Keychain and routing follows operator configuration, not the probe's order or retry."
+      "insufficiency_reason": "production routing follows operator configuration, not the probe's hosted-first order or flat retry, and keys come from Keychain, not OpenCode's auth.json."
     },
     {
       "path_or_symbol": "tools/probes/inference-baseline",
@@ -178,13 +177,10 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - **Social state is derived in its own tick phase.** After the tick's primary events (proposals and environment) have ids, a pure derivation step emits memory and relationship events that cite them, in the same commit. Derived events never trigger further derivation.
 - **Memory is bounded by a pure eviction rule** over committed state (recency and salience), with capacity as a D23 tunable, so rebuild equals live. Unit 13 checks archive size, rebuild time, and live-versus-rebuild equality at full-cast scale.
 - **Fire carries its initiating cause.** Ignition records the initiating event; spread records the source building's ignition; burn and destruction carry that chain. Cause is stored when the fire starts, never inferred later.
-- **Credentials are excluded at the source.** The hosted key lives only in the Keychain and in sidecar memory; it never enters prompts, the journal, saves, trace, logs, or error strings. The trace writer rejects a model-request record that carries provider headers or a key field (a structural check at the write boundary, not a string-scanning redactor).
-- **Only the service-built context leaves the machine.** When Go is enabled, the hosted adapter receives the snapshot-derived context for one god's turn and nothing else: no credentials, full frames, saves, trace rows, or other actors' private state. The settings window says that model context is sent to OpenCode Go.
-- **Only a separate settings window can change the credential.** It has its own Tauri capability; the world webview has no credential commands. The key can be set or cleared, never read back. Keychain entry: service `ai.panthe.desktop.hosted`, account `opencode-go`; tests use an injected store and never touch the real entry.
+- **Keys live in Keychain.** The shell reads a configured endpoint's key and passes it to the sidecar at spawn with the launch token; changing it restarts the sidecar. Keys stay out of config, prompts, saves, trace, and logs.
 - **Model-request payloads are bounded and pruned.** Trace rows keep bounded prompt and output text for evaluation and episode review, pruned after seven days (defaults.md); digests and metadata stay with the world history.
-- **Offline is structural.** In offline mode the hosted adapter is not constructed and the Keychain is not read; the routing chain simply has no hosted steps. Model ids are always provider instances, never bare strings.
-- **Local routing uses `@ai-sdk/openai-compatible` against Ollama `/v1`** with a derived `llama3.2:3b` 4K model (`parallel=1` stays a server setting), and the promoted repair pass. The production chain is operator-configured per role. Paid Go models join only when explicitly configured.
-- **The hosted key reaches the sidecar in memory only**, through an authenticated loopback control route from the Rust shell, so enabling, rotating, or revoking Go needs no world restart. The Rust launcher spawns the sidecar with a zero core-file limit.
+- **Offline drops non-local endpoints.** Each endpoint is marked local or not; offline mode removes non-local ones from assignment and fallback before any adapter is built. Model ids are always provider instances, never bare strings.
+- **Local routing uses `@ai-sdk/openai-compatible` against Ollama `/v1`** with a derived `llama3.2:3b` 4K model (`parallel=1` stays a server setting), and the promoted repair pass. The production chain is operator-configured per role. Every endpoint uses the same OpenAI-compatible adapter and repair pass; no tier or order is built in.
 - **A model outage never stops ticks.** `model-degraded` is a new status distinct from `store-error` and `disk-full`; routines and the director keep running. It shows through the existing status display with wording that separates it from a halting world failure and from intentional offline mode.
 - **Two gates decide whether M2 works.** After the slice, the owner rates real-inference Zeus and Hera episodes and chooses continue, tune, or replan before the other five gods are built. At exit, the unattended run must meet starting thresholds (Unit 13), revisited after the slice measurements. A failed run is kept as tuning evidence but does not pass.
 - **Scheduling is gods-first** within the ~39 turns/min capacity (ADR-0005): one inference at a time, bounded pending work per god, fairness across gods, a per-turn and total-fallback timeout under the 30 s starvation target, and pause freezes new dispatch.
@@ -198,15 +194,15 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - Gods during a total outage: idle with visible `model-degraded` (owner, 2026-09-29).
 - Divine activity during catch-up: none; catch-up stays deterministic (owner, 2026-09-29).
 - Director during an outage: independent (owner, 2026-09-29).
-- Paid Go models: allowed only when explicitly configured (owner, 2026-09-28; ADR-0005).
+- Providers are peer OpenAI-compatible endpoints; Go works in M2 by configuration (owner, 2026-09-29; ADR-0005).
 - W01 art: placeholder sprites; W01 stays partial (owner, 2026-09-28).
-- P06: config plus a minimal settings panel; first-run download later (owner, 2026-09-28).
+- P06: config plus a minimal settings view; first-run download later (owner, 2026-09-28).
 - Second god for the slice: Hera. Her sourced conflict with Zeus gives a natural grudge, a report path, and a later transformation case (Io).
 - Pause semantics: pause freezes new dispatch; in-flight calls complete and journal, then run after resume and revalidate.
-- Hosted Go, Keychain, and settings run alongside the slice and are required before the unattended run (owner, 2026-09-29).
+- The minimal settings view runs alongside the slice (owner, 2026-09-29).
 - Early experience gate after the slice, owner-rated (owner, 2026-09-29).
 - Exit thresholds: starting numbers now, revisited after the slice (owner, 2026-09-29).
-- Credential changes only from a separate settings window with its own capability (owner, 2026-09-29).
+- Keys are set through a write-only command and read by the shell at spawn (owner, 2026-09-29).
 - Trace keeps bounded model payloads with seven-day pruning (owner, 2026-09-29).
 - Deterministic proposal ids for model turns: dropped; the journal plus one-pending-turn-per-god makes restart safe without a durable turn identity.
 
@@ -262,7 +258,7 @@ sequenceDiagram
 
 **Approach:**
 - Promote the repair pass and adapter shape from `tools/probes/provider-matrix`; production must not import probe code.
-- Role config names an ordered chain of provider steps per role; offline mode drops hosted steps before construction.
+- Role config assigns an endpoint and model per role plus an operator-ordered fallback list; endpoints are marked local or not, and offline mode drops non-local ones before construction.
 - Bounded retries with production backoff; per-turn and total-chain timeouts via v7 `timeout` plus `abortSignal`.
 - The router returns a discriminated result: intent, or exhausted with per-step reasons.
 - Adding `ai` and `@ai-sdk/openai-compatible` to a production package changes the lockfile; ask the owner before the dependency lands.
@@ -275,15 +271,15 @@ sequenceDiagram
 - Happy path: a scripted local provider returns valid JSON; the router returns the parsed intent and step metadata.
 - Edge: malformed JSON repaired into a valid intent; unrepairable output falls to the next step.
 - Error: first step times out, second succeeds; all steps fail returns exhausted with each reason.
-- Offline: a chain containing a hosted step in offline mode never constructs the hosted adapter (constructor spy) and never reads a credential.
-- Positive control for the offline claim: the same chain online constructs the hosted adapter once.
+- Offline: a fallback list containing a non-local endpoint (scripted; no real hosted call) in offline mode never constructs that endpoint's adapter (constructor spy) and never reads a key.
+- Positive control for the offline claim: the same list online constructs the non-local endpoint's adapter once.
 - Integration: against a live local Ollama (skipped when absent, reported), one call returns a schema-valid intent.
 
 **Verification:** router tests pass; one recorded real local call through the production path.
 
-- [ ] **Unit 2: Model-request trace, credential exclusion, and `model-degraded`**
+- [ ] **Unit 2: Model-request trace and `model-degraded`**
 
-**Goal:** model requests become part of the causal trace without credentials, and an outage keeps the world ticking.
+**Goal:** model requests become part of the causal trace, and an outage keeps the world ticking.
 
 **Requirements:** R7, R8
 
@@ -297,7 +293,6 @@ sequenceDiagram
 - A model-request record (role, provider step, model, attempts, timings, prompt and output digests, bounded payloads, outcome) links to the proposal it produced; follow-proposal and follow-event include it.
 - Payload text is pruned after seven days; digests and metadata stay.
 - The designer sets `model-degraded` wording and prominence in the existing status display.
-- The record type has no field for headers or keys; the write boundary rejects any extra field.
 - `model-degraded` is set when the chain is exhausted and cleared on the next success; it never clears the tick timer.
 - Schema bump without migration.
 
@@ -306,47 +301,42 @@ sequenceDiagram
 **Test scenarios:**
 - Happy path: a committed model proposal's chain shows observation → model request → proposal → validation → events.
 - Error: a failed-then-successful chain records every attempt with its reason.
-- Negative: after a hosted call with a known test key, no trace row, journal row, log line, or error string contains the key bytes. Positive control: planting the key in a prompt makes the check fail.
 - Outage: with every provider failing, routine ticks keep committing and the frame shows `model-degraded`; recovery clears it.
 
 **Verification:** `bun run check`; the scenario from Unit 8 later exercises the chain end to end.
 
-- [ ] **Unit 3: Keychain, hosted Go adapter, and settings window**
+- [ ] **Unit 3: Minimal settings view and endpoint keys**
 
-**Goal:** opt-in OpenCode Go with Keychain-only credentials, delivered to the sidecar in memory, configured through a minimal settings window.
+**Goal:** an endpoint list (base URL, model, local flag), per-role assignment and fallback order, persisted outside world saves; a write-only command stores an endpoint key in Keychain; the shell reads it at sidecar spawn and passes it with the launch token.
 
 **Requirements:** R6, R7
 
-**Dependencies:** Units 1–2. Runs alongside Phase B; does not gate Units 4–9; required before Unit 13.
+**Dependencies:** Unit 1. Runs alongside Phase B; does not gate Units 4–9; required before Unit 13.
 
 **Files:**
-- Modify: `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/Cargo.lock`, `apps/desktop/src-tauri/src/commands.rs`, `apps/desktop/src-tauri/src/sidecar.rs`, `apps/desktop/src-tauri/capabilities/*`
-- Create: `apps/desktop/src-tauri/src/credentials.rs`
-- Modify: `apps/simulation/src/server.ts` (control route)
-- Create: settings window entry and UI under `apps/client/src/` (designer), with its own capability file under `apps/desktop/src-tauri/capabilities/`
-- Test: Rust unit tests in `credentials.rs`, `apps/simulation/src/server.test.ts`, client tests for the settings view
+- Modify: `apps/desktop/src-tauri/src/commands.rs`, `apps/desktop/src-tauri/src/sidecar.rs`, `apps/desktop/src-tauri/Cargo.toml`, `apps/desktop/src-tauri/Cargo.lock`
+- Create: a small Keychain helper under `apps/desktop/src-tauri/src/`
+- Modify: sidecar config read in `apps/simulation/src/`
+- Create: settings UI under `apps/client/src/ui/` (designer)
+- Test: alongside each change
 
 **Approach:**
-- `keyring` 3.x with `apple-native`, behind Tauri commands granted only to the settings window; the key can be set or cleared, never read back.
-- The launcher sets a zero core-file limit before spawning the sidecar.
-- The shell reads the Keychain only when Go is enabled and online, then posts the key to an authenticated loopback control route; clearing posts null and the sidecar drops the adapter.
-- Settings: local server URL, per-role model assignment, Go opt-in, paid-model opt-in, offline toggle. Config persists outside world saves and contains no secrets.
-- States the designer must cover: key saving, saved, failed, and cleared; Go enabled without a key; invalid or revoked key; local server unreachable; an unassigned or unavailable role model; offline mode with hosted settings kept but inactive; paid opt-in confirmed separately; where changes apply. Wording distinguishes offline from outage and says model context is sent to OpenCode Go.
+- Endpoint config (base URL, model, local flag), per-role assignment, and fallback order persist outside world saves and contain no keys.
+- A write-only command stores an endpoint's key in the Keychain; the shell reads it at sidecar spawn and passes it with the launch token. Changing a key restarts the sidecar.
+- Adding a Keychain crate changes `Cargo.lock`; ask the owner before it lands.
+- Designer owns layout, interaction, and wording. States to cover: endpoint reachable or unreachable, a role with no model or an unavailable model, key saved or missing, and where changes apply (a key change restarts the sidecar).
 - Accessibility: semantic form controls, keyboard focus order with visible focus, announced save and error states, no colour-only state, usable at 1280×720 with larger text.
-- Adding the `keyring` crate changes `Cargo.lock`; ask the owner before it lands.
-- Owner-run: create a stable self-signed dev signing identity so Keychain access survives rebuilds (verify the signing step before relying on it); run the production-path offline packet capture with a positive control.
 
-**Execution note:** designer owns the settings window's layout, interaction, and wording; fixer or implementer owns Rust and sidecar changes.
+**Execution note:** designer owns the settings view's layout, interaction, and wording; fixer or implementer owns Rust and sidecar changes.
 
 **Test scenarios:**
-- Happy path: set a key, enable Go, the sidecar's router constructs the hosted step; clear it, the step disappears without a restart.
-- Offline: offline mode with Go enabled reads no Keychain entry and constructs no hosted adapter.
-- Error: an invalid or revoked key produces a clean fallback with no key in any artifact.
-- Webview: no command returns the key, and the world webview's capability grants no credential command (a call from it is denied).
-- Data boundary: the hosted adapter receives exactly the serialized context fields for one god's turn (asserted on the request body).
-- Owner-run evidence: packet capture shows zero provider packets offline and non-zero with one real hosted request through the same capture.
+- Happy path: assign a role to an endpoint and the router uses it on the next turn.
+- A configured key reaches the sidecar, and a changed key takes effect after the sidecar restarts.
+- Offline mode drops a non-local endpoint.
+- An unreachable endpoint shows its state and gods idle with `model-degraded`.
+- Config survives restart and is not in exports; the key is not in config or exports.
 
-**Verification:** cargo fmt, clippy, tests; `bun run check`; owner-run capture recorded in a probe README; screenshots of the settings window (window-cropped).
+**Verification:** tests; `bun run check`; cargo fmt and clippy; window-cropped screenshots; one manual run with a role pointed at Go, recorded as a note (not an evidence gate).
 
 ### Phase B — Zeus and Hera causal slice
 
@@ -583,7 +573,7 @@ sequenceDiagram
 - Per god: p95 queue wait of 30 s or less (ADR-0005 starvation target).
 - Per god: a minimum count of committed actions tied to its own drives or abilities, and a repetition cap.
 - Per god: at least one relationship or belief change it caused.
-- Zero unauthorized knowledge leaks; zero credential bytes in any artifact.
+- Zero unauthorized knowledge leaks.
 - Routine ticks never stop during the outage; reasoning resumes after recovery.
 - Memory: archive size, rebuild time, and live-versus-rebuild equality within budgets set with the D23 memory values.
 - The owner approves the rated episodes.
@@ -598,7 +588,7 @@ sequenceDiagram
 - **Error propagation:** provider failures stay inside the router and surface as `model-degraded`; store failures keep their existing halting path.
 - **State lifecycle risks:** schema bumps with no migration; the owner's local store is refused after each bump and must be moved aside.
 - **API surface parity:** `/proposals` stays operator and fixture intake; model and director proposals use the same journal in-process, with sources set by the service.
-- **Integration coverage:** the composition-root test with a reopened store, the M2 scenario against the compiled sidecar, and the owner-run offline capture.
+- **Integration coverage:** the composition-root test with a reopened store and the M2 scenario against the compiled sidecar.
 - **Unchanged invariants:** the pure world, one-transaction ticks, durable journal before acknowledge, the read-only renderer, and deterministic catch-up.
 
 ## Risks & Dependencies
@@ -609,13 +599,13 @@ sequenceDiagram
 | Five more gods feel interchangeable | Per-god drive-tied action and relationship thresholds at the exit gate |
 | Seven gods at one inference at a time starve | Gods-first scheduler with measured bounds; tune context and cadence rather than cutting the roster (defaults.md) |
 | Knowledge leaks through context construction | Context built only from the snapshot; isolation controls in the scenario |
-| Keychain prompts on every rebuild | Stable dev signing identity, owner-run once |
+| Keychain may re-prompt after dev rebuilds | Accepted for now; revisit if it slows the loop |
 | Lockfile and `Cargo.lock` changes | Ask the owner before each dependency addition |
 | Schema bumps refuse the owner's local store | State it in each PR |
 
 ## Documentation / Operational Notes
 
-- ADR-0009 for the agent architecture (perception, memory as world state, turn runner, credential path) once Phase B lands.
+- ADR-0009 for the agent architecture (perception, memory as world state, turn runner) once Phase B lands.
 - ADR-0005 update: production routing, version pins, and the measured M2 baseline.
 - `docs/solutions/` entries after each phase via `ce:compound`.
 - Traceability updated in every PR that touches W01, W03, W04, W06, W09, W10, P06, P07, O04, or O08.

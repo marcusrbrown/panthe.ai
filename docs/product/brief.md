@@ -73,6 +73,8 @@ First-run downloads are acceptable, followed by fully offline operation without 
 Models are assigned by character or agent role and can mix local and hosted providers.
 Requested hosted options include OpenCode Go, OpenAI, and Anthropic, subject to supported authentication and capability probes.
 Fallback is mandatory and stays within configured providers.
+
+2026-09-29 clarification (owner): providers are any OpenAI-compatible endpoint; the named hosted options are examples, all peers of local models, usable for any role and in any configured fallback order ([ADR-0005](../decisions/0005-model-providers.md)).
 Continuous character activity takes priority over new artwork.
 
 ## Success and exclusions

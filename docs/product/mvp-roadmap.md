@@ -46,6 +46,17 @@ The M0 renderer probe app (`apps/probe-renderer`) was removed on 2026-09-28 (sou
 `ce9e5a4`; evidence stays in [the probe README](../../tools/probes/renderer-webgl2/README.md)), so
 the repeat runs will use the packaged desktop app with a measurement harness.
 
+**2026-09-28, memory-policy gate:** M1 closed without the coexistence re-measurement, so the
+"deferred to M1" assignment above no longer stands. Only the comparable baseline-versus-3-GiB pair is
+evidence (LLM p95 1242 → 3086 ms, 6 images), and it does not support that policy. The unconstrained,
+global-mutex, and 5 GiB candidates have no comparable baseline and no verdict, so "stay rejected"
+above is not a finding. The next gate: capture the M2 workload baseline at M2 exit, and require
+comparable candidate results (errors, successes, queue wait, completed images, responsiveness, and
+memory recorded together) before M4 enables concurrent image generation. Until then character
+activity comes first and art stays on the temporary/procedural path; offline local image generation
+remains in scope ([ADR-0005](../decisions/0005-model-providers.md),
+[open-decisions.md](open-decisions.md)).
+
 ### M1 outcome (2026-09-28)
 
 M1 is complete. The headless causal scenario passes against the compiled sidecar

@@ -84,9 +84,9 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
 {
   "schema_version": 2,
   "verdict": "extend",
-  "scope": "Unit 8 subtree (apps/client/, apps/probe-renderer/, apps/desktop/src-tauri/, packages/contracts/)",
+  "scope": "Unit 9 subtree (tools/scenarios/, tools/probes/shared/, tools/probes/backend-lifecycle/, apps/simulation/, packages/persistence/, packages/telemetry/, apps/client/src/{store,receipts,connection}.ts)",
   "freshness": {
-    "vcs_reference": "cecd24c9b7a4bbfa634d4faa3c89326e361a793b"
+    "vcs_reference": "6fce917bce505d951036b575e44fc3009a071165"
   },
   "budget": {
     "max_search_passes": 3,
@@ -95,60 +95,80 @@ Acceptance trials exercised in M1 form: A02 (divine consequence, without memorie
   },
   "candidates": [
     {
-      "path_or_symbol": "apps/client/src/{App.tsx,main.tsx}",
-      "description": "Still just the full-window mount shell: `App` renders a placeholder canvas/title, and `main.tsx` only boots React. No observer model, no `subscribe_world` invoke, and no frame parsing yet.",
+      "path_or_symbol": "tools/scenarios/package.json",
+      "description": "Only declares the package name plus bun test/typecheck scripts; it does not yet define a runnable headless scenario harness or build integration.",
       "disposition": "insufficient",
-      "insufficiency_reason": "This is only the placeholder entrypoint for the new client surface; it does not yet own the read-only world view, observer switching, or Channel subscription logic."
+      "insufficiency_reason": "This is scaffolding only; it cannot by itself drive the compiled sidecar, collect evidence, or emit the scenario run."
     },
     {
-      "path_or_symbol": "apps/client/package.json",
-      "description": "Already provides the client runtime/build surface (`react`, `react-dom`, `@tauri-apps/api`, Vite) that a read-only Tauri view can extend.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/probe-renderer/src/Scene.tsx::Scene",
-      "description": "Owns the `WebGPURenderer`/`forceWebGL` bootstrap, deterministic layout, and the concrete device-loss recovery sequence (`ContextLossTracker` attach → dispose sprites → recreate scene contents) that the product client can follow.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/probe-renderer/src/metrics.ts::ContextLossTracker",
-      "description": "Owns the `webglcontextlost`/`webglcontextrestored` event wiring and reset/rebuild seam that the client can reuse for device-loss recovery bookkeeping.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "packages/contracts/src/snapshot.ts::parseSyncFrame",
-      "description": "Owns the `SyncFrame` contract and parser for the exact Channel payload shape the client must decode: `schemaVersion`, `sequence`, `worldId`, `sessionId`, `status`, optional `degradedReason`, optional `catchUpSummary`, and `state`.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/src/commands.rs::{subscribe_world,present_event}",
-      "description": "Owns the renderer-facing Tauri commands: `subscribe_world` installs the `Channel<Value>` stream, and `present_event` relays the observed event receipt for the current sidecar session.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/src/proxy.rs::{extract_frame_key,apply_frame,apply_subscribe,present_event}",
-      "description": "Owns the forwarded frame shape and replay semantics: `sequence`, `status`, `sessionId`, optional `degradedReason`, and verbatim replay to the Channel when a subscriber attaches.",
-      "disposition": "extend"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/capabilities/proxy.json",
-      "description": "Locks the main-window IPC surface down to `allow-subscribe-world` and `allow-present-event`, which matches the read-only client boundary.",
-      "disposition": "reuse"
-    },
-    {
-      "path_or_symbol": "apps/desktop/src-tauri/tauri.conf.json",
-      "description": "Current packaged CSP still has `script-src` set to `'self'` only; it does not yet include the owner-approved `unsafe-eval` required by the Flatland-based client path.",
+      "path_or_symbol": "tools/scenarios/src/index.ts",
+      "description": "Placeholder package entrypoint with ready:false; no scenario orchestration, fixture loading, or assertion loop yet.",
       "disposition": "insufficient",
-      "insufficiency_reason": "The packaged webview policy still blocks the approved client renderer path, so this surface cannot yet host the intended read-only view without a CSP update."
+      "insufficiency_reason": "The entrypoint exists, but it does not yet own the causal story runner or any of the step-by-step evidence checks."
     },
     {
-      "path_or_symbol": "apps/desktop/src-tauri/src/lib.rs",
-      "description": "Rust tray shell, token minting, sidecar spawn/restart, and the desktop integration boundary the read-only client will sit behind.",
+      "path_or_symbol": "tools/probes/backend-lifecycle/scripts/lifecycle.sh",
+      "description": "Owns the spawn/kill/poll/timing choreography for packaged-process transitions, direct binary launch, and SQLite assertions under set -euo pipefail.",
       "disposition": "extend"
     },
     {
-      "path_or_symbol": "packages/contracts/src/index.ts",
-      "description": "Single re-export surface for the contracts vocabulary the client will import from once it starts parsing the committed-state frame.",
+      "path_or_symbol": "tools/probes/shared/src/report.ts::renderReport",
+      "description": "Owns the Markdown evidence renderer, section order, metric tables, and identity/secret scrubbing for probe results.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/simulation/scripts/build-sidecar.sh",
+      "description": "Owns the Bun compile step and the on-disk path for the compiled sidecar binary under apps/desktop/src-tauri/binaries.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/simulation/src/index.ts::main/startService",
+      "description": "Owns the stdin launch-token handshake, PANTHEA_APP_DATA_DIR override, startup catch-up, 1 Hz loop, and PANTHEA_PORT emission for a direct compiled-sidecar launch.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "apps/simulation/src/server.ts::createSimulationServer",
+      "description": "Owns the authenticated HTTP surface (/frame, /pause, /resume, /proposals, /export, /import, /restore, /trace/*, /receipts) and the frame/session/receipt wiring.",
+      "disposition": "extend"
+    },
+    {
+      "path_or_symbol": "apps/simulation/src/catchup.ts::runCatchUp",
+      "description": "Owns chunked catch-up, pause-at-chunk-boundary behavior, and the single-application guarantee across sleep/wake gaps.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/simulation/src/tick.ts::{commitWorldTick,intakeProposal,checkLegendIntake}",
+      "description": "Owns world+trace transaction commits, proposal intake, and the legend-link rejection seam before queueing.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "packages/persistence/src/archive.ts::{exportArchive,importArchive}",
+      "description": "Owns export/import staging, manifest integrity checks, content hashes, and atomic rename semantics for archives and restore branches.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "packages/telemetry/src/query.ts::{followEvent,followProposal}",
+      "description": "Owns the causal trace walk from observation through proposal, validation, event, projection change, and presentation receipts.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "packages/telemetry/src/trace.ts::{recordObservation,recordProposalOutcome,recordReceipt}",
+      "description": "Owns the trace tables and the idempotent receipt write keyed by event and session.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/client/src/connection.ts::{subscribe,presentEvent}",
+      "description": "Owns the frame parsing/decoding seam and the Tauri command relay for subscriptions and presentation receipts.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/client/src/store.ts::createWorldStore/toViewModel",
+      "description": "Owns the latest-frame snapshot and the projection from committed frame to client view model.",
+      "disposition": "reuse"
+    },
+    {
+      "path_or_symbol": "apps/client/src/receipts.ts::createReceiptEmitter",
+      "description": "Owns per-session presentation dedupe and retry semantics for receipts the renderer emits.",
       "disposition": "reuse"
     }
   ]
@@ -544,7 +564,7 @@ flowchart TB
 
 **Verification:** Separate M1 view gate, required before M1 is marked complete but independent of the headless causal proof: the packaged `.app` shows live state with observer switching across all three realms (window-cropped screenshots only) and no CSP errors in Web Inspector.
 
-- [ ] **Unit 9: M1 causal scenario and evidence**
+- [x] **Unit 9: M1 causal scenario and evidence**
 
 **Goal:** A headless scenario that drives the compiled sidecar through the full M1 causal story and hard-asserts every requirement, plus the docs, ADR, and traceability updates that record it.
 

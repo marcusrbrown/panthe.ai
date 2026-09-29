@@ -1,0 +1,20 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "woodcutter",
+    "stateRevision": "$sequence",
+    "factsRead": ["actor:woodcutter.piety"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "worship",
+    "actor": "woodcutter",
+    "deity": "zeus",
+    "targets": ["zeus"],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

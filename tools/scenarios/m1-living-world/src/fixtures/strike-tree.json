@@ -1,0 +1,26 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "zeus",
+    "stateRevision": "$sequence",
+    "factsRead": ["actor:zeus.inventory", "building:old-oak.status"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "strike",
+    "actor": "zeus",
+    "target": "old-oak",
+    "power": 1,
+    "targets": ["old-oak"],
+    "expectedRevisions": [
+      {
+        "entityId": "old-oak",
+        "revision": "$revision:old-oak"
+      }
+    ],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

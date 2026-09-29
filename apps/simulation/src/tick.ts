@@ -148,11 +148,9 @@ export function readPendingExternalQueue(
  * displace a routine.
  *
  * The result is a pure function of the two queues, and nothing here reads a
- * clock. Which tick an external proposal lands in is not persisted input:
- * `/proposals` answers 202 after an in-memory append, so the tick it joins
- * depends on when it arrived, and a crash before that tick commits loses it
- * with no outcome recorded. What is durable is the committed event log; replay
- * and rebuild come from that, never from re-merging queues.
+ * clock. External proposals come from the durable journal in `input_order`,
+ * each assigned to a tick when `/proposals` commits it, so the merge input is
+ * persisted state.
  */
 export function mergeTickQueue(
   routine: readonly QueuedProposal[],

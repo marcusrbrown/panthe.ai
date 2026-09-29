@@ -1,0 +1,20 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "$actor",
+    "stateRevision": "$sequence",
+    "factsRead": ["repairer.inventory", "building:the-tavern.status"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "repair",
+    "actor": "$actor",
+    "structure": "the-tavern",
+    "targets": ["the-tavern"],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "woodcutter",
+    "stateRevision": "$sequence",
+    "factsRead": ["event-log:strike"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "legend",
+    "actor": "woodcutter",
+    "assertion": "Zeus struck the tavern and it burned to the ground.",
+    "linkedEventId": "$event:ignited",
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

@@ -175,6 +175,13 @@
     "tools/scenarios": {
       "name": "@panthea/tools-scenarios",
       "version": "0.1.0",
+      "dependencies": {
+        "@panthea/client": "workspace:*",
+        "@panthea/contracts": "workspace:*",
+        "@panthea/telemetry": "workspace:*",
+        "@panthea/tools-probes-shared": "workspace:*",
+        "@panthea/world": "workspace:*",
+      },
     },
   },
   "packages": {

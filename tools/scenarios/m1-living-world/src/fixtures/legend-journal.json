@@ -1,0 +1,20 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "zeus",
+    "stateRevision": "$sequence",
+    "factsRead": [],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "legend",
+    "actor": "zeus",
+    "assertion": "The gods watched the proposal survive the night.",
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

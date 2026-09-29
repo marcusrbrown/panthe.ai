@@ -1,0 +1,20 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "farmer",
+    "stateRevision": "$sequence",
+    "factsRead": [],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "legend",
+    "actor": "farmer",
+    "assertion": "It is said the woodcutter set the tavern alight for the insurance.",
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

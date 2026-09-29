@@ -43,6 +43,30 @@ follow-up probes, not blockers to M1: packaged Flatland feature completeness on 
 WebGL2 GPU/driver, a signed (not ad-hoc) macOS 15 WebGPU re-check, a macOS 26 WKWebView WebGPU
 re-check, and a packaged Windows/Linux renderer run. M1 work may begin without waiting on these.
 
+### M1 outcome (2026-09-28)
+
+M1 is complete. The headless causal scenario passes against the compiled sidecar
+([m1-living-world](../../tools/scenarios/m1-living-world/README.md): 16 steps in 54 s, seven
+positive controls that each exit non-zero): unattended routines, a strike that damages a tree, a
+strike that becomes fire, lost service, and repair, worship with an expiring favor, attributed legends, rejected malformed, false,
+and stale proposals, pause across a restart, a proposal that survives a kill, a kill mid catch-up
+past the cap that applies no time twice, export, corrupt-copy refusal, import, and restore into a
+branch, and the strike's ignition traced from its observation to the client's presentation
+receipt. The packaged view gate passed on the release `.app`: observer switching across all three
+realms, 143 presentation receipts over a 6.5-minute session, the catch-up panel, and pause/resume
+([m1-packaged-shell](../../tools/scenarios/m1-packaged-shell/README.md#view-gate)).
+
+Known limits, each recorded in its [traceability.md](traceability.md) row: the W03 catch-up summary
+limits (major outcomes from before a restart are not carried, archives do not carry in-flight
+catch-up progress, a kill just before the next frame loses that summary); O01 archives carry
+world state and the proposal journal but no trace records, so a restored branch has no causal trace
+before the restore; O04 is partial, with model-request and relationship links left to M2.
+
+Not covered: a real OS sleep/wake cycle, power loss, disk-full and store-error degradation, a crash
+during import staging, code signing and notarization, the release build's web console, and the
+Windows and Linux packaged runs. The heavy-work memory-sharing policy remains open as its own
+follow-up probe ([open-decisions.md](open-decisions.md)).
+
 ## First playable slice
 
 An early slice contains a small town scene, Zeus, one mortal, one damaging power, and a persistent event history.

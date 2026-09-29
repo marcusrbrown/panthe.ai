@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadContentPack } from "./load";
+import { loadContentPack, loadGodProfiles } from "./load";
 
 const GREEK_WORLD_DIR = join(
   import.meta.dir,
@@ -13,6 +13,8 @@ const GREEK_WORLD_DIR = join(
   "greek",
   "world",
 );
+
+const GREEK_GODS_DIR = join(GREEK_WORLD_DIR, "..", "gods");
 
 function withTempDir(build: (dir: string) => void): string {
   const dir = mkdtempSync(join(tmpdir(), "panthea-content-test-"));
@@ -222,10 +224,13 @@ test("the authored Greek world content loads with the expected geography and rul
   // The authored economy: a woodcutter, a farmer, and a deity, plus the
   // buildings the farmer owns.
   const inhabitantIds = pack.inhabitants.map((i) => i.id).sort();
-  expect(inhabitantIds).toEqual(["farmer", "woodcutter", "zeus"]);
+  expect(inhabitantIds).toEqual(["farmer", "hera", "woodcutter", "zeus"]);
 
-  const zeus = pack.inhabitants.find((i) => i.id === "zeus");
-  expect(zeus?.drives).toBeUndefined();
+  for (const id of ["zeus", "hera"]) {
+    const god = pack.inhabitants.find((i) => i.id === id);
+    expect(god?.deity).toBe(true);
+    expect(god?.drives).toBeUndefined();
+  }
 
   const buildingIds = pack.buildings.map((b) => b.id).sort();
   expect(buildingIds).toEqual(["agora-shop", "old-oak", "the-tavern"]);
@@ -247,6 +252,60 @@ test("the authored Greek world content loads with the expected geography and rul
     inputs: [{ resource: "wood", amount: 2 }],
     outputs: [{ resource: "planks", amount: 1 }],
   });
+});
+
+test("the Greek pack parses with the Zeus and Hera profiles", () => {
+  const packResult = loadContentPack(GREEK_WORLD_DIR);
+  if (!packResult.ok) {
+    throw new Error(`${packResult.path}: ${packResult.message}`);
+  }
+  const result = loadGodProfiles(GREEK_GODS_DIR, packResult.value);
+  if (!result.ok) {
+    throw new Error(`${result.path}: ${result.message}`);
+  }
+  const gods = result.value;
+  expect(gods.map((god) => god.id).sort()).toEqual(["hera", "zeus"]);
+
+  for (const god of gods) {
+    expect(god.lore.length).toBeGreaterThan(0);
+    expect(god.abilities.length).toBeGreaterThan(0);
+    expect(god.variants.length).toBeGreaterThan(0);
+    expect(god.sprite.length).toBeGreaterThan(0);
+    for (const line of god.lore) {
+      expect(line.cites.length).toBeGreaterThan(0);
+    }
+  }
+
+  const zeus = gods.find((god) => god.id === "zeus");
+  expect(zeus?.abilities.map((ability) => ability.action)).toContain("strike");
+  const hera = gods.find((god) => god.id === "hera");
+  expect(hera?.relationships).toEqual(
+    expect.arrayContaining([expect.objectContaining({ target: "zeus" })]),
+  );
+});
+
+test("a missing gods directory yields no profiles", () => {
+  const dir = withTempDir(() => {});
+  const packResult = loadContentPack(GREEK_WORLD_DIR);
+  if (!packResult.ok) throw new Error(packResult.message);
+  const result = loadGodProfiles(join(dir, "gods"), packResult.value);
+  expect(result).toEqual({ ok: true, value: [] });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a malformed profile file is reported by file name", () => {
+  const dir = withTempDir((d) => {
+    writeFileSync(join(d, "zeus.json"), "{ not valid json");
+  });
+  const packResult = loadContentPack(GREEK_WORLD_DIR);
+  if (!packResult.ok) throw new Error(packResult.message);
+  const result = loadGodProfiles(dir, packResult.value);
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("zeus.json");
+    expect(result.message).toContain("not valid JSON");
+  }
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("a recipes key in rules.json is merged into the parsed content pack", () => {

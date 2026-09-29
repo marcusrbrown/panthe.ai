@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "id": "hera",
+  "name": "Hera",
+  "domains": ["marriage", "women", "childbirth", "queenship of the gods"],
+  "drives": {
+    "fidelity": 0.9,
+    "vengeance": 0.8,
+    "guardianship": 0.6,
+    "sovereignty": 0.5,
+    "order": 0.4
+  },
+  "abilities": [
+    {
+      "id": "wrath",
+      "name": "Wrath of Hera",
+      "action": "strike",
+      "description": "Lashes out at a structure. Costs divinity equal to the power; at power 2 it damages a target without setting it alight.",
+      "cost": { "resource": "divinity", "amount": 2 },
+      "parameters": { "power": 2 }
+    },
+    {
+      "id": "grievance-tale",
+      "name": "Tale of a Grievance",
+      "action": "legend",
+      "description": "Tells the story of a wrong done to her, recorded as a legend that other inhabitants can hear and repeat."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "zeus",
+      "kind": "spouse",
+      "disposition": -0.2,
+      "note": "Sister and wife, resentful of his affairs and secrecy yet bound to him by rite. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg001.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "iliad",
+      "title": "Iliad",
+      "author": "Homer",
+      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg001.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "hymn-3-apollo",
+      "title": "Homeric Hymn 3 to Apollo",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0013.tlg003.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "hymn-12-hera",
+      "title": "Homeric Hymn 12 to Hera",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0013.tlg012.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "metamorphoses",
+      "title": "Metamorphoses",
+      "author": "Ovid",
+      "edition": "Latin text, Perseus Digital Library; locators are book and Latin line numbers. Ovid names the gods Juno and Jupiter.",
+      "url": "https://scaife.perseus.org/library/urn:cts:latinLit:phi0959.phi006.perseus-lat2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "apollodorus",
+      "title": "Library (Bibliotheca)",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Loeb Classical Library, 1921, text checked at Theoi.com; locators are book.chapter.section",
+      "accessed": "2026-09-29"
+    }
+  ],
+  "lore": [
+    {
+      "id": "queen-of-the-gods",
+      "statement": "Hera is the daughter of Cronus and Rhea, sister and wife of Zeus, and queen of the immortals, honored by all the gods on Olympus.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 453-458" },
+        { "source": "hymn-12-hera", "locator": "lines 1-5" }
+      ]
+    },
+    {
+      "id": "marriage-and-childbirth",
+      "statement": "In Hesiod, Hera bears Hebe, Ares, and Eileithyia to Zeus; in the Iliad, the Eileithyiai, who send the pangs of childbirth, are called Hera's daughters.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 921-923" },
+        { "source": "iliad", "locator": "book 11, lines 270-271" },
+        { "source": "apollodorus", "locator": "1.3.1" }
+      ]
+    },
+    {
+      "id": "favored-cities",
+      "statement": "Argos, Sparta, and Mycenae are the cities dearest to Hera.",
+      "cites": [{ "source": "iliad", "locator": "book 4, lines 51-52" }]
+    },
+    {
+      "id": "resents-secrecy",
+      "statement": "Hera reproaches Zeus for deciding matters in secret, apart from her, and never being willing to tell her what he intends.",
+      "cites": [{ "source": "iliad", "locator": "book 1, lines 536-543" }]
+    },
+    {
+      "id": "anger-over-athena",
+      "statement": "After Zeus bears Athena from his own head, Hera bears Hephaestus without union with Zeus and quarrels furiously with her husband (Hesiod); in the Hymn to Apollo she rages that Zeus bore Athena apart from her, prays for a child as strong as he, and bears the monster Typhaon.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 924-929" },
+        { "source": "hymn-3-apollo", "locator": "lines 305-355" }
+      ]
+    },
+    {
+      "id": "outwits-zeus",
+      "statement": "Hera outwits Zeus: he falls asleep in her arms on Mount Ida, which he later calls her trick and deception, and she once tricked him into an oath that made Eurystheus, not Heracles, ruler.",
+      "cites": [
+        { "source": "iliad", "locator": "book 14, lines 153-353" },
+        { "source": "iliad", "locator": "book 15, lines 14-33" },
+        { "source": "iliad", "locator": "book 19, lines 95-133" }
+      ]
+    },
+    {
+      "id": "greatest-oath",
+      "statement": "Hera swears by Earth, Heaven, and the water of the Styx, the gravest oath of the gods, and by Zeus's head and their marriage bed.",
+      "cites": [{ "source": "iliad", "locator": "book 15, lines 36-46" }]
+    },
+    {
+      "id": "persecutes-heracles",
+      "statement": "Hera's wrath pursues Heracles, Zeus's son by Alcmene: the Iliad names her storm against him at sea and her wrath that brought him down; Apollodorus adds serpents sent to his cradle, madness, and the same storm after Troy.",
+      "cites": [
+        { "source": "iliad", "locator": "book 15, lines 14-33" },
+        { "source": "iliad", "locator": "book 18, lines 117-119" },
+        { "source": "apollodorus", "locator": "2.4.8" },
+        { "source": "apollodorus", "locator": "2.4.12" },
+        { "source": "apollodorus", "locator": "2.7.1" }
+      ]
+    },
+    {
+      "id": "io",
+      "statement": "Hera asks Zeus for the cow that Io has become and sets Argus to guard her; in Ovid's telling she relents and Io regains human form.",
+      "cites": [
+        { "source": "metamorphoses", "locator": "book 1, lines 583-746" },
+        { "source": "apollodorus", "locator": "2.1.3" }
+      ]
+    },
+    {
+      "id": "semele",
+      "statement": "Hera's hostility to Zeus's Theban lover Semele ends in Semele's death when she asks to see Zeus as he really is.",
+      "cites": [
+        { "source": "apollodorus", "locator": "3.4.3" },
+        { "source": "metamorphoses", "locator": "book 3, lines 253-315" }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "where-hera-was-raised",
+      "note": "Hesiod and the Hymn to Hera make Rhea her mother without saying where she grew up. In the Iliad Hera says Ocean and Tethys reared her after Zeus cast Cronus down. This profile keeps Rhea as her mother and leaves her upbringing unstated.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 453-458" },
+        { "source": "hymn-12-hera", "locator": "line 1" },
+        { "source": "iliad", "locator": "book 14, lines 200-204" }
+      ]
+    },
+    {
+      "id": "when-hera-turns-on-heracles",
+      "note": "The Iliad gives Hera's storm after Troy, her trick that delayed his birth in Eurystheus's favor, and her wrath at his death; Apollodorus adds serpents in the cradle and madness. The accounts pick different episodes, so whether they are one grudge is left open; this profile treats them as one long grudge.",
+      "cites": [
+        { "source": "iliad", "locator": "book 15, lines 14-33" },
+        { "source": "iliad", "locator": "book 18, lines 117-119" },
+        { "source": "iliad", "locator": "book 19, lines 95-133" },
+        { "source": "apollodorus", "locator": "2.4.8" },
+        { "source": "apollodorus", "locator": "2.4.12" },
+        { "source": "apollodorus", "locator": "2.7.1" }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "wrath-as-strike",
+      "statement": "Hera's wrath is expressed in play as a damaging strike on structures, below the ignition threshold.",
+      "reason": "The world has no action that harms a person or curses. Her myths aim her anger at people (Io, Semele, Heracles), not buildings, so this mapping is a game stand-in."
+    },
+    {
+      "id": "grievance-as-legend",
+      "statement": "Hera airs her grievances by telling tales that are recorded as legends.",
+      "reason": "Legend is the world's only action that records speech or tale; it is a game mapping, not a mythic device."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting disposition toward Zeus are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-hera"
+}

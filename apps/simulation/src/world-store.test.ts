@@ -1008,3 +1008,47 @@ test("two tellings from one observation, one event-linked and one unlinked, surv
     rmSync(storeDir, { recursive: true, force: true });
   }
 });
+
+test("startup fails with a clear diagnostic when an embedded god profile matches no deity inhabitant", () => {
+  const orphan = {
+    schemaVersion: 1,
+    id: "athena",
+    name: "Athena",
+    domains: ["wisdom"],
+    drives: { order: 0.5 },
+    abilities: [
+      {
+        id: "counsel",
+        name: "Counsel",
+        action: "legend",
+        description: "Speaks counsel.",
+      },
+    ],
+    sources: [
+      {
+        id: "iliad",
+        title: "Iliad",
+        author: "Homer",
+        edition: "test edition",
+      },
+    ],
+    lore: [
+      {
+        id: "wise",
+        statement: "Athena counsels heroes.",
+        cites: [{ source: "iliad", locator: "book 1" }],
+      },
+    ],
+    sprite: "placeholder-athena",
+  };
+  expect(() =>
+    loadGreekWorldState([{ label: "athena.json", value: orphan }]),
+  ).toThrow("failed to parse the embedded Greek god profiles");
+  expect(() =>
+    loadGreekWorldState([{ label: "athena.json", value: orphan }]),
+  ).toThrow("athena.json.id");
+});
+
+test("startup succeeds with the embedded god profiles by default", () => {
+  expect(() => loadGreekWorldState()).not.toThrow();
+});

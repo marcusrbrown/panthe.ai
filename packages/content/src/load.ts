@@ -8,7 +8,7 @@
 // (`buildings.json`, `inhabitants.json`) that default to an empty list
 // when absent.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type ContentPack,
@@ -18,6 +18,11 @@ import {
   type ParseResult,
   parseContentPack,
 } from "@panthea/contracts";
+import {
+  type GodProfile,
+  type LabeledProfileInput,
+  parseGodProfiles,
+} from "./god-profile";
 
 function readJsonFile(path: string, label: string): ParseResult<unknown> {
   if (!existsSync(path)) {
@@ -50,7 +55,8 @@ function readOptionalJsonFile(
  * Loads and parses the content pack authored under `baseDir` (e.g.
  * `content/greek/world`). `locations.json` and `rules.json` must exist;
  * `buildings.json` and `inhabitants.json` are read if present and default
- * to an empty list otherwise.
+ * to an empty list otherwise. God profiles load separately through
+ * `loadGodProfiles`.
  */
 export function loadContentPack(baseDir: string): ParseResult<ContentPack> {
   const locationsResult = readJsonFile(
@@ -102,4 +108,26 @@ export function loadContentPack(baseDir: string): ParseResult<ContentPack> {
   };
 
   return parseContentPack(merged);
+}
+
+/**
+ * Loads every `*.json` god profile under `godsDir` (e.g. `content/greek/gods`)
+ * in file-name order and checks them against `pack`'s inhabitants. A missing
+ * directory means the pack has no god profiles.
+ */
+export function loadGodProfiles(
+  godsDir: string,
+  pack: ContentPack,
+): ParseResult<readonly GodProfile[]> {
+  if (!existsSync(godsDir)) return ok([]);
+  const files = readdirSync(godsDir)
+    .filter((name) => name.endsWith(".json"))
+    .sort();
+  const inputs: LabeledProfileInput[] = [];
+  for (const file of files) {
+    const raw = readJsonFile(join(godsDir, file), file);
+    if (!raw.ok) return raw;
+    inputs.push({ label: file, value: raw.value });
+  }
+  return parseGodProfiles(inputs, pack.inhabitants);
 }

@@ -1,21 +1,31 @@
-// Statically embeds content/greek/world's four authored JSON files so the
-// compiled sidecar needs no filesystem access to load the Greek world: a
-// static JSON import is inlined by `bun build --compile` into the
-// resulting binary, unlike a runtime `readFileSync` against a path that
-// does not exist inside a compiled binary's virtual module root.
+// Statically embeds content/greek/world's four authored JSON files and the
+// god profiles under content/greek/gods so the compiled sidecar needs no
+// filesystem access to load the Greek world: a static JSON import is
+// inlined by `bun build --compile` into the resulting binary, unlike a
+// runtime `readFileSync` against a path that does not exist inside a
+// compiled binary's virtual module root.
 //
-// Merges the four files the same way packages/content's directory loader
-// does, then parses the merged shape through the same `parseContentPack`
-// -- so an authoring change to content/greek/world/*.json only needs
-// updating here if the merge shape itself ever changes, never a
-// duplicated parse path.
+// Merges the four world files the same way packages/content's directory
+// loader does, then parses the merged shape through the same
+// `parseContentPack` -- so an authoring change to
+// content/greek/world/*.json only needs updating here if the merge shape
+// itself ever changes, never a duplicated parse path. God profiles go
+// through the same `parseGodProfiles` the directory loader uses; a new god
+// file needs one import and one list entry here.
 
+import {
+  type GodProfile,
+  type LabeledProfileInput,
+  parseGodProfiles,
+} from "@panthea/content";
 import {
   type ContentPack,
   isRecord,
   type ParseResult,
   parseContentPack,
 } from "@panthea/contracts";
+import heraFile from "../../../content/greek/gods/hera.json";
+import zeusFile from "../../../content/greek/gods/zeus.json";
 import buildingsFile from "../../../content/greek/world/buildings.json";
 import inhabitantsFile from "../../../content/greek/world/inhabitants.json";
 import locationsFile from "../../../content/greek/world/locations.json";
@@ -44,4 +54,20 @@ export function loadEmbeddedGreekWorldPack(): ParseResult<ContentPack> {
   };
 
   return parseContentPack(merged);
+}
+
+export const EMBEDDED_GOD_PROFILE_FILES: readonly LabeledProfileInput[] = [
+  { label: "hera.json", value: heraFile },
+  { label: "zeus.json", value: zeusFile },
+];
+
+/**
+ * Parses the embedded god profiles (or `files`, so a test can inject a bad
+ * one) against `pack`. Never touches the filesystem.
+ */
+export function loadEmbeddedGreekGodProfiles(
+  pack: ContentPack,
+  files: readonly LabeledProfileInput[] = EMBEDDED_GOD_PROFILE_FILES,
+): ParseResult<readonly GodProfile[]> {
+  return parseGodProfiles(files, pack.inhabitants);
 }

@@ -1,0 +1,22 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "woodcutter",
+    "stateRevision": "$sequence",
+    "factsRead": [],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "gather",
+    "actor": "woodcutter",
+    "resource": "wood",
+    "amount": 2,
+    "costs": [{ "resource": "wood", "amount": 0 }],
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

@@ -5,6 +5,14 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "scenario:m1": "bun run m1-living-world/src/run.ts"
+  },
+  "dependencies": {
+    "@panthea/client": "workspace:*",
+    "@panthea/contracts": "workspace:*",
+    "@panthea/telemetry": "workspace:*",
+    "@panthea/tools-probes-shared": "workspace:*",
+    "@panthea/world": "workspace:*"
   }
 }

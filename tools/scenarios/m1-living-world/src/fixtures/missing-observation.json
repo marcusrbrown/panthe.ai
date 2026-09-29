@@ -1,0 +1,13 @@
+{
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "gather",
+    "actor": "woodcutter",
+    "resource": "wood",
+    "amount": 2,
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "obs-without-a-record"
+  }
+}

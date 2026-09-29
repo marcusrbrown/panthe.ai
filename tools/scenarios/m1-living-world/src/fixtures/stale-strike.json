@@ -1,0 +1,21 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "zeus",
+    "stateRevision": 0,
+    "factsRead": ["building:agora-shop.status"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "strike",
+    "actor": "zeus",
+    "target": "agora-shop",
+    "power": 1,
+    "targets": ["agora-shop"],
+    "expectedRevisions": [{ "entityId": "agora-shop", "revision": 999999 }],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

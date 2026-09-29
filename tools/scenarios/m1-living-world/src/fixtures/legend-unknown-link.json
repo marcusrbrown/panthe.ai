@@ -1,0 +1,21 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "zeus",
+    "stateRevision": "$sequence",
+    "factsRead": [],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "legend",
+    "actor": "zeus",
+    "assertion": "The gods themselves sent a sign.",
+    "linkedEventId": "event-that-never-happened",
+    "targets": [],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "zeus",
+    "stateRevision": "$sequence",
+    "factsRead": ["actor:zeus.inventory", "building:the-tavern.status"],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "strike",
+    "actor": "zeus",
+    "target": "the-tavern",
+    "power": 3,
+    "targets": ["the-tavern"],
+    "expectedRevisions": [
+      { "entityId": "the-tavern", "revision": "$revision:the-tavern" }
+    ],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

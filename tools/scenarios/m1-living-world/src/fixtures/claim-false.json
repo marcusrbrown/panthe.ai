@@ -1,0 +1,20 @@
+{
+  "observation": {
+    "schemaVersion": 1,
+    "id": "$observationId",
+    "observer": "woodcutter",
+    "stateRevision": "$sequence",
+    "factsRead": [],
+    "source": "fixture"
+  },
+  "proposal": {
+    "schemaVersion": 1,
+    "kind": "claim",
+    "actor": "woodcutter",
+    "assertion": "I own the Old Oak and everything under it.",
+    "targets": ["old-oak"],
+    "expectedRevisions": [],
+    "source": "fixture",
+    "observationId": "$observationId"
+  }
+}

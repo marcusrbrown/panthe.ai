@@ -1,6 +1,9 @@
-// Read-only views of a world slot's SQLite file. The scenario asserts on
-// committed rows (events, clock, trace), so it reads them from the store
-// itself rather than trusting a summary the service built.
+// Read-only views of a world slot's SQLite file, for the facts no sidecar
+// endpoint exposes: event payloads and correlation ids, the wall cursor, the
+// proposal journal and catch-up progress, and any state inspected while the
+// sidecar is stopped or killed. Anything /frame, /trace/*, or a proposal retry
+// already serves is read through the API (`steps/api.ts`), not here; the
+// story-bound accessors in `steps/direct.ts` name why each read stays direct.
 
 import { Database } from "bun:sqlite";
 import { join } from "node:path";

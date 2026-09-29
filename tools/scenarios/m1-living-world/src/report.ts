@@ -50,9 +50,14 @@ violated invariant, exits 1, kills every child, and removes its temporary
 directory. It is not part of \`bun run check\`; only the pure helpers in
 \`src/helpers.test.ts\` and \`src/report.test.ts\` are.
 
-Assertions are about committed world state: the events table, clock row,
-proposal journal, and catch-up progress (read from the schema version 3 store
-read-only), the decoded frame, and the trace queries. Waits are bounded polls
+Assertions are about committed world state. Whatever the sidecar serves is
+read through its API: the decoded frame (tick, sequence, status, state), the
+trace queries (proposal outcomes, event chains, presentation receipts), and a
+proposal retry's status. Only facts no endpoint exposes are read from the
+schema version 3 store, read-only: event payloads and correlation ids, the wall
+cursor and paused flag, observation counts, the proposal journal, catch-up
+progress, the set of stored receipts, integrity checks, slot contents, and any
+state inspected while the sidecar is stopped or killed. Waits are bounded polls
 that name the invariant they wait for, never fixed sleeps that decide a
 result. The harness does manipulate wall time and processes; that is the fault
 injection, described per step below.

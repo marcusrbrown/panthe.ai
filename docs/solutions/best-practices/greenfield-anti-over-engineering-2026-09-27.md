@@ -1,6 +1,7 @@
 ---
 title: Build the direct version first in a greenfield, single-user codebase
 date: 2026-09-27
+last_updated: 2026-09-28
 category: best-practices
 module: workspace
 problem_type: best_practice
@@ -77,6 +78,18 @@ Comment hygiene:
 // After: state what the code does, or say nothing
 // Rejects proposals whose actor is not at the edge's origin.
 ```
+
+## Triage with evidence (2026-09-28)
+
+A finding is real when it comes with a concrete failing sequence of supported calls. These suggestions for the durable proposal journal had none, and each was declined on what the code already does:
+
+- **A race on `input_order`:** `insertExternalProposal` reads the maximum and inserts inside one synchronous `bun:sqlite` `IMMEDIATE` transaction with no `await`, so two requests cannot interleave (`packages/persistence/src/journal.ts:141-174`).
+- **An archive format version bump for the journal:** the schema version already gates imports, and a mismatch is rejected before any table is read (`packages/persistence/src/archive.ts:490-494`).
+- **Quarantine for an unparseable journal row:** intake and import both parse the proposal and observation before inserting, so no supported path writes a bad row (`apps/simulation/src/server.ts:624`, `packages/persistence/src/archive.ts:803-820`).
+- **Migrating the trace tables of old stores:** a store with another schema version is refused before the trace schema is touched, and import builds a fresh database instead of copying trace tables (`packages/persistence/src/store.ts:112-125`).
+- **Unicode normalization of retries:** strings that differ in normalization form are different bytes, so the same `proposalId` with them is different content and a 409 is correct (`journal.ts:92-119`).
+
+The findings that were fixed each had a sequence: with a cap of 1, an external claim took the tick's only slot and its actor's routine went `over-limit` ([tick admission](../logic-errors/tick-admission-starved-external-proposals-2026-09-28.md)); after an archive restore, retrying a consumed proposal returned 500 ([durable journal](../integration-issues/proposal-accepted-then-lost-before-durable-2026-09-28.md)).
 
 ## Related
 

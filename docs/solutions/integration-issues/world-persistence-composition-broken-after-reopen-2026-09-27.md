@@ -101,5 +101,6 @@ The log plus the stored genesis state plus the clock row are now the complete so
 
 - [Build the direct version first in a greenfield, single-user codebase](../best-practices/greenfield-anti-over-engineering-2026-09-27.md)
 - [A write that must share a tick's fate runs inside its commit transaction](../best-practices/side-effects-inside-the-commit-transaction-2026-09-28.md)
+- [A headless scenario against the compiled binary needs a positive control per negative claim](../best-practices/end-to-end-scenario-with-positive-controls-2026-09-28.md) — a compiled-binary check of the same composition
 - `tools/probes/backend-lifecycle/README.md`: exactly-once clock evidence from a real process and direct SQLite inspection (moderate overlap; candidate for consolidation review)
 - PR #27 (marcusrbrown/panthea)

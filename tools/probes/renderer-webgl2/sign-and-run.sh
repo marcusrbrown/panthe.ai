@@ -5,6 +5,10 @@
 # real GPU-process behavior — see tools/probes/webgpu-wkwebview/README.md's
 # caveat about ad-hoc `swift <file>` runs not reflecting a signed-app context)
 # onto disk for the D25 renderer probe (P02/P05).
+#
+# Historical (2026-09-28): apps/probe-renderer was removed after M0. This script
+# needs that app; check out commit ce9e5a4 (e.g. `git worktree add <dir> ce9e5a4`)
+# to run it.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../../../apps/probe-renderer"

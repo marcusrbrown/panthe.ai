@@ -11,6 +11,12 @@ WebGPU itself.
 
 ## How to run
 
+**Historical (2026-09-28):** `apps/probe-renderer` was removed after M0, so the commands below no longer run
+as written, and `sign-and-run.sh` no longer works without the app. The method and results in this
+README stand as the M0 evidence. The source is at commit `ce9e5a4`:
+`git show ce9e5a4:apps/probe-renderer/src/Scene.tsx` (or `git worktree add <dir> ce9e5a4` to rebuild it).
+The packaged `apps/desktop` app renders through `apps/client` now, and later renderer runs use it.
+
 ```sh
 cd apps/probe-renderer
 bun run tauri dev            # dev-mode validation (fastest path)

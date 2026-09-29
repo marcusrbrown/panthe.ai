@@ -2,6 +2,8 @@
 
 Hardware, provider, renderer, and sandbox probes live in `tools/probes/<name>/`, each with a README recording the method and results.
 
+The M0 renderer probe app (`apps/probe-renderer`) was removed on 2026-09-28; the repository has one Tauri app, `apps/desktop`. The [renderer-webgl2](renderer-webgl2/README.md) results stand as evidence, and the app source is at commit `ce9e5a4` (`git show ce9e5a4:apps/probe-renderer/...`). The [coexistence](coexistence/README.md) and [inference-baseline](inference-baseline/README.md) runs used its packaged `.app` as the renderer load, so their rerun commands need that commit or a replacement load.
+
 - [webgpu-wkwebview](webgpu-wkwebview/README.md) — WebGPU-in-WKWebView probe via an unsigned Swift WKWebView script (not a packaged app).
 - [renderer-webgl2](renderer-webgl2/README.md) — packaged Three Flatland scene on the WebGL2 backend (D25): 59 fps, 28 ms p50 / 31 ms p95 click-to-visible latency measured on the packaged `.app` (14/14 real clicks), koota CSP constraint (ADR-0002); with `three@0.185.1`'s `WebGPURenderer`, synthetic context loss/restore both occur but the renderer instance stays latched (`_isDeviceLost` never cleared) — automatic same-instance recovery is unavailable in this build, app-managed renderer/canvas reconstruction is untested, sleep/wake is untested.
 - [backend-lifecycle](backend-lifecycle/README.md) — Bun sidecar under Tauri: supervised lifecycle, crash restart, no orphan, no double time advancement (ADR-0003).

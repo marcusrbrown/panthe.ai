@@ -51,7 +51,7 @@ Add `'unsafe-eval'` to `script-src` in both config files:
 ```
 
 `apps/probe-renderer/src-tauri/tauri.conf.json:23` (production) and
-`apps/probe-renderer/src-tauri/tauri.dev.conf.json:7` (kept in sync). Not `'wasm-unsafe-eval'` —
+`apps/probe-renderer/src-tauri/tauri.dev.conf.json:7` (kept in sync). The probe app was removed after M0 (source at commit `ce9e5a4`); `apps/desktop/src-tauri/tauri.conf.json` and `tauri.dev.conf.json` carry the same `script-src` now. Not `'wasm-unsafe-eval'` —
 the violated directive was `'unsafe-eval'` and nothing in the scene touches WASM.
 
 Diagnosis path: a debug-profile bundle (`tauri build --debug`, still ad-hoc signed) plus a

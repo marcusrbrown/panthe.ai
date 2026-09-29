@@ -357,7 +357,7 @@ export function getEntityRevision(
 // --- Deterministic PRNG -----------------------------------------------------
 //
 // mulberry32, matching the deterministic-layout pattern already used at
-// apps/probe-renderer/src/Scene.tsx. The PRNG's entire state is one 32-bit
+// the removed M0 renderer probe (`git show ce9e5a4:apps/probe-renderer/src/Scene.tsx`). The PRNG's entire state is one 32-bit
 // integer that world rules take in and return the next value of, per Key
 // Technical Decisions' determinism boundary: "a seeded PRNG persisted in the
 // world store drives every random rule, so replays and restored snapshots

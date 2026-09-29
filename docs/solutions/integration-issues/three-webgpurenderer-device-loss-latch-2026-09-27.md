@@ -36,7 +36,7 @@ context, the renderer instance never resumes. This has been reported upstream as
 
 ## What Didn't Work
 
-- Rebuilding scene state on the same renderer (`apps/probe-renderer/src/Scene.tsx`, `onLost`):
+- Rebuilding scene state on the same renderer (`apps/probe-renderer/src/Scene.tsx`, `onLost`; the app was removed after M0, source at commit `ce9e5a4`):
   logical state returns, pixels do not.
 - Disposing and re-initialising on the same canvas: `WebGLBackend.dispose()` calls
   `WEBGL_lose_context.loseContext()` itself, so a replacement renderer on that canvas loses
@@ -68,7 +68,7 @@ Treat loss as a single-flight recovery state machine, recorded for ADR-0002:
 
 Steps 5 and 6 are not implemented: there is no verified-frame gate and no retry loop. A new renderer that fails to start shows the "Scene unavailable" banner.
 
-Metrics honesty in the probe (`apps/probe-renderer/src/metrics.ts`, `Scene.tsx`):
+Metrics honesty in the probe (`apps/probe-renderer/src/metrics.ts`, `Scene.tsx`, at commit `ce9e5a4`):
 `ClickLatencyTracker.hitCount` counts every raycast hit; a `deviceLost` flag set in `onLost` and
 never cleared gates `noteRenderSubmitted`, so latency freezes at its pre-loss value instead of
 inventing post-loss numbers. Verified on the packaged app: after loss+restore a new click bumps

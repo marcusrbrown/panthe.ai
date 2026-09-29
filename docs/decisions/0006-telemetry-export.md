@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Confirmation requires the M6 telemetry probe (local recording, endpoint export, redaction, retention, outage behavior).
+Local trace store: accepted (2026-09-28); see the note under Consequences. External export: proposed. Confirmation of export requires the M6 telemetry probe (endpoint export, redaction, retention, outage behavior).
 
 ## Context
 
@@ -15,6 +15,8 @@ Store traces locally first; the full local trace/event store is the source of tr
 ## Consequences
 
 Export failure must never stop or degrade the simulation (D16); local telemetry keeps working independent of endpoint reachability. A full self-hosted Langfuse deployment (web + worker + Postgres + ClickHouse + Redis + object storage) is explicitly not a baseline dependency — it's an operator-configured external target.
+
+**2026-09-28, local trace store accepted.** Always-on local causal recording and inspection is implemented in [packages/telemetry](../../packages/telemetry/src/index.ts) and exercised end to end by the sidecar: observation records, proposal outcomes (committed and rejected), and presentation receipts, linked by correlation and causation IDs ([trace.ts](../../packages/telemetry/src/trace.ts)), with `followEvent` and `followProposal` walking the chain ([query.ts](../../packages/telemetry/src/query.ts)). The sidecar serves the chain at `GET /trace/event` and `GET /trace/proposal` ([apps/simulation/src/server.ts](../../apps/simulation/src/server.ts)). The store needs no endpoint, key, or network, so it works offline. The state model it sits beside is in [ADR-0008](0008-world-state-and-client-transport.md). M1 keeps every causal record for the life of the world; retention pruning (O05) and the seven-day default in [defaults.md](../product/defaults.md) are not implemented. No credential-bearing data enters trace construction, so the local store has no redaction step; add one at the write boundary before any producer passes credential-bearing data into a trace record. The export decision above is unchanged: external export remains proposed, opt-in, and unimplemented, and the Bun/OTel compatibility test still gates it.
 
 ## Evidence/links
 

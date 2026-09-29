@@ -181,7 +181,7 @@ export interface JournalRow {
   readonly observationId: string;
 }
 
-/** The durable proposal journal (`external_proposals`, schema v3), in input order. */
+/** The durable proposal journal (`external_proposals`), in input order. */
 export function readJournal(db: Database): JournalRow[] {
   const rows = db
     .query(

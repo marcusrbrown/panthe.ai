@@ -34,7 +34,6 @@ const summary: RunSummary = {
   environment,
   totalMs: 42_000,
   binaryBytes: 63 * 1024 * 1024,
-  commit: "abc1234",
 };
 
 describe("buildReportInput", () => {

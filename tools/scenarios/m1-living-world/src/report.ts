@@ -22,7 +22,6 @@ export interface RunSummary {
   readonly environment: EnvironmentInfo;
   readonly totalMs: number;
   readonly binaryBytes: number;
-  readonly commit: string;
 }
 
 const HOW_TO_RUN = `\`\`\`sh
@@ -54,13 +53,13 @@ Assertions are about committed world state. Whatever the sidecar serves is
 read through its API: the decoded frame (tick, sequence, status, state), the
 trace queries (proposal outcomes, event chains, presentation receipts), and a
 proposal retry's status. Only facts no endpoint exposes are read from the
-schema version 3 store, read-only: event payloads and correlation ids, the wall
-cursor and paused flag, observation counts, the proposal journal, catch-up
-progress, the set of stored receipts, integrity checks, slot contents, and any
-state inspected while the sidecar is stopped or killed. Waits are bounded polls
-that name the invariant they wait for, never fixed sleeps that decide a
-result. The harness does manipulate wall time and processes; that is the fault
-injection, described per step below.
+store, read-only: event payloads and correlation ids, the wall cursor and paused
+flag, observation counts, the proposal journal, catch-up progress, the set of
+stored receipts, integrity checks, slot contents, and any state inspected while
+the sidecar is stopped or killed. Waits are bounded polls that name the
+invariant they wait for, never fixed sleeps that decide a result. The harness
+does manipulate wall time and processes; that is the fault injection, described
+per step below.
 
 Fault injections, one per negative claim:
 
@@ -98,10 +97,11 @@ const NOT_COVERED = `- **The packaged desktop app and the view.** No Tauri, no r
   journals and event histories across export, import, and restore; it does not
   (and cannot) compare causal trace, so a restored branch has none for history
   before the restore.
-- **The three W03 catch-up summary limits.** Major outcomes from before a
-  restart are not carried into a backlog's summary; archives do not carry
-  in-flight catch-up progress; a kill between the final catch-up commit and the
-  next frame loses that summary. None is provoked here.
+- **The W03 catch-up summary limit.** A backlog closes when its summary is
+  published, not when a client has fetched it, so a kill after publication and
+  before the next frame loses that summary. It is not provoked here, and no
+  export is taken while a backlog is open, so archives carrying an open
+  backlog's progress are not driven either.
 - **Time between a kill and its restart.** The cap bounds the remaining
   backlog, so seconds that pass while the service is down are new gap, applied
   once on top of the capped total. S13 measures that extra (0 s in the recorded
@@ -140,7 +140,7 @@ export function buildReportInput(summary: RunSummary): ReportInput {
   const allNonZero = summary.controls.every(
     (control) => control.exitCode !== 0,
   );
-  const bottomLine = `All ${summary.steps.length} steps held, on a tree built on commit ${summary.commit}. The story ran in ${(summary.steps.reduce((sum, step) => sum + step.elapsedMs, 0) / 1000).toFixed(0)} s; the whole evidence run, with every control, took ${(summary.totalMs / 1000).toFixed(0)} s. ${
+  const bottomLine = `All ${summary.steps.length} steps held on the tree this README was committed with. The story ran in ${(summary.steps.reduce((sum, step) => sum + step.elapsedMs, 0) / 1000).toFixed(0)} s; the whole evidence run, with every control, took ${(summary.totalMs / 1000).toFixed(0)} s. ${
     allNonZero && summary.controls.length > 0
       ? `All ${summary.controls.length} positive controls exited non-zero, so the assertions they target are live. `
       : ""

@@ -8,6 +8,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  clearCatchUpProgress,
   closeStore,
   openStore,
   readClock,
@@ -91,7 +92,9 @@ function ensureDirMode(path: string, mode: number): void {
  * `/frame` must show `paused`, not `running`, for that outcome.
  *
  * A degraded result publishes its summary too: what committed before the
- * failure (chunks applied, excess discarded) is real and stays reported.
+ * failure (chunks applied, excess discarded) is real and stays reported. Its
+ * backlog stays open so a restart continues it; any other result closes the
+ * backlog once its summary is published.
  */
 export function refreshStatusAfterCatchUp(
   statusRef: ServiceStatusRef,
@@ -117,6 +120,10 @@ export function refreshStatusAfterCatchUp(
     ...catchUpSummary,
     paused: readClock(store.db).paused,
   });
+  // The summary is published; the backlog it describes is closed. Until this
+  // point its progress stays committed, so a process that died first would
+  // have found the same summary waiting on its next start.
+  clearCatchUpProgress(store.db);
 }
 
 export interface StartOptions {

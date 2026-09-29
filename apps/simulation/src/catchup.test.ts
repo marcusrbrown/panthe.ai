@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  clearCatchUpProgress,
   closeStore,
+  exportArchive,
   getExternalProposal,
   insertExternalProposal,
   listEvents,
@@ -18,6 +20,8 @@ import {
 import { ensureTraceSchema } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
+import { refreshStatusAfterCatchUp } from "./index";
+import { createServiceStatusRef } from "./server";
 import type { TickDeps } from "./tick";
 import {
   createWorldProjectionReducers,
@@ -25,6 +29,7 @@ import {
   loadGreekWorldState,
   restoreWorldTime,
 } from "./world-store";
+import { importWorldArchive } from "./worlds";
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -160,6 +165,9 @@ test("a capped catch-up run's discarded excess is never replayed by a later catc
     expect(firstRun.degraded).toBeUndefined();
     expect(firstRun.summary.appliedMs).toBe(60 * 60 * 1000);
     expect(firstRun.state.tick).toBe(3600);
+    // The service publishes the summary and closes the backlog before any
+    // later call; a second call that finds it open would report its totals.
+    clearCatchUpProgress(store.db);
 
     // A live-loop-style second call, moments later: the cursor already
     // sits at (approximately) now, so this applies essentially nothing --
@@ -356,9 +364,13 @@ interface Backlog {
   run(
     nowWallMs: number,
     commitTick?: TickDeps["commitTick"],
-    /** Called at each between-chunk yield, where a request could arrive; returning nothing lets catch-up go on. */
-    betweenChunks?: (db: Database) => void,
+    /** Called at each between-chunk yield, where a request could arrive; returning `true` pauses catch-up there, anything else lets it go on. */
+    betweenChunks?: (db: Database) => boolean | undefined,
+    /** `crashBeforePublish` stops the run where the service would have died after the last commit and before publishing the summary. */
+    options?: { readonly crashBeforePublish?: boolean },
   ): Promise<Awaited<ReturnType<typeof runCatchUp>>>;
+  /** Exports the store, as it stands on disk, to `archivePath`. */
+  exportTo(archivePath: string): void;
   /** Runs `fn` against the store opened fresh from disk. */
   withDb<T>(fn: (db: Database) => T): T;
   clock(): ReturnType<typeof readClock>;
@@ -368,7 +380,13 @@ interface Backlog {
 
 function openBacklog(prefix: string): Backlog {
   const storeDir = tempDir(prefix);
-  const storePath = join(storeDir, "world.sqlite");
+  return backlogAt(join(storeDir, "world.sqlite"), () =>
+    rmSync(storeDir, { recursive: true, force: true }),
+  );
+}
+
+/** A backlog over the store at `storePath` (created if new), reopened from disk for every operation. */
+function backlogAt(storePath: string, dispose: () => void = () => {}): Backlog {
   const first = openStore(
     storePath,
     createWorldProjectionReducers(loadGreekWorldState()),
@@ -393,15 +411,26 @@ function openBacklog(prefix: string): Backlog {
   return {
     storePath,
     startCursor,
-    run: (nowWallMs, commitTick, betweenChunks) =>
-      withStore((store) => {
+    exportTo: (archivePath) => {
+      const store = openStore(
+        storePath,
+        createWorldProjectionReducers(loadGreekWorldState()),
+      );
+      try {
+        exportArchive(store, archivePath);
+      } finally {
+        closeStore(store);
+      }
+    },
+    run: (nowWallMs, commitTick, betweenChunks, options) =>
+      withStore(async (store) => {
         const reducers = createWorldProjectionReducers(loadGreekWorldState());
         ensureTraceSchema(store.db);
         const state = restoreWorldTime(
           readLiveProjections(store, reducers),
           readClock(store.db),
         );
-        return runCatchUp(
+        const result = await runCatchUp(
           state,
           deserializePrngState(readPrngState(store.db)) ?? createPrng(1),
           {
@@ -413,15 +442,20 @@ function openBacklog(prefix: string): Backlog {
           {
             nowWallMs,
             ...(betweenChunks
-              ? {
-                  onChunkCommitted: () => {
-                    betweenChunks(store.db);
-                    return false;
-                  },
-                }
+              ? { onChunkCommitted: () => betweenChunks(store.db) === true }
               : {}),
           },
         );
+        // What the service does with a result: publish it, then close the
+        // backlog. A run that "crashes" stops before that.
+        if (!options?.crashBeforePublish) {
+          refreshStatusAfterCatchUp(
+            createServiceStatusRef(result.state),
+            result,
+            store,
+          );
+        }
+        return result;
       }),
     withDb: (fn) => {
       const store = openStore(
@@ -456,7 +490,7 @@ function openBacklog(prefix: string): Backlog {
         closeStore(store);
       }
     },
-    dispose: () => rmSync(storeDir, { recursive: true, force: true }),
+    dispose,
   };
 }
 
@@ -505,6 +539,7 @@ test("the excess over the cap is discarded in its own commit before any chunk: a
     expect(backlog.progress()).toEqual({
       appliedMs: 0,
       discardedMs: 4 * HOUR_MS,
+      startSequence: 0,
     });
   } finally {
     backlog.dispose();
@@ -575,7 +610,11 @@ test("a backlog that fully applied before the final cursor commit failed is fini
     // Commits 1 and 2 are the chunks; commit 3, the final cursor commit, throws.
     const failed = await backlog.run(nowWallMs, throwsAtCommit(3));
     expect(failed.degraded).toBeDefined();
-    expect(backlog.progress()).toEqual({ appliedMs: 120_000, discardedMs: 0 });
+    expect(backlog.progress()).toEqual({
+      appliedMs: 120_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
 
     const restarted = await backlog.run(nowWallMs);
 
@@ -666,6 +705,7 @@ test("a proposal accepted while catch-up yields between chunks targets the next 
         accepted = true;
         insertExternalProposal(db, strikeEntry("b"));
       }
+      return undefined;
     });
 
     backlog.withDb((db) => {
@@ -735,3 +775,181 @@ test("a chunk that fails to commit leaves the pending proposal pending, with no 
     backlog.dispose();
   }
 });
+
+// --- A backlog's summary across restarts, crashes, pauses, and restores ---------
+
+const THREE_MINUTES_MS = 3 * 60 * 1000;
+
+/** A backlog holding the strike entry, so its first chunk ignites the tavern. */
+function backlogWithStrike(prefix: string, id: string): Backlog {
+  const backlog = openBacklog(prefix);
+  backlog.withDb((db) => insertExternalProposal(db, strikeEntry(id)));
+  return backlog;
+}
+
+/** What one uninterrupted run over the strike backlog reports: the yardstick every interrupted variant must equal. */
+async function uninterruptedSummary() {
+  const backlog = backlogWithStrike("panthea-sim-catchup-yardstick-", "y");
+  try {
+    const result = await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+    expect(result.degraded).toBeUndefined();
+    return result.summary;
+  } finally {
+    backlog.dispose();
+  }
+}
+
+test("the yardstick: an uninterrupted run over the strike backlog reports the ignition and its consequences among its outcomes", async () => {
+  const summary = await uninterruptedSummary();
+
+  expect(summary.appliedMs).toBe(THREE_MINUTES_MS);
+  expect(summary.majorOutcomes).toContain("building-ignited:the-tavern");
+  expect(summary.majorOutcomes).toContain("building-destroyed:the-tavern");
+});
+
+test("a backlog interrupted after a chunk that found outcomes reports them after the restart, and its whole summary equals an uninterrupted run's", async () => {
+  const yardstick = await uninterruptedSummary();
+  const backlog = backlogWithStrike("panthea-sim-catchup-outcomes-", "o");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+
+    // Two chunks commit, the third fails.
+    const interrupted = await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(interrupted.degraded).toBeDefined();
+    expect(interrupted.summary.majorOutcomes).toContain(
+      "building-ignited:the-tavern",
+    );
+
+    const resumed = await backlog.run(nowWallMs);
+
+    expect(resumed.degraded).toBeUndefined();
+    expect(resumed.summary).toEqual(yardstick);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("the process dying after the last commit and before the summary is published: the next start publishes the same summary, then closes the backlog", async () => {
+  const yardstick = await uninterruptedSummary();
+  const backlog = backlogWithStrike("panthea-sim-catchup-crash-window-", "w");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+
+    const finished = await backlog.run(nowWallMs, undefined, undefined, {
+      crashBeforePublish: true,
+    });
+    expect(finished.summary).toEqual(yardstick);
+    expect(backlog.progress()).toBeDefined();
+
+    const restarted = await backlog.run(nowWallMs);
+
+    expect(restarted.summary).toEqual(yardstick);
+    expect(backlog.progress()).toBeUndefined();
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a backlog ended by a mid-catch-up pause keeps its summary until published: a restart while paused reports it, then closes the backlog", async () => {
+  const backlog = backlogWithStrike("panthea-sim-catchup-pause-", "p");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+
+    const paused = await backlog.run(nowWallMs, undefined, () => true, {
+      crashBeforePublish: true,
+    });
+    expect(backlog.clock().paused).toBe(true);
+    expect(paused.summary.appliedMs).toBe(60_000);
+    expect(paused.summary.skippedMs).toBe(2 * 60_000);
+    expect(paused.summary.majorOutcomes).toContain(
+      "building-ignited:the-tavern",
+    );
+
+    const restartedWhilePaused = await backlog.run(nowWallMs);
+
+    expect(restartedWhilePaused.summary).toEqual(paused.summary);
+    expect(backlog.progress()).toBeUndefined();
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a closed backlog's outcomes never leak into the next one: the second summary counts only events committed after its own start", async () => {
+  const backlog = backlogWithStrike("panthea-sim-catchup-two-backlogs-", "t");
+  try {
+    const firstNow = backlog.startCursor + THREE_MINUTES_MS;
+    const first = await backlog.run(firstNow);
+    expect(first.summary.majorOutcomes).toContain(
+      "building-ignited:the-tavern",
+    );
+    const sequenceAfterFirst = backlog.withDb(
+      (db) => listEvents(db).at(-1)?.sequence ?? 0,
+    );
+
+    const failed = await backlog.run(firstNow + 2 * 60_000, throwsAtCommit(2));
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.progress()?.startSequence).toBe(sequenceAfterFirst);
+
+    const second = await backlog.run(firstNow + 2 * 60_000);
+
+    expect(second.summary.majorOutcomes).not.toContain(
+      "building-ignited:the-tavern",
+    );
+    const expected = backlog.withDb((db) =>
+      listEvents(db, { fromSequence: sequenceAfterFirst })
+        .filter((event) =>
+          [
+            "building-ignited",
+            "building-destroyed",
+            "building-repaired",
+            "legend-recorded",
+          ].includes(event.kind),
+        )
+        .map((event) => `${event.kind}:${String(event.entityId)}`),
+    );
+    expect(second.summary.majorOutcomes).toEqual(expected);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a backlog's progress records the event sequence it started after", async () => {
+  const backlog = backlogWithStrike("panthea-sim-catchup-start-sequence-", "s");
+  try {
+    await backlog.run(
+      backlog.startCursor + THREE_MINUTES_MS,
+      throwsAtCommit(2),
+    );
+
+    expect(backlog.progress()?.startSequence).toBe(0);
+  } finally {
+    backlog.dispose();
+  }
+});
+
+test("an archive exported mid-backlog, imported, and resumed reports the same summary as an uninterrupted run: applied, skipped, and outcomes", async () => {
+  const yardstick = await uninterruptedSummary();
+  const backlog = backlogWithStrike("panthea-sim-catchup-archive-", "a");
+  const slotsDir = tempDir("panthea-sim-catchup-archive-slots-");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+    const interrupted = await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(interrupted.degraded).toBeDefined();
+    const archivePath = join(slotsDir, "mid-backlog.sqlite");
+    backlog.exportTo(archivePath);
+
+    const slot = importWorldArchive(
+      archivePath,
+      join(slotsDir, "slots"),
+      createWorldProjectionReducers(loadGreekWorldState()).codec,
+    );
+    const restored = backlogAt(join(slot.slotPath, "world.sqlite"));
+    const resumed = await restored.run(nowWallMs);
+
+    expect(resumed.degraded).toBeUndefined();
+    expect(resumed.summary).toEqual(yardstick);
+  } finally {
+    backlog.dispose();
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -21,9 +21,11 @@ import type {
   WorldEvent,
 } from "@panthea/contracts";
 import {
+  type CatchUpProgress,
   type ClockConfig,
-  clearCatchUpProgress,
   computeTick,
+  getCurrentSequence,
+  listEvents,
   readCatchUpProgress,
   readClock,
   writeCatchUpProgress,
@@ -56,6 +58,39 @@ const MAJOR_EVENT_KINDS = new Set<string>([
 
 export type CatchUpDeps = TickDeps;
 
+const EMPTY_SUMMARY: CatchUpOutcome = {
+  appliedMs: 0,
+  skippedMs: 0,
+  majorOutcomes: [],
+};
+
+/**
+ * A backlog's summary, read from what it committed: time applied and
+ * discarded from its progress row, and its notable outcomes from the events
+ * committed after the sequence it started at. Nothing is kept in memory
+ * between runs, so a summary is the same whether one run or several (with
+ * restarts, crashes, or a restore in between) worked on the backlog.
+ */
+function summaryOf(
+  deps: CatchUpDeps,
+  progress: CatchUpProgress,
+): CatchUpOutcome {
+  return {
+    appliedMs: progress.appliedMs,
+    skippedMs: progress.discardedMs,
+    majorOutcomes: listEvents(deps.store.db, {
+      fromSequence: progress.startSequence,
+    })
+      .filter((event) => MAJOR_EVENT_KINDS.has(event.kind))
+      .map((event) => `${event.kind}:${String(event.entityId)}`),
+  };
+}
+
+/** The summary of everything the open backlog has committed so far, or an empty one when it has committed nothing. */
+function committedSummaryOf(deps: CatchUpDeps): CatchUpOutcome {
+  const progress = readCatchUpProgress(deps.store.db);
+  return progress ? summaryOf(deps, progress) : EMPTY_SUMMARY;
+}
 export interface CatchUpOptions {
   readonly nowWallMs: number;
   /**
@@ -107,10 +142,15 @@ function yieldToEventLoop(): Promise<void> {
  * any chunk, so a run that dies partway never hands its restart a fresh
  * cap over the same sleep.
  *
- * The backlog's progress (time applied and time discarded so far) is
- * committed in the same transaction as each discard and chunk and cleared
- * when the backlog ends, so a restart continues it and the summary it
- * returns covers the whole backlog, not only this run.
+ * The backlog's progress (time applied, time discarded, and the event
+ * sequence it started after) is committed in the same transaction as each
+ * discard and chunk, so a restart continues it, and the summary this
+ * returns is derived from it and from the backlog's committed events: it
+ * covers the whole backlog, not only this run, and includes its notable
+ * outcomes. The progress stays open after the backlog's last commit, or
+ * after a pause ends it, until the caller has published the summary and
+ * closes it (`refreshStatusAfterCatchUp`); a process that dies before then
+ * finds the same summary waiting on its next start.
  */
 export async function runCatchUp(
   initialState: WorldState,
@@ -120,8 +160,10 @@ export async function runCatchUp(
 ): Promise<CatchUpResult> {
   const clock = readClock(deps.store.db);
   if (clock.paused) {
+    // Paused wall time never becomes catch-up. A backlog a pause already
+    // ended can still be waiting for its summary to be published.
     return {
-      summary: { appliedMs: 0, skippedMs: 0, majorOutcomes: [] },
+      summary: committedSummaryOf(deps),
       state: initialState,
       prng: initialPrng,
     };
@@ -135,10 +177,12 @@ export async function runCatchUp(
     newCursor: sampledNowCursor,
   } = computeTick(clock, options.nowWallMs, clockConfig);
 
-  // Progress a previous run committed for this same backlog, if it did not
-  // finish. Zero otherwise.
+  // Progress a previous run committed for this same backlog, if its summary
+  // was not published. A new backlog starts after the last committed event.
   const prior = readCatchUpProgress(deps.store.db);
   const priorAppliedMs = prior?.appliedMs ?? 0;
+  const startSequence =
+    prior?.startSequence ?? getCurrentSequence(deps.store.db);
   let discardedMs = prior?.discardedMs ?? 0;
 
   // A remainder shorter than one tick is below the simulation's resolution:
@@ -148,39 +192,12 @@ export async function runCatchUp(
   const totalTicks = Math.floor(totalAppliedMs / tickMs);
 
   if (totalTicks === 0) {
-    if (!prior) {
-      return {
-        summary: { appliedMs: 0, skippedMs: 0, majorOutcomes: [] },
-        state: initialState,
-        prng: initialPrng,
-      };
-    }
-    // The previous run applied everything but died before ending the
-    // backlog. End it now and report what it committed.
-    const finish = commitWorldTick(
-      deps,
-      [],
-      {
-        tick: initialState.tick,
-        simTimeMs: initialState.simTime,
-        prngState: serializePrngState(initialPrng),
-        cursorWallMs: clock.cursorWallMs,
-        paused: false,
-      },
-      [],
-      clearCatchUpProgress,
-    );
+    // Nothing more to apply. If a previous run finished the backlog and died
+    // before its summary was published, that summary is what this returns.
     return {
-      summary: {
-        appliedMs: priorAppliedMs,
-        skippedMs: discardedMs,
-        majorOutcomes: [],
-      },
+      summary: prior ? summaryOf(deps, prior) : EMPTY_SUMMARY,
       state: initialState,
       prng: initialPrng,
-      ...(finish.ok
-        ? {}
-        : { degraded: { reason: finish.reason, message: finish.message } }),
     };
   }
 
@@ -205,16 +222,13 @@ export async function runCatchUp(
         writeCatchUpProgress(db, {
           appliedMs: priorAppliedMs,
           discardedMs: discardedMs + excessMs,
+          startSequence,
         });
       },
     );
     if (!discard.ok) {
       return {
-        summary: {
-          appliedMs: priorAppliedMs,
-          skippedMs: discardedMs,
-          majorOutcomes: [],
-        },
+        summary: committedSummaryOf(deps),
         state: initialState,
         prng: initialPrng,
         degraded: { reason: discard.reason, message: discard.message },
@@ -230,17 +244,12 @@ export async function runCatchUp(
   let committedPrng = initialPrng;
   let ticksDone = 0;
   let pausedMidCatchUp = false;
-  const majorOutcomes: string[] = [];
 
   // What the backlog has committed so far. A run that stops because a
   // commit failed reports exactly this: a restart still applies the rest,
   // so nothing more is skipped. Once paused, the chunks it will not apply
-  // are discarded for good and count as skipped.
-  const committedSummary = (): CatchUpOutcome => ({
-    appliedMs: priorAppliedMs + ticksDone * tickMs,
-    skippedMs: discardedMs,
-    majorOutcomes,
-  });
+  // are discarded for good and count as skipped (recorded by the pause).
+  const committedSummary = (): CatchUpOutcome => committedSummaryOf(deps);
 
   while (ticksDone < totalTicks) {
     const ticksThisChunk = Math.min(chunkTicks, totalTicks - ticksDone);
@@ -302,6 +311,7 @@ export async function runCatchUp(
         writeCatchUpProgress(db, {
           appliedMs: priorAppliedMs + (ticksDone + ticksThisChunk) * tickMs,
           discardedMs,
+          startSequence,
         }),
     );
 
@@ -312,16 +322,6 @@ export async function runCatchUp(
         prng: committedPrng,
         degraded: { reason: commit.reason, message: commit.message },
       };
-    }
-
-    for (const outcome of chunkOutcomes) {
-      for (const record of outcome.result.committed) {
-        for (const event of record.events) {
-          if (MAJOR_EVENT_KINDS.has(event.kind)) {
-            majorOutcomes.push(`${event.kind}:${String(event.entityId)}`);
-          }
-        }
-      }
     }
 
     committedState = workingState;
@@ -346,7 +346,8 @@ export async function runCatchUp(
       // `onCommitted` path `/pause` itself uses (`recordOperatorEvent`),
       // so a trace failure here rolls the pause transition back exactly
       // like it would for a live `/pause` request, rather than being
-      // swallowed. The backlog ends here: the remainder is discarded.
+      // swallowed. The backlog ends here: the remainder is discarded, which
+      // the progress records so the summary stays true until it is published.
       const pauseCommit = commitWorldTick(
         deps,
         [],
@@ -360,7 +361,11 @@ export async function runCatchUp(
         [],
         (db) => {
           recordOperatorEvent("pause")(db);
-          clearCatchUpProgress(db);
+          writeCatchUpProgress(db, {
+            appliedMs: priorAppliedMs + ticksDone * tickMs,
+            discardedMs: discardedMs + (totalTicks - ticksDone) * tickMs,
+            startSequence,
+          });
         },
       );
       if (!pauseCommit.ok) {
@@ -384,8 +389,8 @@ export async function runCatchUp(
     // persisted cursor the rest of the way to the sampled wall time
     // (matching what `computeTick` itself would have persisted for an
     // ordinary, uncapped tick), dropping the sub-tick remainder so it does
-    // not look like still-missed time to whatever calls catch-up next, and
-    // end the backlog.
+    // not look like still-missed time to whatever calls catch-up next. The
+    // backlog itself stays open until its summary is published.
     const adjust = commitWorldTick(
       deps,
       [],
@@ -397,7 +402,6 @@ export async function runCatchUp(
         paused: false,
       },
       [],
-      clearCatchUpProgress,
     );
     if (!adjust.ok) {
       return {
@@ -410,12 +414,7 @@ export async function runCatchUp(
   }
 
   return {
-    summary: {
-      ...committedSummary(),
-      skippedMs: pausedMidCatchUp
-        ? discardedMs + (totalTicks - ticksDone) * tickMs
-        : discardedMs,
-    },
+    summary: committedSummary(),
     state: committedState,
     prng: committedPrng,
   };

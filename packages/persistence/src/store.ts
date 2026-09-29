@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -90,14 +90,18 @@ export function createSchema(db: Database): void {
       CREATE INDEX idx_external_proposals_pending
       ON external_proposals (input_order) WHERE consumed_tick IS NULL
     `);
-    // At most one row, present only while a catch-up backlog is being
-    // worked off. Written in the same transaction as the discard or chunk it
-    // describes, so a restart resumes from exactly what committed.
+    // At most one row, present from a catch-up backlog's first commit until
+    // the service has published its summary. Written in the same
+    // transaction as the discard or chunk it describes, so a restart
+    // resumes from exactly what committed. `start_sequence` is the last
+    // event sequence before the backlog began: the backlog's notable
+    // outcomes are the events committed after it.
     db.exec(`
       CREATE TABLE catch_up_progress (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         applied_ms INTEGER NOT NULL,
-        discarded_ms INTEGER NOT NULL
+        discarded_ms INTEGER NOT NULL,
+        start_sequence INTEGER NOT NULL
       ) STRICT
     `);
     db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
@@ -312,21 +316,33 @@ function writeClock(db: Database, state: ClockRow): void {
   );
 }
 
-/** What the current catch-up backlog has committed so far: time applied as ticks and time discarded beyond the cap, across every run (and restart) that worked on it. */
+/** What the current catch-up backlog has committed so far, across every run (and restart) that worked on it. */
 export interface CatchUpProgress {
+  /** Time applied as ticks. */
   readonly appliedMs: number;
+  /** Time discarded for good: the excess over the cap, and chunks a mid-catch-up pause gave up. */
   readonly discardedMs: number;
+  /** The last event sequence before the backlog began; the backlog's events are those after it. */
+  readonly startSequence: number;
 }
 
-/** The committed progress of an unfinished catch-up backlog, or `undefined` when none is in progress. */
+/** The committed progress of a catch-up backlog whose summary has not been published yet, or `undefined` when none is open. */
 export function readCatchUpProgress(db: Database): CatchUpProgress | undefined {
   const row = db
     .query(
-      "SELECT applied_ms, discarded_ms FROM catch_up_progress WHERE id = 1",
+      "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
     )
-    .get() as { applied_ms: number; discarded_ms: number } | null;
+    .get() as {
+    applied_ms: number;
+    discarded_ms: number;
+    start_sequence: number;
+  } | null;
   return row
-    ? { appliedMs: row.applied_ms, discardedMs: row.discarded_ms }
+    ? {
+        appliedMs: row.applied_ms,
+        discardedMs: row.discarded_ms,
+        startSequence: row.start_sequence,
+      }
     : undefined;
 }
 
@@ -336,13 +352,13 @@ export function writeCatchUpProgress(
   progress: CatchUpProgress,
 ): void {
   db.run(
-    `INSERT INTO catch_up_progress (id, applied_ms, discarded_ms) VALUES (1, ?, ?)
-     ON CONFLICT (id) DO UPDATE SET applied_ms = excluded.applied_ms, discarded_ms = excluded.discarded_ms`,
-    [progress.appliedMs, progress.discardedMs],
+    `INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET applied_ms = excluded.applied_ms, discarded_ms = excluded.discarded_ms, start_sequence = excluded.start_sequence`,
+    [progress.appliedMs, progress.discardedMs, progress.startSequence],
   );
 }
 
-/** Ends the backlog: the next catch-up starts a new one. Call inside a tick's `onCommitted`. */
+/** Closes the backlog: the next catch-up starts a new one. */
 export function clearCatchUpProgress(db: Database): void {
   db.run("DELETE FROM catch_up_progress WHERE id = 1");
 }

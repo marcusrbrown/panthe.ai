@@ -845,7 +845,11 @@ test("GET /trace/event follows a committed event back to its observation", async
 test("POST /resume ends an unfinished catch-up backlog: paused wall time never becomes part of one", async () => {
   const harness = startHarness();
   try {
-    writeCatchUpProgress(harness.db, { appliedMs: 60_000, discardedMs: 1_000 });
+    writeCatchUpProgress(harness.db, {
+      appliedMs: 60_000,
+      discardedMs: 1_000,
+      startSequence: 0,
+    });
     expect((await authed(harness, "/pause", { method: "POST" })).status).toBe(
       200,
     );

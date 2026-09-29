@@ -15,7 +15,9 @@ import {
   listExternalProposals,
   openStore,
   commitTick as persistCommitTick,
+  readCatchUpProgress,
   readClock,
+  writeCatchUpProgress,
 } from "@panthea/persistence";
 import { ensureTraceSchema } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
@@ -640,6 +642,69 @@ describe("service (bun run src/index.ts)", () => {
       expect(exitCode).toBe(3);
     } finally {
       first.proc.kill();
+    }
+  });
+});
+
+describe("refreshStatusAfterCatchUp: closing the backlog", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-close-"));
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(dir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+    writeCatchUpProgress(store.db, {
+      appliedMs: 120_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    return {
+      seeded,
+      store,
+      dispose() {
+        closeStore(store);
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  const finished = (world: ReturnType<typeof setup>) => ({
+    summary: { appliedMs: 120_000, skippedMs: 0, majorOutcomes: [] },
+    state: world.seeded,
+    prng: createPrng(1),
+  });
+
+  test("a finished backlog's progress is closed only once its summary is published", () => {
+    const world = setup();
+    try {
+      const statusRef = createServiceStatusRef(world.seeded);
+
+      refreshStatusAfterCatchUp(statusRef, finished(world), world.store);
+
+      expect(statusRef.catchUpSummary?.appliedMs).toBe(120_000);
+      expect(readCatchUpProgress(world.store.db)).toBeUndefined();
+    } finally {
+      world.dispose();
+    }
+  });
+
+  test("a degraded run leaves the backlog open, so a restart continues it", () => {
+    const world = setup();
+    try {
+      const statusRef = createServiceStatusRef(world.seeded);
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          ...finished(world),
+          degraded: { reason: "store-error", message: "disk hiccup" },
+        },
+        world.store,
+      );
+
+      expect(readCatchUpProgress(world.store.db)).toBeDefined();
+    } finally {
+      world.dispose();
     }
   });
 });

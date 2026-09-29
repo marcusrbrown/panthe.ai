@@ -53,6 +53,7 @@ const HASHED_TABLES: readonly {
   { table: "projections", pk: "id" },
   { table: "events", pk: "sequence" },
   { table: "external_proposals", pk: "input_order" },
+  { table: "catch_up_progress", pk: "id" },
 ];
 
 function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -162,6 +163,14 @@ interface ExportData {
   readonly projectionsData: string;
   readonly eventRows: readonly Record<string, unknown>[];
   readonly journalRows: readonly JournalRow[];
+  readonly catchUpProgress: CatchUpProgressRow | undefined;
+}
+
+/** The `catch_up_progress` row exactly as stored. */
+interface CatchUpProgressRow {
+  readonly applied_ms: number;
+  readonly discarded_ms: number;
+  readonly start_sequence: number;
 }
 
 /** One `external_proposals` row exactly as stored. */
@@ -210,6 +219,11 @@ function readExportData(store: Store): ExportData {
     const journalRows = store.db
       .query("SELECT * FROM external_proposals ORDER BY input_order ASC")
       .all() as JournalRow[];
+    const catchUpProgress = store.db
+      .query(
+        "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
+      )
+      .get() as CatchUpProgressRow | null;
     return {
       worldId: store.worldId,
       sequence,
@@ -223,6 +237,7 @@ function readExportData(store: Store): ExportData {
       projectionsData: projectionsRow.data,
       eventRows,
       journalRows,
+      catchUpProgress: catchUpProgress ?? undefined,
     };
   });
   return run.deferred();
@@ -298,6 +313,16 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
               row.consumed_tick,
               row.outcome,
               row.reason,
+            ],
+          );
+        }
+        if (data.catchUpProgress) {
+          archiveDb.run(
+            "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)",
+            [
+              data.catchUpProgress.applied_ms,
+              data.catchUpProgress.discarded_ms,
+              data.catchUpProgress.start_sequence,
             ],
           );
         }
@@ -873,6 +898,35 @@ export function importArchive(
                   row.consumed_tick,
                   row.outcome,
                   row.reason,
+                ],
+              );
+            }
+            // An open catch-up backlog: the accounting a restore resumes
+            // from. Counts must be plain non-negative integers, and the
+            // backlog cannot have started after the archive's last event.
+            const progress = db
+              .query(
+                "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
+              )
+              .get() as CatchUpProgressRow | null;
+            if (progress) {
+              const valid = [
+                progress.applied_ms,
+                progress.discarded_ms,
+                progress.start_sequence,
+              ].every((value) => Number.isInteger(value) && value >= 0);
+              if (!valid || progress.start_sequence > manifest.eventSequence) {
+                throw new ImportError(
+                  "corrupt",
+                  "archive catch-up progress has an invalid count or starts after the archive's last event",
+                );
+              }
+              stagingDb.run(
+                "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)",
+                [
+                  progress.applied_ms,
+                  progress.discarded_ms,
+                  progress.start_sequence,
                 ],
               );
             }

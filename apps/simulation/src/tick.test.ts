@@ -640,7 +640,7 @@ test("measurement: JSON projection commit cost per tick, authored Greek world vs
   expect(scaledMaxMs).toBeLessThan(500);
 });
 
-test("mergeTickQueue keeps the routines' order, drops a routine whose actor has an external non-claim proposal, and appends the external proposals in arrival order", () => {
+test("mergeTickQueue puts every external proposal first in arrival order, then the routines in their own order, minus a routine whose actor has an external non-claim proposal", () => {
   const state = loadGreekWorldState();
   const routine = buildRoutineQueue(state);
   const woodcutter = routine.find(
@@ -665,10 +665,10 @@ test("mergeTickQueue keeps the routines' order, drops a routine whose actor has 
 
   const merged = mergeTickQueue(routine, [worship, strike, claim]);
   expect(merged).toEqual([
-    ...routine.filter((queued) => queued !== woodcutter),
     worship,
     strike,
     claim,
+    ...routine.filter((queued) => queued !== woodcutter),
   ]);
   expect(merged).toContain(farmer);
 });

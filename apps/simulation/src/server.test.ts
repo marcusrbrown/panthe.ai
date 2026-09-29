@@ -986,9 +986,22 @@ describe("applyLiveTick: an external proposal takes its actor's slot for the tic
     };
   }
 
-  function runLiveTick(external: readonly QueuedProposal[]) {
+  function runLiveTick(
+    external: readonly QueuedProposal[],
+    options: { readonly maxProposalsPerTick?: number } = {},
+  ) {
     const storeDir = tempDir("panthea-sim-server-priority-");
-    const seeded = loadGreekWorldState();
+    const authored = loadGreekWorldState();
+    const seeded =
+      options.maxProposalsPerTick === undefined
+        ? authored
+        : {
+            ...authored,
+            rules: {
+              ...authored.rules,
+              maxProposalsPerTick: options.maxProposalsPerTick,
+            },
+          };
     const reducers = createWorldProjectionReducers(seeded);
     const store = openStore(join(storeDir, "world.sqlite"), reducers);
     ensureTraceSchema(store.db);
@@ -1025,6 +1038,51 @@ describe("applyLiveTick: an external proposal takes its actor's slot for the tic
       deity: "zeus",
       offering: { resource: "currency", amount: 1 },
     });
+
+  test("under a proposal cap smaller than the routine queue, an external proposal for the later routine actor still commits, its routine yields, and nothing external is rejected over-limit", () => {
+    const external = externalProposal("farmer", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1 },
+    });
+    const run = runLiveTick([external], { maxProposalsPerTick: 1 });
+    try {
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, external.id),
+      ).toMatchObject({ outcome: "committed" });
+      expect(
+        getProposalOutcomeByProposalId(
+          run.store.db,
+          run.routineOf("farmer").id,
+        ),
+      ).toBeUndefined();
+      // The cap left room for one proposal, so the unrelated routine is the
+      // one over the limit; it is a routine, not the operator's proposal.
+      expect(
+        getProposalOutcomeByProposalId(
+          run.store.db,
+          run.routineOf("woodcutter").id,
+        ),
+      ).toMatchObject({ outcome: "rejected", reason: "over-limit" });
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("under the cap, an external claim is admitted ahead of routines and recorded as a rejected claim, not over-limit", () => {
+    const claim = externalProposal("woodcutter", {
+      kind: "claim",
+      assertion: "I own the old oak",
+    });
+    const run = runLiveTick([claim], { maxProposalsPerTick: 1 });
+    try {
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, claim.id),
+      ).toMatchObject({ outcome: "rejected", reason: "unauthorized-claim" });
+    } finally {
+      run.dispose();
+    }
+  });
 
   test("an external worship by an actor with a routine commits", () => {
     const external = worship();

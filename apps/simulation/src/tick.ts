@@ -91,9 +91,16 @@ export function buildRoutineQueue(
 }
 
 /**
- * The proposals one live tick runs: the routines' proposals in their own
- * order, then the external (fixture or operator) proposals in the order
- * they arrived.
+ * The proposals one live tick runs, in admission order: every external
+ * (fixture or operator) proposal first, in the order they arrived, then the
+ * routines' proposals in their own order.
+ *
+ * External proposals go first because `stepWorldTick` admits only the first
+ * `maxProposalsPerTick` entries: behind the routines, an external proposal
+ * would be the one rejected as over-limit whenever the cap is tight. Claims
+ * are external proposals too and go first with the rest; they never commit
+ * but always get a recorded outcome (a rejected claim), never an over-limit
+ * one.
  *
  * An actor commits one action per tick, so an external proposal for an
  * actor takes that actor's slot and the actor's routine proposal yields:
@@ -119,8 +126,8 @@ export function mergeTickQueue(
       .map((queued) => queued.proposal.actor),
   );
   return [
-    ...routine.filter((queued) => !claimed.has(queued.proposal.actor)),
     ...external,
+    ...routine.filter((queued) => !claimed.has(queued.proposal.actor)),
   ];
 }
 

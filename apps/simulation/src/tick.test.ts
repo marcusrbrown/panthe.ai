@@ -26,7 +26,12 @@ import {
   type ProposalId,
   recordReceipt,
 } from "@panthea/telemetry";
-import { createPrng, submitProposal, toEntityId } from "@panthea/world";
+import {
+  createPrng,
+  isEventLinked,
+  submitProposal,
+  toEntityId,
+} from "@panthea/world";
 import {
   applyOneTick,
   buildRoutineQueue,
@@ -35,6 +40,7 @@ import {
   mergeTickQueue,
   type QueuedProposal,
   stepWorldTick,
+  traceWorldTick,
 } from "./tick";
 import {
   createEventSource,
@@ -341,7 +347,7 @@ test("proposals beyond the per-tick cap are rejected as over-limit before reachi
   }
 });
 
-test("a legend proposal with an unknown linkedEventId is rejected at intake; one with a committed link is admitted and commits verified", () => {
+test("a legend proposal with an unknown linkedEventId is rejected at intake; one citing a committed but unrelated event is admitted and recorded event-linked, its prose not certified", () => {
   const storeDir = tempDir("panthea-sim-legend-");
   try {
     const storePath = join(storeDir, "world.sqlite");
@@ -396,7 +402,8 @@ test("a legend proposal with an unknown linkedEventId is rejected at intake; one
     expect(linkedEventId).toBeDefined();
     if (!linkedEventId) throw new Error("expected a linked event id");
 
-    // Committed link: admitted at intake, and the resulting legend is verified.
+    // Committed link: admitted at intake. The cited event is a farmer's
+    // walk, unrelated to the story, and the legend is recorded anyway.
     const committedLink = intakeProposal(store.db, {
       schemaVersion: 1,
       actor: "farmer",
@@ -436,8 +443,10 @@ test("a legend proposal with an unknown linkedEventId is rejected at intake; one
       throw new Error("expected a committed tick");
 
     const legend = [...tick2.state.legends.values()][0];
-    expect(legend?.verified).toBe(true);
+    expect(legend?.assertion).toBe("the tavern burned by Zeus's own hand");
     expect(legend?.linkedEventId).toBe(linkedEventId);
+    expect(legend && isEventLinked(legend)).toBe(true);
+    expect(legend).not.toHaveProperty("verified");
 
     closeStore(store);
   } finally {
@@ -715,4 +724,316 @@ test("mergeTickQueue depends only on its two queues: the same inputs always give
     mergeTickQueue(routine, external),
   );
   expect(mergeTickQueue(routine, [])).toEqual([...routine]);
+});
+
+test("a legend citing the strike that really happened, one citing an unrelated event, and one citing nothing: the world records each link and certifies none", () => {
+  const storeDir = tempDir("panthea-sim-legend-tellings-");
+  try {
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(storeDir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+
+    const strike = manualProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    const struck = applyOneTick(
+      seeded,
+      createPrng(1),
+      [strike],
+      { store, reducers, traceDb: store.db },
+      { cursorWallMs: 1_000, paused: false },
+    );
+    if (struck.kind !== "committed") throw new Error("expected a commit");
+    const [spendId, ignitionId] =
+      getProposalOutcomeByProposalId(store.db, strike.id)?.eventIds ?? [];
+    if (!spendId || !ignitionId) throw new Error("expected two strike events");
+
+    const tellings = [
+      // Genuine: the story matches the cited ignition.
+      {
+        assertion: "Zeus struck the tavern and it burned",
+        linkedEventId: ignitionId,
+      },
+      // Unrelated: the cited event is the divinity spend.
+      {
+        assertion: "Zeus destroyed the entire Underworld",
+        linkedEventId: spendId,
+      },
+      // Absent: no evidence cited.
+      { assertion: "The gods were angry that night" },
+    ];
+    let state = struck.state;
+    let prng = struck.prng;
+    for (const telling of tellings) {
+      const intake = intakeProposal(store.db, {
+        schemaVersion: 1,
+        actor: "farmer",
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        // Every telling cites the same unchanged observation id.
+        observationId: "obs-one-unchanged-observation",
+        kind: "legend",
+        ...telling,
+      });
+      if (!intake.ok) throw new Error(intake.rejection.message);
+      const step = applyOneTick(
+        state,
+        prng,
+        [
+          {
+            id: createProposalId(),
+            proposal: intake.proposal,
+            observation: {
+              schemaVersion: 1,
+              id: intake.proposal.observationId,
+              observer: toEntityId("farmer"),
+              stateRevision: 0,
+              factsRead: [],
+              source: "fixture",
+            },
+          },
+        ],
+        { store, reducers, traceDb: store.db },
+        { cursorWallMs: 1_000 * (state.tick + 1), paused: false },
+      );
+      if (step.kind !== "committed") throw new Error("expected a commit");
+      state = step.state;
+      prng = step.prng;
+    }
+
+    const legends = [...state.legends.values()];
+    expect(legends.map((legend) => legend.assertion)).toEqual(
+      tellings.map((telling) => telling.assertion),
+    );
+    expect(legends.map((legend) => legend.linkedEventId)).toEqual([
+      ignitionId,
+      spendId,
+      undefined,
+    ]);
+    expect(legends.map(isEventLinked)).toEqual([true, true, false]);
+    for (const legend of legends) {
+      expect(legend).not.toHaveProperty("verified");
+    }
+    // Three tellings from one observation id: three distinct legends.
+    expect(new Set(legends.map((legend) => legend.id)).size).toBe(3);
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+// --- Observation identity ---------------------------------------------------
+
+/** A copy of `queued` that cites `observationId` and carries `factsRead` as its evidence. */
+function citing(
+  queued: QueuedProposal,
+  observationId: ObservationRecord["id"],
+  factsRead: readonly string[],
+): QueuedProposal {
+  return {
+    ...queued,
+    proposal: { ...queued.proposal, observationId },
+    observation: { ...queued.observation, id: observationId, factsRead },
+  };
+}
+
+function withStore<T>(
+  fn: (world: {
+    store: ReturnType<typeof openStore>;
+    reducers: ReturnType<typeof createWorldProjectionReducers>;
+    state: ReturnType<typeof loadGreekWorldState>;
+    tick: (queue: readonly QueuedProposal[]) => ReturnType<typeof applyOneTick>;
+  }) => T,
+): T {
+  const storeDir = tempDir("panthea-sim-observation-identity-");
+  try {
+    const state = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(state);
+    const store = openStore(join(storeDir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+    let current = state;
+    let prng = createPrng(1);
+    const tick = (queue: readonly QueuedProposal[]) => {
+      const step = applyOneTick(
+        current,
+        prng,
+        queue,
+        { store, reducers, traceDb: store.db },
+        { cursorWallMs: 1_000 * (current.tick + 1), paused: false },
+      );
+      if (step.kind === "committed") {
+        current = step.state;
+        prng = step.prng;
+      }
+      return step;
+    };
+    try {
+      return fn({ store, reducers, state, tick });
+    } finally {
+      closeStore(store);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+}
+
+test("a proposal citing a recorded observation id with different content is refused as observation-conflict: the tick commits, the recorded evidence is untouched, and nothing runs", () => {
+  withStore(({ store, tick }) => {
+    const first = manualProposal("farmer", { kind: "move", to: "tavern" });
+    expect(tick([first]).kind).toBe("committed");
+    const recorded = getObservation(store.db, first.observation.id)?.record;
+
+    // A second, valid action reusing the first one's observation id with
+    // different facts and state revision.
+    const reuse = citing(
+      manualProposal("woodcutter", { kind: "move", to: "tavern" }),
+      first.observation.id,
+      ["invented fact"],
+    );
+    const step = tick([reuse]);
+
+    expect(step.kind).toBe("committed");
+    expect(getProposalOutcomeByProposalId(store.db, reuse.id)).toMatchObject({
+      outcome: "rejected",
+      reason: "observation-conflict",
+      eventIds: [],
+    });
+    expect(getObservation(store.db, first.observation.id)?.record).toEqual(
+      recorded,
+    );
+    // Only the first proposal's move exists: the refused one changed nothing.
+    expect(
+      listEvents(store.db)
+        .filter((event) => event.kind === "entity-moved")
+        .map((event) => String(event.entityId)),
+    ).toEqual(["farmer"]);
+  });
+});
+
+test("a refused proposal does not hold up the others in its tick, and the tick is not repeated", () => {
+  withStore(({ store, tick, state }) => {
+    const first = manualProposal("farmer", { kind: "move", to: "tavern" });
+    tick([first]);
+    const conflicting = citing(
+      manualProposal("woodcutter", { kind: "move", to: "tavern" }),
+      first.observation.id,
+      ["invented fact"],
+    );
+    const fine = manualProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    const before = readClock(store.db).tick;
+
+    const step = tick([conflicting, fine]);
+
+    expect(step.kind).toBe("committed");
+    expect(readClock(store.db).tick).toBe(before + 1);
+    expect(getProposalOutcomeByProposalId(store.db, fine.id)?.outcome).toBe(
+      "committed",
+    );
+    expect(state.tick).toBeLessThan(readClock(store.db).tick);
+  });
+});
+
+test("two proposals in one tick citing one observation id with different content: the first runs, the second is refused, and the observation is recorded once", () => {
+  withStore(({ store, tick }) => {
+    const observationId = createObservationId();
+    const a = citing(
+      manualProposal("farmer", { kind: "move", to: "tavern" }),
+      observationId,
+      ["a"],
+    );
+    const b = citing(
+      manualProposal("woodcutter", { kind: "move", to: "tavern" }),
+      observationId,
+      ["b"],
+    );
+
+    expect(tick([a, b]).kind).toBe("committed");
+
+    expect(getProposalOutcomeByProposalId(store.db, a.id)?.outcome).toBe(
+      "committed",
+    );
+    expect(getProposalOutcomeByProposalId(store.db, b.id)).toMatchObject({
+      outcome: "rejected",
+      reason: "observation-conflict",
+    });
+    expect(getObservation(store.db, observationId)?.record.factsRead).toEqual([
+      "a",
+    ]);
+  });
+});
+
+test("several proposals citing one unchanged observation all run, in the same tick or later, and the observation is recorded once", () => {
+  withStore(({ store, tick }) => {
+    const a = manualProposal("zeus", {
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    });
+    // The same observer's unchanged observation, cited again by a later
+    // proposal of the same actor.
+    const again = manualProposal("zeus", {
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    });
+    const c: QueuedProposal = {
+      ...again,
+      proposal: { ...again.proposal, observationId: a.observation.id },
+      observation: a.observation,
+    };
+    // And a same-tick proposal by a different actor citing it would be a
+    // different observer, hence different content: covered as a conflict above.
+
+    expect(tick([a]).kind).toBe("committed");
+    expect(tick([c]).kind).toBe("committed");
+
+    for (const queued of [a, c]) {
+      expect(getProposalOutcomeByProposalId(store.db, queued.id)).toMatchObject(
+        { outcome: "committed" },
+      );
+    }
+    expect(
+      (
+        store.db
+          .query("SELECT COUNT(*) AS n FROM trace_observations WHERE id = ?")
+          .get(a.observation.id) as { n: number }
+      ).n,
+    ).toBe(1);
+  });
+});
+
+test("tracing a tick whose admitted observation conflicts with the recorded one throws: screening makes it unreachable, so reaching it is an invariant breach, not an outcome", () => {
+  withStore(({ store, state }) => {
+    const first = manualProposal("zeus", {
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    });
+    // Bypass `screenObservations`: record the first, then trace a tick that
+    // admits a proposal citing the same id with different content.
+    const recorded = stepWorldTick(state, createPrng(1), [first]);
+    traceWorldTick(store.db, recorded);
+    const conflicting = citing(
+      manualProposal("zeus", { kind: "strike", target: "old-oak", power: 1 }),
+      first.observation.id,
+      ["changed"],
+    );
+    const unscreened = stepWorldTick(state, createPrng(1), [conflicting]);
+
+    expect(() => traceWorldTick(store.db, unscreened)).toThrow(
+      /observation .* already bound to different content/,
+    );
+    expect(getObservation(store.db, first.observation.id)?.record).toEqual(
+      first.observation,
+    );
+  });
 });

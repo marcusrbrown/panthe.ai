@@ -158,6 +158,105 @@ describe("insertExternalProposal", () => {
   });
 });
 
+describe("observation identity in the journal", () => {
+  /** A second proposal (its own id) citing the same observation id, with the observation's content possibly changed. */
+  const citing = (
+    id: string,
+    observation: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    proposalId: id,
+    proposal: { kind: "strike", target: "the-tavern", power: 3, ...extra },
+    observation,
+  });
+
+  test("two pending proposals may cite one unchanged observation", () => {
+    const store = openStore(dbPath, reducer);
+    const observation = { id: "obs-shared", factsRead: ["a"] };
+
+    const first = insertExternalProposal(
+      store.db,
+      citing("proposal-a", observation),
+    );
+    const second = insertExternalProposal(
+      store.db,
+      citing(
+        "proposal-b",
+        { factsRead: ["a"], id: "obs-shared" },
+        { power: 2 },
+      ),
+    );
+
+    expect(first.kind).toBe("accepted");
+    expect(second.kind).toBe("accepted");
+    expect(readPendingExternalProposals(store.db, 5)).toHaveLength(2);
+    closeStore(store);
+  });
+
+  test("a second pending proposal reusing an observation id with different content is refused, and the first entry is untouched", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(
+      store.db,
+      citing("proposal-a", { id: "obs-shared", factsRead: ["a"] }),
+    );
+
+    const result = insertExternalProposal(
+      store.db,
+      citing("proposal-b", { id: "obs-shared", factsRead: ["b"] }),
+    );
+
+    expect(result.kind).toBe("observation-conflict");
+    expect(result.entry.proposalId).toBe("proposal-a");
+    expect(getExternalProposal(store.db, "proposal-b")).toBeUndefined();
+    expect(readPendingExternalProposals(store.db, 5)).toHaveLength(1);
+    closeStore(store);
+  });
+
+  test("the observation id stays bound after the first proposal is consumed, and across a reopen", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(
+      store.db,
+      citing("proposal-a", { id: "obs-shared", factsRead: ["a"] }),
+    );
+    markExternalProposalConsumed(store.db, "proposal-a", 1, COMMITTED);
+    closeStore(store);
+
+    const reopened = openStore(dbPath, reducer);
+    const conflicting = insertExternalProposal(
+      reopened.db,
+      citing("proposal-b", { id: "obs-shared", factsRead: ["b"] }),
+    );
+    const same = insertExternalProposal(
+      reopened.db,
+      citing("proposal-c", { id: "obs-shared", factsRead: ["a"] }),
+    );
+
+    expect(conflicting.kind).toBe("observation-conflict");
+    expect(same.kind).toBe("accepted");
+    closeStore(reopened);
+  });
+
+  test("a retry of one proposal id with changed content is still a proposal conflict, not an observation one", () => {
+    const store = openStore(dbPath, reducer);
+    insertExternalProposal(
+      store.db,
+      citing("proposal-a", { id: "obs-shared", factsRead: ["a"] }),
+    );
+
+    const result = insertExternalProposal(
+      store.db,
+      citing(
+        "proposal-a",
+        { id: "obs-shared", factsRead: ["a"] },
+        { power: 9 },
+      ),
+    );
+
+    expect(result.kind).toBe("conflict");
+    closeStore(store);
+  });
+});
+
 describe("readPendingExternalProposals", () => {
   test("the per-tick pending read is served by an index, not a scan of the whole journal", () => {
     const store = openStore(dbPath, reducer);

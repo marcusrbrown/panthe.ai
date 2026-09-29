@@ -44,6 +44,7 @@ import {
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
+  toLegendId,
   type WorldEventDraft,
   type WorldState,
   withLegend,
@@ -177,11 +178,11 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "legend-recorded":
       next = withLegend(state, {
-        id: event.legendId,
+        // Each telling is its own event, so the event's id is its identity.
+        id: toLegendId(`legend-${event.id}`),
         narrator: event.entityId,
         assertion: event.assertion,
         ...(event.linkedEventId ? { linkedEventId: event.linkedEventId } : {}),
-        verified: event.verified,
       });
       break;
     default: {

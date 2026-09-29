@@ -216,7 +216,25 @@ describe("openStore", () => {
     expect(readdirSync(dir).sort()).toEqual(filesBefore);
   });
 
-  test("this build stamps schema version 4", () => {
+  test("an existing version 4 store is refused and left untouched: same bytes, no new files, no reset", () => {
+    const v4 = new Database(dbPath, { create: true });
+    v4.exec("PRAGMA journal_mode = WAL");
+    v4.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY CHECK (id = 1), world_id TEXT NOT NULL) STRICT",
+    );
+    v4.run("INSERT INTO world (id, world_id) VALUES (1, 'world-from-v4')");
+    v4.exec("PRAGMA user_version = 4");
+    v4.close();
+    const bytesBefore = readFileSync(dbPath);
+    const filesBefore = readdirSync(dir).sort();
+
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 4/);
+
+    expect(readFileSync(dbPath).equals(bytesBefore)).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(filesBefore);
+  });
+
+  test("this build stamps schema version 5", () => {
     const store = openStore(dbPath, countReducer);
     expect(
       (
@@ -224,7 +242,7 @@ describe("openStore", () => {
           user_version: number;
         }
       ).user_version,
-    ).toBe(4);
+    ).toBe(5);
     closeStore(store);
   });
 

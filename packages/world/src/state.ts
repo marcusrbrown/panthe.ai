@@ -116,17 +116,25 @@ export interface BuildingState {
 }
 
 /**
- * An attributed narrative record: `verified` is exactly whether
- * `linkedEventId` is present. A disputed second telling of the same
- * happening is simply another `LegendRecord`, never a replacement for the
- * first. Never mutates any other part of `WorldState`.
+ * An attributed narrative record: the narrator's free-form, possibly false
+ * assertion, plus the event they cited as evidence, if any. The world never
+ * judges whether the event supports the assertion, so a legend is at most
+ * event-linked (`isEventLinked`), never certified. `id` is derived from the
+ * event that recorded it, so every telling has its own identity, and a
+ * disputed second telling of the same happening is another `LegendRecord`,
+ * never a replacement for the first. Never mutates any other part of
+ * `WorldState`.
  */
 export interface LegendRecord {
   readonly id: LegendId;
   readonly narrator: EntityId;
   readonly assertion: string;
   readonly linkedEventId?: EventId;
-  readonly verified: boolean;
+}
+
+/** Whether a legend cites a committed event as its evidence. This says nothing about whether the assertion is true. */
+export function isEventLinked(legend: LegendRecord): boolean {
+  return legend.linkedEventId !== undefined;
 }
 
 export interface WorldState {
@@ -179,7 +187,7 @@ export function toEntityId(raw: string): EntityId {
   return raw as EntityId;
 }
 
-/** Same trusted-cast rationale as `toEntityId`, for deterministically-derived legend ids (see `validate.ts`'s `handleLegend`). */
+/** Same trusted-cast rationale as `toEntityId`, for deterministically-derived legend ids (see `applyEvent`'s `legend-recorded` reducer). */
 export function toLegendId(raw: string): LegendId {
   return raw as LegendId;
 }

@@ -407,6 +407,173 @@ describe("a tick that fails to commit", () => {
   });
 });
 
+/** A copy of `body` citing observation `observationId`, whose evidence is `factsRead`. */
+function citingObservation(
+  body: ReturnType<typeof envelope>,
+  observationId: string,
+  factsRead: readonly string[],
+  proposalId: string = nextProposalId(),
+) {
+  return {
+    proposalId,
+    observation: { ...body.observation, id: observationId, factsRead },
+    proposal: { ...body.proposal, observationId },
+  };
+}
+
+describe("an observation id binds to one content", () => {
+  const strikeBy = (actor: string, target: string) =>
+    envelope(actor, { kind: "strike", target, power: 1 });
+
+  test("two pending proposals may cite one unchanged observation, and both run", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const first = strikeBy("zeus", "old-oak");
+      const again = citingObservation(
+        strikeBy("zeus", "old-oak"),
+        first.observation.id,
+        [...first.observation.factsRead],
+      );
+
+      expect((await post(world, first)).status).toBe(202);
+      expect((await post(world, again)).status).toBe(202);
+      expect(listExternalProposals(world.store.db)).toHaveLength(2);
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("a second pending proposal reusing an observation id with different content is a 409 that names the conflict, and nothing is journaled for it", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const first = strikeBy("zeus", "old-oak");
+      await post(world, first);
+      const conflicting = citingObservation(
+        strikeBy("zeus", "old-oak"),
+        first.observation.id,
+        ["a different fact"],
+      );
+
+      const response = await post(world, conflicting);
+
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { error: string }).error).toContain(
+        first.observation.id,
+      );
+      expect(
+        getExternalProposal(world.store.db, conflicting.proposalId),
+      ).toBeUndefined();
+      expect(listExternalProposals(world.store.db)).toHaveLength(1);
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("an observation id already recorded in the trace, with different content, is a 409; exact reuse is accepted", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const first = strikeBy("zeus", "old-oak");
+      await post(world, first);
+      tick(world);
+      expect(outcomeOf(world, first.proposalId)?.outcome).toBe("committed");
+
+      const conflicting = citingObservation(
+        strikeBy("zeus", "old-oak"),
+        first.observation.id,
+        ["invented after the fact"],
+      );
+      const reuse = citingObservation(
+        strikeBy("zeus", "old-oak"),
+        first.observation.id,
+        [...first.observation.factsRead],
+      );
+
+      expect((await post(world, conflicting)).status).toBe(409);
+      expect(
+        getExternalProposal(world.store.db, conflicting.proposalId),
+      ).toBeUndefined();
+      expect((await post(world, reuse)).status).toBe(202);
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("after a restart, both the recorded and the still-pending observation ids stay bound", async () => {
+    const storePath = join(dir, "world.sqlite");
+    const first = openWorld(storePath);
+    startServer(first);
+    const recorded = strikeBy("zeus", "old-oak");
+    await post(first, recorded);
+    tick(first);
+    const pending = strikeBy("farmer", "old-oak");
+    await post(first, pending);
+    shutDown(first);
+
+    const second = openWorld(storePath);
+    startServer(second);
+    try {
+      const againstRecorded = citingObservation(
+        strikeBy("zeus", "old-oak"),
+        recorded.observation.id,
+        ["changed"],
+      );
+      const againstPending = citingObservation(
+        strikeBy("farmer", "old-oak"),
+        pending.observation.id,
+        ["changed"],
+      );
+
+      expect((await post(second, againstRecorded)).status).toBe(409);
+      expect((await post(second, againstPending)).status).toBe(409);
+      expect(listExternalProposals(second.store.db)).toHaveLength(2);
+    } finally {
+      shutDown(second);
+    }
+  });
+
+  test("a proposal journaled before its observation id became bound elsewhere is refused at execution with a durable observation-conflict outcome, and the tick is not repeated", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const victim = strikeBy("zeus", "old-oak");
+      await post(world, victim);
+      // Something else binds the id to different content before the tick.
+      world.store.db.run(
+        `INSERT INTO trace_observations (id, observer, state_revision, source, recorded_at, payload)
+         VALUES (?, 'someone', 0, 'fixture', 0, ?)`,
+        [
+          victim.observation.id,
+          JSON.stringify({ ...victim.observation, factsRead: ["elsewhere"] }),
+        ],
+      );
+
+      expect(tick(world)).toBe("committed");
+
+      expect(outcomeOf(world, victim.proposalId)).toMatchObject({
+        outcome: "rejected",
+        reason: "observation-conflict",
+      });
+      expect(
+        getExternalProposal(world.store.db, victim.proposalId),
+      ).toMatchObject({
+        consumedTick: 1,
+        outcome: { status: "rejected", reason: "observation-conflict" },
+      });
+      const retry = await post(world, victim);
+      expect(await retry.json()).toMatchObject({
+        status: "rejected",
+        reason: "observation-conflict",
+      });
+      expect(tick(world)).toBe("committed");
+    } finally {
+      shutDown(world);
+    }
+  });
+});
+
 describe("retrying a proposal", () => {
   test("the same id with the same content journals nothing new and reports its status, pending and then committed", async () => {
     const world = openWorld(join(dir, "world.sqlite"));

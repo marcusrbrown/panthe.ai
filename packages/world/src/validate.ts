@@ -41,7 +41,6 @@ import {
   getBuilding,
   getEntityRevision,
   getLocation,
-  toLegendId,
   type WorldEventDraft,
   type WorldState,
 } from "./state";
@@ -504,25 +503,24 @@ function handleWorship(
 
 /**
  * A legend commits regardless of whether its assertion is true -- it
- * records that someone told the story, never that the story is fact.
- * `legendId` is derived from the proposal's own `observationId`, so the
- * same proposal always yields the same legend id.
+ * records that someone told the story, never that the story is fact. A cited
+ * event is carried along as the narrator's evidence link, not judged: the
+ * world does not decide whether it supports the prose. The legend's identity
+ * comes from the event that records it (see `applyEvent`), so two tellings
+ * from one unchanged observation stay distinct.
  */
 function handleLegend(
   _state: WorldState,
   proposal: LegendProposal,
 ): RuleOutcome {
-  const legendId = toLegendId(`legend-${proposal.observationId}`);
   return commit([
     {
       kind: "legend-recorded",
       entityId: proposal.actor,
-      legendId,
       assertion: proposal.assertion,
       ...(proposal.linkedEventId
         ? { linkedEventId: proposal.linkedEventId }
         : {}),
-      verified: proposal.linkedEventId !== undefined,
     },
   ]);
 }

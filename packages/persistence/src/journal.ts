@@ -10,7 +10,7 @@
 // packages/contracts own what they mean.
 
 import type { Database } from "bun:sqlite";
-import type { RejectionReasonCode } from "@panthea/contracts";
+import { canonicalJson, type RejectionReasonCode } from "@panthea/contracts";
 
 /** How a consumed proposal ended. A rejection always carries the reason code the world gave. */
 export type ExternalProposalOutcome =
@@ -53,8 +53,13 @@ export type InsertExternalProposalResult =
   | { readonly kind: "accepted"; readonly entry: ExternalProposalEntry }
   /** The id was already journaled with the same content; nothing was inserted. */
   | { readonly kind: "existing"; readonly entry: ExternalProposalEntry }
-  /** The id was already journaled with different content; nothing was inserted. */
-  | { readonly kind: "conflict"; readonly entry: ExternalProposalEntry };
+  /** The proposal id was already journaled with different content; nothing was inserted. */
+  | { readonly kind: "conflict"; readonly entry: ExternalProposalEntry }
+  /** A different proposal already journaled the same observation id with different observation content; nothing was inserted, and `entry` is that earlier proposal. */
+  | {
+      readonly kind: "observation-conflict";
+      readonly entry: ExternalProposalEntry;
+    };
 
 interface JournalRow {
   input_order: number;
@@ -87,22 +92,6 @@ function decode(row: JournalRow): ExternalProposalEntry {
         ? { status: "rejected", reason: row.reason as RejectionReasonCode }
         : { status: "committed" },
   };
-}
-
-/** JSON text with object keys sorted at every depth, so equal values compare equal whatever order their keys arrived in. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function sameContent(
@@ -145,6 +134,23 @@ export function insertExternalProposal(
         kind: sameContent(existing, input) ? "existing" : "conflict",
         entry: existing,
       };
+    }
+    // An observation id binds to one content: another proposal may cite the
+    // same, unchanged observation, but not a changed one.
+    const observationId = (input.observation as { id?: unknown } | null)?.id;
+    if (typeof observationId === "string") {
+      const earlier = db
+        .query(
+          "SELECT * FROM external_proposals WHERE json_extract(observation, '$.id') = ? ORDER BY input_order ASC LIMIT 1",
+        )
+        .get(observationId) as JournalRow | null;
+      if (
+        earlier &&
+        canonicalJson(decode(earlier).observation) !==
+          canonicalJson(input.observation)
+      ) {
+        return { kind: "observation-conflict", entry: decode(earlier) };
+      }
     }
     const { tick } = db.query("SELECT tick FROM clock WHERE id = 1").get() as {
       tick: number;

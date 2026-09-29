@@ -417,71 +417,45 @@ test("decode rejects a rules object missing a required numeric field", () => {
   expect(() => decode({ ...base, rules: incompleteRules })).toThrow();
 });
 
-test("decode rejects a legend claiming verified without a linkedEventId", () => {
-  const base = encode(createInitialWorldState(economyPack()));
-  expect(() =>
-    decode({
-      ...base,
-      legends: [
-        [
-          "legend-1",
-          {
-            id: "legend-1",
-            narrator: "farmer",
-            assertion: "Zeus struck down the old oak",
-            verified: true,
-          },
-        ],
-      ],
-    }),
-  ).toThrow();
-});
-
-test("decode rejects a legend with a linkedEventId claiming unverified", () => {
-  const base = encode(createInitialWorldState(economyPack()));
-  expect(() =>
-    decode({
-      ...base,
-      legends: [
-        [
-          "legend-1",
-          {
-            id: "legend-1",
-            narrator: "farmer",
-            assertion: "Zeus struck down the old oak",
-            linkedEventId: "evt-9",
-            verified: false,
-          },
-        ],
-      ],
-    }),
-  ).toThrow();
-});
-
-test("encode -> JSON round-trip -> decode reproduces both an unlinked rumor and a linked verified legend", () => {
+test("encode -> JSON round-trip -> decode reproduces an unlinked legend and an event-linked one, neither carrying a truth flag", () => {
   let original = createInitialWorldState(economyPack());
   original = withLegend(original, {
-    id: toLegendId("legend-rumor"),
+    id: toLegendId("legend-unlinked"),
     narrator: toEntityId("farmer"),
     assertion: "Zeus struck down the old oak",
-    verified: false,
   });
   original = withLegend(original, {
-    id: toLegendId("legend-verified"),
+    id: toLegendId("legend-linked"),
     narrator: toEntityId("farmer"),
     assertion: "Zeus struck down the old oak",
     linkedEventId: "evt-9" as EventId,
-    verified: true,
   });
   const roundTripped = decode(JSON.parse(JSON.stringify(encode(original))));
   expect(roundTripped).toEqual(original);
-  expect(roundTripped.legends.get(toLegendId("legend-rumor"))).toMatchObject({
-    verified: false,
-  });
-  expect(roundTripped.legends.get(toLegendId("legend-verified"))).toMatchObject(
-    {
-      linkedEventId: "evt-9",
-      verified: true,
-    },
-  );
+  const unlinked = roundTripped.legends.get(toLegendId("legend-unlinked"));
+  expect(unlinked).not.toHaveProperty("linkedEventId");
+  expect(unlinked).not.toHaveProperty("verified");
+  const linked = roundTripped.legends.get(toLegendId("legend-linked"));
+  expect(linked).toMatchObject({ linkedEventId: "evt-9" });
+  expect(linked).not.toHaveProperty("verified");
+});
+
+test("decode rejects a legend whose linkedEventId is not a string", () => {
+  const base = encode(createInitialWorldState(economyPack()));
+  expect(() =>
+    decode({
+      ...base,
+      legends: [
+        [
+          "legend-1",
+          {
+            id: "legend-1",
+            narrator: "farmer",
+            assertion: "Zeus struck down the old oak",
+            linkedEventId: 9,
+          },
+        ],
+      ],
+    }),
+  ).toThrow();
 });

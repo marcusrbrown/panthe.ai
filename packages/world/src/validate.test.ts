@@ -1063,7 +1063,7 @@ test("a strike by a non-deity actor is rejected regardless of divine power held"
   expect(outcome.ok).toBe(false);
 });
 
-test("an unlinked legend proposal commits as an unverified rumor", () => {
+test("an unlinked legend proposal commits as an attributed assertion with no evidence link", () => {
   const state = fireFixtureState();
   const outcome = validateProposal(
     state,
@@ -1076,29 +1076,39 @@ test("an unlinked legend proposal commits as an unverified rumor", () => {
   expect(outcome.ok).toBe(true);
   if (outcome.ok) {
     expect(outcome.events).toHaveLength(1);
-    expect(outcome.events[0]).toMatchObject({
+    const [event] = outcome.events;
+    expect(event).toMatchObject({
       kind: "legend-recorded",
       entityId: "farmer",
       assertion: "Zeus struck down the old oak",
-      verified: false,
     });
+    expect(event).not.toHaveProperty("linkedEventId");
+    expect(event).not.toHaveProperty("verified");
   }
 });
 
-test("a legend proposal linking a committed event commits as verified", () => {
+test("a legend proposal citing an event commits the citation as an evidence link, never as certification of the prose", () => {
   const state = fireFixtureState();
+  // The cited event is unrelated to the story: the world does not judge
+  // truth, so the legend still commits, linked, and carries no truth flag.
   const outcome = validateProposal(
     state,
     proposal({
       actor: "farmer",
       kind: "legend",
-      assertion: "Zeus struck down the old oak",
+      assertion: "Zeus destroyed the entire Underworld",
       linkedEventId: "evt-9",
     }),
   );
   expect(outcome.ok).toBe(true);
   if (outcome.ok) {
-    expect(outcome.events[0]).toMatchObject({ verified: true });
+    const [event] = outcome.events;
+    expect(event).toMatchObject({
+      kind: "legend-recorded",
+      assertion: "Zeus destroyed the entire Underworld",
+      linkedEventId: "evt-9",
+    });
+    expect(event).not.toHaveProperty("verified");
   }
 });
 

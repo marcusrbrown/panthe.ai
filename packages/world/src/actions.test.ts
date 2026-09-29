@@ -393,3 +393,57 @@ test("a gather, produce, trade, and consume run through a tick and reproduce via
   const rebuilt = applyEvents(state, allEvents);
   expect(rebuilt.actors).toEqual(consume.state.actors);
 });
+
+function legendBy(narrator: string, assertion: string): Proposal {
+  const result = submitProposal({
+    schemaVersion: 1,
+    actor: narrator,
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    // One unchanged observation, cited by both tellings.
+    observationId: "obs-shared",
+    kind: "legend",
+    assertion,
+  });
+  if (!result.ok) {
+    throw new Error(
+      `legend fixture failed to parse: ${result.rejection.message}`,
+    );
+  }
+  return result.proposal;
+}
+
+test("two tellings from one unchanged observation on successive ticks both survive, each with its own identity", () => {
+  const state = walkState();
+  const first = runTick(state, createPrng(1), [
+    legendBy("wanderer", "the old oak was struck"),
+  ]);
+  const second = runTick(first.state, first.prng, [
+    legendBy("wanderer", "the old oak was not struck at all"),
+  ]);
+
+  expect(second.state.legends.size).toBe(2);
+  const tellings = [...second.state.legends.values()].map(
+    (legend) => legend.assertion,
+  );
+  expect(tellings).toEqual([
+    "the old oak was struck",
+    "the old oak was not struck at all",
+  ]);
+  expect(new Set(second.state.legends.keys()).size).toBe(2);
+});
+
+test("a legend's identity comes from the event that recorded it, so replaying the same events yields the same legends", () => {
+  const state = walkState();
+  const told = runTick(state, createPrng(1), [
+    legendBy("wanderer", "the old oak was struck"),
+  ]);
+
+  const replayed = applyEvents(state, told.events);
+
+  expect([...replayed.legends.keys()]).toEqual([...told.state.legends.keys()]);
+  expect([...told.state.legends.keys()][0]).toContain(
+    String(told.events[0]?.id),
+  );
+});

@@ -16,6 +16,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   type ArchiveManifest,
   type CatchUpSummary,
+  canonicalJson,
   createSessionId,
   type DegradedReason,
   eventSubjects,
@@ -43,6 +44,7 @@ import {
 import {
   followEvent,
   followProposal,
+  getObservation,
   getProposalOutcomeByProposalId,
   parseProposalId,
   recordReceipt,
@@ -589,6 +591,16 @@ export function createSimulationServer(
     });
   }
 
+  function observationConflictResponse(observationId: string): Response {
+    return jsonResponse(
+      {
+        ok: false,
+        error: `observation ${observationId} is already bound to different content; an observation id refers to one record, so reuse it only unchanged`,
+      },
+      409,
+    );
+  }
+
   async function handleProposal(request: Request): Promise<Response> {
     let body: unknown;
     try {
@@ -651,6 +663,23 @@ export function createSimulationServer(
           409,
         );
       }
+      // An observation id binds to one content. The trace holds every
+      // observation a tick has recorded; a different content under a used id
+      // is refused here, with an explicit outcome, so evidence can never be
+      // silently attributed to the wrong observation (the journal checks the
+      // still-pending proposals in the same insert). This runs before any
+      // await, in the same synchronous step as the insert, so no tick can
+      // record the id in between.
+      if (getExternalProposal(store.db, proposalId.value) === undefined) {
+        const recorded = getObservation(traceDb, observationResult.value.id);
+        if (
+          recorded &&
+          canonicalJson(recorded.record) !==
+            canonicalJson(observationResult.value)
+        ) {
+          return observationConflictResponse(observationResult.value.id);
+        }
+      }
       result = insertExternalProposal(store.db, {
         proposalId: proposalId.value,
         proposal: intake.proposal,
@@ -664,6 +693,9 @@ export function createSimulationServer(
         },
         500,
       );
+    }
+    if (result.kind === "observation-conflict") {
+      return observationConflictResponse(observationResult.value.id);
     }
     if (result.kind === "conflict") {
       return jsonResponse(

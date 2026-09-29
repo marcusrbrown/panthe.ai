@@ -1,6 +1,8 @@
 // Context, memory, planning, model routing, and fallback live here. Model
-// routing is the first system: a router that turns a context into a typed
-// intent through operator-configured OpenAI-compatible endpoints.
+// routing: a router that turns a context into a typed intent through
+// operator-configured OpenAI-compatible endpoints. Context: a god's prompt and
+// intent schema built from its profile and one perception snapshot, and the
+// trusted builder that turns a parsed intent into an observation and proposal.
 
 export type {
   Endpoint,
@@ -16,6 +18,16 @@ export {
   parseRoutingConfig,
   planRoute,
 } from "./config";
+export type { GodIntent, GodIntentAction } from "./context";
+export {
+  buildGodContext,
+  GOD_INTENT_ACTIONS,
+  godAvailableActions,
+  godIntentSchema,
+  MAX_ASSERTION_LENGTH,
+} from "./context";
+export type { ModelProposalResult } from "./observation";
+export { buildModelProposal, snapshotFacts } from "./observation";
 export type { EndpointModelArgs } from "./providers";
 export { createEndpointModel, RedirectRefusedError } from "./providers";
 export { extractJsonObjects, repairIntent } from "./repair";

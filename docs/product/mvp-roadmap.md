@@ -45,8 +45,8 @@ re-check, and a packaged Windows/Linux renderer run. M1 work may begin without w
 
 ### M1 outcome (2026-09-28)
 
-M1 meets its exit evidence. The headless causal scenario passes against the compiled sidecar
-([m1-living-world](../../tools/scenarios/m1-living-world/README.md): 16 steps in 54 s, three
+M1 is complete. The headless causal scenario passes against the compiled sidecar
+([m1-living-world](../../tools/scenarios/m1-living-world/README.md): 16 steps in 54 s, seven
 positive controls that each exit non-zero): unattended routines, a strike that damages a tree, a
 strike that becomes fire, lost service, and repair, worship with an expiring favor, attributed legends, rejected malformed, false,
 and stale proposals, pause across a restart, a proposal that survives a kill, a kill mid catch-up

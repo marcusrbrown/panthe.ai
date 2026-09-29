@@ -42,6 +42,9 @@ M1 from starting. Four independent re-checks also remain open — tracked as the
 follow-up probes, not blockers to M1: packaged Flatland feature completeness on a second
 WebGL2 GPU/driver, a signed (not ad-hoc) macOS 15 WebGPU re-check, a macOS 26 WKWebView WebGPU
 re-check, and a packaged Windows/Linux renderer run. M1 work may begin without waiting on these.
+The M0 renderer probe app (`apps/probe-renderer`) was removed on 2026-09-28 (source at commit
+`ce9e5a4`; evidence stays in [the probe README](../../tools/probes/renderer-webgl2/README.md)), so
+the repeat runs will use the packaged desktop app with a measurement harness.
 
 ### M1 outcome (2026-09-28)
 

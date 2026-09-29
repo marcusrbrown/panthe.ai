@@ -34,7 +34,9 @@ measure. None blocks M1 work from starting; each is its own follow-up probe.
 3. **macOS 26 WKWebView WebGPU re-check** — confirm `navigator.gpu` actually appears once the OS
    gate lifts, and re-verify the `WebGPURenderer` context-loss-recovery limitation on that path.
 4. **Packaged Windows/Linux renderer run** — Linux (WebKitGTK) and Windows (WebView2) remain
-   conditional per P05/ADR-0002 until their own packaged-app probe runs.
+   conditional per P05/ADR-0002 until their own packaged-app probe runs. The probe app
+   (`apps/probe-renderer`) was removed on 2026-09-28 (source at commit `ce9e5a4`), so this run will
+   use the packaged desktop app with a measurement harness.
 
 ## Requirements touched by M0 evidence
 

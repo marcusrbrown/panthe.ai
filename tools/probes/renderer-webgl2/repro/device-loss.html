@@ -9,7 +9,7 @@
       webglcontextrestored, and dispose() loses the context again.
       See: tools/probes/renderer-webgl2/README.md (Results §3, context loss)
            docs/solutions/integration-issues/three-webgpurenderer-device-loss-latch-2026-09-27.md
-           apps/probe-renderer/src/Scene.tsx (the original discovery site)
+           apps/probe-renderer/src/Scene.tsx (the original discovery site; app removed, source at commit ce9e5a4)
 
       No build step: this is a single plain HTML file with an importmap
       pointing at unpkg so it can be dropped into a jsfiddle/codepen/plain
@@ -132,7 +132,7 @@
       import { WebGPURenderer } from "three/webgpu";
 
       // three/tsl and three/addons/ are mapped above (matching how this
-      // workspace resolves them, see apps/probe-renderer/src/Scene.tsx) but
+      // workspace resolves them, see apps/probe-renderer/src/Scene.tsx at commit ce9e5a4) but
       // this minimal repro doesn't need TSL nodes or addon classes — a
       // MeshBasicMaterial box is enough to observe the device-lost bug.
 

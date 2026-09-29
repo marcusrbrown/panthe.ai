@@ -167,4 +167,4 @@ Not covered:
 
 ## Bottom line
 
-All 16 steps held, on a tree built on commit 9135afa. The story ran in 53 s; the whole evidence run, with every control, took 363 s. All 7 positive controls exited non-zero, so the assertions they target are live. The compiled sidecar binary was 60 MiB.
+All 16 steps held on the tree merged in #44. The story ran in 53 s; the whole evidence run, with every control, took 363 s. All 7 positive controls exited non-zero, so the assertions they target are live. The compiled sidecar binary was 60 MiB.

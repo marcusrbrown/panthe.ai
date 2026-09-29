@@ -137,4 +137,5 @@ export function recordOperatorEvent(kind: string): (db: Database) => void {
 ## Related
 
 - [World and persistence composed incorrectly despite green package tests](../integration-issues/world-persistence-composition-broken-after-reopen-2026-09-27.md)
+- [A proposal acknowledged before it was durable was lost on a crash, and its retry answer did not survive a restore](../integration-issues/proposal-accepted-then-lost-before-durable-2026-09-28.md) — journal consumption uses this hook
 - [0003: Simulation service](../../decisions/0003-simulation-service.md)

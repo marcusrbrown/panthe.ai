@@ -152,6 +152,8 @@ needs its own capture plus control, not a reused result.
 ## Related Issues
 
 - [ADR-0005 Model providers](../../decisions/0005-model-providers.md) — offline consequence
+- [A headless scenario against the compiled binary needs a positive control per negative claim](../best-practices/end-to-end-scenario-with-positive-controls-2026-09-28.md)
+  — the same positive-control principle applied to a scenario's negative claims
 - [D22](../../product/decisions.md), [P07](../../product/requirements.md) — the invariant and its
   requirement
 - [Sampling Ollama's real memory usage needs the runner child pid](../performance-issues/ollama-runner-pid-rss-sampling-2026-09-27.md)

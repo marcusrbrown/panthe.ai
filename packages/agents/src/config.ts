@@ -259,6 +259,15 @@ function parseEndpoint(value: unknown, path: string): ParseResult<Endpoint> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return fail(`${path}.baseUrl`, "expected an http or https URL");
   }
+  // A base URL needs no query or fragment, and a query is where API keys
+  // get pasted (`?api_key=...`). Checked on the text, so a bare `?` or `#` is
+  // caught too. The message never echoes the URL.
+  if (/[?#]/.test(baseUrl.value)) {
+    return fail(
+      `${path}.baseUrl`,
+      "a base URL must not carry a query string or fragment; a key belongs in credential storage, referenced by keyRef",
+    );
+  }
   if (url.username !== "" || url.password !== "") {
     return fail(
       `${path}.baseUrl`,

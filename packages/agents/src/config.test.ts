@@ -192,6 +192,28 @@ describe("parseRoutingConfig", () => {
       "endpoints[0].baseUrl",
     ],
     [
+      "a secret in the URL's query string",
+      {
+        endpoints: [
+          {
+            ...go,
+            baseUrl: "https://api.example.com/v1?api_key=sk-example-secret",
+          },
+        ],
+      },
+      "endpoints[0].baseUrl",
+    ],
+    [
+      "an empty query string",
+      { endpoints: [{ ...go, baseUrl: "https://api.example.com/v1?" }] },
+      "endpoints[0].baseUrl",
+    ],
+    [
+      "a fragment",
+      { endpoints: [{ ...go, baseUrl: "https://api.example.com/v1#frag" }] },
+      "endpoints[0].baseUrl",
+    ],
+    [
       "a missing model",
       { endpoints: [{ id: "ollama", baseUrl: ollama.baseUrl }] },
       "endpoints[0].model",
@@ -224,6 +246,45 @@ describe("parseRoutingConfig", () => {
     if (!result.ok) {
       expect(result.path).toBe(path);
     }
+  });
+
+  test("a query-string rejection says where a key belongs and does not echo the secret", () => {
+    const result = parseRoutingConfig(
+      config({
+        endpoints: [
+          {
+            ...go,
+            baseUrl: "https://api.example.com/v1?api_key=sk-example-secret",
+          },
+        ],
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("keyRef");
+      expect(result.message).not.toContain("sk-example-secret");
+    }
+  });
+
+  test("a plain base URL is still accepted, with or without a trailing slash, and the trailing slash is dropped", () => {
+    const value = parsed(
+      config({
+        endpoints: [
+          { ...go, id: "slash", baseUrl: "https://api.example.com/v1/" },
+          { ...go, id: "plain", baseUrl: "https://api.example.com/v1" },
+        ],
+        roles: {},
+        fallback: [],
+      }),
+    );
+
+    expect(value.endpoints.get("slash")?.baseUrl).toBe(
+      "https://api.example.com/v1",
+    );
+    expect(value.endpoints.get("plain")?.baseUrl).toBe(
+      "https://api.example.com/v1",
+    );
   });
 
   test("rejects input that is not an object", () => {

@@ -26,7 +26,6 @@ import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
 import {
   applyLiveTick,
   type CatchUpControl,
-  createExternalQueue,
   createServiceStatusRef,
   createSimulationServer,
   type ServiceStatusRef,
@@ -172,7 +171,6 @@ export function startService(options: StartOptions): ServiceHandle {
 
   const tickDeps: TickDeps = { store, reducers, traceDb: store.db };
   const statusRef: ServiceStatusRef = createServiceStatusRef(state);
-  const externalQueue = createExternalQueue();
 
   // Set synchronously at the start of every `runCatchUpNow` call, before
   // that call's first `await` -- so by the time any other code in this
@@ -217,7 +215,6 @@ export function startService(options: StartOptions): ServiceHandle {
     traceDb: store.db,
     slotsDir,
     statusRef,
-    externalQueue,
     catchUpControl,
     ...(options.port !== undefined ? { port: options.port } : {}),
   });
@@ -235,9 +232,9 @@ export function startService(options: StartOptions): ServiceHandle {
    * routines still need to act at the same one-simulated-second
    * granularity as live play; that catch-up run itself now executes in
    * the background (chunked, yielding to the event loop) rather than
-   * blocking this cycle. Otherwise drains the queue (routine proposals
-   * decided from the last committed state, plus anything `/proposals`
-   * enqueued since) through one ordinary tick.
+   * blocking this cycle. Otherwise runs one ordinary tick over the routine
+   * proposals decided from the last committed state plus the pending entries
+   * of the durable proposal journal, which the tick consumes itself.
    */
   function runOneLiveTick(): void {
     if (catchUpInProgress) {
@@ -264,7 +261,7 @@ export function startService(options: StartOptions): ServiceHandle {
       return;
     }
 
-    const step = applyLiveTick(externalQueue, queue, state, prng, tickDeps, {
+    const step = applyLiveTick(queue, state, prng, tickDeps, {
       cursorWallMs: currentClock.cursorWallMs + TICK_INTERVAL_MS,
       paused: false,
     });

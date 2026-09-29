@@ -5,5 +5,6 @@
 
 export * from "./archive";
 export * from "./clock";
+export * from "./journal";
 export * from "./snapshot";
 export * from "./store";

@@ -7,6 +7,10 @@
 // ever advances at a chunk boundary. Every event a catch-up tick produces
 // is marked approximate.
 //
+// Journaled external proposals run inside the chunk transactions like any
+// other tick input: the first tick of each chunk takes the pending entries,
+// and the same commit that applies the chunk marks them consumed.
+//
 // Between chunks, control yields back to the event loop so a concurrent
 // HTTP request (e.g. `/pause`) is actually served while a long catch-up
 // run is in progress, rather than only after it finishes.
@@ -32,6 +36,9 @@ import {
 import {
   buildRoutineQueue,
   commitWorldTick,
+  mergeTickQueue,
+  type QueuedProposal,
+  readPendingExternalQueue,
   recordOperatorEvent,
   stepWorldTick,
   type TickDeps,
@@ -238,9 +245,33 @@ export async function runCatchUp(
   while (ticksDone < totalTicks) {
     const ticksThisChunk = Math.min(chunkTicks, totalTicks - ticksDone);
 
+    // Journaled external proposals run on their next simulated tick, which
+    // is this chunk's first. Anything accepted while catch-up yielded targets
+    // the tick after the last committed chunk, so it is eligible here too.
+    let pending: QueuedProposal[];
+    try {
+      pending = readPendingExternalQueue(
+        deps.store.db,
+        committedState.tick + 1,
+      );
+    } catch (error) {
+      return {
+        summary: committedSummary(),
+        state: committedState,
+        prng: committedPrng,
+        degraded: {
+          reason: "store-error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+
     let workingState = committedState;
     let workingPrng = committedPrng;
-    let workingQueue = buildRoutineQueue(workingState);
+    let workingQueue: readonly QueuedProposal[] = mergeTickQueue(
+      buildRoutineQueue(workingState),
+      pending,
+    );
     const chunkOutcomes: WorldTickOutcome[] = [];
     let chunkEvents: WorldEvent[] = [];
 

@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -64,6 +64,31 @@ export function createSchema(db: Database): void {
         approximate INTEGER NOT NULL,
         payload TEXT NOT NULL
       ) STRICT
+    `);
+    // Every external (fixture or operator) proposal accepted over
+    // /proposals, in the order it arrived. Written by intake, consumed by
+    // the tick that runs it; kept afterwards (see journal.ts).
+    db.exec(`
+      CREATE TABLE external_proposals (
+        input_order INTEGER PRIMARY KEY,
+        proposal_id TEXT NOT NULL UNIQUE,
+        target_tick INTEGER NOT NULL,
+        proposal TEXT NOT NULL,
+        observation TEXT NOT NULL,
+        consumed_tick INTEGER,
+        outcome TEXT CHECK (outcome IN ('committed', 'rejected')),
+        reason TEXT,
+        -- A row is pending (no consuming tick, no outcome) or consumed with
+        -- its terminal outcome; a rejection always names its reason.
+        CHECK ((consumed_tick IS NULL) = (outcome IS NULL)),
+        CHECK ((outcome IS 'rejected') = (reason IS NOT NULL))
+      ) STRICT
+    `);
+    // Serves each tick's pending read (unconsumed, target reached, in input
+    // order) without walking the consumed history, which is never pruned.
+    db.exec(`
+      CREATE INDEX idx_external_proposals_pending
+      ON external_proposals (input_order) WHERE consumed_tick IS NULL
     `);
     // At most one row, present only while a catch-up backlog is being
     // worked off. Written in the same transaction as the discard or chunk it

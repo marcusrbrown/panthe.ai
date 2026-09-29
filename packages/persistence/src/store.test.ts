@@ -180,7 +180,25 @@ describe("openStore", () => {
     check.close();
   });
 
-  test("this build stamps schema version 2", () => {
+  test("an existing version 2 store is refused and left untouched: same bytes, no new files, no reset", () => {
+    const v2 = new Database(dbPath, { create: true });
+    v2.exec("PRAGMA journal_mode = WAL");
+    v2.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY CHECK (id = 1), world_id TEXT NOT NULL) STRICT",
+    );
+    v2.run("INSERT INTO world (id, world_id) VALUES (1, 'world-from-v2')");
+    v2.exec("PRAGMA user_version = 2");
+    v2.close();
+    const bytesBefore = readFileSync(dbPath);
+    const filesBefore = readdirSync(dir).sort();
+
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 2/);
+
+    expect(readFileSync(dbPath).equals(bytesBefore)).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(filesBefore);
+  });
+
+  test("this build stamps schema version 3", () => {
     const store = openStore(dbPath, countReducer);
     expect(
       (
@@ -188,7 +206,7 @@ describe("openStore", () => {
           user_version: number;
         }
       ).user_version,
-    ).toBe(2);
+    ).toBe(3);
     closeStore(store);
   });
 

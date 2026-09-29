@@ -25,6 +25,11 @@ import {
   importArchive,
 } from "./archive";
 import {
+  insertExternalProposal,
+  listExternalProposals,
+  markExternalProposalConsumed,
+} from "./journal";
+import {
   CURRENT_SCHEMA_VERSION,
   closeStore,
   commitTick,
@@ -495,6 +500,25 @@ describe("importArchive: version mismatch", () => {
     closeStore(store);
   });
 
+  test("error path: a version 2 archive is rejected as incompatible-version, never imported; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET sqlite_schema_version = 2");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
   test("error path: a version 1 archive is rejected as incompatible-version, never imported; no slot is created", () => {
     const dbPath = join(dir, "world.sqlite");
     const store = buildPopulatedStore(dbPath);
@@ -916,6 +940,9 @@ describe("computeContentHash", () => {
       db.exec(
         "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
       );
+      db.exec(
+        "CREATE TABLE external_proposals (input_order INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, target_tick INTEGER NOT NULL, proposal TEXT NOT NULL, observation TEXT NOT NULL, consumed_tick INTEGER) STRICT",
+      );
       db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
       db.run(
         "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
@@ -978,6 +1005,9 @@ describe("computeContentHash", () => {
     db.exec(
       "CREATE TABLE events (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL, correlation_id TEXT NOT NULL, causation_id TEXT NOT NULL, kind TEXT NOT NULL, approximate INTEGER NOT NULL, payload TEXT NOT NULL) STRICT",
     );
+    db.exec(
+      "CREATE TABLE external_proposals (input_order INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, target_tick INTEGER NOT NULL, proposal TEXT NOT NULL, observation TEXT NOT NULL, consumed_tick INTEGER) STRICT",
+    );
     db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
     db.run(
       "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
@@ -1008,5 +1038,280 @@ describe("computeContentHash", () => {
     ).not.toBe(baseline);
 
     db.close();
+  });
+});
+
+describe("the external proposal journal in an archive", () => {
+  function journalEntry(id: string, power = 3) {
+    return {
+      proposalId: `proposal-${id}`,
+      proposal: {
+        schemaVersion: 1,
+        kind: "strike",
+        actor: "zeus",
+        target: "the-tavern",
+        power,
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        observationId: `obs-${id}`,
+      },
+      observation: {
+        schemaVersion: 1,
+        id: `obs-${id}`,
+        observer: "zeus",
+        stateRevision: 0,
+        factsRead: [],
+        source: "fixture",
+      },
+    };
+  }
+
+  /** A populated store with one consumed and two pending entries. */
+  function storeWithJournal(dbPath: string): Store {
+    const store = buildPopulatedStore(dbPath);
+    insertExternalProposal(store.db, journalEntry("a"));
+    insertExternalProposal(store.db, journalEntry("b"));
+    insertExternalProposal(store.db, journalEntry("c"));
+    insertExternalProposal(store.db, journalEntry("d"));
+    // "a" (committed) and "d" (rejected) were accepted before the store's
+    // three ticks and consumed by them; "b" and "c" were accepted after and
+    // are still pending.
+    store.db.run(
+      "UPDATE external_proposals SET target_tick = 1 WHERE proposal_id IN ('proposal-a', 'proposal-d')",
+    );
+    markExternalProposalConsumed(store.db, "proposal-a", 3, {
+      status: "committed",
+    });
+    markExternalProposalConsumed(store.db, "proposal-d", 2, {
+      status: "rejected",
+      reason: "busy-actor",
+    });
+    return store;
+  }
+
+  test("an imported slot holds every entry, pending and consumed, with ids, order, target ticks, and consumption preserved", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(listExternalProposals(imported.db)).toEqual(
+      listExternalProposals(store.db),
+    );
+    expect(
+      listExternalProposals(imported.db).map((entry) => [
+        entry.proposalId,
+        entry.inputOrder,
+        entry.consumedTick,
+      ]),
+    ).toEqual([
+      ["proposal-a", 1, 3],
+      ["proposal-b", 2, undefined],
+      ["proposal-c", 3, undefined],
+      ["proposal-d", 4, 2],
+    ]);
+    expect(
+      listExternalProposals(imported.db).map((entry) => entry.outcome),
+    ).toEqual([
+      { status: "committed" },
+      undefined,
+      undefined,
+      { status: "rejected", reason: "busy-actor" },
+    ]);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("an imported slot continues allocation above the maximum input order", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    const next = insertExternalProposal(imported.db, journalEntry("e"));
+
+    expect(next.entry.inputOrder).toBe(5);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("the content hash covers the journal: changing an entry without rehashing is rejected; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET proposal = ? WHERE proposal_id = 'proposal-b'",
+      [JSON.stringify(journalEntry("b", 99).proposal)],
+    );
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry whose proposal no longer parses is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET proposal = ? WHERE proposal_id = 'proposal-b'",
+      [JSON.stringify({ kind: "not-a-proposal" })],
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry whose proposal cites a different observation than the one stored beside it is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const mismatched = {
+      ...journalEntry("b").proposal,
+      observationId: "obs-someone-else",
+    };
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET proposal = ? WHERE proposal_id = 'proposal-b'",
+      [JSON.stringify(mismatched)],
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  /** Rewrites one journal row in an exported archive, past the schema's own CHECKs, and rehashes it. */
+  function corruptOutcome(archivePath: string, set: string): void {
+    const db = new Database(archivePath);
+    db.exec("PRAGMA ignore_check_constraints = ON");
+    db.run(
+      `UPDATE external_proposals SET ${set} WHERE proposal_id = 'proposal-d'`,
+    );
+    db.close();
+    rehash(archivePath);
+  }
+
+  test.each([
+    ["a consumed entry with no outcome", "outcome = NULL, reason = NULL"],
+    ["a pending entry that has an outcome", "consumed_tick = NULL"],
+    ["a committed entry that has a reason", "outcome = 'committed'"],
+    ["a rejected entry with no reason", "reason = NULL"],
+    ["a rejected entry with an unknown reason", "reason = 'because'"],
+    ["an outcome that is neither committed nor rejected", "outcome = 'lost'"],
+  ])(
+    "a rehashed archive with %s is rejected as corrupt; no slot is created",
+    (_label, set) => {
+      const store = storeWithJournal(join(dir, "world.sqlite"));
+      const archivePath = join(dir, "archive.sqlite");
+      exportArchive(store, archivePath);
+      corruptOutcome(archivePath, set);
+
+      const slotsDir = join(dir, "slots");
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, projectionCodec),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    },
+  );
+
+  test("the content hash covers the outcome: changing it without rehashing is rejected; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET reason = 'stale-target' WHERE proposal_id = 'proposal-d'",
+    );
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry consumed before its own target tick is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    // The archive's clock is at tick 3, so consumed tick 2 is within it, but
+    // it is before the tick 3 the entry was targeted at.
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET target_tick = 3, consumed_tick = 2 WHERE proposal_id = 'proposal-a'",
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry consumed after the archive's own clock is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET consumed_tick = 500 WHERE proposal_id = 'proposal-a'",
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
   });
 });

@@ -46,9 +46,9 @@ re-check, and a packaged Windows/Linux renderer run. M1 work may begin without w
 ### M1 outcome (2026-09-28)
 
 M1 meets its exit evidence. The headless causal scenario passes against the compiled sidecar
-([m1-living-world](../../tools/scenarios/m1-living-world/README.md): 15 steps in 54 s, three
-positive controls that each exit non-zero): unattended routines, a strike that becomes fire, lost
-service, and repair, worship with an expiring favor, attributed legends, rejected malformed, false,
+([m1-living-world](../../tools/scenarios/m1-living-world/README.md): 16 steps in 54 s, three
+positive controls that each exit non-zero): unattended routines, a strike that damages a tree, a
+strike that becomes fire, lost service, and repair, worship with an expiring favor, attributed legends, rejected malformed, false,
 and stale proposals, pause across a restart, a proposal that survives a kill, a kill mid catch-up
 past the cap that applies no time twice, export, corrupt-copy refusal, import, and restore into a
 branch, and the strike's ignition traced from its observation to the client's presentation
@@ -64,9 +64,8 @@ before the restore; O04 is partial, with model-request and relationship links le
 
 Not covered: a real OS sleep/wake cycle, power loss, disk-full and store-error degradation, a crash
 during import staging, code signing and notarization, the release build's web console, and the
-Windows and Linux packaged runs. The scenario does not assert that a strike damages the old oak
-(W08 stays scaffolded). The heavy-work memory-sharing policy remains open as its own follow-up probe
-([open-decisions.md](open-decisions.md)).
+Windows and Linux packaged runs. The heavy-work memory-sharing policy remains open as its own
+follow-up probe ([open-decisions.md](open-decisions.md)).
 
 ## First playable slice
 

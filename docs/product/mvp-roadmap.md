@@ -57,8 +57,8 @@ realms, 143 presentation receipts over a 6.5-minute session, the catch-up panel,
 ([m1-packaged-shell](../../tools/scenarios/m1-packaged-shell/README.md#view-gate)).
 
 Known limits, each recorded in its [traceability.md](traceability.md) row: the W03 catch-up summary
-limits (major outcomes from before a restart are not carried, archives do not carry in-flight
-catch-up progress, a kill just before the next frame loses that summary); O01 archives carry
+limit (the backlog closes when its summary is published, not when a client has fetched it, so a
+kill just before the next frame loses that summary); O01 archives carry
 world state and the proposal journal but no trace records, so a restored branch has no causal trace
 before the restore; O04 is partial, with model-request and relationship links left to M2.
 

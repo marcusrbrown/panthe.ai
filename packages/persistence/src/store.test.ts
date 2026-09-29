@@ -198,7 +198,25 @@ describe("openStore", () => {
     expect(readdirSync(dir).sort()).toEqual(filesBefore);
   });
 
-  test("this build stamps schema version 3", () => {
+  test("an existing version 3 store is refused and left untouched: same bytes, no new files, no reset", () => {
+    const v3 = new Database(dbPath, { create: true });
+    v3.exec("PRAGMA journal_mode = WAL");
+    v3.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY CHECK (id = 1), world_id TEXT NOT NULL) STRICT",
+    );
+    v3.run("INSERT INTO world (id, world_id) VALUES (1, 'world-from-v3')");
+    v3.exec("PRAGMA user_version = 3");
+    v3.close();
+    const bytesBefore = readFileSync(dbPath);
+    const filesBefore = readdirSync(dir).sort();
+
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 3/);
+
+    expect(readFileSync(dbPath).equals(bytesBefore)).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(filesBefore);
+  });
+
+  test("this build stamps schema version 4", () => {
     const store = openStore(dbPath, countReducer);
     expect(
       (
@@ -206,7 +224,7 @@ describe("openStore", () => {
           user_version: number;
         }
       ).user_version,
-    ).toBe(3);
+    ).toBe(4);
     closeStore(store);
   });
 
@@ -604,7 +622,11 @@ describe("catch-up progress", () => {
     const store = openStore(dbPath, countReducer);
     tick(store, 1, {
       onCommitted: (db: Database) =>
-        writeCatchUpProgress(db, { appliedMs: 60_000, discardedMs: 4_000 }),
+        writeCatchUpProgress(db, {
+          appliedMs: 60_000,
+          discardedMs: 4_000,
+          startSequence: 7,
+        }),
     });
     closeStore(store);
 
@@ -612,10 +634,15 @@ describe("catch-up progress", () => {
     expect(readCatchUpProgress(reopened.db)).toEqual({
       appliedMs: 60_000,
       discardedMs: 4_000,
+      startSequence: 7,
     });
     tick(reopened, 2, {
       onCommitted: (db: Database) =>
-        writeCatchUpProgress(db, { appliedMs: 120_000, discardedMs: 4_000 }),
+        writeCatchUpProgress(db, {
+          appliedMs: 120_000,
+          discardedMs: 4_000,
+          startSequence: 7,
+        }),
     });
     expect(readCatchUpProgress(reopened.db)?.appliedMs).toBe(120_000);
     tick(reopened, 3, { onCommitted: clearCatchUpProgress });
@@ -628,7 +655,11 @@ describe("catch-up progress", () => {
     expect(() =>
       tick(store, 1, {
         onCommitted: (db: Database) => {
-          writeCatchUpProgress(db, { appliedMs: 1, discardedMs: 1 });
+          writeCatchUpProgress(db, {
+            appliedMs: 1,
+            discardedMs: 1,
+            startSequence: 0,
+          });
           throw new Error("fail after writing progress");
         },
       }),

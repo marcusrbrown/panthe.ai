@@ -34,12 +34,15 @@ import {
   closeStore,
   commitTick,
   getCurrentSequence,
+  listEvents,
   openStore,
   type ProjectionCodec,
   type ProjectionReducers,
+  readCatchUpProgress,
   readClock,
   readLiveProjections,
   type Store,
+  writeCatchUpProgress,
 } from "./store";
 
 let dir: string;
@@ -943,6 +946,9 @@ describe("computeContentHash", () => {
       db.exec(
         "CREATE TABLE external_proposals (input_order INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, target_tick INTEGER NOT NULL, proposal TEXT NOT NULL, observation TEXT NOT NULL, consumed_tick INTEGER) STRICT",
       );
+      db.exec(
+        "CREATE TABLE catch_up_progress (id INTEGER PRIMARY KEY, applied_ms INTEGER NOT NULL, discarded_ms INTEGER NOT NULL, start_sequence INTEGER NOT NULL) STRICT",
+      );
       db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
       db.run(
         "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
@@ -1007,6 +1013,9 @@ describe("computeContentHash", () => {
     );
     db.exec(
       "CREATE TABLE external_proposals (input_order INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE, target_tick INTEGER NOT NULL, proposal TEXT NOT NULL, observation TEXT NOT NULL, consumed_tick INTEGER) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE catch_up_progress (id INTEGER PRIMARY KEY, applied_ms INTEGER NOT NULL, discarded_ms INTEGER NOT NULL, start_sequence INTEGER NOT NULL) STRICT",
     );
     db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
     db.run(
@@ -1314,4 +1323,126 @@ describe("the external proposal journal in an archive", () => {
     );
     closeStore(store);
   });
+});
+
+describe("an unfinished catch-up backlog's progress in an archive", () => {
+  const progress = {
+    appliedMs: 120_000,
+    discardedMs: 7_200_000,
+    startSequence: 1,
+  };
+
+  function storeMidBacklog(dbPath: string): Store {
+    const store = buildPopulatedStore(dbPath);
+    writeCatchUpProgress(store.db, progress);
+    return store;
+  }
+
+  test("an imported slot holds the same progress, so its catch-up continues the backlog", () => {
+    const store = storeMidBacklog(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)).toEqual(progress);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a backlog whose start sequence equals the archive's last event sequence imports: a discard-only or pause-ended backlog commits no events, and it reports no outcomes", () => {
+    // Hand-built: this package cannot run catch-up. The row is what a
+    // discard-only backlog (or one ended by a pause before any chunk) leaves:
+    // time discarded, nothing applied, start_sequence at the last event.
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const lastSequence = getCurrentSequence(store.db);
+    const discardOnly = {
+      appliedMs: 0,
+      discardedMs: 7_200_000,
+      startSequence: lastSequence,
+    };
+    writeCatchUpProgress(store.db, discardOnly);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)).toEqual(discardOnly);
+    // The summary's outcomes are the events after start_sequence: none.
+    expect(
+      listEvents(imported.db, { fromSequence: discardOnly.startSequence }),
+    ).toEqual([]);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("an archive of a store with no open backlog imports with none", () => {
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)).toBeUndefined();
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("the content hash covers the progress: changing it without rehashing is rejected; no slot is created", () => {
+    const store = storeMidBacklog(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run("UPDATE catch_up_progress SET applied_ms = 60000");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test.each([
+    ["a start sequence beyond the archive's event log", "start_sequence = 99"],
+    ["a negative start sequence", "start_sequence = -1"],
+    ["a negative applied time", "applied_ms = -1"],
+    ["a negative discarded time", "discarded_ms = -1"],
+  ])(
+    "a rehashed archive with %s is rejected as corrupt; no slot is created",
+    (_label, set) => {
+      const store = storeMidBacklog(join(dir, "world.sqlite"));
+      const archivePath = join(dir, "archive.sqlite");
+      exportArchive(store, archivePath);
+      const db = new Database(archivePath);
+      db.run(`UPDATE catch_up_progress SET ${set}`);
+      db.close();
+      rehash(archivePath);
+
+      const slotsDir = join(dir, "slots");
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, projectionCodec),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    },
+  );
 });

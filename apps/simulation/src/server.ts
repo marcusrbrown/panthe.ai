@@ -133,6 +133,9 @@ export function checkRequestGuards(
   return undefined;
 }
 
+/** Proposal sources the service sets itself; `/proposals` refuses a body that claims one. */
+const IN_PROCESS_SOURCES: readonly string[] = ["model", "director"];
+
 // --- Live tick -----------------------------------------------------------------
 
 /**
@@ -173,8 +176,11 @@ export function applyLiveTick(
 
 /** Mutated by the tick loop and by pause/resume; read to build every `SyncFrame`. */
 export interface ServiceStatusRef {
+  /** The world's own state. `degraded` here is a halting failure (`store-error`, `disk-full`); a model outage is `modelDegraded`, which never halts. */
   status: WorldStatus;
   degradedReason?: DegradedReason;
+  /** Every model endpoint failed on the last request. Shown on frames, but the tick loop ignores it. */
+  modelDegraded?: boolean;
   sequence: number;
   /** The tick of the state `sequence` and `encodedState` describe; the recent-event window is measured back from it. */
   tick: number;
@@ -188,6 +194,41 @@ export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
     sequence: state.lastSequence,
     tick: state.tick,
     encodedState: worldProjectionCodec.encode(state),
+  };
+}
+
+/** Whether the tick loop must stop ticking: only a halting failure does. A model outage never does. */
+export function isHalted(ref: ServiceStatusRef): boolean {
+  return ref.status === "degraded";
+}
+
+/**
+ * Records how the latest model request ended: an exhausted chain sets
+ * `model-degraded`, an intent clears it. It touches nothing the tick loop
+ * reads, so an outage cannot stop ticks.
+ */
+export function reportModelOutcome(
+  ref: ServiceStatusRef,
+  result: { readonly kind: "intent" | "exhausted" },
+): void {
+  ref.modelDegraded = result.kind === "exhausted";
+}
+
+/**
+ * The status a frame shows. A halting failure wins over a model outage, and a
+ * paused world shows paused (new model dispatch is frozen, so an outage cannot
+ * be re-judged). Otherwise an outage shows as `degraded` with `model-degraded`.
+ */
+function displayedStatus(ref: ServiceStatusRef): {
+  readonly status: WorldStatus;
+  readonly degradedReason?: DegradedReason;
+} {
+  if (ref.status === "running" && ref.modelDegraded) {
+    return { status: "degraded", degradedReason: "model-degraded" };
+  }
+  return {
+    status: ref.status,
+    ...(ref.degradedReason ? { degradedReason: ref.degradedReason } : {}),
   };
 }
 
@@ -280,8 +321,7 @@ function buildFrame(
     sequence: ref.sequence,
     worldId,
     sessionId,
-    status: ref.status,
-    ...(ref.degradedReason ? { degradedReason: ref.degradedReason } : {}),
+    ...displayedStatus(ref),
     ...(ref.catchUpSummary ? { catchUpSummary: ref.catchUpSummary } : {}),
     recentEvents: readRecentEvents(db, ref.sequence, ref.tick),
     state: ref.encodedState,
@@ -636,6 +676,22 @@ export function createSimulationServer(
     const intake = intakeProposal(store.db, rawProposal);
     if (!intake.ok) {
       return jsonResponse({ ok: false, error: intake.rejection.message }, 400);
+    }
+    // The agent layer and the director enter in-process, with the service
+    // setting the source; nothing arriving over HTTP may claim to be one.
+    for (const claimed of [
+      intake.proposal.source,
+      observationResult.value.source,
+    ]) {
+      if (IN_PROCESS_SOURCES.includes(claimed)) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: `the ${claimed} source enters in-process only and cannot be claimed over /proposals`,
+          },
+          400,
+        );
+      }
     }
     if (intake.proposal.observationId !== observationResult.value.id) {
       return jsonResponse(

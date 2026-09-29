@@ -144,6 +144,11 @@ a:focus-visible {
   background: #f0d8cc;
   border-bottom: 1px solid #d9b5a7;
 }
+.model-degraded-banner {
+  color: var(--ink-soft);
+  background: var(--paper-raised);
+  border-bottom: 1px solid var(--line);
+}
 .paused-banner {
   color: #63502f;
   background: #eee2bd;

@@ -19,7 +19,13 @@ import {
   readClock,
   writeCatchUpProgress,
 } from "@panthea/persistence";
-import { ensureTraceSchema } from "@panthea/telemetry";
+import {
+  createProposalId,
+  ensureTraceSchema,
+  getModelRequestByProposalId,
+  type ModelRouteResult,
+  recordModelRequest,
+} from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
 import { refreshStatusAfterCatchUp, resolveAppDataDir } from "./index";
@@ -433,6 +439,61 @@ describe("service (bun run src/index.ts)", () => {
         status: "committed",
         proposalId: "proposal-kill-1",
       });
+    } finally {
+      second.proc.kill();
+    }
+  }, 60_000);
+
+  test("a restart prunes model-request payload text older than seven days at startup and keeps the digests", async () => {
+    const first = await spawnService("prune-token-1");
+    const stdin = first.proc.stdin;
+    if (typeof stdin === "number" || !stdin) throw new Error("stdin");
+    stdin.end();
+    expect(await first.proc.exited).toBe(0);
+
+    const day = 24 * 60 * 60 * 1000;
+    const route: ModelRouteResult = {
+      kind: "intent",
+      step: {
+        endpoint: "ollama",
+        model: "m",
+        attempts: 1,
+        elapsedMs: 1,
+        mode: "native",
+      },
+      failed: [],
+      elapsedMs: 1,
+    };
+    const old = createProposalId();
+    const recent = createProposalId();
+    withActiveDb(
+      (db) => {
+        for (const [proposalId, ageDays] of [
+          [old, 8],
+          [recent, 1],
+        ] as const) {
+          recordModelRequest(
+            db,
+            { proposalId, role: "zeus", route, prompt: "p", output: "o" },
+            Date.now() - ageDays * day,
+          );
+        }
+      },
+      { write: true },
+    );
+
+    const second = await spawnService("prune-token-2");
+    try {
+      // Pruning runs when the service starts, before it serves its first tick.
+      const prunedOld = withActiveDb((db) =>
+        getModelRequestByProposalId(db, old),
+      );
+      const keptRecent = withActiveDb((db) =>
+        getModelRequestByProposalId(db, recent),
+      );
+      expect(prunedOld?.promptPayload).toBeUndefined();
+      expect(prunedOld?.promptDigest).toHaveLength(64);
+      expect(keptRecent?.promptPayload).toBe("p");
     } finally {
       second.proc.kill();
     }

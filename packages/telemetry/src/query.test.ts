@@ -17,6 +17,8 @@ import {
   createProposalId,
   type EventSource,
   ensureTraceSchema,
+  type ModelRouteResult,
+  recordModelRequest,
   recordObservation,
   recordProposalOutcome,
   recordReceipt,
@@ -391,5 +393,182 @@ describe("a proposal refused for an observation conflict", () => {
       outcome: "rejected",
       reason: "observation-conflict",
     });
+  });
+});
+
+describe("a proposal a model produced", () => {
+  const route: ModelRouteResult = {
+    kind: "intent",
+    step: {
+      endpoint: "ollama",
+      model: "llama3.2-3b-4k",
+      attempts: 1,
+      elapsedMs: 800,
+      mode: "native",
+    },
+    failed: [],
+    elapsedMs: 800,
+  };
+
+  test("followProposal walks observation, model request, proposal, validation, then each event with its projection change", () => {
+    const { proposalId, spend, ignition, observation } = seedStrike();
+    recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route,
+      prompt: "What does Zeus do?",
+      output: '{"kind":"strike"}',
+    });
+
+    const result = followProposal(db, eventSource, proposalId);
+
+    expect(result.steps.map((step) => step.step)).toEqual([
+      "observation",
+      "model-request",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+    ]);
+    expect(result.steps[0]).toMatchObject({ record: observation });
+    expect(result.steps[1]).toMatchObject({
+      step: "model-request",
+      request: {
+        role: "zeus",
+        outcome: "intent",
+        proposalId,
+        promptPayload: "What does Zeus do?",
+        steps: [{ endpoint: "ollama", mode: "native" }],
+      },
+    });
+    expect(
+      result.steps
+        .filter((step) => step.step === "event")
+        .map((s) => s.eventId),
+    ).toEqual([spend.id, ignition.id]);
+  });
+
+  test("followEvent on any event the proposal committed shows the same model-request hop", () => {
+    const { proposalId, ignition } = seedStrike();
+    recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route,
+      prompt: "p",
+      output: "o",
+    });
+
+    const result = followEvent(db, eventSource, ignition.id);
+
+    expect(result.steps.map((step) => step.step)).toEqual([
+      "observation",
+      "model-request",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+    ]);
+  });
+
+  test("a chain that failed over shows every step with its reason in the hop", () => {
+    const { proposalId } = seedStrike();
+    recordModelRequest(db, {
+      proposalId,
+      role: "hera",
+      route: {
+        kind: "intent",
+        step: {
+          endpoint: "go",
+          model: "some-go-model",
+          attempts: 1,
+          elapsedMs: 3_000,
+          mode: "repaired",
+        },
+        failed: [
+          {
+            endpoint: "ollama",
+            model: "llama3.2-3b-4k",
+            attempts: 1,
+            elapsedMs: 15_000,
+            reason: "timeout",
+          },
+        ],
+        elapsedMs: 18_000,
+      },
+      prompt: "p",
+      output: "o",
+    });
+
+    const hop = followProposal(db, eventSource, proposalId).steps.find(
+      (step) => step.step === "model-request",
+    );
+
+    expect(hop).toMatchObject({
+      request: {
+        steps: [
+          { endpoint: "ollama", reason: "timeout" },
+          { endpoint: "go", mode: "repaired" },
+        ],
+      },
+    });
+  });
+
+  test("a rejected proposal still shows the request that produced it, between its observation and the proposal", () => {
+    const observation: ObservationRecord = {
+      schemaVersion: 1,
+      id: createObservationId(),
+      observer: createEntityId(),
+      stateRevision: 0,
+      factsRead: [],
+      source: "model",
+    };
+    recordObservation(db, observation);
+    const proposalId = createProposalId();
+    recordProposalOutcome(db, {
+      proposalId,
+      observationId: observation.id,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      proposal: {
+        schemaVersion: 1,
+        actor: createEntityId(),
+        targets: [],
+        expectedRevisions: [],
+        source: "model",
+        observationId: observation.id,
+        kind: "move",
+        to: createEntityId(),
+      },
+      outcome: "rejected",
+      reason: "stale-target",
+    });
+    recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route,
+      prompt: "p",
+      output: "o",
+    });
+
+    const result = followProposal(db, eventSource, proposalId);
+
+    expect(result.steps.map((step) => step.step)).toEqual([
+      "observation",
+      "model-request",
+      "proposal",
+      "validation",
+    ]);
+  });
+
+  test("a proposal that no model produced has no model-request hop", () => {
+    const { proposalId } = seedStrike();
+
+    expect(
+      followProposal(db, eventSource, proposalId).steps.some(
+        (step) => step.step === "model-request",
+      ),
+    ).toBe(false);
   });
 });

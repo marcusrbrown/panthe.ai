@@ -24,11 +24,13 @@ import {
 } from "@panthea/world";
 import { type CatchUpResult, runCatchUp } from "./catchup";
 import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
+import { startModelPayloadPruner } from "./prune";
 import {
   applyLiveTick,
   type CatchUpControl,
   createServiceStatusRef,
   createSimulationServer,
+  isHalted,
   type ServiceStatusRef,
   type SimulationServerHandle,
   updateServiceStatus,
@@ -166,6 +168,13 @@ export function startService(options: StartOptions): ServiceHandle {
   const reducers = createWorldProjectionReducers(genesisState);
   const store = openStore(activeStorePath, reducers);
   ensureTraceSchema(store.db);
+  // Model-request payload text is kept seven days: pruned now, then hourly.
+  const payloadPruner = startModelPayloadPruner(store.db, {
+    onError: (error) =>
+      log(
+        `panthea-simulation: model payload prune failed: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+  });
 
   const clock = readClock(store.db);
   let state: WorldState = restoreWorldTime(
@@ -247,7 +256,7 @@ export function startService(options: StartOptions): ServiceHandle {
     if (catchUpInProgress) {
       return;
     }
-    if (statusRef.status === "degraded") {
+    if (isHalted(statusRef)) {
       return;
     }
     const currentClock = readClock(store.db);
@@ -312,6 +321,7 @@ export function startService(options: StartOptions): ServiceHandle {
     if (tickTimer) {
       clearInterval(tickTimer);
     }
+    payloadPruner.stop();
     parentGuard.stop();
     serverHandle.stop(true);
     try {

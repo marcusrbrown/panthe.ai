@@ -153,6 +153,27 @@ test("a degraded frame requires and carries a reason", () => {
   }
 });
 
+test("a frame can report model-degraded, the outage that never halts the world", () => {
+  const result = parseSyncFrame(
+    frame({ status: "degraded", degradedReason: "model-degraded" }),
+  );
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value).toMatchObject({
+      status: "degraded",
+      degradedReason: "model-degraded",
+    });
+  }
+});
+
+test("an unknown degraded reason is still rejected", () => {
+  expect(
+    parseSyncFrame(frame({ status: "degraded", degradedReason: "gremlins" }))
+      .ok,
+  ).toBe(false);
+});
+
 test("a degraded frame missing a reason is rejected", () => {
   const result = parseSyncFrame(frame({ status: "degraded" }));
   expect(result.ok).toBe(false);

@@ -1,15 +1,18 @@
 // "Follow this event" query: walks from an event or a proposal outcome
-// through observation -> proposal -> validation -> event -> projection
-// change -> presentation receipts, in order.
+// through observation -> model request (when a model produced the proposal)
+// -> proposal -> validation -> event -> projection change -> presentation
+// receipts, in order.
 
 import type { Database } from "bun:sqlite";
 import type { EventId, RejectionReasonCode } from "@panthea/contracts";
 import {
   type EventSource,
+  getModelRequestByProposalId,
   getObservation,
   getProposalOutcomeByEventId,
   getProposalOutcomeByProposalId,
   listReceiptsByEvent,
+  type ModelRequestRow,
   type ObservationEntry,
   type ProposalId,
   type ProposalOutcomeRow,
@@ -21,6 +24,7 @@ export type TraceStep =
       readonly step: "observation";
       readonly record: ObservationEntry["record"];
     }
+  | { readonly step: "model-request"; readonly request: ModelRequestRow }
   | {
       readonly step: "proposal";
       readonly proposalId: ProposalId;
@@ -67,8 +71,8 @@ function eventSteps(
 
 /**
  * The steps up to and including validation for one proposal outcome:
- * observation (if still resolvable), the proposal, and its validation
- * outcome.
+ * observation (if still resolvable), the model request that produced the
+ * proposal (if a model did), the proposal, and its validation outcome.
  */
 function causeSteps(db: Database, outcome: ProposalOutcomeRow): TraceStep[] {
   const steps: TraceStep[] = [];
@@ -80,6 +84,10 @@ function causeSteps(db: Database, outcome: ProposalOutcomeRow): TraceStep[] {
       : getObservation(db, outcome.observationId);
   if (observation) {
     steps.push({ step: "observation", record: observation.record });
+  }
+  const request = getModelRequestByProposalId(db, outcome.proposalId);
+  if (request) {
+    steps.push({ step: "model-request", request });
   }
   steps.push({
     step: "proposal",

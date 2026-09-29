@@ -574,6 +574,92 @@ describe("an observation id binds to one content", () => {
   });
 });
 
+describe("sources that enter in-process only", () => {
+  const strikeBody = () =>
+    envelope("zeus", { kind: "strike", target: "old-oak", power: 1 });
+
+  test.each([["model"], ["director"]])(
+    "a proposal claiming the %s source is refused at /proposals and journals nothing",
+    async (source) => {
+      const world = openWorld(join(dir, "world.sqlite"));
+      startServer(world);
+      try {
+        const body = strikeBody();
+        const claiming = {
+          ...body,
+          observation: { ...body.observation, source },
+          proposal: { ...body.proposal, source },
+        };
+
+        const response = await post(world, claiming);
+
+        expect(response.status).toBe(400);
+        expect(((await response.json()) as { error: string }).error).toContain(
+          source,
+        );
+        expect(listExternalProposals(world.store.db)).toEqual([]);
+      } finally {
+        shutDown(world);
+      }
+    },
+  );
+
+  test.each([["model"], ["director"]])(
+    "a proposal claiming the %s source is refused when its observation says fixture",
+    async (source) => {
+      const world = openWorld(join(dir, "world.sqlite"));
+      startServer(world);
+      try {
+        const body = strikeBody();
+
+        const response = await post(world, {
+          ...body,
+          proposal: { ...body.proposal, source },
+        });
+
+        expect(response.status).toBe(400);
+        expect(((await response.json()) as { error: string }).error).toContain(
+          source,
+        );
+        expect(listExternalProposals(world.store.db)).toEqual([]);
+      } finally {
+        shutDown(world);
+      }
+    },
+  );
+
+  test.each([["model"], ["director"]])(
+    "an observation claiming the %s source is refused even when its proposal says fixture",
+    async (source) => {
+      const world = openWorld(join(dir, "world.sqlite"));
+      startServer(world);
+      try {
+        const body = strikeBody();
+
+        const response = await post(world, {
+          ...body,
+          observation: { ...body.observation, source },
+        });
+
+        expect(response.status).toBe(400);
+        expect(listExternalProposals(world.store.db)).toEqual([]);
+      } finally {
+        shutDown(world);
+      }
+    },
+  );
+
+  test("a fixture proposal is still accepted", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      expect((await post(world, strikeBody())).status).toBe(202);
+    } finally {
+      shutDown(world);
+    }
+  });
+});
+
 describe("retrying a proposal", () => {
   test("the same id with the same content journals nothing new and reports its status, pending and then committed", async () => {
     const world = openWorld(join(dir, "world.sqlite"));

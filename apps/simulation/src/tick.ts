@@ -36,8 +36,10 @@ import {
 import {
   createProposalId,
   getObservation,
+  type IntentModelRequest,
   type ProposalId,
   parseProposalId,
+  recordModelRequest,
   recordObservation,
   recordProposalOutcome,
 } from "@panthea/telemetry";
@@ -60,6 +62,13 @@ export interface QueuedProposal {
   readonly observation: ObservationRecord;
   /** Set on a proposal read from the durable journal: the tick that runs it also marks it consumed, in its own transaction. */
   readonly external?: true;
+  /**
+   * The model request that produced this proposal, if a model did. It is
+   * recorded in the trace by the tick that gives the proposal its terminal
+   * outcome (committed, rejected, or over the limit), inside that tick's
+   * transaction, so a rolled-back tick leaves no row.
+   */
+  readonly modelRequest?: Omit<IntentModelRequest, "proposalId">;
 }
 
 export interface TickDeps {
@@ -445,6 +454,20 @@ export function traceWorldTick(
       reason: record.reason,
     });
     terminal.set(queued.id, { status: "rejected", reason: record.reason });
+  }
+  // A model proposal's request joins the trace with the proposal's outcome, in
+  // the same transaction. Refused proposals count: the model was still asked.
+  for (const queued of [
+    ...outcome.admitted,
+    ...outcome.overflow,
+    ...outcome.refused,
+  ]) {
+    if (queued.modelRequest) {
+      recordModelRequest(traceDb, {
+        ...queued.modelRequest,
+        proposalId: queued.id,
+      });
+    }
   }
   // Every external proposal this tick took, committed, rejected, or over the
   // limit, now has its terminal outcome above; consume it, with that outcome

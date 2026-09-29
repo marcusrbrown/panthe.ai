@@ -13,14 +13,23 @@ import {
   type WorldEvent,
 } from "@panthea/contracts";
 import {
+  createModelRequestId,
   createProposalId,
   type EventSource,
   ensureTraceSchema,
+  getModelRequest,
+  getModelRequestByProposalId,
   getObservation,
   getProposalOutcomeByEventId,
   getProposalOutcomeByProposalId,
   listReceiptsByEvent,
+  MODEL_PAYLOAD_LIMIT,
+  MODEL_PAYLOAD_RETENTION_MS,
+  type ModelRequestInput,
+  type ModelRouteResult,
   parseProposalId,
+  pruneModelPayloads,
+  recordModelRequest,
   recordObservation,
   recordProposalOutcome,
   recordReceipt,
@@ -95,7 +104,7 @@ describe("ensureTraceSchema", () => {
     expect(plan.every((row) => !/^SCAN/.test(row.detail))).toBe(true);
   });
 
-  test("only the four trace tables exist", () => {
+  test("only the five trace tables exist", () => {
     const tables = (
       db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
         name: string;
@@ -103,6 +112,7 @@ describe("ensureTraceSchema", () => {
     ).map((row) => row.name);
     expect(tables.sort()).toEqual(
       [
+        "trace_model_requests",
         "trace_observations",
         "trace_outcome_events",
         "trace_proposal_outcomes",
@@ -296,5 +306,342 @@ describe("recordReceipt", () => {
     recordReceipt(db, eventSource, { eventId: event.id, sessionId });
 
     expect(listReceiptsByEvent(db, event.id)).toHaveLength(1);
+  });
+});
+
+// --- Model requests --------------------------------------------------------------
+
+const sha256 = (text: string): string =>
+  new Bun.CryptoHasher("sha256").update(text).digest("hex");
+
+const OLLAMA_STEP = {
+  endpoint: "ollama",
+  model: "llama3.2-3b-4k",
+  attempts: 1,
+  elapsedMs: 812.4,
+};
+
+const intentRoute = {
+  kind: "intent",
+  step: { ...OLLAMA_STEP, mode: "native" },
+  failed: [],
+  elapsedMs: 815.2,
+} satisfies ModelRouteResult;
+
+describe("recordModelRequest", () => {
+  test("a request that produced a proposal is found by that proposal, with its role, steps, timing, digests, and payloads", () => {
+    const proposalId = createProposalId();
+
+    const id = recordModelRequest(
+      db,
+      {
+        proposalId,
+        role: "zeus",
+        route: intentRoute,
+        prompt: "What does Zeus do?",
+        output: '{"kind":"strike"}',
+      },
+      1_000,
+    );
+
+    const row = getModelRequestByProposalId(db, proposalId);
+    expect(row).toEqual({
+      id,
+      proposalId,
+      role: "zeus",
+      outcome: "intent",
+      steps: [{ ...OLLAMA_STEP, elapsedMs: 812, mode: "native" }],
+      elapsedMs: 815,
+      promptDigest: sha256("What does Zeus do?"),
+      outputDigest: sha256('{"kind":"strike"}'),
+      promptPayload: "What does Zeus do?",
+      outputPayload: '{"kind":"strike"}',
+      recordedAtMs: 1_000,
+    });
+  });
+
+  test("a chain where one step failed and the next answered records both steps, in order, with the reason and the mode", () => {
+    const proposalId = createProposalId();
+    const route: ModelRouteResult = {
+      kind: "intent",
+      step: {
+        endpoint: "go",
+        model: "some-go-model",
+        attempts: 2,
+        elapsedMs: 4_100,
+        mode: "repaired",
+      },
+      failed: [
+        {
+          endpoint: "ollama",
+          model: "llama3.2-3b-4k",
+          attempts: 1,
+          elapsedMs: 15_000,
+          reason: "timeout",
+          detail: "no reply within 15000 ms",
+        },
+      ],
+      elapsedMs: 19_200,
+    };
+
+    recordModelRequest(db, {
+      proposalId,
+      role: "hera",
+      route,
+      prompt: "p",
+      output: "o",
+    });
+
+    const row = getModelRequestByProposalId(db, proposalId);
+    expect(row?.steps).toEqual([
+      {
+        endpoint: "ollama",
+        model: "llama3.2-3b-4k",
+        attempts: 1,
+        elapsedMs: 15_000,
+        reason: "timeout",
+        detail: "no reply within 15000 ms",
+      },
+      {
+        endpoint: "go",
+        model: "some-go-model",
+        attempts: 2,
+        elapsedMs: 4_100,
+        mode: "repaired",
+      },
+    ]);
+    expect(row?.outcome).toBe("intent");
+  });
+
+  test("an exhausted chain is recorded with no proposal and no output, every step with its reason", () => {
+    const id = recordModelRequest(db, {
+      role: "zeus",
+      route: {
+        kind: "exhausted",
+        steps: [
+          { ...OLLAMA_STEP, reason: "network", detail: "Cannot connect" },
+          {
+            endpoint: "go",
+            model: "some-go-model",
+            attempts: 1,
+            elapsedMs: 90,
+            reason: "http-4xx",
+          },
+        ],
+        elapsedMs: 900,
+      },
+      prompt: "What does Zeus do?",
+    });
+
+    const row = getModelRequest(db, id);
+    expect(row).toMatchObject({
+      id,
+      role: "zeus",
+      outcome: "exhausted",
+      elapsedMs: 900,
+      promptDigest: sha256("What does Zeus do?"),
+    });
+    expect(row?.proposalId).toBeUndefined();
+    expect(row?.outputDigest).toBeUndefined();
+    expect(row?.outputPayload).toBeUndefined();
+    expect(row?.steps.map((step) => [step.endpoint, step.reason])).toEqual([
+      ["ollama", "network"],
+      ["go", "http-4xx"],
+    ]);
+  });
+
+  test("an intent the service refused before it became a proposal may be recorded with no proposal", () => {
+    const id = recordModelRequest(db, {
+      role: "zeus",
+      route: intentRoute,
+      prompt: "p",
+      output: "o",
+    });
+
+    expect(getModelRequest(db, id)?.proposalId).toBeUndefined();
+  });
+
+  test("the digest covers the whole text while the stored payload is bounded", () => {
+    const prompt = "p".repeat(MODEL_PAYLOAD_LIMIT + 5_000);
+    const output = "o".repeat(MODEL_PAYLOAD_LIMIT * 2);
+
+    const id = recordModelRequest(db, {
+      role: "zeus",
+      route: intentRoute,
+      prompt,
+      output,
+    });
+
+    const row = getModelRequest(db, id);
+    expect(row?.promptPayload).toHaveLength(MODEL_PAYLOAD_LIMIT);
+    expect(row?.outputPayload).toHaveLength(MODEL_PAYLOAD_LIMIT);
+    expect(row?.promptDigest).toBe(sha256(prompt));
+    expect(row?.outputDigest).toBe(sha256(output));
+  });
+
+  test("the schema still refuses an exhausted chain that claims a proposal, should the type be bypassed", () => {
+    const bypassed = {
+      proposalId: createProposalId(),
+      role: "zeus",
+      route: { kind: "exhausted", steps: [], elapsedMs: 1 },
+      prompt: "p",
+    } as unknown as ModelRequestInput;
+
+    expect(() => recordModelRequest(db, bypassed)).toThrow();
+  });
+
+  test("a proposal has at most one model request: a second is ignored, never thrown, so a tick that traces twice cannot fail", () => {
+    const proposalId = createProposalId();
+    const first = recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "first",
+      output: "o",
+    });
+
+    recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "second",
+      output: "o",
+    });
+
+    expect(getModelRequestByProposalId(db, proposalId)?.id).toBe(first);
+    expect(
+      (
+        db.query("SELECT COUNT(*) AS n FROM trace_model_requests").get() as {
+          n: number;
+        }
+      ).n,
+    ).toBe(1);
+  });
+
+  test("the id a repeat request returns is the id of the row that holds the proposal, never one that was not written", () => {
+    const proposalId = createProposalId();
+    const first = recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "first",
+      output: "o",
+    });
+
+    const second = recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "second",
+      output: "o",
+    });
+
+    expect(second).toBe(first);
+    expect(getModelRequest(db, second)?.promptPayload).toBe("first");
+  });
+
+  test("an unknown id and a proposal with no request resolve to nothing", () => {
+    expect(getModelRequest(db, createModelRequestId())).toBeUndefined();
+    expect(getModelRequestByProposalId(db, createProposalId())).toBeUndefined();
+  });
+});
+
+describe("pruneModelPayloads", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  function recordAt(recordedAt: number, tag: string) {
+    const proposalId = createProposalId();
+    recordModelRequest(
+      db,
+      {
+        proposalId,
+        role: "zeus",
+        route: intentRoute,
+        prompt: `prompt ${tag}`,
+        output: `output ${tag}`,
+      },
+      recordedAt,
+    );
+    return proposalId;
+  }
+
+  test("nulls payload text older than the retention and keeps digests and metadata; newer rows are left alone", () => {
+    const now = 100 * DAY;
+    const old = recordAt(now - 8 * DAY, "old");
+    const recent = recordAt(now - 6 * DAY, "recent");
+
+    const pruned = pruneModelPayloads(db, MODEL_PAYLOAD_RETENTION_MS, now);
+
+    expect(pruned).toBe(1);
+    const oldRow = getModelRequestByProposalId(db, old);
+    expect(oldRow?.promptPayload).toBeUndefined();
+    expect(oldRow?.outputPayload).toBeUndefined();
+    expect(oldRow).toMatchObject({
+      promptDigest: sha256("prompt old"),
+      outputDigest: sha256("output old"),
+      role: "zeus",
+      outcome: "intent",
+      elapsedMs: 815,
+    });
+    expect(oldRow?.steps).toHaveLength(1);
+    const recentRow = getModelRequestByProposalId(db, recent);
+    expect(recentRow?.promptPayload).toBe("prompt recent");
+    expect(recentRow?.outputPayload).toBe("output recent");
+  });
+
+  test("the retention is seven days, and a second prune finds nothing more to do", () => {
+    expect(MODEL_PAYLOAD_RETENTION_MS).toBe(7 * DAY);
+    const now = 100 * DAY;
+    recordAt(now - 8 * DAY, "old");
+
+    expect(pruneModelPayloads(db, MODEL_PAYLOAD_RETENTION_MS, now)).toBe(1);
+    expect(pruneModelPayloads(db, MODEL_PAYLOAD_RETENTION_MS, now)).toBe(0);
+  });
+
+  test("a row exactly at the boundary is kept", () => {
+    const now = 100 * DAY;
+    const boundary = recordAt(now - 7 * DAY, "boundary");
+
+    expect(pruneModelPayloads(db, MODEL_PAYLOAD_RETENTION_MS, now)).toBe(0);
+    expect(getModelRequestByProposalId(db, boundary)?.promptPayload).toBe(
+      "prompt boundary",
+    );
+  });
+});
+
+describe("an exhausted chain cannot claim a proposal or an output, by type", () => {
+  const exhaustedRoute = {
+    kind: "exhausted",
+    steps: [],
+    elapsedMs: 1,
+  } as const;
+
+  test("recordModelRequest refuses the combination at compile time, and accepts an exhausted chain that claims neither", () => {
+    // Never called: these lines exist to be type-checked.
+    const claimsProposal = () =>
+      // @ts-expect-error an exhausted route produced no proposal
+      recordModelRequest(db, {
+        proposalId: createProposalId(),
+        role: "zeus",
+        route: exhaustedRoute,
+        prompt: "p",
+      });
+    const claimsOutput = () =>
+      // @ts-expect-error an exhausted route has no output
+      recordModelRequest(db, {
+        role: "zeus",
+        route: exhaustedRoute,
+        prompt: "p",
+        output: "o",
+      });
+    expect(typeof claimsProposal).toBe("function");
+    expect(typeof claimsOutput).toBe("function");
+
+    const id = recordModelRequest(db, {
+      role: "zeus",
+      route: exhaustedRoute,
+      prompt: "p",
+    });
+    expect(getModelRequest(db, id)?.outcome).toBe("exhausted");
   });
 });

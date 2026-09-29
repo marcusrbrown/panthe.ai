@@ -564,7 +564,7 @@ flowchart TB
 
 **Verification:** Separate M1 view gate, required before M1 is marked complete but independent of the headless causal proof: the packaged `.app` shows live state with observer switching across all three realms (window-cropped screenshots only) and no CSP errors in Web Inspector.
 
-- [ ] **Unit 9: M1 causal scenario and evidence**
+- [x] **Unit 9: M1 causal scenario and evidence**
 
 **Goal:** A headless scenario that drives the compiled sidecar through the full M1 causal story and hard-asserts every requirement, plus the docs, ADR, and traceability updates that record it.
 

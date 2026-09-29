@@ -4,6 +4,7 @@ Solved problems and practices, organized by category directory:
 
 - `best-practices/`
 - `integration-issues/`
+- `logic-errors/`
 - `performance-issues/`
 - `security-issues/`
 - `test-failures/`

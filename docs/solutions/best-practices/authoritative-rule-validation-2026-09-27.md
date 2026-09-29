@@ -116,5 +116,6 @@ test("every building status has a path back to operational", () => {
 - [Build the direct version first in a greenfield, single-user codebase](greenfield-anti-over-engineering-2026-09-27.md)
 - [One lock over lifecycle state, transitions as pure functions](lifecycle-state-one-lock-transitions-2026-09-28.md)
 - [World and persistence composed incorrectly despite green package tests](../integration-issues/world-persistence-composition-broken-after-reopen-2026-09-27.md)
+- [Client view presentation logic was written and tested against invented events and maps](../logic-errors/client-view-presentation-against-invented-fixtures-2026-09-28.md) — the presentation-side case for keying logic to the contract, not to invented data
 - `docs/plans/2026-09-27-001-feat-m1-persistent-living-world-plan.md`: Key Technical Decisions (execution-time validation) and Unit 6 (checking legend links at intake)
 - `docs/product/requirements.md`: W05, W06, W07, W08

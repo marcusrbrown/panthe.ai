@@ -1,6 +1,7 @@
 ---
 title: three@0.185.1's WebGPURenderer never recovers from a WebGL context loss on the same instance
 date: 2026-09-27
+last_updated: 2026-09-28
 category: integration-issues
 module: probe-renderer
 problem_type: integration_issue
@@ -59,7 +60,15 @@ Treat loss as a single-flight recovery state machine, recorded for ADR-0002:
 5. Resume only after a verified frame has been presented.
 6. Bounded retries, then an explicit failure UI.
 
-Metrics honesty in the meantime (`apps/probe-renderer/src/metrics.ts`, `Scene.tsx`):
+`apps/client` implements steps 1, 3, and 4:
+
+- `startSceneRenderer` latches `recovering`, so repeat loss signals are ignored (`apps/client/src/renderer/lifecycle.ts:45-49`). The scene reports loss from the `webglcontextlost` event and from `device.lost` (`renderer/scene.ts:289-305`).
+- `App` bumps `rendererEpoch` on loss and passes it as the `key` of `SceneHost` (`App.tsx:163-172`, `App.tsx:186`). React unmounts the old host, whose effect cleanup disposes the renderer, and mounts a new one with a fresh `<canvas>` and renderer (`renderer/SceneHost.tsx:36-54`, `renderer/SceneHost.tsx:66`).
+- `createRecovery(store).rebuild()` recomputes the view from the store's retained frame and state (`apps/client/src/recovery.ts`).
+
+Steps 5 and 6 are not implemented: there is no verified-frame gate and no retry loop. A new renderer that fails to start shows the "Scene unavailable" banner.
+
+Metrics honesty in the probe (`apps/probe-renderer/src/metrics.ts`, `Scene.tsx`):
 `ClickLatencyTracker.hitCount` counts every raycast hit; a `deviceLost` flag set in `onLost` and
 never cleared gates `noteRenderSubmitted`, so latency freezes at its pre-loss value instead of
 inventing post-loss numbers. Verified on the packaged app: after loss+restore a new click bumps
@@ -70,8 +79,8 @@ inventing post-loss numbers. Verified on the packaged app: after loss+restore a 
 The renderer's lost state is a one-way latch in this build, `init()` is memoised, and
 `dispose()` tears the backend down by losing its own context — so nothing on the same instance
 or canvas can bring pixels back. A fresh canvas plus a new renderer is the only path the code
-allows, and gating the metric on a presented frame keeps the evidence truthful until that path
-is implemented.
+allows, and gating the probe's metric on a presented frame keeps its evidence truthful after a
+loss.
 
 ## Prevention
 
@@ -86,9 +95,13 @@ is implemented.
 
 - On every three.js bump: is `_isDeviceLost` still never cleared, is `init()` still cached, does
   `WebGLBackend.dispose()` still lose its own context?
-- App-managed fresh-canvas reconstruction is documented but **untested**; real sleep/wake
-  (`pmset displaysleepnow`) is **untested** — forced `WEBGL_lose_context` is not a full
-  suspend/resume proxy. Both are M1 renderer work.
+- App-managed recovery is implemented (`apps/client/src/App.tsx` `rendererEpoch` remount,
+  `renderer/SceneHost.tsx`, `renderer/scene.ts`) and was verified in the packaged debug build by
+  forcing a WebGL context loss from Web Inspector: the console logged `WebGL Device Lost`, a new
+  renderer was built, and the scene drew again
+  ([View gate](../../../tools/scenarios/m1-packaged-shell/README.md#view-gate), check 4). A real
+  OS sleep/wake cycle (`pmset displaysleepnow`) is still **untested** — forced
+  `WEBGL_lose_context` is not a full suspend/resume proxy.
 
 ## Related Issues
 

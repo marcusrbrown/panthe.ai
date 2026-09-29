@@ -1,6 +1,7 @@
 // The polling proxy: once a second, GETs the sidecar's `/frame` with the
-// bearer token and forwards it to the subscribed Channel only when its
-// sequence, status, or session ID changed. Also relays pause, resume,
+// bearer token and forwards it to the subscribed Channel whenever it differs
+// from the last frame forwarded (any field: tick, events, status, reason,
+// summary). Also relays pause, resume,
 // and presentation-receipt requests, all authenticated the same way.
 //
 // The webview never holds the token: only this module ever sends it, in
@@ -36,6 +37,7 @@ pub(crate) fn extract_frame_key(frame: &Value) -> Option<FrameKey> {
         sequence: frame.get("sequence")?.as_u64()?,
         status: frame.get("status")?.as_str()?.to_string(),
         session_id: frame.get("sessionId")?.as_str()?.to_string(),
+        frame: frame.clone(),
     })
 }
 
@@ -67,8 +69,8 @@ pub(crate) struct FrameDecision {
 /// flight from the previous launch's poll loop (a task-cancellation
 /// race) must never reach the webview or change any state.
 ///
-/// For a current-launch frame: `forward` follows the existing
-/// sequence/status/session-id change check; `refresh_tray` fires on
+/// For a current-launch frame: `forward` is true when the frame differs
+/// from the last one forwarded (`should_forward`); `refresh_tray` fires on
 /// either a status change or a degraded-reason change, so a reason
 /// changing while the status stays `"degraded"` still updates the label.
 pub(crate) fn decide_frame_handling(
@@ -301,6 +303,9 @@ mod tests {
             sequence,
             status: status.to_string(),
             session_id: session_id.to_string(),
+            frame: serde_json::json!({
+                "sequence": sequence, "status": status, "sessionId": session_id
+            }),
         }
     }
 
@@ -484,6 +489,169 @@ mod tests {
 
         let received = delivered.lock().expect("delivered mutex poisoned");
         assert_eq!(*received, vec![frame1, frame2, frame3]);
+    }
+
+    /// A channel that records every body sent to it, and the sink to read them from.
+    fn recording_channel() -> (Channel<Value>, Arc<Mutex<Vec<Value>>>) {
+        let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink = delivered.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                if let Ok(value) = serde_json::from_str::<Value>(&json) {
+                    sink.lock().expect("delivered mutex poisoned").push(value);
+                }
+            }
+            Ok(())
+        });
+        (channel, delivered)
+    }
+
+    /// A polled frame: what the sidecar's `/frame` carries beyond the
+    /// sequence, status, and session the shell used to compare.
+    fn polled(sequence: u64, tick: u64, status: &str) -> Value {
+        serde_json::json!({
+            "schemaVersion": 1,
+            "sequence": sequence,
+            "worldId": "world-1",
+            "sessionId": "session-1",
+            "status": status,
+            "recentEvents": [],
+            "state": { "tick": tick }
+        })
+    }
+
+    /// A lifecycle for launch 1 with a recording subscriber installed.
+    fn subscribed() -> (Lifecycle, Arc<Mutex<Vec<Value>>>) {
+        let mut lifecycle = Lifecycle {
+            launch_id: 1,
+            ..Default::default()
+        };
+        let (channel, delivered) = recording_channel();
+        apply_subscribe(&mut lifecycle, channel);
+        (lifecycle, delivered)
+    }
+
+    #[test]
+    fn an_eventless_tick_that_advances_time_without_a_new_sequence_is_forwarded() {
+        let (mut lifecycle, delivered) = subscribed();
+        let first = polled(5, 10, "running");
+        let next_tick = polled(5, 11, "running");
+
+        apply_frame(&mut lifecycle, 1, first.clone());
+        apply_frame(&mut lifecycle, 1, next_tick.clone());
+
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![first, next_tick]);
+    }
+
+    #[test]
+    fn a_degraded_reason_change_with_an_unchanged_status_is_forwarded() {
+        let (mut lifecycle, delivered) = subscribed();
+        let mut disk_full = polled(5, 10, "degraded");
+        disk_full["degradedReason"] = serde_json::json!("disk-full");
+        let mut store_error = polled(5, 10, "degraded");
+        store_error["degradedReason"] = serde_json::json!("store-error");
+
+        apply_frame(&mut lifecycle, 1, disk_full.clone());
+        let refreshed = apply_frame(&mut lifecycle, 1, store_error.clone());
+
+        assert!(refreshed, "the tray still learns of the new reason");
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![disk_full, store_error]);
+    }
+
+    #[test]
+    fn a_catch_up_summary_that_appears_or_changes_with_nothing_else_different_is_forwarded() {
+        let (mut lifecycle, delivered) = subscribed();
+        let plain = polled(5, 10, "running");
+        let mut summarized = plain.clone();
+        summarized["catchUpSummary"] = serde_json::json!({
+            "appliedMs": 60000, "skippedMs": 0, "majorOutcomes": [], "atSequence": 4
+        });
+        let mut replaced = summarized.clone();
+        replaced["catchUpSummary"]["atSequence"] = serde_json::json!(5);
+
+        apply_frame(&mut lifecycle, 1, plain.clone());
+        apply_frame(&mut lifecycle, 1, summarized.clone());
+        apply_frame(&mut lifecycle, 1, replaced.clone());
+
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![plain, summarized, replaced]);
+    }
+
+    #[test]
+    fn a_change_only_in_the_recent_event_window_is_forwarded() {
+        let (mut lifecycle, delivered) = subscribed();
+        let quiet = polled(5, 10, "running");
+        let mut windowed = quiet.clone();
+        windowed["recentEvents"] = serde_json::json!([
+            { "id": "evt-1", "sequence": 5, "tick": 10, "kind": "resource-traded", "subjects": [] }
+        ]);
+
+        apply_frame(&mut lifecycle, 1, quiet.clone());
+        apply_frame(&mut lifecycle, 1, windowed.clone());
+
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![quiet, windowed]);
+    }
+
+    #[test]
+    fn a_frame_identical_to_the_last_forwarded_one_is_not_sent_again() {
+        let (mut lifecycle, delivered) = subscribed();
+        let frame = polled(5, 10, "paused");
+
+        apply_frame(&mut lifecycle, 1, frame.clone());
+        apply_frame(&mut lifecycle, 1, frame.clone());
+        apply_frame(&mut lifecycle, 1, frame.clone());
+
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![frame]);
+    }
+
+    #[test]
+    fn a_stale_launch_frame_is_not_forwarded_even_when_it_differs() {
+        let (mut lifecycle, delivered) = subscribed();
+        lifecycle.launch_id = 2;
+
+        let refreshed = apply_frame(&mut lifecycle, 1, polled(9, 99, "running"));
+
+        assert!(!refreshed);
+        assert!(delivered
+            .lock()
+            .expect("delivered mutex poisoned")
+            .is_empty());
+        assert_eq!(lifecycle.last_frame_body, None);
+    }
+
+    #[test]
+    fn resubscribing_replays_the_latest_cached_frame_including_one_changed_only_by_a_tick() {
+        let mut lifecycle = Lifecycle {
+            launch_id: 1,
+            ..Default::default()
+        };
+        // Polled with no subscriber: cached, nothing to send.
+        apply_frame(&mut lifecycle, 1, polled(5, 10, "running"));
+        let latest = polled(5, 11, "running");
+        apply_frame(&mut lifecycle, 1, latest.clone());
+
+        let (channel, delivered) = recording_channel();
+        apply_subscribe(&mut lifecycle, channel);
+        assert_eq!(
+            *delivered.lock().expect("delivered mutex poisoned"),
+            vec![latest.clone()]
+        );
+
+        // The same frame polled again is not re-sent to that subscriber.
+        apply_frame(&mut lifecycle, 1, latest.clone());
+        assert_eq!(delivered.lock().expect("delivered mutex poisoned").len(), 1);
+
+        // A reload subscribes again and is replayed the cache once more.
+        let (reloaded, reloaded_delivered) = recording_channel();
+        apply_subscribe(&mut lifecycle, reloaded);
+        assert_eq!(
+            *reloaded_delivered.lock().expect("delivered mutex poisoned"),
+            vec![latest]
+        );
     }
 
     #[test]

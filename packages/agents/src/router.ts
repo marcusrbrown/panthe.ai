@@ -1,0 +1,483 @@
+// The production router: turns a context into a typed intent through the
+// endpoints configured for a role. It tries the role's endpoint, then the
+// operator's fallback list, over one adapter shape and one repair pass; no
+// endpoint is favored and none is skipped except by offline mode.
+//
+// Inference never runs inside a world transaction, and this module knows
+// nothing about the world: callers hand it a prompt and a schema and get back
+// an intent or an account of why no endpoint could give one.
+
+import {
+  APICallError,
+  generateText,
+  jsonSchema,
+  type LanguageModel,
+  NoObjectGeneratedError,
+  Output,
+} from "ai";
+import {
+  type ParseResult,
+  planRoute,
+  type RouteStep,
+  type RoutingConfig,
+} from "./config";
+import {
+  CLIENT_HEADERS,
+  createEndpointModel,
+  RedirectRefusedError,
+} from "./providers";
+import { repairIntent } from "./repair";
+
+/** What the model is asked to produce: the JSON Schema it is steered to, and the parser that decides whether its answer is an intent. The parser is the source of truth; the schema is guidance. */
+export interface IntentSchema<T> {
+  readonly jsonSchema: Parameters<typeof jsonSchema>[0];
+  parse(candidate: unknown): ParseResult<T>;
+}
+
+export interface RouteContext {
+  /** The character's standing instructions (a system message). */
+  readonly instructions?: string;
+  readonly prompt: string;
+}
+
+export interface RouteLimits {
+  /** One attempt at one endpoint, from request to reply. */
+  readonly attemptTimeoutMs: number;
+  /** The whole chain across every endpoint and retry. */
+  readonly totalTimeoutMs: number;
+  /** Attempts per endpoint, the first included. */
+  readonly maxAttempts: number;
+  /** The delay before the second attempt; each later delay doubles. */
+  readonly backoffBaseMs: number;
+  readonly backoffMaxMs: number;
+}
+
+export const DEFAULT_ROUTE_LIMITS: RouteLimits = {
+  attemptTimeoutMs: 15_000,
+  totalTimeoutMs: 30_000,
+  maxAttempts: 2,
+  backoffBaseMs: 250,
+  backoffMaxMs: 2_000,
+};
+
+export interface RouterOptions {
+  readonly config: RoutingConfig;
+  /** Offline mode: non-local endpoints are removed before any adapter is built. */
+  readonly offline: boolean;
+  /**
+   * Returns the key for a `keyRef`, from platform credential storage. Called
+   * only when an endpoint that has a `keyRef` is about to be built, so an
+   * endpoint offline mode removed never has its key touched. The router never
+   * reads a key from anywhere else and never logs one.
+   */
+  readonly getKey?: (keyRef: string) => string | undefined;
+  readonly limits?: Partial<RouteLimits>;
+  /** Replaces the adapter factory; tests use it to observe construction. */
+  readonly buildModel?: typeof createEndpointModel;
+}
+
+export type FailureReason =
+  /** One attempt ran past its own timeout. */
+  | "timeout"
+  /** The whole chain ran out of time. */
+  | "chain-timeout"
+  /** The caller aborted. */
+  | "aborted"
+  | "rate-limit"
+  | "http-4xx"
+  | "http-5xx"
+  /** The endpoint could not be reached. */
+  | "network"
+  /** The endpoint answered with a redirect, which is refused. */
+  | "redirect"
+  /** The model answered, but nothing in the reply parsed as an intent. */
+  | "invalid-output"
+  | "unknown";
+
+export interface StepMetadata {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly attempts: number;
+  /** `native` when the reply parsed as structured output; `repaired` when the repair pass had to extract it. */
+  readonly mode: "native" | "repaired";
+  readonly elapsedMs: number;
+}
+
+export interface StepFailure {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly reason: FailureReason;
+  /** A short account, with any key value redacted. */
+  readonly detail: string;
+  readonly attempts: number;
+  readonly elapsedMs: number;
+}
+
+export type RouteResult<T> =
+  | {
+      readonly kind: "intent";
+      readonly intent: T;
+      readonly step: StepMetadata;
+      /** Steps tried and failed before this one answered, in order. */
+      readonly failed: readonly StepFailure[];
+      readonly elapsedMs: number;
+    }
+  | {
+      readonly kind: "exhausted";
+      /** Every step tried, in order, with why it failed. */
+      readonly steps: readonly StepFailure[];
+      /** Endpoint ids offline mode removed, so "nothing local is configured" reads differently from an outage. */
+      readonly offlineSkipped: readonly string[];
+      readonly elapsedMs: number;
+    };
+
+export interface Router {
+  route<T>(
+    role: string,
+    context: RouteContext,
+    schema: IntentSchema<T>,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<RouteResult<T>>;
+}
+
+type Attempt<T> =
+  | {
+      readonly ok: true;
+      readonly intent: T;
+      readonly mode: "native" | "repaired";
+    }
+  | {
+      readonly ok: false;
+      readonly reason: FailureReason;
+      readonly detail: string;
+    };
+
+const RETRYABLE: ReadonlySet<FailureReason> = new Set([
+  "rate-limit",
+  "http-5xx",
+  "network",
+  "invalid-output",
+]);
+
+const DETAIL_LIMIT = 300;
+
+function describe(error: unknown): string {
+  if (APICallError.isInstance(error)) {
+    const status = error.statusCode === undefined ? "" : `${error.statusCode} `;
+    const body = error.responseBody?.slice(0, DETAIL_LIMIT) ?? "";
+    return `${status}${error.message}${body === "" ? "" : `: ${body}`}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
+}
+
+function schemaInstruction<T>(schema: IntentSchema<T>): string {
+  return `Respond with a single JSON object only, no prose, that matches this JSON Schema:\n${JSON.stringify(schema.jsonSchema)}`;
+}
+
+export function createRouter(options: RouterOptions): Router {
+  const limits: RouteLimits = { ...DEFAULT_ROUTE_LIMITS, ...options.limits };
+  const build = options.buildModel ?? createEndpointModel;
+  const built = new Map<string, { model: LanguageModel; apiKey?: string }>();
+
+  /** Builds an endpoint's adapter on first use, reading its key only then. */
+  function adapterFor(step: RouteStep): {
+    model: LanguageModel;
+    apiKey?: string;
+  } {
+    const cacheKey = `${step.endpoint.id}\n${step.model}`;
+    const cached = built.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const apiKey =
+      step.endpoint.keyRef === undefined
+        ? undefined
+        : options.getKey?.(step.endpoint.keyRef);
+    const adapter = {
+      model: build({
+        endpoint: step.endpoint,
+        model: step.model,
+        ...(apiKey === undefined ? {} : { apiKey }),
+      }),
+      ...(apiKey === undefined ? {} : { apiKey }),
+    };
+    built.set(cacheKey, adapter);
+    return adapter;
+  }
+
+  function classify(
+    error: unknown,
+    chain: AbortSignal,
+    caller: AbortSignal | undefined,
+  ): { reason: FailureReason; detail: string } {
+    const detail = describe(error);
+    if (caller?.aborted) {
+      return { reason: "aborted", detail: "aborted by the caller" };
+    }
+    if (chain.aborted) {
+      return {
+        reason: "chain-timeout",
+        detail: `the ${limits.totalTimeoutMs} ms chain timeout ran out`,
+      };
+    }
+    if (error instanceof RedirectRefusedError) {
+      return { reason: "redirect", detail };
+    }
+    if (
+      error instanceof Error &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      return {
+        reason: "timeout",
+        detail: `no reply within ${limits.attemptTimeoutMs} ms`,
+      };
+    }
+    if (APICallError.isInstance(error)) {
+      const status = error.statusCode;
+      if (status === undefined) return { reason: "network", detail };
+      if (status === 429) return { reason: "rate-limit", detail };
+      if (status >= 500) return { reason: "http-5xx", detail };
+      if (status >= 400) return { reason: "http-4xx", detail };
+    }
+    return { reason: "unknown", detail };
+  }
+
+  /** One attempt: a structured-output request; on malformed JSON the repair pass; on an endpoint that rejects the schema request (400/422) one plain-text request and the repair pass. */
+  async function attempt<T>(
+    model: LanguageModel,
+    context: RouteContext,
+    schema: IntentSchema<T>,
+    chain: AbortSignal,
+    caller: AbortSignal | undefined,
+  ): Promise<Attempt<T>> {
+    const startedAt = performance.now();
+    const request = (timeoutMs: number) => ({
+      model,
+      ...(context.instructions === undefined
+        ? {}
+        : { instructions: context.instructions }),
+      headers: CLIENT_HEADERS,
+      abortSignal: chain,
+      timeout: timeoutMs,
+      maxRetries: 0,
+    });
+    const invalid = (message: string): Attempt<T> => ({
+      ok: false,
+      reason: "invalid-output",
+      detail: message,
+    });
+
+    let text: string | undefined;
+    try {
+      const result = await generateText({
+        ...request(limits.attemptTimeoutMs),
+        prompt: context.prompt,
+        output: Output.object({ schema: jsonSchema(schema.jsonSchema) }),
+      });
+      const parsed = schema.parse(result.output);
+      return parsed.ok
+        ? { ok: true, intent: parsed.value, mode: "native" }
+        : invalid(
+            `${parsed.path === "" ? "" : `${parsed.path}: `}${parsed.message}`,
+          );
+    } catch (error) {
+      if (NoObjectGeneratedError.isInstance(error)) {
+        text = error.text ?? "";
+      } else if (
+        APICallError.isInstance(error) &&
+        (error.statusCode === 400 || error.statusCode === 422)
+      ) {
+        text = undefined;
+      } else {
+        return { ok: false, ...classify(error, chain, caller) };
+      }
+    }
+
+    if (text === undefined) {
+      try {
+        const remaining = Math.max(
+          1,
+          limits.attemptTimeoutMs - (performance.now() - startedAt),
+        );
+        const result = await generateText({
+          ...request(remaining),
+          prompt: `${context.prompt}\n\n${schemaInstruction(schema)}`,
+        });
+        text = result.text;
+      } catch (error) {
+        return { ok: false, ...classify(error, chain, caller) };
+      }
+    }
+
+    const repaired = repairIntent(text, schema.parse);
+    return repaired.ok
+      ? { ok: true, intent: repaired.value, mode: "repaired" }
+      : invalid(repaired.message);
+  }
+
+  async function tryStep<T>(
+    step: RouteStep,
+    context: RouteContext,
+    schema: IntentSchema<T>,
+    chain: AbortSignal,
+    chainDeadline: number,
+    caller: AbortSignal | undefined,
+  ): Promise<
+    | { readonly ok: true; readonly intent: T; readonly step: StepMetadata }
+    | {
+        readonly ok: false;
+        readonly failure: StepFailure;
+        readonly halt: boolean;
+      }
+  > {
+    const startedAt = performance.now();
+    const endpoint = step.endpoint.id;
+    const redact = (text: string, apiKey: string | undefined): string => {
+      const clean =
+        apiKey === undefined || apiKey === ""
+          ? text
+          : text.split(apiKey).join("[redacted]");
+      return clean.slice(0, DETAIL_LIMIT);
+    };
+
+    let adapter: { model: LanguageModel; apiKey?: string };
+    try {
+      adapter = adapterFor(step);
+    } catch (error) {
+      return {
+        ok: false,
+        halt: false,
+        failure: {
+          endpoint,
+          model: step.model,
+          reason: "unknown",
+          detail: redact(
+            `could not build the adapter: ${describe(error)}`,
+            undefined,
+          ),
+          attempts: 0,
+          elapsedMs: performance.now() - startedAt,
+        },
+      };
+    }
+
+    let attempts = 0;
+    let last: Extract<Attempt<T>, { ok: false }>;
+    for (;;) {
+      attempts += 1;
+      const outcome = await attempt(
+        adapter.model,
+        context,
+        schema,
+        chain,
+        caller,
+      );
+      if (outcome.ok) {
+        return {
+          ok: true,
+          intent: outcome.intent,
+          step: {
+            endpoint,
+            model: step.model,
+            attempts,
+            mode: outcome.mode,
+            elapsedMs: performance.now() - startedAt,
+          },
+        };
+      }
+      last = outcome;
+      if (!RETRYABLE.has(outcome.reason) || attempts >= limits.maxAttempts) {
+        break;
+      }
+      const delay = Math.min(
+        limits.backoffBaseMs * 2 ** (attempts - 1),
+        limits.backoffMaxMs,
+      );
+      // A retry that could not finish inside the chain is not started.
+      if (performance.now() + delay >= chainDeadline) {
+        break;
+      }
+      await sleep(delay, chain);
+      if (chain.aborted) {
+        last = { ok: false, ...classify(new Error("aborted"), chain, caller) };
+        break;
+      }
+    }
+
+    return {
+      ok: false,
+      halt: last.reason === "chain-timeout" || last.reason === "aborted",
+      failure: {
+        endpoint,
+        model: step.model,
+        reason: last.reason,
+        detail: redact(last.detail, adapter.apiKey),
+        attempts,
+        elapsedMs: performance.now() - startedAt,
+      },
+    };
+  }
+
+  return {
+    async route(role, context, schema, routeOptions) {
+      const startedAt = performance.now();
+      const plan = planRoute(options.config, role, {
+        offline: options.offline,
+      });
+      const caller = routeOptions?.signal;
+      const timeout = AbortSignal.timeout(limits.totalTimeoutMs);
+      const chain = caller ? AbortSignal.any([timeout, caller]) : timeout;
+      const chainDeadline = startedAt + limits.totalTimeoutMs;
+
+      const failed: StepFailure[] = [];
+      for (const step of plan.steps) {
+        if (chain.aborted) {
+          break;
+        }
+        const outcome = await tryStep(
+          step,
+          context,
+          schema,
+          chain,
+          chainDeadline,
+          caller,
+        );
+        if (outcome.ok) {
+          return {
+            kind: "intent",
+            intent: outcome.intent,
+            step: outcome.step,
+            failed,
+            elapsedMs: performance.now() - startedAt,
+          };
+        }
+        failed.push(outcome.failure);
+        if (outcome.halt) {
+          break;
+        }
+      }
+      return {
+        kind: "exhausted",
+        steps: failed,
+        offlineSkipped: plan.offlineSkipped,
+        elapsedMs: performance.now() - startedAt,
+      };
+    },
+  };
+}

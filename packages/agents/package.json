@@ -6,5 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.57",
+    "ai": "7.0.116"
   }
 }

@@ -51,6 +51,10 @@
     "packages/agents": {
       "name": "@panthea/agents",
       "version": "0.1.0",
+      "dependencies": {
+        "@ai-sdk/openai-compatible": "3.0.57",
+        "ai": "7.0.116",
+      },
     },
     "packages/assets": {
       "name": "@panthea/assets",

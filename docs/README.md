@@ -3,6 +3,10 @@
 Status: Ready for implementation planning after nine interview rounds.
 The owner accepted the desktop-first MVP and delegated tunable defaults.
 
+## Current authority
+
+For what is decided and built now, read in this order: owner choices in [Decisions](product/decisions.md), then the accepted [ADRs](decisions/README.md) (they supersede parts of the original [Architecture recommendation](product/architecture-options.md), which stays as the proposal), then the [MVP roadmap](product/mvp-roadmap.md) milestone outcomes for what has been verified and what remains open, and [Traceability](product/traceability.md) for per-requirement status and evidence. Research and review documents inform decisions but do not change them.
+
 ## Reading order
 
 | Document | Purpose |
@@ -17,7 +21,7 @@ The owner accepted the desktop-first MVP and delegated tunable defaults.
 | [UX](product/ux-direction.md) | User journeys, controls, observation, accessibility, and recovery |
 | [Operations](product/operations-and-research.md) | Universe, saves, replay, telemetry, and experiments |
 | [Technical constraints](product/technical-constraints.md) | Selected stack and required probes |
-| [Architecture](product/architecture-options.md) | Backend candidates, boundaries, and workspace outline |
+| [Architecture](product/architecture-options.md) | Original architecture recommendation (proposal; accepted decisions are in the ADRs) |
 | [MVP roadmap](product/mvp-roadmap.md) | Milestones, dependencies, and future scope |
 | [Acceptance](product/acceptance.md) | End-to-end tests, performance hypotheses, and unattended trials |
 | [Open decisions](product/open-decisions.md) | Delegated engineering research and known risks |
@@ -38,3 +42,7 @@ Later accepted decisions supersede earlier open questions.
 Use a Bun-managed workspace, Tauri, Three.js, and Three Flatland, rendering through WebGPU where the webview supports it and WebGL2 otherwise (D25).
 The MVP targets local single-person desktop use with optional hosted model adapters.
 The owner implements through OpenCode and Systematic.
+
+## Implementation reviews
+
+- [M0/M1 review and OpenCode prompt (2026-09-28)](research/m0-m1-review-2026-09-28.md): architecture assessment, reproduced correctness gaps, and focused M2 follow-up. Review recommendations do not supersede owner decisions or ADRs.

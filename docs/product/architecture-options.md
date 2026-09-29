@@ -1,5 +1,7 @@
 # Architecture recommendation and probes
 
+> **2026-09-28:** this is the original proposal, kept for history. Accepted architecture lives in the [ADRs](../decisions/README.md), and later ADRs supersede parts of this document: [ADR-0003](../decisions/0003-simulation-service.md) (Bun sidecar supervised by the Tauri shell), [ADR-0005](../decisions/0005-model-providers.md) (model providers and scheduling; the heavy-work memory policy is open), [ADR-0008](../decisions/0008-world-state-and-client-transport.md) (event-log state model, durable proposal journal, new-slot import/restore, one-frame client transport). Milestone outcomes are in the [roadmap](mvp-roadmap.md).
+
 Status: Recommendation for the implementing agent, not a completed implementation or benchmark.
 The owner selected the desktop/rendering stack and delegated backend research.
 Use the first milestone to confirm or revise this recommendation with measured evidence.

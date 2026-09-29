@@ -20,18 +20,25 @@ use tauri_plugin_shell::process::CommandChild;
 
 pub const MAX_RESTARTS: u32 = 3;
 
-/// The change-detection key extracted from a polled `/frame` response.
+/// A polled `/frame` response: the identity fields the shell reads itself
+/// (the tray needs `status`, receipts need `session_id`) and the whole frame.
+/// Two keys are equal only when the frames are equal, so a key comparison is
+/// a whole-frame comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameKey {
     pub sequence: u64,
     pub status: String,
     pub session_id: String,
+    /// The frame exactly as the sidecar sent it.
+    pub frame: serde_json::Value,
 }
 
-/// True if `current` differs from `previous` in sequence, status, or
-/// session ID -- the only fields that decide whether a polled frame is
-/// worth forwarding to the webview. No previous frame (the first poll of
-/// a launch) always forwards.
+/// True if `current` is not the frame `previous` already delivered. The
+/// whole frame decides, not a few of its fields: the tick inside `state`,
+/// the recent-event window, the degraded reason, and the catch-up summary
+/// change without a new event sequence or status, and the webview shows
+/// them. Identical polls (a paused or idle world) are not re-sent. No
+/// previous frame (the first poll of a launch) always forwards.
 pub fn should_forward(previous: Option<&FrameKey>, current: &FrameKey) -> bool {
     match previous {
         None => true,
@@ -82,7 +89,8 @@ pub struct Lifecycle {
     /// Set once the supervisor gives up after `MAX_RESTARTS` attempts.
     pub exhausted: bool,
     pub restarts: u32,
-    /// The last frame forwarded to the webview, for change detection.
+    /// The last frame forwarded to the webview, for change detection: a
+    /// polled frame is sent only when it differs from this one.
     pub last_frame: Option<FrameKey>,
     /// The most recently polled frame's raw body, cached regardless of
     /// whether a subscriber was present to receive it -- replayed
@@ -381,7 +389,15 @@ mod tests {
             sequence,
             status: status.to_string(),
             session_id: session_id.to_string(),
+            frame: serde_json::json!({
+                "sequence": sequence, "status": status, "sessionId": session_id
+            }),
         }
+    }
+
+    fn with_frame(mut key: FrameKey, frame: serde_json::Value) -> FrameKey {
+        key.frame = frame;
+        key
     }
 
     #[test]
@@ -414,6 +430,29 @@ mod tests {
         let previous = key(5, "running", "s1");
         let current = key(5, "running", "s2");
         assert!(should_forward(Some(&previous), &current));
+    }
+
+    #[test]
+    fn a_changed_tick_forwards_even_with_the_same_sequence_status_and_session() {
+        let previous = with_frame(
+            key(5, "running", "s1"),
+            serde_json::json!({ "sequence": 5, "state": { "tick": 10 } }),
+        );
+        let current = with_frame(
+            key(5, "running", "s1"),
+            serde_json::json!({ "sequence": 5, "state": { "tick": 11 } }),
+        );
+        assert!(should_forward(Some(&previous), &current));
+    }
+
+    #[test]
+    fn a_frame_equal_in_every_field_does_not_forward() {
+        let previous = with_frame(
+            key(5, "running", "s1"),
+            serde_json::json!({ "sequence": 5, "state": { "tick": 10 } }),
+        );
+        let current = previous.clone();
+        assert!(!should_forward(Some(&previous), &current));
     }
 
     #[test]

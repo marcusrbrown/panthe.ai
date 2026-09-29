@@ -341,3 +341,35 @@ test("a proposal referencing an observation carries its ID", () => {
     expect(String(result.value.observationId)).toBe("obs-42");
   }
 });
+
+test.each(["routine", "fixture", "operator", "model", "director"])(
+  "a proposal and an observation may declare the %s source",
+  (source) => {
+    expect(
+      parseProposal(
+        base({ source, kind: "gather", resource: "wood", amount: 3 }),
+      ).ok,
+    ).toBe(true);
+    expect(
+      parseObservationRecord({
+        schemaVersion: 1,
+        id: "obs-1",
+        observer: "npc-1",
+        stateRevision: 0,
+        factsRead: [],
+        source,
+      }).ok,
+    ).toBe(true);
+  },
+);
+
+test("an unknown source is still rejected, naming the source", () => {
+  const result = parseProposal(
+    base({ source: "oracle", kind: "gather", resource: "wood", amount: 3 }),
+  );
+
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.message).toContain("oracle");
+  }
+});

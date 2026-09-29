@@ -18,6 +18,7 @@
 // `idParser`/`idFactory` helpers rather than editing packages/contracts.
 
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import {
   type Brand,
   type CausationId,
@@ -37,6 +38,11 @@ import {
 export type ProposalId = Brand<string, "ProposalId">;
 export const parseProposalId = idParser<"ProposalId">();
 export const createProposalId = idFactory<"ProposalId">("proposal");
+
+export type ModelRequestId = Brand<string, "ModelRequestId">;
+export const parseModelRequestId = idParser<"ModelRequestId">();
+export const createModelRequestId =
+  idFactory<"ModelRequestId">("model-request");
 
 /** Resolves committed events by ID. Injected so this module never assumes a specific events table shape (packages/persistence owns that). */
 export interface EventSource {
@@ -81,6 +87,30 @@ export function ensureTraceSchema(db: Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_trace_outcome_events_proposal_id
     ON trace_outcome_events(proposal_id, position)
+  `);
+  // One row per model call chain (see `recordModelRequest`). `proposal_id` is
+  // the proposal the request produced; it is null when the chain was
+  // exhausted or the intent was refused before it became a proposal.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS trace_model_requests (
+      id TEXT PRIMARY KEY,
+      proposal_id TEXT,
+      role TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      steps TEXT NOT NULL,
+      elapsed_ms INTEGER NOT NULL,
+      prompt_digest TEXT NOT NULL,
+      output_digest TEXT,
+      prompt_payload TEXT,
+      output_payload TEXT,
+      recorded_at INTEGER NOT NULL,
+      CHECK (outcome IN ('intent', 'exhausted')),
+      CHECK (outcome <> 'exhausted' OR proposal_id IS NULL)
+    ) STRICT
+  `);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_model_requests_proposal_id
+    ON trace_model_requests(proposal_id)
   `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS trace_receipts (
@@ -320,4 +350,217 @@ export function listReceiptsByEvent(
     sessionId: row.session_id as SessionId,
     presentedAtMs: row.presented_at_ms,
   }));
+}
+
+// --- Model requests ---------------------------------------------------------------
+
+/** Most characters of prompt or output text kept per model request. Digests always cover the whole text. */
+export const MODEL_PAYLOAD_LIMIT = 16_384;
+
+/** How long payload text is kept; digests and metadata stay for the life of the world history. */
+export const MODEL_PAYLOAD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface RouteStepLike {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly attempts: number;
+  readonly elapsedMs: number;
+}
+
+interface FailedRouteStepLike extends RouteStepLike {
+  readonly reason: string;
+  readonly detail?: string;
+}
+
+/**
+ * The result of routing a model request, as `@panthea/agents`' router reports
+ * it. Declared here structurally so telemetry does not depend on the agent
+ * layer: a `RouteResult` is assignable to this.
+ */
+export type ModelRouteResult =
+  | {
+      readonly kind: "intent";
+      /** The step that answered. */
+      readonly step: RouteStepLike & { readonly mode: "native" | "repaired" };
+      /** Steps that failed before it, in order. */
+      readonly failed: readonly FailedRouteStepLike[];
+      readonly elapsedMs: number;
+    }
+  | {
+      readonly kind: "exhausted";
+      readonly steps: readonly FailedRouteStepLike[];
+      readonly elapsedMs: number;
+    };
+
+/** One step of the chain as stored: a failed step has a `reason`, the step that answered has a `mode`. */
+export interface ModelRequestStep {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly attempts: number;
+  readonly elapsedMs: number;
+  readonly mode?: "native" | "repaired";
+  readonly reason?: string;
+  readonly detail?: string;
+}
+
+export interface ModelRequestInput {
+  /** The proposal this request produced; absent when the chain was exhausted or the intent was refused before it became one. */
+  readonly proposalId?: ProposalId;
+  readonly role: string;
+  readonly route: ModelRouteResult;
+  readonly prompt: string;
+  /** What the model answered (the raw reply, or its parsed intent as JSON); absent for an exhausted chain. */
+  readonly output?: string;
+}
+
+export interface ModelRequestRow {
+  readonly id: ModelRequestId;
+  readonly proposalId: ProposalId | undefined;
+  readonly role: string;
+  readonly outcome: "intent" | "exhausted";
+  readonly steps: readonly ModelRequestStep[];
+  readonly elapsedMs: number;
+  readonly promptDigest: string;
+  readonly outputDigest: string | undefined;
+  /** Bounded prompt text; gone once pruned. */
+  readonly promptPayload: string | undefined;
+  readonly outputPayload: string | undefined;
+  /** Wall time the row was written. Used only to decide when to prune; never a world input. */
+  readonly recordedAtMs: number;
+}
+
+const digest = (text: string): string =>
+  createHash("sha256").update(text).digest("hex");
+
+const bounded = (text: string): string => text.slice(0, MODEL_PAYLOAD_LIMIT);
+
+function stepsOf(route: ModelRouteResult): ModelRequestStep[] {
+  const failed = route.kind === "intent" ? route.failed : route.steps;
+  const steps: ModelRequestStep[] = failed.map((step) => ({
+    endpoint: step.endpoint,
+    model: step.model,
+    attempts: step.attempts,
+    elapsedMs: Math.round(step.elapsedMs),
+    reason: step.reason,
+    ...(step.detail === undefined ? {} : { detail: step.detail }),
+  }));
+  if (route.kind === "intent") {
+    steps.push({
+      endpoint: route.step.endpoint,
+      model: route.step.model,
+      attempts: route.step.attempts,
+      elapsedMs: Math.round(route.step.elapsedMs),
+      mode: route.step.mode,
+    });
+  }
+  return steps;
+}
+
+/**
+ * Records one model call chain: its role, every step with its reason or
+ * mode, timing, sha256 digests of the whole prompt and output, and the
+ * prompt and output text bounded to `MODEL_PAYLOAD_LIMIT` characters.
+ *
+ * A request whose proposal commits is written inside that tick's
+ * transaction, so a rolled-back tick leaves no row; an exhausted chain has
+ * no proposal and is written on its own. A second request for one proposal
+ * is ignored, never thrown, because this runs inside a tick where a throw
+ * would roll the tick back to be repeated.
+ */
+export function recordModelRequest(
+  db: Database,
+  input: ModelRequestInput,
+  now: number = Date.now(),
+): ModelRequestId {
+  const id = createModelRequestId();
+  db.run(
+    // Only a repeat of the proposal is ignored; a CHECK violation still throws.
+    `INSERT INTO trace_model_requests
+       (id, proposal_id, role, outcome, steps, elapsed_ms, prompt_digest, output_digest, prompt_payload, output_payload, recorded_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (proposal_id) DO NOTHING`,
+    [
+      id,
+      input.proposalId ?? null,
+      input.role,
+      input.route.kind,
+      JSON.stringify(stepsOf(input.route)),
+      Math.round(input.route.elapsedMs),
+      digest(input.prompt),
+      input.output === undefined ? null : digest(input.output),
+      bounded(input.prompt),
+      input.output === undefined ? null : bounded(input.output),
+      now,
+    ],
+  );
+  return id;
+}
+
+interface ModelRequestSqlRow {
+  id: string;
+  proposal_id: string | null;
+  role: string;
+  outcome: string;
+  steps: string;
+  elapsed_ms: number;
+  prompt_digest: string;
+  output_digest: string | null;
+  prompt_payload: string | null;
+  output_payload: string | null;
+  recorded_at: number;
+}
+
+function decodeModelRequest(row: ModelRequestSqlRow): ModelRequestRow {
+  return {
+    id: row.id as ModelRequestId,
+    proposalId: (row.proposal_id ?? undefined) as ProposalId | undefined,
+    role: row.role,
+    outcome: row.outcome as "intent" | "exhausted",
+    steps: JSON.parse(row.steps) as ModelRequestStep[],
+    elapsedMs: row.elapsed_ms,
+    promptDigest: row.prompt_digest,
+    outputDigest: row.output_digest ?? undefined,
+    promptPayload: row.prompt_payload ?? undefined,
+    outputPayload: row.output_payload ?? undefined,
+    recordedAtMs: row.recorded_at,
+  };
+}
+
+export function getModelRequest(
+  db: Database,
+  id: ModelRequestId,
+): ModelRequestRow | undefined {
+  const row = db
+    .query("SELECT * FROM trace_model_requests WHERE id = ?")
+    .get(id) as ModelRequestSqlRow | null;
+  return row ? decodeModelRequest(row) : undefined;
+}
+
+export function getModelRequestByProposalId(
+  db: Database,
+  proposalId: ProposalId,
+): ModelRequestRow | undefined {
+  const row = db
+    .query("SELECT * FROM trace_model_requests WHERE proposal_id = ?")
+    .get(proposalId) as ModelRequestSqlRow | null;
+  return row ? decodeModelRequest(row) : undefined;
+}
+
+/**
+ * Nulls the prompt and output text of every request recorded more than
+ * `olderThanMs` before `now`, keeping digests, steps, timing, and outcome.
+ * Returns how many rows it changed. A row exactly at the boundary is kept.
+ */
+export function pruneModelPayloads(
+  db: Database,
+  olderThanMs: number,
+  now: number = Date.now(),
+): number {
+  return db.run(
+    `UPDATE trace_model_requests
+     SET prompt_payload = NULL, output_payload = NULL
+     WHERE recorded_at < ?
+       AND (prompt_payload IS NOT NULL OR output_payload IS NOT NULL)`,
+    [now - olderThanMs],
+  ).changes;
 }

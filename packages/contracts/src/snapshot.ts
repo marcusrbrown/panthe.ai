@@ -31,6 +31,8 @@ export const DEGRADED_REASONS = [
   "store-error",
   "disk-full",
   "sidecar-unreachable",
+  /** Every model endpoint failed. Unlike the others it never halts the world: routines and the director keep ticking. */
+  "model-degraded",
 ] as const;
 export type DegradedReason = (typeof DEGRADED_REASONS)[number];
 

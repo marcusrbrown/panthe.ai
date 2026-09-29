@@ -88,7 +88,13 @@ export function parseObservationRecord(
 
 // --- Proposal source -----------------------------------------------------
 
-export const PROPOSAL_SOURCES = ["routine", "fixture", "operator"] as const;
+export const PROPOSAL_SOURCES = [
+  "routine",
+  "fixture",
+  "operator",
+  "model",
+  "director",
+] as const;
 export type ProposalSource = (typeof PROPOSAL_SOURCES)[number];
 
 function parseProposalSource(

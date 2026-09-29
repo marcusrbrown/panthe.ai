@@ -212,6 +212,29 @@ export type Proposal =
   | ClaimProposal
   | LegendProposal;
 
+export type ProposalKind = Proposal["kind"];
+
+// `satisfies Record<ProposalKind, true>` makes a new proposal kind fail to
+// compile here until it is listed, so content that names a world action
+// (god abilities) tracks the proposal contract.
+const PROPOSAL_KIND_SET = {
+  move: true,
+  "realm-transition": true,
+  gather: true,
+  produce: true,
+  trade: true,
+  consume: true,
+  strike: true,
+  repair: true,
+  worship: true,
+  claim: true,
+  legend: true,
+} as const satisfies Record<ProposalKind, true>;
+
+export const PROPOSAL_KINDS = Object.keys(
+  PROPOSAL_KIND_SET,
+) as readonly ProposalKind[];
+
 export function parseProposal(input: unknown): ParseResult<Proposal> {
   if (!isRecord(input)) {
     return fail("", "expected a proposal object");

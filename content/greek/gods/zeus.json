@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "id": "zeus",
+  "name": "Zeus",
+  "domains": ["sky", "thunder", "kingship", "oaths", "hospitality (xenia)"],
+  "drives": {
+    "sovereignty": 0.9,
+    "order": 0.7,
+    "desire": 0.7,
+    "vengeance": 0.4,
+    "guardianship": 0.3
+  },
+  "abilities": [
+    {
+      "id": "thunderbolt",
+      "name": "Thunderbolt",
+      "action": "strike",
+      "description": "Hurls lightning at a structure. Costs divinity equal to the power; a strike at or above the ignition threshold sets a combustible target alight.",
+      "cost": { "resource": "divinity", "amount": 3 },
+      "parameters": { "power": 3 }
+    },
+    {
+      "id": "pronouncement",
+      "name": "Pronouncement",
+      "action": "legend",
+      "description": "Declares a judgment or decree, recorded as a legend that other inhabitants can hear and repeat."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "hera",
+      "kind": "spouse",
+      "disposition": 0.2,
+      "note": "Sister and wife; he asserts authority over her and she resists. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg001.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "works-and-days",
+      "title": "Works and Days",
+      "author": "Hesiod",
+      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg002.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "iliad",
+      "title": "Iliad",
+      "author": "Homer",
+      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg001.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "odyssey",
+      "title": "Odyssey",
+      "author": "Homer",
+      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg002.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "hymn-23-zeus",
+      "title": "Homeric Hymn 23 to Zeus",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0013.tlg023.perseus-grc2/",
+      "accessed": "2026-09-29"
+    },
+    {
+      "id": "apollodorus",
+      "title": "Library (Bibliotheca)",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Loeb Classical Library, 1921, text checked at Theoi.com; locators are book.chapter.section",
+      "accessed": "2026-09-29"
+    }
+  ],
+  "lore": [
+    {
+      "id": "thunderer",
+      "statement": "Zeus is the thunderer: the sons of Heaven whom he freed from their bonds gave him thunder, lightning, and the thunderbolt, and his thunder shakes the earth.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 453-458" },
+        { "source": "theogony", "locator": "lines 501-506" },
+        { "source": "hymn-23-zeus", "locator": "lines 1-4" }
+      ]
+    },
+    {
+      "id": "typhoeus",
+      "statement": "Zeus struck down the monster Typhoeus with thunder and lightning and cast him into Tartarus.",
+      "cites": [{ "source": "theogony", "locator": "lines 853-868" }]
+    },
+    {
+      "id": "king-of-the-gods",
+      "statement": "After the war with the Titans the gods pressed Zeus to reign over them, and he divided their honors among them.",
+      "cites": [{ "source": "theogony", "locator": "lines 881-885" }]
+    },
+    {
+      "id": "strongest",
+      "statement": "Zeus boasts that no god or goddess, all pulling together on a golden chain, could drag him down from the sky, while he could haul up earth and sea.",
+      "cites": [{ "source": "iliad", "locator": "book 8, lines 17-27" }]
+    },
+    {
+      "id": "his-word-stands",
+      "statement": "Zeus's nod is the surest pledge among the gods: what he grants with it is never revoked, false, or left unfulfilled, and it shakes Olympus.",
+      "cites": [{ "source": "iliad", "locator": "book 1, lines 524-530" }]
+    },
+    {
+      "id": "zeus-xenios",
+      "statement": "Zeus guards suppliants and guests: he avenges wrongs done to them, and strangers and beggars are held to come from him.",
+      "cites": [
+        { "source": "odyssey", "locator": "book 9, lines 266-271" },
+        { "source": "odyssey", "locator": "book 14, lines 56-58" }
+      ]
+    },
+    {
+      "id": "oath-witness",
+      "statement": "Oaths are sworn by Zeus, and he punishes those who swear falsely: perjury withers a man's line.",
+      "cites": [
+        { "source": "iliad", "locator": "book 3, lines 276-301" },
+        { "source": "works-and-days", "locator": "lines 274-285" }
+      ]
+    },
+    {
+      "id": "many-lovers",
+      "statement": "Zeus desires and pursues many women, mortal and divine; he lists Danae, Semele, Alcmene, Demeter, and Leto among his past loves.",
+      "cites": [{ "source": "iliad", "locator": "book 14, lines 315-328" }]
+    },
+    {
+      "id": "quarrels-with-hera",
+      "statement": "Zeus and Hera quarrel openly: he tells her she is not owed his counsels and threatens her with force, and he recalls once hanging her from the sky with anvils on her feet.",
+      "cites": [
+        { "source": "iliad", "locator": "book 1, lines 536-567" },
+        { "source": "iliad", "locator": "book 15, lines 14-33" }
+      ]
+    },
+    {
+      "id": "deceived-by-hera",
+      "statement": "Hera can deceive Zeus: she lulls him to sleep while the battle turns, and she once tricked him into an oath that made Eurystheus, not Heracles, ruler.",
+      "cites": [
+        { "source": "iliad", "locator": "book 14, lines 153-353" },
+        { "source": "iliad", "locator": "book 19, lines 95-133" }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "how-zeus-came-to-rule",
+      "note": "Hesiod has the gods urge Zeus to reign after the Titan war, after which he distributes honors. Homer's Poseidon and Apollodorus have three brothers divide the world by lot, with Zeus drawing the sky. This profile keeps the sky-and-kingship reading; neither telling is preferred as fact.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 881-885" },
+        { "source": "iliad", "locator": "book 15, lines 187-193" },
+        { "source": "apollodorus", "locator": "1.2.1" }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "thunderbolt-on-structures",
+      "statement": "Zeus's thunderbolt strikes structures such as trees and buildings in play.",
+      "reason": "The world's strike action targets structures. The myths cite his lightning against monsters and Titans, not buildings."
+    },
+    {
+      "id": "pronouncement-as-legend",
+      "statement": "Zeus's pronouncements are recorded as legends.",
+      "reason": "Legend is the world's only action that records speech or tale; it is a game mapping, not a mythic device."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting disposition toward Hera are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-zeus"
+}

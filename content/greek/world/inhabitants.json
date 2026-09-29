@@ -23,6 +23,13 @@
       "locationId": "great-hall",
       "deity": true,
       "startingInventory": [{ "resource": "divinity", "amount": 10 }]
+    },
+    {
+      "id": "hera",
+      "name": "Hera",
+      "locationId": "great-hall",
+      "deity": true,
+      "startingInventory": [{ "resource": "divinity", "amount": 10 }]
     }
   ]
 }

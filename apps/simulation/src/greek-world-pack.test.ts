@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { loadContentPack } from "@panthea/content";
+import { loadContentPack, loadGodProfiles } from "@panthea/content";
 import { createInitialWorldState } from "@panthea/world";
-import { loadEmbeddedGreekWorldPack } from "./greek-world-pack";
+import {
+  loadEmbeddedGreekGodProfiles,
+  loadEmbeddedGreekWorldPack,
+} from "./greek-world-pack";
 
 const GREEK_WORLD_DIR = join(
   import.meta.dir,
@@ -14,6 +17,8 @@ const GREEK_WORLD_DIR = join(
   "world",
 );
 
+const GREEK_GODS_DIR = join(GREEK_WORLD_DIR, "..", "gods");
+
 test("the embedded Greek pack parses to the same content pack as loading content/greek/world from disk", () => {
   const embedded = loadEmbeddedGreekWorldPack();
   expect(embedded.ok).toBe(true);
@@ -24,6 +29,19 @@ test("the embedded Greek pack parses to the same content pack as loading content
   if (!embedded.ok || !fromDisk.ok) {
     return;
   }
+  expect(embedded.value).toEqual(fromDisk.value);
+});
+
+test("the embedded pack carries the Zeus and Hera profiles, identical to content/greek/gods on disk", () => {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+
+  const embedded = loadEmbeddedGreekGodProfiles(pack.value);
+  const fromDisk = loadGodProfiles(GREEK_GODS_DIR, pack.value);
+  if (!embedded.ok) throw new Error(`${embedded.path}: ${embedded.message}`);
+  if (!fromDisk.ok) throw new Error(`${fromDisk.path}: ${fromDisk.message}`);
+
+  expect(embedded.value.map((god) => god.id).sort()).toEqual(["hera", "zeus"]);
   expect(embedded.value).toEqual(fromDisk.value);
 });
 

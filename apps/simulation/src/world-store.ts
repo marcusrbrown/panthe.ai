@@ -23,20 +23,31 @@ import {
   type PrngState,
   type WorldState,
 } from "@panthea/world";
-import { loadEmbeddedGreekWorldPack } from "./greek-world-pack";
+import {
+  loadEmbeddedGreekGodProfiles,
+  loadEmbeddedGreekWorldPack,
+} from "./greek-world-pack";
 
 /**
  * Loads the embedded authored Greek content pack (see
  * greek-world-pack.ts) and builds its initial `WorldState` (no actors --
  * see packages/world/src/state.ts). Needs no filesystem access, so it
  * works identically whether running from source or inside a compiled
- * `bun build --compile` sidecar binary.
+ * `bun build --compile` sidecar binary. The embedded god profiles are
+ * parsed against the pack too, so a profile that no longer matches a deity
+ * inhabitant stops startup.
  */
 export function loadGreekWorldState(): WorldState {
   const result = loadEmbeddedGreekWorldPack();
   if (!result.ok) {
     throw new Error(
       `world-store: failed to parse the embedded Greek content pack (${result.path}): ${result.message}`,
+    );
+  }
+  const gods = loadEmbeddedGreekGodProfiles(result.value);
+  if (!gods.ok) {
+    throw new Error(
+      `world-store: failed to parse the embedded Greek god profiles (${gods.path}): ${gods.message}`,
     );
   }
   return createInitialWorldState(result.value);

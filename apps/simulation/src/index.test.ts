@@ -103,6 +103,71 @@ describe("refreshStatusAfterCatchUp", () => {
     }
   });
 
+  test("a degraded catch-up result publishes what it committed, discard included", () => {
+    const dir = mkdtempSync(
+      join(tmpdir(), "panthea-sim-index-degraded-summary-"),
+    );
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const statusRef = createServiceStatusRef(seeded);
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: {
+            appliedMs: 120_000,
+            skippedMs: 4 * 60 * 60 * 1000,
+            majorOutcomes: [],
+          },
+          state: seeded,
+          prng: createPrng(1),
+          degraded: { reason: "store-error", message: "disk hiccup" },
+        },
+        store,
+      );
+
+      expect(statusRef.status).toBe("degraded");
+      expect(statusRef.catchUpSummary).toMatchObject({
+        appliedMs: 120_000,
+        skippedMs: 4 * 60 * 60 * 1000,
+      });
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a degraded catch-up result that committed nothing publishes no summary", () => {
+    const dir = mkdtempSync(
+      join(tmpdir(), "panthea-sim-index-degraded-empty-"),
+    );
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const statusRef = createServiceStatusRef(seeded);
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: { appliedMs: 0, skippedMs: 0, majorOutcomes: [] },
+          state: seeded,
+          prng: createPrng(1),
+          degraded: { reason: "store-error", message: "disk hiccup" },
+        },
+        store,
+      );
+
+      expect(statusRef.status).toBe("degraded");
+      expect(statusRef.catchUpSummary).toBeUndefined();
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a catch-up that applied and skipped nothing leaves the earlier summary in place", async () => {
     const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-empty-summary-"));
     try {
@@ -265,6 +330,63 @@ describe("service (bun run src/index.ts)", () => {
     expect(exitCode).toBe(0);
   });
 
+  test("a five hour gap whose first chunk never committed after the discard: the restarted service's /frame reports the whole backlog, discard included", async () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const storePath = join(appDataDir, "active", "world.sqlite");
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+    store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+      Date.now() - 5 * HOUR_MS,
+    ]);
+    let attempt = 0;
+    const interrupted = await runCatchUp(
+      seeded,
+      createPrng(1),
+      {
+        store,
+        reducers,
+        traceDb: store.db,
+        commitTick: (storeArg, reducersArg, input) => {
+          attempt += 1;
+          if (attempt === 2) throw new Error("simulated commit failure");
+          return persistCommitTick(storeArg, reducersArg, input);
+        },
+      },
+      { nowWallMs: Date.now() },
+    );
+    expect(interrupted.degraded).toBeDefined();
+    expect(readClock(store.db).tick).toBe(0);
+    closeStore(store);
+
+    const { proc, port } = await spawnService("test-token-frame");
+    try {
+      const summary = await (async () => {
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const response = await fetch(`http://127.0.0.1:${port}/frame`, {
+            headers: { Authorization: "Bearer test-token-frame" },
+          });
+          const frame = (await response.json()) as {
+            catchUpSummary?: { appliedMs: number; skippedMs: number };
+          };
+          if (frame.catchUpSummary) return frame.catchUpSummary;
+          await Bun.sleep(50);
+        }
+        throw new Error("no catch-up summary appeared in /frame");
+      })();
+
+      // The cap is applied once; everything else in the five hours, and the
+      // seconds the restart took, was discarded.
+      expect(summary.appliedMs).toBe(HOUR_MS);
+      expect(summary.skippedMs).toBeGreaterThanOrEqual(4 * HOUR_MS);
+      expect(summary.skippedMs).toBeLessThan(4 * HOUR_MS + 60_000);
+    } finally {
+      proc.kill();
+    }
+  }, 60_000);
+
   test("error path: stdin EOF before any token line refuses to start (non-zero exit, never serves)", async () => {
     const proc = Bun.spawn(["bun", "run", INDEX_ENTRY], {
       stdin: "pipe",
@@ -304,6 +426,102 @@ describe("service (bun run src/index.ts)", () => {
       expect(exitCode).toBe(3);
     } finally {
       first.proc.kill();
+    }
+  });
+});
+
+describe("refreshStatusAfterCatchUp: nothing happened", () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-nothing-"));
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(dir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+    return {
+      seeded,
+      reducers,
+      store,
+      dispose() {
+        closeStore(store);
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  test("a fresh world's startup catch-up, run milliseconds after the store was created, leaves the frame with no catch-up summary", async () => {
+    const world = setup();
+    try {
+      const statusRef = createServiceStatusRef(world.seeded);
+      const result = await runCatchUp(
+        world.seeded,
+        createPrng(1),
+        {
+          store: world.store,
+          reducers: world.reducers,
+          traceDb: world.store.db,
+        },
+        { nowWallMs: readClock(world.store.db).cursorWallMs + 5 },
+      );
+
+      refreshStatusAfterCatchUp(statusRef, result, world.store);
+
+      expect(statusRef.catchUpSummary).toBeUndefined();
+    } finally {
+      world.dispose();
+    }
+  });
+
+  test("a catch-up that applied less than one tick and has no outcomes leaves the earlier summary in place", () => {
+    const world = setup();
+    try {
+      const statusRef = createServiceStatusRef(world.seeded);
+      const earlier = {
+        appliedMs: 3_600_000,
+        skippedMs: 60_000,
+        majorOutcomes: ["tavern fire spread"],
+      };
+      updateServiceStatus(statusRef, world.seeded, {
+        catchUpSummary: earlier,
+      });
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: { appliedMs: 400, skippedMs: 0, majorOutcomes: [] },
+          state: world.seeded,
+          prng: createPrng(1),
+        },
+        world.store,
+      );
+
+      expect(statusRef.catchUpSummary?.appliedMs).toBe(3_600_000);
+    } finally {
+      world.dispose();
+    }
+  });
+
+  test("a catch-up that applied less than one tick but found an outcome still reports it", () => {
+    const world = setup();
+    try {
+      const statusRef = createServiceStatusRef(world.seeded);
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: {
+            appliedMs: 0,
+            skippedMs: 0,
+            majorOutcomes: ["building-ignited:the-tavern"],
+          },
+          state: world.seeded,
+          prng: createPrng(1),
+        },
+        world.store,
+      );
+      expect(statusRef.catchUpSummary?.majorOutcomes).toEqual([
+        "building-ignited:the-tavern",
+      ]);
+    } finally {
+      world.dispose();
     }
   });
 });

@@ -61,15 +61,24 @@ export function ensureTraceSchema(db: Database): void {
       causation_id TEXT NOT NULL,
       outcome TEXT NOT NULL,
       reason TEXT,
-      event_id TEXT,
       recorded_at INTEGER NOT NULL,
       payload TEXT NOT NULL,
       CHECK (outcome IN ('committed', 'rejected'))
     ) STRICT
   `);
+  // Every event a committed proposal produced, in commit order. An event
+  // carries only its observation id, so this is what tells two proposals
+  // that cite the same observation apart.
   db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_trace_proposal_outcomes_event_id
-    ON trace_proposal_outcomes(event_id)
+    CREATE TABLE IF NOT EXISTS trace_outcome_events (
+      event_id TEXT PRIMARY KEY,
+      proposal_id TEXT NOT NULL,
+      position INTEGER NOT NULL
+    ) STRICT
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_trace_outcome_events_proposal_id
+    ON trace_outcome_events(proposal_id, position)
   `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS trace_receipts (
@@ -128,7 +137,8 @@ export interface RecordProposalOutcomeInput {
   readonly proposal: Proposal;
   readonly outcome: ProposalOutcomeKind;
   readonly reason?: RejectionReasonCode;
-  readonly eventId?: EventId;
+  /** Every event a committed proposal produced, in commit order. */
+  readonly eventIds?: readonly EventId[];
 }
 
 export function recordProposalOutcome(
@@ -138,8 +148,8 @@ export function recordProposalOutcome(
 ): void {
   db.run(
     `INSERT OR IGNORE INTO trace_proposal_outcomes
-       (proposal_id, observation_id, correlation_id, causation_id, outcome, reason, event_id, recorded_at, payload)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (proposal_id, observation_id, correlation_id, causation_id, outcome, reason, recorded_at, payload)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.proposalId,
       input.observationId,
@@ -147,11 +157,17 @@ export function recordProposalOutcome(
       input.causationId,
       input.outcome,
       input.reason ?? null,
-      input.eventId ?? null,
       now,
       JSON.stringify(input.proposal),
     ],
   );
+  (input.eventIds ?? []).forEach((eventId, position) => {
+    db.run(
+      `INSERT OR IGNORE INTO trace_outcome_events (event_id, proposal_id, position)
+       VALUES (?, ?, ?)`,
+      [eventId, input.proposalId, position],
+    );
+  });
 }
 
 export interface ProposalOutcomeRow {
@@ -161,20 +177,23 @@ export interface ProposalOutcomeRow {
   readonly causationId: CausationId;
   readonly outcome: ProposalOutcomeKind;
   readonly reason: RejectionReasonCode | undefined;
-  readonly eventId: EventId | undefined;
+  /** Every event the proposal committed, in commit order; empty for a rejection. */
+  readonly eventIds: readonly EventId[];
   readonly proposal: Proposal;
 }
 
-function decodeProposalOutcomeRow(row: {
-  proposal_id: string;
-  observation_id: string;
-  correlation_id: string;
-  causation_id: string;
-  outcome: string;
-  reason: string | null;
-  event_id: string | null;
-  payload: string;
-}): ProposalOutcomeRow {
+function decodeProposalOutcomeRow(
+  db: Database,
+  row: {
+    proposal_id: string;
+    observation_id: string;
+    correlation_id: string;
+    causation_id: string;
+    outcome: string;
+    reason: string | null;
+    payload: string;
+  },
+): ProposalOutcomeRow {
   return {
     proposalId: row.proposal_id as ProposalId,
     observationId: row.observation_id as ObservationId,
@@ -182,7 +201,13 @@ function decodeProposalOutcomeRow(row: {
     causationId: row.causation_id as CausationId,
     outcome: row.outcome as ProposalOutcomeKind,
     reason: (row.reason ?? undefined) as RejectionReasonCode | undefined,
-    eventId: (row.event_id ?? undefined) as EventId | undefined,
+    eventIds: (
+      db
+        .query(
+          "SELECT event_id FROM trace_outcome_events WHERE proposal_id = ? ORDER BY position ASC",
+        )
+        .all(row.proposal_id) as { event_id: string }[]
+    ).map((event) => event.event_id as EventId),
     proposal: JSON.parse(row.payload) as Proposal,
   };
 }
@@ -193,18 +218,20 @@ export function getProposalOutcomeByProposalId(
 ): ProposalOutcomeRow | undefined {
   const row = db
     .query("SELECT * FROM trace_proposal_outcomes WHERE proposal_id = ?")
-    .get(proposalId) as Parameters<typeof decodeProposalOutcomeRow>[0] | null;
-  return row ? decodeProposalOutcomeRow(row) : undefined;
+    .get(proposalId) as Parameters<typeof decodeProposalOutcomeRow>[1] | null;
+  return row ? decodeProposalOutcomeRow(db, row) : undefined;
 }
 
 export function getProposalOutcomeByEventId(
   db: Database,
   eventId: EventId,
 ): ProposalOutcomeRow | undefined {
-  const row = db
-    .query("SELECT * FROM trace_proposal_outcomes WHERE event_id = ?")
-    .get(eventId) as Parameters<typeof decodeProposalOutcomeRow>[0] | null;
-  return row ? decodeProposalOutcomeRow(row) : undefined;
+  const link = db
+    .query("SELECT proposal_id FROM trace_outcome_events WHERE event_id = ?")
+    .get(eventId) as { proposal_id: string } | null;
+  return link
+    ? getProposalOutcomeByProposalId(db, link.proposal_id as ProposalId)
+    : undefined;
 }
 
 export interface RecordReceiptInput {

@@ -90,6 +90,40 @@ export function buildRoutineQueue(
   return queue;
 }
 
+/**
+ * The proposals one live tick runs: the routines' proposals in their own
+ * order, then the external (fixture or operator) proposals in the order
+ * they arrived.
+ *
+ * An actor commits one action per tick, so an external proposal for an
+ * actor takes that actor's slot and the actor's routine proposal yields:
+ * it is dropped before the tick, never submitted, so nothing about it is
+ * recorded (no observation, no rejection). This holds whether or not the
+ * external proposal then commits. A claim never commits, so it does not
+ * displace a routine.
+ *
+ * The result is a pure function of the two queues, and nothing here reads a
+ * clock. Which tick an external proposal lands in is not persisted input:
+ * `/proposals` answers 202 after an in-memory append, so the tick it joins
+ * depends on when it arrived, and a crash before that tick commits loses it
+ * with no outcome recorded. What is durable is the committed event log; replay
+ * and rebuild come from that, never from re-merging queues.
+ */
+export function mergeTickQueue(
+  routine: readonly QueuedProposal[],
+  external: readonly QueuedProposal[],
+): QueuedProposal[] {
+  const claimed = new Set<EntityId>(
+    external
+      .filter((queued) => queued.proposal.kind !== "claim")
+      .map((queued) => queued.proposal.actor),
+  );
+  return [
+    ...routine.filter((queued) => !claimed.has(queued.proposal.actor)),
+    ...external,
+  ];
+}
+
 export interface StepOptions {
   readonly elapsedMs?: number;
   readonly approximate?: boolean;
@@ -236,7 +270,6 @@ export function traceWorldTick(
     if (!queued) {
       continue;
     }
-    const firstEvent = record.events[0];
     recordProposalOutcome(traceDb, {
       proposalId: queued.id,
       observationId: queued.observation.id,
@@ -244,7 +277,7 @@ export function traceWorldTick(
       causationId: toCausationId(String(queued.observation.id)),
       proposal: record.proposal,
       outcome: "committed",
-      ...(firstEvent ? { eventId: firstEvent.id } : {}),
+      eventIds: record.events.map((event) => event.id),
     });
   }
   for (const record of outcome.result.rejected) {

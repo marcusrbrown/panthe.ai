@@ -7,13 +7,22 @@ import {
   createSessionId,
   type EventId,
 } from "@panthea/contracts";
-import { closeStore, openStore, readClock } from "@panthea/persistence";
 import {
+  closeStore,
+  listEvents,
+  openStore,
+  readCatchUpProgress,
+  readClock,
+  writeCatchUpProgress,
+} from "@panthea/persistence";
+import {
+  createProposalId,
   ensureTraceSchema,
+  getObservation,
   getProposalOutcomeByProposalId,
   listReceiptsByEvent,
 } from "@panthea/telemetry";
-import { createPrng } from "@panthea/world";
+import { createPrng, submitProposal, toEntityId } from "@panthea/world";
 import { runCatchUp } from "./catchup";
 import { refreshStatusAfterCatchUp } from "./index";
 import {
@@ -23,7 +32,12 @@ import {
   createServiceStatusRef,
   createSimulationServer,
 } from "./server";
-import { applyOneTick, buildRoutineQueue, type TickDeps } from "./tick";
+import {
+  applyOneTick,
+  buildRoutineQueue,
+  type QueuedProposal,
+  type TickDeps,
+} from "./tick";
 import {
   createWorldProjectionReducers,
   loadGreekWorldState,
@@ -73,8 +87,9 @@ function startHarness(
   let committedEventId: EventId | undefined;
   for (const queued of queue) {
     const outcome = getProposalOutcomeByProposalId(store.db, queued.id);
-    if (outcome?.outcome === "committed" && outcome.eventId) {
-      committedEventId = outcome.eventId;
+    const [firstEventId] = outcome?.eventIds ?? [];
+    if (outcome?.outcome === "committed" && firstEventId) {
+      committedEventId = firstEventId;
       break;
     }
   }
@@ -900,6 +915,25 @@ test("GET /trace/event follows a committed event back to its observation", async
   }
 });
 
+test("POST /resume ends an unfinished catch-up backlog: paused wall time never becomes part of one", async () => {
+  const harness = startHarness();
+  try {
+    writeCatchUpProgress(harness.db, { appliedMs: 60_000, discardedMs: 1_000 });
+    expect((await authed(harness, "/pause", { method: "POST" })).status).toBe(
+      200,
+    );
+    expect(readCatchUpProgress(harness.db)).toBeDefined();
+
+    expect((await authed(harness, "/resume", { method: "POST" })).status).toBe(
+      200,
+    );
+
+    expect(readCatchUpProgress(harness.db)).toBeUndefined();
+  } finally {
+    harness.stop();
+  }
+});
+
 test("POST /import surfaces a staging failure as an error response rather than throwing, and creates no slot", async () => {
   const harness = startHarness();
   const exportDir = tempDir("panthea-sim-server-export-");
@@ -920,4 +954,188 @@ test("POST /import surfaces a staging failure as an error response rather than t
     harness.stop();
     rmSync(exportDir, { recursive: true, force: true });
   }
+});
+
+describe("applyLiveTick: an external proposal takes its actor's slot for the tick", () => {
+  function externalProposal(
+    actor: string,
+    raw: Record<string, unknown>,
+  ): QueuedProposal {
+    const observationId = createObservationId();
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      actor,
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId,
+      ...raw,
+    });
+    if (!submitted.ok) throw new Error(submitted.rejection.message);
+    return {
+      id: createProposalId(),
+      proposal: submitted.proposal,
+      observation: {
+        schemaVersion: 1,
+        id: observationId,
+        observer: toEntityId(actor),
+        stateRevision: 0,
+        factsRead: [],
+        source: "fixture",
+      },
+    };
+  }
+
+  function runLiveTick(external: readonly QueuedProposal[]) {
+    const storeDir = tempDir("panthea-sim-server-priority-");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(storeDir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+    const routine = buildRoutineQueue(seeded);
+    const externalQueue = createExternalQueue();
+    for (const proposal of external) externalQueue.enqueue(proposal);
+    const step = applyLiveTick(
+      externalQueue,
+      routine,
+      seeded,
+      createPrng(1),
+      { store, reducers, traceDb: store.db },
+      { cursorWallMs: 1_000, paused: false },
+    );
+    expect(step.kind).toBe("committed");
+    const routineOf = (actor: string) => {
+      const found = routine.find((queued) => queued.proposal.actor === actor);
+      if (!found) throw new Error(`no routine proposal for ${actor}`);
+      return found;
+    };
+    return {
+      store,
+      routineOf,
+      dispose() {
+        closeStore(store);
+        rmSync(storeDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  const worship = () =>
+    externalProposal("woodcutter", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1 },
+    });
+
+  test("an external worship by an actor with a routine commits", () => {
+    const external = worship();
+    const run = runLiveTick([external]);
+    try {
+      const outcome = getProposalOutcomeByProposalId(run.store.db, external.id);
+      expect(outcome?.outcome).toBe("committed");
+      expect(
+        listEvents(run.store.db).some(
+          (event) => event.kind === "worship-performed",
+        ),
+      ).toBe(true);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("that actor's routine yields: it neither commits nor is recorded as a rejection, and its observation is never recorded", () => {
+    const external = worship();
+    const run = runLiveTick([external]);
+    try {
+      const yielded = run.routineOf("woodcutter");
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, yielded.id),
+      ).toBeUndefined();
+      expect(
+        getObservation(run.store.db, yielded.observation.id),
+      ).toBeUndefined();
+      expect(
+        listEvents(run.store.db).filter(
+          (event) => String(event.correlationId) === yielded.observation.id,
+        ),
+      ).toEqual([]);
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("other actors' routines still run in the same tick", () => {
+    const run = runLiveTick([worship()]);
+    try {
+      const farmer = run.routineOf("farmer");
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, farmer.id),
+      ).toBeDefined();
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("an external proposal for an actor with no routine leaves every routine running", () => {
+    const strike = externalProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    const run = runLiveTick([strike]);
+    try {
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, strike.id)?.outcome,
+      ).toBe("committed");
+      for (const actor of ["woodcutter", "farmer"]) {
+        expect(
+          getProposalOutcomeByProposalId(run.store.db, run.routineOf(actor).id),
+        ).toBeDefined();
+      }
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("an external claim never commits, so it does not displace the actor's routine", () => {
+    const claim = externalProposal("woodcutter", {
+      kind: "claim",
+      assertion: "I own the old oak",
+    });
+    const run = runLiveTick([claim]);
+    try {
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, claim.id)?.outcome,
+      ).toBe("rejected");
+      expect(
+        getProposalOutcomeByProposalId(
+          run.store.db,
+          run.routineOf("woodcutter").id,
+        ),
+      ).toBeDefined();
+    } finally {
+      run.dispose();
+    }
+  });
+
+  test("a rejected external proposal still takes the slot: the routine yields rather than acting behind a failed fixture", () => {
+    const broke = externalProposal("woodcutter", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1_000 },
+    });
+    const run = runLiveTick([broke]);
+    try {
+      expect(
+        getProposalOutcomeByProposalId(run.store.db, broke.id)?.reason,
+      ).toBe("insufficient-resources");
+      expect(
+        getProposalOutcomeByProposalId(
+          run.store.db,
+          run.routineOf("woodcutter").id,
+        ),
+      ).toBeUndefined();
+    } finally {
+      run.dispose();
+    }
+  });
 });

@@ -44,60 +44,64 @@ export interface FollowResult {
   readonly steps: readonly TraceStep[];
 }
 
-/**
- * Builds the ordered step list for one proposal outcome: observation (if
- * still resolvable), the proposal, its validation outcome, and — only for
- * a committed outcome whose event still resolves via `eventSource` — the
- * event, its projection change (the event's own committed sequence,
- * since packages/persistence's `commitTick` writes events and projections
- * in the same transaction), and every receipt recorded against it.
- */
-function buildChain(
+/** The event hop, its projection change (the event's own committed sequence, since `commitTick` writes events and projections in one transaction), and every receipt recorded against it. */
+function eventSteps(
   db: Database,
   eventSource: EventSource,
-  outcome: ProposalOutcomeRow,
+  eventId: EventId,
 ): readonly TraceStep[] {
-  const steps: TraceStep[] = [];
+  const steps: TraceStep[] = [{ step: "event", eventId }];
+  const event = eventSource.getEvent(eventId);
+  if (event) {
+    steps.push({ step: "projection-change", revision: event.sequence });
+  }
+  for (const receipt of listReceiptsByEvent(db, eventId)) {
+    steps.push({
+      step: "receipt",
+      sessionId: receipt.sessionId,
+      presentedAtMs: receipt.presentedAtMs,
+    });
+  }
+  return steps;
+}
 
+/**
+ * The steps up to and including validation for one proposal outcome:
+ * observation (if still resolvable), the proposal, and its validation
+ * outcome.
+ */
+function causeSteps(db: Database, outcome: ProposalOutcomeRow): TraceStep[] {
+  const steps: TraceStep[] = [];
   const observation = getObservation(db, outcome.observationId);
   if (observation) {
     steps.push({ step: "observation", record: observation.record });
   }
-
   steps.push({
     step: "proposal",
     proposalId: outcome.proposalId,
     record: outcome.proposal,
   });
-
   steps.push({
     step: "validation",
     outcome: outcome.outcome,
     ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
   });
-
-  if (outcome.outcome === "committed" && outcome.eventId) {
-    steps.push({ step: "event", eventId: outcome.eventId });
-    const event = eventSource.getEvent(outcome.eventId);
-    if (event) {
-      steps.push({ step: "projection-change", revision: event.sequence });
-    }
-    for (const receipt of listReceiptsByEvent(db, outcome.eventId)) {
-      steps.push({
-        step: "receipt",
-        sessionId: receipt.sessionId,
-        presentedAtMs: receipt.presentedAtMs,
-      });
-    }
-  }
-
   return steps;
 }
 
 /**
- * Walks the causal chain starting from a committed event: observation,
- * proposal, validation, the event itself, its projection change, and every
- * presentation receipt recorded against it, in that order.
+ * Walks the causal chain of one committed event: the observation,
+ * proposal, and validation that produced it, the event itself, its
+ * projection change, and every presentation receipt recorded against that
+ * event, in that order. Works for any event a proposal committed, not only
+ * its first.
+ *
+ * An event no proposal committed (income, and a fire's burn ticks and
+ * destruction) was caused by its tick's automatic rules. It has no
+ * observation or proposal to walk, so its chain is the event, its
+ * projection change, and its receipts. The fire is not chained back to the
+ * strike that ignited it: the log records the tick as the cause, not the
+ * ignition.
  */
 export function followEvent(
   db: Database,
@@ -105,18 +109,24 @@ export function followEvent(
   eventId: EventId,
 ): FollowResult {
   const event = eventSource.getEvent(eventId);
-  const outcome = getProposalOutcomeByEventId(db, eventId);
-  if (!outcome) {
-    return { found: event !== undefined, steps: [] };
+  if (event === undefined) {
+    return { found: false, steps: [] };
   }
-  return { found: true, steps: buildChain(db, eventSource, outcome) };
+  const outcome = getProposalOutcomeByEventId(db, eventId);
+  return {
+    found: true,
+    steps: [
+      ...(outcome ? causeSteps(db, outcome) : []),
+      ...eventSteps(db, eventSource, eventId),
+    ],
+  };
 }
 
 /**
  * Walks the causal chain starting from a proposal (covers the rejected
  * path, which never reaches a committed event): observation, proposal,
- * validation, and — only if the proposal was committed — the same
- * event/projection/receipt tail as `followEvent`.
+ * validation, and, for a committed outcome, each event it committed in
+ * order with that event's projection change and receipts.
  */
 export function followProposal(
   db: Database,
@@ -127,5 +137,13 @@ export function followProposal(
   if (!outcome) {
     return { found: false, steps: [] };
   }
-  return { found: true, steps: buildChain(db, eventSource, outcome) };
+  return {
+    found: true,
+    steps: [
+      ...causeSteps(db, outcome),
+      ...outcome.eventIds.flatMap((eventId) =>
+        eventSteps(db, eventSource, eventId),
+      ),
+    ],
+  };
 }

@@ -11,7 +11,7 @@ import {
 import { startModelPayloadPruner } from "./prune";
 
 const DAY = 24 * 60 * 60 * 1000;
-const route: ModelRouteResult = {
+const route = {
   kind: "intent",
   step: {
     endpoint: "ollama",
@@ -22,7 +22,7 @@ const route: ModelRouteResult = {
   },
   failed: [],
   elapsedMs: 1,
-};
+} satisfies ModelRouteResult;
 
 let db: Database;
 

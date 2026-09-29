@@ -25,6 +25,7 @@ import {
   listReceiptsByEvent,
   MODEL_PAYLOAD_LIMIT,
   MODEL_PAYLOAD_RETENTION_MS,
+  type ModelRequestInput,
   type ModelRouteResult,
   parseProposalId,
   pruneModelPayloads,
@@ -320,12 +321,12 @@ const OLLAMA_STEP = {
   elapsedMs: 812.4,
 };
 
-const intentRoute: ModelRouteResult = {
+const intentRoute = {
   kind: "intent",
   step: { ...OLLAMA_STEP, mode: "native" },
   failed: [],
   elapsedMs: 815.2,
-};
+} satisfies ModelRouteResult;
 
 describe("recordModelRequest", () => {
   test("a request that produced a proposal is found by that proposal, with its role, steps, timing, digests, and payloads", () => {
@@ -478,15 +479,15 @@ describe("recordModelRequest", () => {
     expect(row?.outputDigest).toBe(sha256(output));
   });
 
-  test("the schema refuses an exhausted chain that claims a proposal", () => {
-    expect(() =>
-      recordModelRequest(db, {
-        proposalId: createProposalId(),
-        role: "zeus",
-        route: { kind: "exhausted", steps: [], elapsedMs: 1 },
-        prompt: "p",
-      }),
-    ).toThrow();
+  test("the schema still refuses an exhausted chain that claims a proposal, should the type be bypassed", () => {
+    const bypassed = {
+      proposalId: createProposalId(),
+      role: "zeus",
+      route: { kind: "exhausted", steps: [], elapsedMs: 1 },
+      prompt: "p",
+    } as unknown as ModelRequestInput;
+
+    expect(() => recordModelRequest(db, bypassed)).toThrow();
   });
 
   test("a proposal has at most one model request: a second is ignored, never thrown, so a tick that traces twice cannot fail", () => {
@@ -515,6 +516,28 @@ describe("recordModelRequest", () => {
         }
       ).n,
     ).toBe(1);
+  });
+
+  test("the id a repeat request returns is the id of the row that holds the proposal, never one that was not written", () => {
+    const proposalId = createProposalId();
+    const first = recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "first",
+      output: "o",
+    });
+
+    const second = recordModelRequest(db, {
+      proposalId,
+      role: "zeus",
+      route: intentRoute,
+      prompt: "second",
+      output: "o",
+    });
+
+    expect(second).toBe(first);
+    expect(getModelRequest(db, second)?.promptPayload).toBe("first");
   });
 
   test("an unknown id and a proposal with no request resolve to nothing", () => {
@@ -583,5 +606,42 @@ describe("pruneModelPayloads", () => {
     expect(getModelRequestByProposalId(db, boundary)?.promptPayload).toBe(
       "prompt boundary",
     );
+  });
+});
+
+describe("an exhausted chain cannot claim a proposal or an output, by type", () => {
+  const exhaustedRoute = {
+    kind: "exhausted",
+    steps: [],
+    elapsedMs: 1,
+  } as const;
+
+  test("recordModelRequest refuses the combination at compile time, and accepts an exhausted chain that claims neither", () => {
+    // Never called: these lines exist to be type-checked.
+    const claimsProposal = () =>
+      // @ts-expect-error an exhausted route produced no proposal
+      recordModelRequest(db, {
+        proposalId: createProposalId(),
+        role: "zeus",
+        route: exhaustedRoute,
+        prompt: "p",
+      });
+    const claimsOutput = () =>
+      // @ts-expect-error an exhausted route has no output
+      recordModelRequest(db, {
+        role: "zeus",
+        route: exhaustedRoute,
+        prompt: "p",
+        output: "o",
+      });
+    expect(typeof claimsProposal).toBe("function");
+    expect(typeof claimsOutput).toBe("function");
+
+    const id = recordModelRequest(db, {
+      role: "zeus",
+      route: exhaustedRoute,
+      prompt: "p",
+    });
+    expect(getModelRequest(db, id)?.outcome).toBe("exhausted");
   });
 });

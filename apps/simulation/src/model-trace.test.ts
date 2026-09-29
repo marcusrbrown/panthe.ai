@@ -27,7 +27,7 @@ import {
   getModelRequest,
   getModelRequestByProposalId,
   getProposalOutcomeByProposalId,
-  type ModelRequestInput,
+  type IntentModelRequest,
   type ModelRouteResult,
   recordModelRequest,
 } from "@panthea/telemetry";
@@ -44,7 +44,7 @@ import {
   loadGreekWorldState,
 } from "./world-store";
 
-const answered: ModelRouteResult = {
+const answered = {
   kind: "intent",
   step: {
     endpoint: "ollama",
@@ -55,14 +55,14 @@ const answered: ModelRouteResult = {
   },
   failed: [],
   elapsedMs: 815,
-};
+} satisfies ModelRouteResult;
 
 /** A proposal the agent layer would build: model source on both the proposal and its observation, plus the request that produced it. */
 function modelProposal(
   actor: string,
   raw: Record<string, unknown>,
-  route: ModelRouteResult = answered,
-): { queued: QueuedProposal; request: Omit<ModelRequestInput, "proposalId"> } {
+  route: IntentModelRequest["route"] = answered,
+): { queued: QueuedProposal; request: Omit<IntentModelRequest, "proposalId"> } {
   const observation: ObservationRecord = {
     schemaVersion: 1,
     id: createObservationId(),
@@ -341,4 +341,111 @@ test("a store created at schema version 5 without the model-request table opens 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("an exhausted route cannot be queued on a proposal, by type: an outage can never reach the tick transaction as a failing write", () => {
+  const exhausted = { kind: "exhausted", steps: [], elapsedMs: 1 } as const;
+
+  // Never called: this line exists to be type-checked.
+  const queueIt = (): QueuedProposal["modelRequest"] =>
+    // @ts-expect-error a model request queued on a proposal must be an intent route
+    ({ role: "zeus", route: exhausted, prompt: "p" });
+
+  expect(typeof queueIt).toBe("function");
+});
+
+test("a model proposal refused for an observation conflict still has its request in the trace: the tick commits, and the chain shows the request and the refusal but no observation", () => {
+  withWorld(({ store, deps, state, prng }) => {
+    const first = modelProposal("zeus", strike);
+    const firstStep = applyOneTick(state, prng, [first.queued], deps, commit);
+    if (firstStep.kind !== "committed") throw new Error("expected a commit");
+
+    // A second proposal cites the first one's observation id with other facts.
+    const reused = modelProposal("zeus", {
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    });
+    const conflicting: QueuedProposal = {
+      ...reused.queued,
+      proposal: {
+        ...reused.queued.proposal,
+        observationId: first.queued.observation.id,
+      },
+      observation: {
+        ...reused.queued.observation,
+        id: first.queued.observation.id,
+        factsRead: ["invented after the fact"],
+      },
+    };
+
+    const step = applyOneTick(
+      firstStep.state,
+      firstStep.prng,
+      [conflicting],
+      deps,
+      { cursorWallMs: 2_000, paused: false },
+    );
+
+    expect(step.kind).toBe("committed");
+    expect(
+      getProposalOutcomeByProposalId(store.db, conflicting.id),
+    ).toMatchObject({ outcome: "rejected", reason: "observation-conflict" });
+    expect(getModelRequestByProposalId(store.db, conflicting.id)).toMatchObject(
+      {
+        role: "zeus",
+        proposalId: conflicting.id,
+      },
+    );
+    expect(
+      followProposal(
+        store.db,
+        createEventSource(store),
+        conflicting.id,
+      ).steps.map((entry) => entry.step),
+    ).toEqual(["model-request", "proposal", "validation"]);
+  });
+});
+
+test("a model proposal over the per-tick limit still has its request in the trace, between its observation and the proposal", () => {
+  withWorld(({ store, deps, state, prng }) => {
+    const admitted = modelProposal("zeus", strike);
+    const overflow = modelProposal("farmer", {
+      kind: "worship",
+      deity: "zeus",
+      offering: { resource: "currency", amount: 1 },
+    });
+    const capped = {
+      ...state,
+      rules: { ...state.rules, maxProposalsPerTick: 1 },
+    };
+
+    applyOneTick(
+      capped,
+      prng,
+      [admitted.queued, overflow.queued],
+      deps,
+      commit,
+    );
+
+    expect(
+      getProposalOutcomeByProposalId(store.db, admitted.queued.id)?.outcome,
+    ).toBe("committed");
+    expect(
+      getProposalOutcomeByProposalId(store.db, overflow.queued.id),
+    ).toMatchObject({ outcome: "rejected", reason: "over-limit" });
+    expect(
+      getModelRequestByProposalId(store.db, overflow.queued.id),
+    ).toMatchObject({
+      role: "farmer",
+      proposalId: overflow.queued.id,
+    });
+    expect(
+      followProposal(
+        store.db,
+        createEventSource(store),
+        overflow.queued.id,
+      ).steps.map((entry) => entry.step),
+    ).toEqual(["observation", "model-request", "proposal", "validation"]);
+  });
 });

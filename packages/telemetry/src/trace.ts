@@ -403,15 +403,33 @@ export interface ModelRequestStep {
   readonly detail?: string;
 }
 
-export interface ModelRequestInput {
-  /** The proposal this request produced; absent when the chain was exhausted or the intent was refused before it became one. */
-  readonly proposalId?: ProposalId;
+interface ModelRequestBase {
   readonly role: string;
-  readonly route: ModelRouteResult;
   readonly prompt: string;
-  /** What the model answered (the raw reply, or its parsed intent as JSON); absent for an exhausted chain. */
+}
+
+/** A chain that produced an intent. */
+export interface IntentModelRequest extends ModelRequestBase {
+  readonly route: Extract<ModelRouteResult, { readonly kind: "intent" }>;
+  /** The proposal this request produced; absent when the intent was refused before it became one. */
+  readonly proposalId?: ProposalId;
+  /** What the model answered (the raw reply, or its parsed intent as JSON). */
   readonly output?: string;
 }
+
+/** A chain that produced nothing: no proposal and no output, so neither can be given. */
+export interface ExhaustedModelRequest extends ModelRequestBase {
+  readonly route: Extract<ModelRouteResult, { readonly kind: "exhausted" }>;
+  readonly proposalId?: never;
+  readonly output?: never;
+}
+
+/**
+ * A model request to record, discriminated on `route.kind`. An exhausted chain
+ * cannot claim a proposal (the table would refuse it, and inside a tick that
+ * would turn an outage into a store failure), so the type refuses it first.
+ */
+export type ModelRequestInput = IntentModelRequest | ExhaustedModelRequest;
 
 export interface ModelRequestRow {
   readonly id: ModelRequestId;
@@ -465,7 +483,8 @@ function stepsOf(route: ModelRouteResult): ModelRequestStep[] {
  * transaction, so a rolled-back tick leaves no row; an exhausted chain has
  * no proposal and is written on its own. A second request for one proposal
  * is ignored, never thrown, because this runs inside a tick where a throw
- * would roll the tick back to be repeated.
+ * would roll the tick back to be repeated; it returns the id of the row that
+ * already holds the proposal.
  */
 export function recordModelRequest(
   db: Database,
@@ -473,7 +492,7 @@ export function recordModelRequest(
   now: number = Date.now(),
 ): ModelRequestId {
   const id = createModelRequestId();
-  db.run(
+  const result = db.run(
     // Only a repeat of the proposal is ignored; a CHECK violation still throws.
     `INSERT INTO trace_model_requests
        (id, proposal_id, role, outcome, steps, elapsed_ms, prompt_digest, output_digest, prompt_payload, output_payload, recorded_at)
@@ -493,6 +512,13 @@ export function recordModelRequest(
       now,
     ],
   );
+  if (result.changes === 0 && input.proposalId !== undefined) {
+    // The proposal already had its request; that row's id is the answer.
+    const existing = getModelRequestByProposalId(db, input.proposalId);
+    if (existing) {
+      return existing.id;
+    }
+  }
   return id;
 }
 

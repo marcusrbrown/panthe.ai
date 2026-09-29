@@ -605,6 +605,30 @@ describe("sources that enter in-process only", () => {
   );
 
   test.each([["model"], ["director"]])(
+    "a proposal claiming the %s source is refused when its observation says fixture",
+    async (source) => {
+      const world = openWorld(join(dir, "world.sqlite"));
+      startServer(world);
+      try {
+        const body = strikeBody();
+
+        const response = await post(world, {
+          ...body,
+          proposal: { ...body.proposal, source },
+        });
+
+        expect(response.status).toBe(400);
+        expect(((await response.json()) as { error: string }).error).toContain(
+          source,
+        );
+        expect(listExternalProposals(world.store.db)).toEqual([]);
+      } finally {
+        shutDown(world);
+      }
+    },
+  );
+
+  test.each([["model"], ["director"]])(
     "an observation claiming the %s source is refused even when its proposal says fixture",
     async (source) => {
       const world = openWorld(join(dir, "world.sqlite"));

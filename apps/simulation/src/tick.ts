@@ -36,7 +36,7 @@ import {
 import {
   createProposalId,
   getObservation,
-  type ModelRequestInput,
+  type IntentModelRequest,
   type ProposalId,
   parseProposalId,
   recordModelRequest,
@@ -68,7 +68,7 @@ export interface QueuedProposal {
    * outcome (committed, rejected, or over the limit), inside that tick's
    * transaction, so a rolled-back tick leaves no row.
    */
-  readonly modelRequest?: Omit<ModelRequestInput, "proposalId">;
+  readonly modelRequest?: Omit<IntentModelRequest, "proposalId">;
 }
 
 export interface TickDeps {

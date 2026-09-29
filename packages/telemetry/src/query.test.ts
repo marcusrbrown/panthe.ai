@@ -87,7 +87,7 @@ function seedCommittedChain(): {
     causationId: event.causationId,
     proposal,
     outcome: "committed",
-    eventId: event.id,
+    eventIds: [event.id],
   });
 
   return { observation, proposal, proposalId, event };
@@ -175,5 +175,176 @@ describe("followEvent", () => {
     const result = followEvent(db, eventSource, createEventId());
     expect(result.found).toBe(false);
     expect(result.steps).toHaveLength(0);
+  });
+});
+
+/** A strike: a divinity spend followed by the ignition it caused, committed together. */
+function seedStrike(): {
+  observation: ObservationRecord;
+  proposalId: ReturnType<typeof createProposalId>;
+  spend: WorldEvent;
+  ignition: WorldEvent;
+} {
+  const observation: ObservationRecord = {
+    schemaVersion: 1,
+    id: createObservationId(),
+    observer: createEntityId(),
+    stateRevision: 0,
+    factsRead: [],
+    source: "fixture",
+  };
+  recordObservation(db, observation);
+  const tavern = createEntityId();
+  const base = {
+    schemaVersion: 2,
+    simTime: 1000,
+    correlationId: createCorrelationId(),
+    causationId: createCausationId(),
+    approximate: false,
+  };
+  const spend: WorldEvent = {
+    ...base,
+    id: createEventId(),
+    sequence: 10,
+    kind: "resource-consumed",
+    entityId: createEntityId(),
+    resource: "divinity",
+    amount: 3,
+  };
+  const ignition: WorldEvent = {
+    ...base,
+    id: createEventId(),
+    sequence: 11,
+    kind: "building-ignited",
+    entityId: tavern,
+  };
+  events.set(spend.id, spend);
+  events.set(ignition.id, ignition);
+  const proposalId = createProposalId();
+  recordProposalOutcome(db, {
+    proposalId,
+    observationId: observation.id,
+    correlationId: spend.correlationId,
+    causationId: spend.causationId,
+    proposal: {
+      schemaVersion: 1,
+      actor: createEntityId(),
+      targets: [tavern],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId: observation.id,
+      kind: "strike",
+      target: tavern,
+      power: 3,
+    },
+    outcome: "committed",
+    eventIds: [spend.id, ignition.id],
+  });
+  return { observation, proposalId, spend, ignition };
+}
+
+describe("a proposal that committed several events", () => {
+  test("followEvent on a later event walks observation, proposal, validation, that event, its projection change, and its receipts", () => {
+    const { observation, proposalId, spend, ignition } = seedStrike();
+    const sessionId = createSessionId();
+    recordReceipt(db, eventSource, { eventId: ignition.id, sessionId });
+
+    const result = followEvent(db, eventSource, ignition.id);
+    expect(result.found).toBe(true);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "receipt",
+    ]);
+    expect(result.steps[0]).toMatchObject({
+      step: "observation",
+      record: observation,
+    });
+    expect(result.steps[1]).toMatchObject({ step: "proposal", proposalId });
+    expect(result.steps[3]).toMatchObject({
+      step: "event",
+      eventId: ignition.id,
+    });
+    expect(result.steps[3]).not.toMatchObject({ eventId: spend.id });
+    expect(result.steps[4]).toMatchObject({
+      step: "projection-change",
+      revision: ignition.sequence,
+    });
+    expect(result.steps[5]).toMatchObject({ step: "receipt", sessionId });
+  });
+
+  test("followEvent lists only the queried event's receipts, not its siblings'", () => {
+    const { spend, ignition } = seedStrike();
+    const drawnBy = createSessionId();
+    recordReceipt(db, eventSource, {
+      eventId: ignition.id,
+      sessionId: drawnBy,
+    });
+
+    const spendChain = followEvent(db, eventSource, spend.id);
+    expect(spendChain.steps.map((s) => s.step)).not.toContain("receipt");
+    expect(
+      followEvent(db, eventSource, ignition.id).steps.filter(
+        (s) => s.step === "receipt",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("followProposal lists every event the proposal committed, each with its projection change and receipts", () => {
+    const { proposalId, spend, ignition } = seedStrike();
+    const sessionId = createSessionId();
+    recordReceipt(db, eventSource, { eventId: ignition.id, sessionId });
+
+    const result = followProposal(db, eventSource, proposalId);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+      "receipt",
+    ]);
+    expect(
+      result.steps.filter((s) => s.step === "event").map((s) => s.eventId),
+    ).toEqual([spend.id, ignition.id]);
+  });
+});
+
+describe("events no proposal committed", () => {
+  test("an environment event (a fire's burn or destruction) is caused by the tick's automatic rules, so its chain has no observation or proposal hop", () => {
+    seedStrike();
+    const burn: WorldEvent = {
+      schemaVersion: 2,
+      id: createEventId(),
+      sequence: 12,
+      simTime: 2000,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      approximate: false,
+      kind: "building-burn-ticked",
+      entityId: createEntityId(),
+      fireIntensity: 1,
+      ticksBurning: 1,
+    };
+    events.set(burn.id, burn);
+    const sessionId = createSessionId();
+    recordReceipt(db, eventSource, { eventId: burn.id, sessionId });
+
+    const result = followEvent(db, eventSource, burn.id);
+    expect(result.found).toBe(true);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "event",
+      "projection-change",
+      "receipt",
+    ]);
+    expect(result.steps[1]).toMatchObject({
+      step: "projection-change",
+      revision: burn.sequence,
+    });
   });
 });

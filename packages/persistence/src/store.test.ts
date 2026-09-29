@@ -1,6 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +19,7 @@ import {
   type WorldEvent,
 } from "@panthea/contracts";
 import {
+  clearCatchUpProgress,
   closeStore,
   commitTick,
   getCurrentSequence,
@@ -21,9 +28,11 @@ import {
   NonContiguousSequenceError,
   openStore,
   type ProjectionReducers,
+  readCatchUpProgress,
   readClock,
   readLiveProjections,
   rebuildProjections,
+  writeCatchUpProgress,
 } from "./store";
 
 let dir: string;
@@ -145,6 +154,42 @@ describe("openStore", () => {
     // The failed open closes its handle rather than leaking it -- a repeat
     // attempt fails the same way, not with a "database is locked" error.
     expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 99/);
+  });
+
+  test("an existing version 1 store is refused and left untouched: same bytes, no new files, no reset", () => {
+    const v1 = new Database(dbPath, { create: true });
+    v1.exec("PRAGMA journal_mode = WAL");
+    v1.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY CHECK (id = 1), world_id TEXT NOT NULL) STRICT",
+    );
+    v1.run("INSERT INTO world (id, world_id) VALUES (1, 'world-from-v1')");
+    v1.exec("PRAGMA user_version = 1");
+    v1.close();
+    const bytesBefore = readFileSync(dbPath);
+    const filesBefore = readdirSync(dir).sort();
+
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 1/);
+
+    expect(readFileSync(dbPath).equals(bytesBefore)).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(filesBefore);
+    const check = new Database(dbPath, { readonly: true });
+    expect(
+      (check.query("PRAGMA user_version").get() as { user_version: number })
+        .user_version,
+    ).toBe(1);
+    check.close();
+  });
+
+  test("this build stamps schema version 2", () => {
+    const store = openStore(dbPath, countReducer);
+    expect(
+      (
+        store.db.query("PRAGMA user_version").get() as {
+          user_version: number;
+        }
+      ).user_version,
+    ).toBe(2);
+    closeStore(store);
   });
 
   test("happy path: a brand-new store's genesis row round-trips through the codec and matches its own projections row at creation", () => {
@@ -515,5 +560,63 @@ describe("projection codec", () => {
     expect(rebuilt.counts.get(String(event.entityId))).toBe(1);
     expect(live.counts).toEqual(rebuilt.counts);
     closeStore(reopened);
+  });
+});
+
+describe("catch-up progress", () => {
+  function tick(store: ReturnType<typeof openStore>, n: number, extra = {}) {
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(n)],
+      cursorWallMs: 1000 * n,
+      paused: false,
+      tick: n,
+      simTimeMs: 1000 * n,
+      prngState: "seed",
+      ...extra,
+    });
+  }
+
+  test("a new store has no catch-up progress", () => {
+    const store = openStore(dbPath, countReducer);
+    expect(readCatchUpProgress(store.db)).toBeUndefined();
+    closeStore(store);
+  });
+
+  test("progress written in a tick's transaction survives a reopen, and clearing removes it", () => {
+    const store = openStore(dbPath, countReducer);
+    tick(store, 1, {
+      onCommitted: (db: Database) =>
+        writeCatchUpProgress(db, { appliedMs: 60_000, discardedMs: 4_000 }),
+    });
+    closeStore(store);
+
+    const reopened = openStore(dbPath, countReducer);
+    expect(readCatchUpProgress(reopened.db)).toEqual({
+      appliedMs: 60_000,
+      discardedMs: 4_000,
+    });
+    tick(reopened, 2, {
+      onCommitted: (db: Database) =>
+        writeCatchUpProgress(db, { appliedMs: 120_000, discardedMs: 4_000 }),
+    });
+    expect(readCatchUpProgress(reopened.db)?.appliedMs).toBe(120_000);
+    tick(reopened, 3, { onCommitted: clearCatchUpProgress });
+    expect(readCatchUpProgress(reopened.db)).toBeUndefined();
+    closeStore(reopened);
+  });
+
+  test("progress is rolled back with the tick when the transaction fails", () => {
+    const store = openStore(dbPath, countReducer);
+    expect(() =>
+      tick(store, 1, {
+        onCommitted: (db: Database) => {
+          writeCatchUpProgress(db, { appliedMs: 1, discardedMs: 1 });
+          throw new Error("fail after writing progress");
+        },
+      }),
+    ).toThrow();
+    expect(readCatchUpProgress(store.db)).toBeUndefined();
+    expect(readClock(store.db).tick).toBe(0);
+    closeStore(store);
   });
 });

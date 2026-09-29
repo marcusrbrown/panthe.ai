@@ -90,6 +90,47 @@ export function buildRoutineQueue(
   return queue;
 }
 
+/**
+ * The proposals one live tick runs, in admission order: every external
+ * (fixture or operator) proposal first, in the order they arrived, then the
+ * routines' proposals in their own order.
+ *
+ * External proposals go first because `stepWorldTick` admits only the first
+ * `maxProposalsPerTick` entries: behind the routines, an external proposal
+ * would be the one rejected as over-limit whenever the cap is tight. Claims
+ * are external proposals too and go first with the rest. They are counted
+ * against the cap separately (`stepWorldTick`), so a claim gets its recorded
+ * rejection, never an over-limit one, and never costs a routine its slot.
+ *
+ * An actor commits one action per tick, so an external proposal for an
+ * actor takes that actor's slot and the actor's routine proposal yields:
+ * it is dropped before the tick, never submitted, so nothing about it is
+ * recorded (no observation, no rejection). This holds whether or not the
+ * external proposal then commits. A claim never commits, so it does not
+ * displace a routine.
+ *
+ * The result is a pure function of the two queues, and nothing here reads a
+ * clock. Which tick an external proposal lands in is not persisted input:
+ * `/proposals` answers 202 after an in-memory append, so the tick it joins
+ * depends on when it arrived, and a crash before that tick commits loses it
+ * with no outcome recorded. What is durable is the committed event log; replay
+ * and rebuild come from that, never from re-merging queues.
+ */
+export function mergeTickQueue(
+  routine: readonly QueuedProposal[],
+  external: readonly QueuedProposal[],
+): QueuedProposal[] {
+  const claimed = new Set<EntityId>(
+    external
+      .filter((queued) => queued.proposal.kind !== "claim")
+      .map((queued) => queued.proposal.actor),
+  );
+  return [
+    ...external,
+    ...routine.filter((queued) => !claimed.has(queued.proposal.actor)),
+  ];
+}
+
 export interface StepOptions {
   readonly elapsedMs?: number;
   readonly approximate?: boolean;
@@ -102,10 +143,39 @@ export interface WorldTickOutcome {
 }
 
 /**
+ * Splits `queue`, in order, into what one tick admits and what is over the
+ * limit. Actions and claims are counted separately, each up to `cap`: a
+ * claim never commits and never takes an actor's slot, so it must not use up
+ * capacity a routine or another action needs, yet it still has to be bounded
+ * so a flood of claims cannot make the tick do unbounded validation and
+ * trace writes.
+ */
+function admitWithinCap(
+  queue: readonly QueuedProposal[],
+  cap: number,
+): { admitted: QueuedProposal[]; overflow: QueuedProposal[] } {
+  const admitted: QueuedProposal[] = [];
+  const overflow: QueuedProposal[] = [];
+  let actions = 0;
+  let claims = 0;
+  for (const queued of queue) {
+    const isClaim = queued.proposal.kind === "claim";
+    if ((isClaim ? claims : actions) < cap) {
+      admitted.push(queued);
+      if (isClaim) claims += 1;
+      else actions += 1;
+    } else {
+      overflow.push(queued);
+    }
+  }
+  return { admitted, overflow };
+}
+
+/**
  * Runs one world tick purely in memory: proposals beyond
- * `state.rules.maxProposalsPerTick` never reach the world engine
- * (over-limit), everything else is revalidated and committed
- * sequentially by `runTick`. No store or trace I/O --
+ * `state.rules.maxProposalsPerTick` (counted as `admitWithinCap` does) never
+ * reach the world engine (over-limit), everything else is revalidated and
+ * committed sequentially by `runTick`. No store or trace I/O --
  * `commitWorldTick`/`traceWorldTick` do that, separately, so a caller can
  * run several ticks before committing any of them (catchup.ts's
  * chunking).
@@ -116,9 +186,10 @@ export function stepWorldTick(
   queue: readonly QueuedProposal[],
   options: StepOptions = {},
 ): WorldTickOutcome {
-  const cap = state.rules.maxProposalsPerTick;
-  const admitted = queue.slice(0, cap);
-  const overflow = queue.slice(cap);
+  const { admitted, overflow } = admitWithinCap(
+    queue,
+    state.rules.maxProposalsPerTick,
+  );
   const result = runTick(
     state,
     prng,
@@ -236,7 +307,6 @@ export function traceWorldTick(
     if (!queued) {
       continue;
     }
-    const firstEvent = record.events[0];
     recordProposalOutcome(traceDb, {
       proposalId: queued.id,
       observationId: queued.observation.id,
@@ -244,7 +314,7 @@ export function traceWorldTick(
       causationId: toCausationId(String(queued.observation.id)),
       proposal: record.proposal,
       outcome: "committed",
-      ...(firstEvent ? { eventId: firstEvent.id } : {}),
+      eventIds: record.events.map((event) => event.id),
     });
   }
   for (const record of outcome.result.rejected) {

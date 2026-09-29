@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -65,24 +65,38 @@ export function createSchema(db: Database): void {
         payload TEXT NOT NULL
       ) STRICT
     `);
+    // At most one row, present only while a catch-up backlog is being
+    // worked off. Written in the same transaction as the discard or chunk it
+    // describes, so a restart resumes from exactly what committed.
+    db.exec(`
+      CREATE TABLE catch_up_progress (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        applied_ms INTEGER NOT NULL,
+        discarded_ms INTEGER NOT NULL
+      ) STRICT
+    `);
     db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
   }).immediate();
 }
 
-/** Creates a fresh store's schema, or checks an existing one matches this build. Never migrates or resets a mismatched file. */
-function initializeSchema(db: Database): void {
+/**
+ * Returns whether `db` is a brand-new (version 0) file that needs its
+ * schema created, and throws for any other version than this build's. Reads
+ * only: a mismatched file is never migrated, reset, or otherwise touched.
+ */
+function needsSchema(db: Database): boolean {
   const current = (
     db.query("PRAGMA user_version").get() as { user_version: number }
   ).user_version;
   if (current === 0) {
-    createSchema(db);
-    return;
+    return true;
   }
   if (current !== CURRENT_SCHEMA_VERSION) {
     throw new Error(
-      `store: schema version ${current} does not match the version this build understands (${CURRENT_SCHEMA_VERSION})`,
+      `store: schema version ${current} does not match the version this build understands (${CURRENT_SCHEMA_VERSION}); this build never migrates or resets a store, so move the file aside to start a new world`,
     );
   }
+  return false;
 }
 
 /**
@@ -154,6 +168,9 @@ export function openStore<TProjections>(
   const db = new Database(path, { create: true });
 
   try {
+    // Check the version before anything else touches the file: enabling WAL
+    // rewrites the header, and a refused store must be left as it was.
+    const fresh = needsSchema(db);
     // Set the db file's mode before WAL mode is enabled: SQLite creates the
     // -wal and -shm sibling files with the main file's current mode, so
     // chmod-ing the main file first (rather than after, once its siblings
@@ -171,7 +188,9 @@ export function openStore<TProjections>(
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA synchronous = NORMAL");
 
-    initializeSchema(db);
+    if (fresh) {
+      createSchema(db);
+    }
 
     let worldId: WorldId;
     const worldRow = db.query("SELECT world_id FROM world LIMIT 1").get() as {
@@ -266,6 +285,41 @@ function writeClock(db: Database, state: ClockRow): void {
     "UPDATE clock SET cursor_wall_ms = ?, paused = ?, tick = ?, sim_time_ms = ? WHERE id = 1",
     [state.cursorWallMs, state.paused ? 1 : 0, state.tick, state.simTimeMs],
   );
+}
+
+/** What the current catch-up backlog has committed so far: time applied as ticks and time discarded beyond the cap, across every run (and restart) that worked on it. */
+export interface CatchUpProgress {
+  readonly appliedMs: number;
+  readonly discardedMs: number;
+}
+
+/** The committed progress of an unfinished catch-up backlog, or `undefined` when none is in progress. */
+export function readCatchUpProgress(db: Database): CatchUpProgress | undefined {
+  const row = db
+    .query(
+      "SELECT applied_ms, discarded_ms FROM catch_up_progress WHERE id = 1",
+    )
+    .get() as { applied_ms: number; discarded_ms: number } | null;
+  return row
+    ? { appliedMs: row.applied_ms, discardedMs: row.discarded_ms }
+    : undefined;
+}
+
+/** Records backlog progress. Call inside a tick's `onCommitted` so it commits or rolls back with that tick. */
+export function writeCatchUpProgress(
+  db: Database,
+  progress: CatchUpProgress,
+): void {
+  db.run(
+    `INSERT INTO catch_up_progress (id, applied_ms, discarded_ms) VALUES (1, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET applied_ms = excluded.applied_ms, discarded_ms = excluded.discarded_ms`,
+    [progress.appliedMs, progress.discardedMs],
+  );
+}
+
+/** Ends the backlog: the next catch-up starts a new one. Call inside a tick's `onCommitted`. */
+export function clearCatchUpProgress(db: Database): void {
+  db.run("DELETE FROM catch_up_progress WHERE id = 1");
 }
 
 export function readPrngState(db: Database): string {

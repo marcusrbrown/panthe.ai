@@ -29,6 +29,7 @@ import {
   type WorldStatus,
 } from "@panthea/contracts";
 import {
+  clearCatchUpProgress,
   exportArchive,
   listEvents,
   type ProjectionReducers,
@@ -54,6 +55,7 @@ import {
   applyOneTick,
   commitWorldTick,
   intakeProposal,
+  mergeTickQueue,
   type QueuedProposal,
   recordOperatorEvent,
   type TickDeps,
@@ -155,7 +157,8 @@ export function createExternalQueue(): ExternalQueue {
 /**
  * Drains `externalQueue` and runs one live tick against the routine queue
  * plus whatever fixture proposals `/proposals` enqueued since the last
- * tick. A tick that fails to commit puts the drained fixture proposals
+ * tick; an actor with an external proposal has its routine yield (see
+ * `mergeTickQueue`). A tick that fails to commit puts the drained fixture proposals
  * back at the front of `externalQueue` rather than losing them, so the
  * next successful tick processes them.
  */
@@ -171,7 +174,7 @@ export function applyLiveTick(
   const step = applyOneTick(
     state,
     prng,
-    [...routineQueue, ...drained],
+    mergeTickQueue(routineQueue, drained),
     deps,
     commit,
   );
@@ -562,7 +565,12 @@ export function createSimulationServer(
         paused: false,
       },
       [],
-      recordOperatorEvent("resume"),
+      (db) => {
+        recordOperatorEvent("resume")(db);
+        // The paused interval is discarded, never caught up, so a backlog
+        // left unfinished before the pause ends here.
+        clearCatchUpProgress(db);
+      },
     );
     if (!commit.ok) {
       statusRef.status = "degraded";

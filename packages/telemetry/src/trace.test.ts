@@ -86,21 +86,16 @@ describe("ProposalId", () => {
 });
 
 describe("ensureTraceSchema", () => {
-  test("the event_id lookup on trace_proposal_outcomes uses the event_id index, not a full table scan", () => {
+  test("resolving an event to its proposal outcome searches by primary key, not a full table scan", () => {
     const plan = db
       .query(
-        "EXPLAIN QUERY PLAN SELECT * FROM trace_proposal_outcomes WHERE event_id = ?",
+        "EXPLAIN QUERY PLAN SELECT * FROM trace_outcome_events WHERE event_id = ?",
       )
       .all("some-event-id") as { detail: string }[];
-    const usesIndex = plan.some((row) =>
-      /USING (COVERING )?INDEX idx_trace_proposal_outcomes_event_id/.test(
-        row.detail,
-      ),
-    );
-    expect(usesIndex).toBe(true);
+    expect(plan.every((row) => !/^SCAN/.test(row.detail))).toBe(true);
   });
 
-  test("only the three trace tables exist", () => {
+  test("only the four trace tables exist", () => {
     const tables = (
       db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
         name: string;
@@ -109,6 +104,7 @@ describe("ensureTraceSchema", () => {
     expect(tables.sort()).toEqual(
       [
         "trace_observations",
+        "trace_outcome_events",
         "trace_proposal_outcomes",
         "trace_receipts",
       ].sort(),
@@ -152,7 +148,7 @@ describe("recordProposalOutcome", () => {
       causationId: createCausationId(),
       proposal,
       outcome: "committed",
-      eventId,
+      eventIds: [eventId],
     });
 
     const byProposal = getProposalOutcomeByProposalId(db, proposalId);
@@ -160,9 +156,44 @@ describe("recordProposalOutcome", () => {
     expect(byProposal?.outcome).toBe("committed");
     expect(byEvent?.proposalId).toBe(proposalId);
     expect(byProposal?.proposal).toEqual(proposal);
+    expect(byProposal?.eventIds).toEqual([eventId]);
   });
 
-  test("error path: a rejected proposal keeps its reason and no event ID", () => {
+  test("a committed outcome is retrievable by every event it committed, in commit order", () => {
+    const observation = makeObservation();
+    recordObservation(db, observation);
+    const proposalId = createProposalId();
+    const first = createEventId();
+    const second = createEventId();
+    const third = createEventId();
+
+    recordProposalOutcome(db, {
+      proposalId,
+      observationId: observation.id,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      proposal: makeProposal(observation.id),
+      outcome: "committed",
+      eventIds: [first, second, third],
+    });
+
+    for (const eventId of [first, second, third]) {
+      expect(getProposalOutcomeByEventId(db, eventId)?.proposalId).toBe(
+        proposalId,
+      );
+    }
+    expect(getProposalOutcomeByProposalId(db, proposalId)?.eventIds).toEqual([
+      first,
+      second,
+      third,
+    ]);
+  });
+
+  test("an event the outcome did not commit resolves to no outcome", () => {
+    expect(getProposalOutcomeByEventId(db, createEventId())).toBeUndefined();
+  });
+
+  test("error path: a rejected proposal keeps its reason and no event IDs", () => {
     const observation = makeObservation();
     recordObservation(db, observation);
     const proposal = makeProposal(observation.id);
@@ -181,7 +212,7 @@ describe("recordProposalOutcome", () => {
     const outcome = getProposalOutcomeByProposalId(db, proposalId);
     expect(outcome?.outcome).toBe("rejected");
     expect(outcome?.reason).toBe("stale-target");
-    expect(outcome?.eventId).toBeUndefined();
+    expect(outcome?.eventIds).toEqual([]);
   });
 });
 

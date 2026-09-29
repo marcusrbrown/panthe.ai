@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createObservationId,
+  createSessionId,
   type EventId,
   type ObservationRecord,
   type Proposal,
@@ -23,6 +24,7 @@ import {
   getObservation,
   getProposalOutcomeByProposalId,
   type ProposalId,
+  recordReceipt,
 } from "@panthea/telemetry";
 import { createPrng, submitProposal, toEntityId } from "@panthea/world";
 import {
@@ -30,6 +32,7 @@ import {
   buildRoutineQueue,
   checkLegendIntake,
   intakeProposal,
+  mergeTickQueue,
   type QueuedProposal,
   stepWorldTick,
 } from "./tick";
@@ -122,6 +125,39 @@ test("stepWorldTick admits up to the cap from the world's own authored rules and
   const uncappedOutcome = stepWorldTick(state, prng, queue);
   expect(uncappedOutcome.admitted).toHaveLength(queue.length);
   expect(uncappedOutcome.overflow).toHaveLength(0);
+});
+
+test("stepWorldTick counts claims against their own cap, so a claim never uses a slot a routine needs and its rejection is never over-limit", () => {
+  const state = loadGreekWorldState();
+  const routine = buildRoutineQueue(state);
+  const [woodcutterRoutine, farmerRoutine] = routine;
+  if (!woodcutterRoutine || !farmerRoutine) throw new Error("two routines");
+  const claim = manualProposal("woodcutter", {
+    kind: "claim",
+    assertion: "I own the old oak",
+  });
+  const secondClaim = manualProposal("farmer", {
+    kind: "claim",
+    assertion: "I own the shop",
+  });
+  const cappedState = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(cappedState, createPrng(1), [
+    claim,
+    secondClaim,
+    woodcutterRoutine,
+    farmerRoutine,
+  ]);
+
+  expect(outcome.admitted).toEqual([claim, woodcutterRoutine]);
+  expect(outcome.overflow).toEqual([secondClaim, farmerRoutine]);
+  expect(outcome.result.rejected.map((entry) => entry.reason)).toContain(
+    "unauthorized-claim",
+  );
+  expect(outcome.result.committed).toHaveLength(1);
 });
 
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
@@ -356,7 +392,7 @@ test("a legend proposal with an unknown linkedEventId is rejected at intake; one
       store.db,
       moveQueued.id,
     );
-    const linkedEventId = committedOutcome?.eventId;
+    const linkedEventId = committedOutcome?.eventIds[0];
     expect(linkedEventId).toBeDefined();
     if (!linkedEventId) throw new Error("expected a linked event id");
 
@@ -442,8 +478,9 @@ test("one multi-tick run through the real store and trace: routines act, events 
       if (!followableEventId) {
         for (const queued of queue) {
           const outcome = getProposalOutcomeByProposalId(store.db, queued.id);
-          if (outcome?.outcome === "committed" && outcome.eventId) {
-            followableEventId = outcome.eventId;
+          const [firstEventId] = outcome?.eventIds ?? [];
+          if (outcome?.outcome === "committed" && firstEventId) {
+            followableEventId = firstEventId;
             followableProposalId = outcome.proposalId;
             break;
           }
@@ -483,6 +520,74 @@ test("one multi-tick run through the real store and trace: routines act, events 
     );
     if (!outcome) throw new Error("expected a recorded proposal outcome");
     expect(observationStep.record.id).toBe(outcome.observationId);
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+test("a strike's ignition follows back to the strike's observation and forward to its presentation receipt, and the divinity spend follows the same chain", () => {
+  const storeDir = tempDir("panthea-sim-strike-trace-");
+  try {
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(storeDir, "world.sqlite"), reducers);
+    ensureTraceSchema(store.db);
+
+    const strike = manualProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    const step = applyOneTick(
+      seeded,
+      createPrng(1),
+      [strike],
+      { store, reducers, traceDb: store.db },
+      { cursorWallMs: 1_000, paused: false },
+    );
+    expect(step.kind).toBe("committed");
+
+    const outcome = getProposalOutcomeByProposalId(store.db, strike.id);
+    if (outcome?.outcome !== "committed") {
+      throw new Error("expected the strike to commit");
+    }
+    const events = listEvents(store.db);
+    const spend = events.find((event) => event.kind === "resource-consumed");
+    const ignition = events.find((event) => event.kind === "building-ignited");
+    if (!spend || !ignition) throw new Error("expected spend and ignition");
+    expect(outcome.eventIds).toEqual([spend.id, ignition.id]);
+
+    const eventSource = createEventSource(store);
+    const sessionId = createSessionId();
+    recordReceipt(store.db, eventSource, { eventId: ignition.id, sessionId });
+
+    const chain = followEvent(store.db, eventSource, ignition.id);
+    expect(chain.steps.map((entry) => entry.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "receipt",
+    ]);
+    expect(chain.steps[0]).toMatchObject({
+      step: "observation",
+      record: { id: strike.observation.id },
+    });
+    expect(chain.steps[3]).toMatchObject({ eventId: ignition.id });
+    expect(chain.steps[5]).toMatchObject({ sessionId });
+
+    const spendChain = followEvent(store.db, eventSource, spend.id);
+    expect(spendChain.steps.slice(0, 3).map((entry) => entry.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+    ]);
+    expect(spendChain.steps.some((entry) => entry.step === "receipt")).toBe(
+      false,
+    );
 
     closeStore(store);
   } finally {
@@ -566,4 +671,48 @@ test("measurement: JSON projection commit cost per tick, authored Greek world vs
   // measurement stays well clear of the budget, not a tight benchmark.
   expect(greekMaxMs).toBeLessThan(500);
   expect(scaledMaxMs).toBeLessThan(500);
+});
+
+test("mergeTickQueue puts every external proposal first in arrival order, then the routines in their own order, minus a routine whose actor has an external non-claim proposal", () => {
+  const state = loadGreekWorldState();
+  const routine = buildRoutineQueue(state);
+  const woodcutter = routine.find(
+    (queued) => queued.proposal.actor === "woodcutter",
+  );
+  const farmer = routine.find((queued) => queued.proposal.actor === "farmer");
+  if (!woodcutter || !farmer) throw new Error("expected two routine actors");
+
+  const worship = manualProposal("woodcutter", {
+    kind: "worship",
+    deity: "zeus",
+  });
+  const strike = manualProposal("zeus", {
+    kind: "strike",
+    target: "the-tavern",
+    power: 3,
+  });
+  const claim = manualProposal("farmer", {
+    kind: "claim",
+    assertion: "I own the shop",
+  });
+
+  const merged = mergeTickQueue(routine, [worship, strike, claim]);
+  expect(merged).toEqual([
+    worship,
+    strike,
+    claim,
+    ...routine.filter((queued) => queued !== woodcutter),
+  ]);
+  expect(merged).toContain(farmer);
+});
+
+test("mergeTickQueue depends only on its two queues: the same inputs always give the same order", () => {
+  const routine = buildRoutineQueue(loadGreekWorldState());
+  const external = [
+    manualProposal("woodcutter", { kind: "worship", deity: "zeus" }),
+  ];
+  expect(mergeTickQueue(routine, external)).toEqual(
+    mergeTickQueue(routine, external),
+  );
+  expect(mergeTickQueue(routine, [])).toEqual([...routine]);
 });

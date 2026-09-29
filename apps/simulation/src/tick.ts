@@ -350,6 +350,19 @@ export function commitWorldTick(
   }
 }
 
+/** Records an observation `screenObservations` has already cleared; a conflict means the screen was bypassed or is wrong, and throws. */
+function recordScreenedObservation(
+  traceDb: Database,
+  observation: ObservationRecord,
+): void {
+  const result = recordObservation(traceDb, observation);
+  if (result.kind === "conflict") {
+    throw new Error(
+      `invariant breach: observation ${observation.id} is already bound to different content, but a proposal citing it reached the trace unscreened`,
+    );
+  }
+}
+
 /** Records every queued proposal's observation and outcome (committed, rejected, or over-limit) to the trace, and consumes the external ones from the journal -- called inside the tick's own transaction, so neither trace rows nor consumption outlive a rolled-back tick. */
 export function traceWorldTick(
   traceDb: Database,
@@ -362,10 +375,13 @@ export function traceWorldTick(
   const terminal = new Map<ProposalId, ExternalProposalOutcome>();
 
   // `screenObservations` already refused any proposal whose observation id is
-  // bound to different content, so these can only be new or exact reuse; the
-  // result is deliberately not inspected, and a conflict must never throw here.
+  // bound to different content, so an admitted or over-limit observation can
+  // only be new or an exact reuse. A conflict here is a broken invariant, not
+  // an outcome: it throws, the tick's transaction rolls back, and the commit
+  // reports a store error rather than silently attributing evidence to the
+  // wrong record.
   for (const queued of outcome.admitted) {
-    recordObservation(traceDb, queued.observation);
+    recordScreenedObservation(traceDb, queued.observation);
   }
   for (const queued of outcome.refused) {
     // Its own observation is not recorded: the id already means something
@@ -386,7 +402,7 @@ export function traceWorldTick(
     });
   }
   for (const queued of outcome.overflow) {
-    recordObservation(traceDb, queued.observation);
+    recordScreenedObservation(traceDb, queued.observation);
     recordProposalOutcome(traceDb, {
       proposalId: queued.id,
       observationId: queued.observation.id,

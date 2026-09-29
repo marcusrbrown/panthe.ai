@@ -40,6 +40,7 @@ import {
   mergeTickQueue,
   type QueuedProposal,
   stepWorldTick,
+  traceWorldTick,
 } from "./tick";
 import {
   createEventSource,
@@ -1007,5 +1008,32 @@ test("several proposals citing one unchanged observation all run, in the same ti
           .get(a.observation.id) as { n: number }
       ).n,
     ).toBe(1);
+  });
+});
+
+test("tracing a tick whose admitted observation conflicts with the recorded one throws: screening makes it unreachable, so reaching it is an invariant breach, not an outcome", () => {
+  withStore(({ store, state }) => {
+    const first = manualProposal("zeus", {
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    });
+    // Bypass `screenObservations`: record the first, then trace a tick that
+    // admits a proposal citing the same id with different content.
+    const recorded = stepWorldTick(state, createPrng(1), [first]);
+    traceWorldTick(store.db, recorded);
+    const conflicting = citing(
+      manualProposal("zeus", { kind: "strike", target: "old-oak", power: 1 }),
+      first.observation.id,
+      ["changed"],
+    );
+    const unscreened = stepWorldTick(state, createPrng(1), [conflicting]);
+
+    expect(() => traceWorldTick(store.db, unscreened)).toThrow(
+      /observation .* already bound to different content/,
+    );
+    expect(getObservation(store.db, first.observation.id)?.record).toEqual(
+      first.observation,
+    );
   });
 });

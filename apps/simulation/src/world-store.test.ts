@@ -28,6 +28,7 @@ import {
   decideRoutineProposal,
   effectiveServices,
   getResourceAmount,
+  isEventLinked,
   runTick,
   submitProposal,
   toEntityId,
@@ -921,4 +922,89 @@ test("deserializePrngState treats the empty seed-row string as undefined", () =>
   expect(deserializePrngState(JSON.stringify({ seed: 7 }))).toEqual({
     seed: 7,
   });
+});
+
+test("two tellings from one observation, one event-linked and one unlinked, survive a close and reopen with their ids, assertions, and link, and a projection rebuild; neither carries a truth flag", () => {
+  const storeDir = tempDir("panthea-sim-legends-reopen-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seededState = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seededState);
+    let store = openStore(storePath, reducers);
+
+    const telling = (assertion: string, linkedEventId?: string): Proposal => {
+      const submitted = submitProposal({
+        schemaVersion: 1,
+        actor: "farmer",
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        // Both tellings cite the same, unchanged observation.
+        observationId: "obs-one-observation",
+        kind: "legend",
+        assertion,
+        ...(linkedEventId ? { linkedEventId } : {}),
+      });
+      if (!submitted.ok) throw new Error(submitted.rejection.message);
+      return submitted.proposal;
+    };
+
+    // Tick 1 commits a real event to cite; tick 2 and 3 tell the two legends.
+    let state = seededState;
+    let prng = createPrng(5);
+    const commit = (proposals: Proposal[], wallMs: number) => {
+      const result = runTick(state, prng, proposals);
+      commitTick(store, reducers, {
+        events: result.events,
+        cursorWallMs: wallMs,
+        paused: false,
+        tick: result.state.tick,
+        simTimeMs: result.state.simTime,
+        prngState: serializePrngState(result.prng),
+      });
+      state = result.state;
+      prng = result.prng;
+      return result;
+    };
+    const first = commit([moveProposal("farmer", "tavern", "obs-move")], 1_000);
+    const citedEventId = first.events[0]?.id;
+    if (!citedEventId) throw new Error("expected a committed event to cite");
+    commit([telling("the farmer walked to the tavern", citedEventId)], 2_000);
+    commit([telling("the gods were angry that night")], 3_000);
+
+    const expectedLegends = [...state.legends.values()];
+    expect(expectedLegends).toHaveLength(2);
+
+    closeStore(store);
+    store = openStore(storePath, reducers);
+    const reopened = restoreWorldTime(
+      readLiveProjections(store, reducers),
+      readClock(store.db),
+    );
+    const rebuilt = restoreWorldTime(
+      rebuildProjections(store, reducers),
+      readClock(store.db),
+    );
+
+    for (const world of [reopened, rebuilt]) {
+      const legends = [...world.legends.values()];
+      expect(legends).toEqual(expectedLegends);
+      expect(legends.map((legend) => legend.assertion)).toEqual([
+        "the farmer walked to the tavern",
+        "the gods were angry that night",
+      ]);
+      expect(legends.map((legend) => legend.linkedEventId)).toEqual([
+        citedEventId,
+        undefined,
+      ]);
+      expect(legends.map(isEventLinked)).toEqual([true, false]);
+      expect(new Set(legends.map((legend) => legend.id)).size).toBe(2);
+      for (const legend of legends) {
+        expect(legend).not.toHaveProperty("verified");
+      }
+    }
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
 });

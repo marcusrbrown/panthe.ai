@@ -55,6 +55,14 @@ const CONTROL_SABOTAGE: Readonly<Record<ControlName, string>> = {
     "After the kill, the harness rewinds the persisted cursor to where the chunks began, so the restart replays time the committed chunks already applied.",
   journal:
     "After the kill, the harness deletes the accepted proposal from the journal, as if the service had kept it only in memory, so nothing consumes it after the restart.",
+  "bad-proposals":
+    "The harness adds the tree strike's observation, which did cause events, to the list of bad proposals' observations, so the check that they caused no event sees a change.",
+  "claim-owner":
+    "The harness checks the tavern, which has an owner, instead of the old oak for the false claim's effect, so the check that the claim granted no owner sees one.",
+  pause:
+    "The harness resumes the world just before stopping it, so it is running when it stops and cannot come back paused.",
+  underworld:
+    "The second client follows the farmer in the mortal realm instead of the underworld, so it sees and receipts mortal events.",
 };
 
 /** Runs the story again in a child process with a control enabled, and reports how it ended. */

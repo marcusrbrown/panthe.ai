@@ -89,11 +89,25 @@ async function drain(
 const PORT_PATTERN = /PANTHEA_PORT=(\d+)/;
 const START_TIMEOUT_MS = 15_000;
 
-/** Launches the binary against `dataDir`, hands it a fresh token on stdin, and resolves once it prints its port. Stdin stays open: EOF makes the sidecar shut itself down. */
+export interface StartOptions {
+  /** How long to wait for the port line. Defaults to 15 s. */
+  readonly startTimeoutMs?: number;
+  /** Called with the child's pid as soon as it is spawned (for tests). */
+  readonly onSpawn?: (pid: number) => void;
+}
+
+/** How many sidecars this module started that are still running. */
+export function liveSidecarCount(): number {
+  return live.size;
+}
+
+/** Launches the binary against `dataDir`, hands it a fresh token on stdin, and resolves once it prints its port. Stdin stays open: EOF makes the sidecar shut itself down. A child whose startup fails is killed before the error propagates. */
 export async function startSidecar(
   binary: string,
   dataDir: string,
+  options: StartOptions = {},
 ): Promise<Sidecar> {
+  const startTimeoutMs = options.startTimeoutMs ?? START_TIMEOUT_MS;
   const token = crypto.randomUUID();
   const child = Bun.spawn([binary], {
     stdin: "pipe",
@@ -102,6 +116,7 @@ export async function startSidecar(
     env: { ...process.env, PANTHEA_APP_DATA_DIR: dataDir },
   });
   live.add(child);
+  options.onSpawn?.(child.pid);
 
   let output = "";
   let resolvePort!: (port: number) => void;
@@ -123,22 +138,39 @@ export async function startSidecar(
     return code;
   });
 
-  child.stdin.write(`${token}\n`);
-  await child.stdin.flush();
-
-  const port = await Promise.race([
-    portPromise,
-    exited.then((code) => {
-      throw new Error(
-        `sidecar exited (${code}) before printing its port:\n${output}`,
-      );
-    }),
-    Bun.sleep(START_TIMEOUT_MS).then(() => {
-      throw new Error(
-        `sidecar did not print its port in ${START_TIMEOUT_MS} ms:\n${output}`,
-      );
-    }),
-  ]);
+  let port: number;
+  try {
+    child.stdin.write(`${token}\n`);
+    await child.stdin.flush();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      port = await Promise.race([
+        portPromise,
+        exited.then((code) => {
+          throw new Error(
+            `sidecar exited (${code}) before printing its port:\n${output}`,
+          );
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `sidecar did not print its port in ${startTimeoutMs} ms:\n${output}`,
+                ),
+              ),
+            startTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    child.kill("SIGKILL");
+    await exited;
+    throw error;
+  }
 
   const base = `http://127.0.0.1:${port}`;
   return {

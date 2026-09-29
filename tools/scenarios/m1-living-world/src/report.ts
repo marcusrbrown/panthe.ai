@@ -31,6 +31,10 @@ bun run --cwd tools/scenarios scenario:m1 --skip-build                     # reu
 bun run --cwd tools/scenarios scenario:m1 --positive-control=archive       # must exit non-zero
 bun run --cwd tools/scenarios scenario:m1 --positive-control=catch-up      # must exit non-zero
 bun run --cwd tools/scenarios scenario:m1 --positive-control=journal       # must exit non-zero
+bun run --cwd tools/scenarios scenario:m1 --positive-control=bad-proposals # must exit non-zero
+bun run --cwd tools/scenarios scenario:m1 --positive-control=claim-owner   # must exit non-zero
+bun run --cwd tools/scenarios scenario:m1 --positive-control=pause         # must exit non-zero
+bun run --cwd tools/scenarios scenario:m1 --positive-control=underworld    # must exit non-zero
 bun run --cwd tools/scenarios scenario:m1 --write-readme                   # story + every control, rewrites this file
 \`\`\`
 

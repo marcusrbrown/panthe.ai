@@ -20,10 +20,25 @@ import {
   createWorldStore,
   type WorldViewModel,
 } from "@panthea/client/src/store";
-import type { Realm, SyncFrame } from "@panthea/contracts";
+import { parseSyncFrame, type Realm, type SyncFrame } from "@panthea/contracts";
 import type { Sidecar } from "./sidecar";
 
 const POLL_INTERVAL_MS = 250;
+
+export type FrameBody =
+  | { readonly ok: true; readonly frame: SyncFrame }
+  | { readonly ok: false; readonly message: string };
+
+/** Parses a `GET /frame` body through the contracts parser, the way the real client does, before anything reads a field off it. */
+export function parseFrameBody(body: unknown): FrameBody {
+  const parsed = parseSyncFrame(body);
+  return parsed.ok
+    ? { ok: true, frame: parsed.value }
+    : {
+        ok: false,
+        message: `frame did not parse: ${parsed.path}: ${parsed.message}`,
+      };
+}
 
 export interface PresentedEvent {
   readonly eventId: string;
@@ -94,8 +109,16 @@ export function createHeadlessClient(
     polling = true;
     try {
       const response = await target.request("GET", "/frame");
-      if (response.status !== 200) return;
-      const frame = response.body as SyncFrame;
+      if (response.status !== 200) {
+        errors.push(`frame: GET /frame answered ${response.status}`);
+        return;
+      }
+      const parsed = parseFrameBody(response.body);
+      if (!parsed.ok) {
+        errors.push(`frame: ${parsed.message}`);
+        return;
+      }
+      const frame = parsed.frame;
       latestSessionId = frame.sessionId;
       const key = `${frame.sessionId}:${frame.sequence}:${frame.status}`;
       if (key !== lastForwarded) {

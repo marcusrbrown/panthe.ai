@@ -72,11 +72,22 @@ import {
   withWorldDb,
 } from "./world-db";
 
-export type ControlName = "archive" | "catch-up" | "journal";
+export type ControlName =
+  | "archive"
+  | "catch-up"
+  | "journal"
+  | "bad-proposals"
+  | "claim-owner"
+  | "pause"
+  | "underworld";
 export const CONTROL_NAMES: readonly ControlName[] = [
   "archive",
   "catch-up",
   "journal",
+  "bad-proposals",
+  "claim-owner",
+  "pause",
+  "underworld",
 ];
 
 export interface StoryOptions {
@@ -110,6 +121,7 @@ interface Story {
     staleObservationId?: string;
     staleProposalId?: string;
     oakDamagedEventId?: string;
+    oakObservationId?: string;
     oakSessionId?: string;
     worshipProposalId?: string;
     worshipEventId?: string;
@@ -313,44 +325,47 @@ export async function runStory(
   const binaryBytes = Bun.file(binary).size;
   const root = mkdtempSync(join(tmpdir(), "panthea-m1-"));
   const dataDir = join(root, "app-data");
-  const first = await startSidecar(binary, dataDir);
-  const story: Story = {
-    options,
-    binary,
-    root,
-    dataDir,
-    sidecar: first,
-    clients: [],
-    memo: {},
-    async restart() {
-      const next = await startSidecar(binary, dataDir);
-      story.sidecar = next;
-      for (const client of story.clients) client.attach(next);
-      return next;
-    },
-  };
-
+  // Everything from here on is cleaned up by the `finally`, including a
+  // first sidecar that fails to start.
+  let story: Story | undefined;
   try {
-    await stepSeed(recorder, story);
-    await stepUnattended(recorder, story);
-    await stepTreeStrike(recorder, story);
-    await stepStrike(recorder, story);
-    await stepFire(recorder, story);
-    await stepLostService(recorder, story);
-    await stepRepair(recorder, story);
-    await stepWorship(recorder, story);
-    await stepLegends(recorder, story);
-    await stepBadProposals(recorder, story);
-    await stepPauseAcrossRestart(recorder, story);
-    await stepJournalKill(recorder, story);
-    await stepKillMidCatchUp(recorder, story);
-    await stepArchives(recorder, story);
-    await stepClientReceipts(recorder, story);
-    await stepTrace(recorder, story);
+    const first = await startSidecar(binary, dataDir);
+    const running: Story = {
+      options,
+      binary,
+      root,
+      dataDir,
+      sidecar: first,
+      clients: [],
+      memo: {},
+      async restart() {
+        const next = await startSidecar(binary, dataDir);
+        running.sidecar = next;
+        for (const client of running.clients) client.attach(next);
+        return next;
+      },
+    };
+    story = running;
+    await stepSeed(recorder, running);
+    await stepUnattended(recorder, running);
+    await stepTreeStrike(recorder, running);
+    await stepStrike(recorder, running);
+    await stepFire(recorder, running);
+    await stepLostService(recorder, running);
+    await stepRepair(recorder, running);
+    await stepWorship(recorder, running);
+    await stepLegends(recorder, running);
+    await stepBadProposals(recorder, running);
+    await stepPauseAcrossRestart(recorder, running);
+    await stepJournalKill(recorder, running);
+    await stepKillMidCatchUp(recorder, running);
+    await stepArchives(recorder, running);
+    await stepClientReceipts(recorder, running);
+    await stepTrace(recorder, running);
     return { steps: recorder.results, binaryBytes };
   } finally {
-    for (const client of story.clients) client.stop();
-    await story.sidecar.stop("SIGTERM").catch(() => undefined);
+    for (const client of story?.clients ?? []) client.stop();
+    await story?.sidecar.stop("SIGTERM").catch(() => undefined);
     killAllSidecars();
     rmSync(root, { recursive: true, force: true });
   }
@@ -597,6 +612,7 @@ async function stepTreeStrike(recorder: Recorder, story: Story): Promise<void> {
       );
 
       story.memo.oakDamagedEventId = damaged.id;
+      story.memo.oakObservationId = posted.observationId;
       story.memo.oakSessionId = after.frame.sessionId;
       step.done(
         `strike of power ${power} (ignition threshold ${threshold}) at sequences ${spend.sequence}-${damaged.sequence}: old oak ${oak.status} -> ${oakAfter.status} (revision ${oak.revision} -> ${oakAfter.revision}); divinity ${zeusBefore} -> ${zeusAfter}; trace chain ${chain.map((entry) => entry.step).join(" -> ")}`,
@@ -1461,10 +1477,18 @@ async function stepBadProposals(
         );
       }
       const events = eventsOf(story);
+      // Positive control: put an observation that did cause events (the tree
+      // strike's) among the "bad" ones, so a change IS observed.
+      const controlObservation =
+        story.options.control === "bad-proposals" &&
+        story.memo.oakObservationId !== undefined
+          ? [story.memo.oakObservationId]
+          : [];
       for (const id of [
         claim.observationId,
         stale.observationId,
         ...refused.map((entry) => entry.observationId),
+        ...controlObservation,
       ]) {
         check(
           events.every((event) => event.correlationId !== id),
@@ -1473,11 +1497,14 @@ async function stepBadProposals(
         );
       }
       const afterState = (await readFrame(story.sidecar)).state;
+      // Positive control: probe a building that does have an owner (the tavern's).
+      const ownerProbe =
+        story.options.control === "claim-owner" ? "the-tavern" : "old-oak";
       check(
-        building(afterState, "old-oak").owner === undefined &&
-          building(beforeState, "old-oak").owner === undefined,
+        building(afterState, ownerProbe).owner === undefined &&
+          building(beforeState, ownerProbe).owner === undefined,
         "the false claim did not give the old oak an owner",
-        fmt(building(afterState, "old-oak").owner),
+        fmt(building(afterState, ownerProbe).owner),
       );
       step.done(
         `refused at intake (400): invalid JSON, missing observation, self-declared costs; recorded rejections: claim ${claimOutcome.reason}, stale strike ${staleOutcome.reason}; events caused by all five: 0; old oak owner unchanged`,
@@ -1527,6 +1554,12 @@ async function stepPauseAcrossRestart(
         `tick ${pausedClock.tick} -> ${clockNow(story).tick}`,
       );
 
+      if (story.options.control === "pause") {
+        // Positive control: resume before the restart, so the world is
+        // running when it stops and does not come back paused.
+        await story.sidecar.request("POST", "/resume");
+        await waitForTicks(story, 1, "the resumed world ticks");
+      }
       await stopClean(story, "the paused sidecar shuts down cleanly");
       const integrity = activeDb(story, integrityCheck);
       check(
@@ -2309,7 +2342,10 @@ async function stepClientReceipts(
       );
 
       const underworld = createHeadlessClient(
-        { kind: "location", id: "judgment-hall" },
+        story.options.control === "underworld"
+          ? // Positive control: view the mortal realm instead of the underworld.
+            { kind: "actor", id: "farmer" }
+          : { kind: "location", id: "judgment-hall" },
         story.sidecar,
       );
       story.clients.push(underworld);

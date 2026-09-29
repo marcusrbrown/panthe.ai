@@ -74,6 +74,8 @@ export interface RouterOptions {
   readonly limits?: Partial<RouteLimits>;
   /** Replaces the adapter factory; tests use it to observe construction. */
   readonly buildModel?: typeof createEndpointModel;
+  /** Waits between retries; resolves early when the signal aborts. Tests replace it to see the requested delays without real time. */
+  readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export type FailureReason =
@@ -164,7 +166,8 @@ const DETAIL_LIMIT = 300;
 function describe(error: unknown): string {
   if (APICallError.isInstance(error)) {
     const status = error.statusCode === undefined ? "" : `${error.statusCode} `;
-    const body = error.responseBody?.slice(0, DETAIL_LIMIT) ?? "";
+    // Whole: the caller redacts a key from the full text, then truncates.
+    const body = error.responseBody ?? "";
     return `${status}${error.message}${body === "" ? "" : `: ${body}`}`;
   }
   return error instanceof Error ? error.message : String(error);
@@ -193,6 +196,7 @@ function schemaInstruction<T>(schema: IntentSchema<T>): string {
 export function createRouter(options: RouterOptions): Router {
   const limits: RouteLimits = { ...DEFAULT_ROUTE_LIMITS, ...options.limits };
   const build = options.buildModel ?? createEndpointModel;
+  const wait = options.sleep ?? sleep;
   const built = new Map<string, { model: LanguageModel; apiKey?: string }>();
 
   /** Builds an endpoint's adapter on first use, reading its key only then. */
@@ -413,7 +417,7 @@ export function createRouter(options: RouterOptions): Router {
       if (performance.now() + delay >= chainDeadline) {
         break;
       }
-      await sleep(delay, chain);
+      await wait(delay, chain);
       if (chain.aborted) {
         last = { ok: false, ...classify(new Error("aborted"), chain, caller) };
         break;

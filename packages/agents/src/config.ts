@@ -19,8 +19,6 @@ export interface Endpoint {
   readonly model: string;
   /** Names a key in platform credential storage; the value is supplied by the caller, never read here. */
   readonly keyRef?: string;
-  /** Derived from `baseUrl` (see `isLocalHost`); not configurable. */
-  readonly local: boolean;
 }
 
 export interface RoleAssignment {
@@ -281,7 +279,6 @@ function parseEndpoint(value: unknown, path: string): ParseResult<Endpoint> {
       baseUrl: url.href.replace(/\/+$/, ""),
       model: model.value,
       ...(keyRef === undefined ? {} : { keyRef }),
-      local: isLocalHost(url.hostname),
     },
   };
 }
@@ -384,6 +381,9 @@ export interface RoutePlan {
  * override), then its own fallback list or else the global one, with no
  * endpoint repeated. A role with no assignment uses the global list alone.
  * Offline mode removes non-local endpoints here, before anything is built.
+ * Locality is judged from each endpoint's `baseUrl` at this point, not read
+ * from a field, so a config built without the parser cannot declare a public
+ * host local.
  */
 export function planRoute(
   config: RoutingConfig,
@@ -411,9 +411,9 @@ export function planRoute(
     return { steps: ordered, offlineSkipped: [] };
   }
   return {
-    steps: ordered.filter((step) => step.endpoint.local),
+    steps: ordered.filter((step) => isLocalUrl(step.endpoint.baseUrl)),
     offlineSkipped: ordered
-      .filter((step) => !step.endpoint.local)
+      .filter((step) => !isLocalUrl(step.endpoint.baseUrl))
       .map((step) => step.endpoint.id),
   };
 }

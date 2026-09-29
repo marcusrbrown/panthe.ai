@@ -276,32 +276,35 @@ describe("route: repair", () => {
     expect(stub.seen).toHaveLength(1);
   });
 
-  test("an endpoint that rejects the schema request gets one plain-text request that states the schema, and its reply is repaired", async () => {
-    const stub = startStub(
-      sequence(
-        { status: 400, body: "response_format is not supported" },
-        { content: `Sure! ${SAY}` },
-      ),
-    );
-    const router = routerFor(
-      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
-        roles: { zeus: { endpoint: "ollama" } },
-      }),
-    );
+  test.each([[400], [422]])(
+    "an endpoint that rejects the schema request with %d gets one plain-text request that states the schema, and its reply is repaired",
+    async (status) => {
+      const stub = startStub(
+        sequence(
+          { status, body: "response_format is not supported" },
+          { content: `Sure! ${SAY}` },
+        ),
+      );
+      const router = routerFor(
+        configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+          roles: { zeus: { endpoint: "ollama" } },
+        }),
+      );
 
-    const result = await router.route("zeus", context, sayIntent);
+      const result = await router.route("zeus", context, sayIntent);
 
-    expect(result.kind).toBe("intent");
-    if (result.kind === "intent") {
-      expect(result.step).toMatchObject({ mode: "repaired", attempts: 1 });
-    }
-    expect(stub.seen).toHaveLength(2);
-    expect(stub.seen[1]?.body.response_format).toBeUndefined();
-    const messages = stub.seen[1]?.body.messages as { content: string }[];
-    expect(messages.map((message) => message.content).join("\n")).toContain(
-      '"required":["kind","text"]',
-    );
-  });
+      expect(result.kind).toBe("intent");
+      if (result.kind === "intent") {
+        expect(result.step).toMatchObject({ mode: "repaired", attempts: 1 });
+      }
+      expect(stub.seen).toHaveLength(2);
+      expect(stub.seen[1]?.body.response_format).toBeUndefined();
+      const messages = stub.seen[1]?.body.messages as { content: string }[];
+      expect(messages.map((message) => message.content).join("\n")).toContain(
+        '"required":["kind","text"]',
+      );
+    },
+  );
 
   test("garbage on the first attempt and a valid reply on the retry is one step with two attempts, native", async () => {
     const stub = startStub(
@@ -445,30 +448,48 @@ describe("route: failure, timeouts, and backoff", () => {
     expect(forbidden.seen).toHaveLength(1);
   });
 
-  test("retry delays grow exponentially and are capped", async () => {
+  test("retry delays double from the base and are capped: 60, 100, 100 for base 60 and cap 100", async () => {
     const stub = startStub(always({ status: 503 }));
+    const delays: number[] = [];
     const router = routerFor(
       configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
         roles: { zeus: { endpoint: "ollama" } },
       }),
       {
         limits: { maxAttempts: 4, backoffBaseMs: 60, backoffMaxMs: 100 },
+        sleep: async (ms) => {
+          delays.push(ms);
+        },
+      },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(delays).toEqual([60, 100, 100]);
+    expect(stub.seen).toHaveLength(4);
+    expect(result).toMatchObject({
+      kind: "exhausted",
+      steps: [{ endpoint: "ollama", reason: "http-5xx", attempts: 4 }],
+    });
+  });
+
+  test("a step that is not retried never sleeps", async () => {
+    const stub = startStub(always({ status: 401 }));
+    const delays: number[] = [];
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+      {
+        sleep: async (ms) => {
+          delays.push(ms);
+        },
       },
     );
 
     await router.route("zeus", context, sayIntent);
 
-    const gaps = stub.seen.slice(1).map((seen, index) => {
-      const previous = stub.seen[index];
-      return seen.at - (previous?.at ?? 0);
-    });
-    expect(gaps).toHaveLength(3);
-    // 60 ms, then 120 ms capped to 100 ms, then 100 ms.
-    expect(gaps[0]).toBeGreaterThanOrEqual(55);
-    expect(gaps[0]).toBeLessThan(100);
-    expect(gaps[1]).toBeGreaterThanOrEqual(95);
-    expect(gaps[2]).toBeGreaterThanOrEqual(95);
-    expect(gaps[2]).toBeLessThan(400);
+    expect(delays).toEqual([]);
   });
 
   test("the total chain timeout ends the whole route: the step in flight fails as chain-timeout and no later step is tried", async () => {
@@ -668,6 +689,49 @@ describe("offline mode", () => {
   });
 });
 
+describe("adapter construction", () => {
+  test("a build that throws fails that step as unknown with no attempts, and the next endpoint still answers", async () => {
+    const good = startStub(always({ content: SAY }));
+    const built: string[] = [];
+    const router = routerFor(
+      configFor(
+        [
+          { id: "broken", baseUrl: "http://127.0.0.1:1/v1" },
+          { id: "good", baseUrl: good.baseUrl },
+        ],
+        { roles: { zeus: { endpoint: "broken", fallback: ["good"] } } },
+      ),
+      {
+        buildModel: ((args: Parameters<typeof createEndpointModel>[0]) => {
+          built.push(args.endpoint.id);
+          if (args.endpoint.id === "broken") {
+            throw new Error("cannot construct this adapter");
+          }
+          return createEndpointModel(args);
+        }) as typeof createEndpointModel,
+      },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    if (result.kind === "intent") {
+      expect(result.intent).toEqual(HAIL);
+      expect(result.step.endpoint).toBe("good");
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0]).toMatchObject({
+        endpoint: "broken",
+        reason: "unknown",
+        attempts: 0,
+      });
+      expect(result.failed[0]?.detail).toContain(
+        "cannot construct this adapter",
+      );
+    }
+    expect(built).toEqual(["broken", "good"]);
+  });
+});
+
 describe("keys", () => {
   test("a key value that comes back in an error is redacted from the reason", async () => {
     const hosted = scriptedHostedFetch(
@@ -693,6 +757,49 @@ describe("keys", () => {
       expect(result.steps[0]?.detail).toContain("[redacted]");
       expect(result.steps[0]?.reason).toBe("http-4xx");
     }
+  });
+});
+
+describe("keys and the detail limit", () => {
+  /** A hosted endpoint that answers 401 with `body`, and the router that asks it with `key`. */
+  async function refusedWith(key: string, body: string) {
+    const hosted = scriptedHostedFetch(
+      () => new Response(body, { status: 401 }),
+    );
+    const router = routerFor(
+      configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+        roles: { zeus: { endpoint: "go" } },
+      }),
+      { buildModel: spies(hosted.fetch).options.buildModel, getKey: () => key },
+    );
+    return JSON.stringify(await router.route("zeus", context, sayIntent));
+  }
+
+  test("a key that starts just before the detail limit and runs past it leaves no prefix of 8 or more characters", async () => {
+    const key = "sk-Qz9XkLm2Pv7Rt4WnB8YcH3JdF6";
+    const body = `${"x".repeat(285)}${key} and more text after it`;
+
+    const result = await refusedWith(key, body);
+
+    expect(result).not.toContain(key.slice(0, 8));
+    // The placeholder itself may be cut by the limit; the key never survives it.
+    expect(result).toContain("[redacted");
+  });
+
+  test("a key longer than the detail limit leaves no prefix of 8 or more characters", async () => {
+    const key = `LONGKEY-${"Zq7".repeat(150)}`;
+    const body = `Incorrect API key provided: ${key}`;
+
+    const result = await refusedWith(key, body);
+
+    expect(result).not.toContain(key.slice(0, 8));
+    expect(result).toContain("[redacted]");
+  });
+
+  test("the detail is still bounded", async () => {
+    const result = await refusedWith("sk-short", "y".repeat(5_000));
+
+    expect(result.length).toBeLessThan(1_500);
   });
 });
 

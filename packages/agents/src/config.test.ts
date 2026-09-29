@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type Endpoint,
   isLocalHost,
   isLocalUrl,
   parseRoutingConfig,
@@ -112,10 +113,15 @@ function parsed(input: unknown): RoutingConfig {
 }
 
 describe("parseRoutingConfig", () => {
-  test("derives locality from each endpoint's URL", () => {
+  test("an endpoint carries no locality field: locality is judged from its URL where it is used", () => {
     const value = parsed(config());
 
-    expect([...value.endpoints.values()].map((e) => [e.id, e.local])).toEqual([
+    for (const endpoint of value.endpoints.values()) {
+      expect(endpoint).not.toHaveProperty("local");
+    }
+    expect(
+      [...value.endpoints.values()].map((e) => [e.id, isLocalUrl(e.baseUrl)]),
+    ).toEqual([
       ["ollama", true],
       ["go", false],
     ]);
@@ -312,6 +318,34 @@ describe("planRoute", () => {
 
     expect(plan.steps).toEqual([]);
     expect(plan.offlineSkipped).toEqual(["go"]);
+  });
+
+  test("a hand-built config is judged by its URLs too: a public baseUrl is dropped offline whatever else the object claims", () => {
+    const forged: RoutingConfig = {
+      endpoints: new Map([
+        [
+          "public",
+          // A caller that skips the parser tries to declare a public host local.
+          {
+            id: "public",
+            baseUrl: "https://api.example.com/v1",
+            model: "m",
+            local: true,
+          } as unknown as Endpoint,
+        ],
+        [
+          "loopback",
+          { id: "loopback", baseUrl: "http://127.0.0.1:11434/v1", model: "m" },
+        ],
+      ]),
+      roles: new Map([["zeus", { endpoint: "public" }]]),
+      fallback: ["loopback"],
+    };
+
+    const plan = planRoute(forged, "zeus", { offline: true });
+
+    expect(plan.steps.map((step) => step.endpoint.id)).toEqual(["loopback"]);
+    expect(plan.offlineSkipped).toEqual(["public"]);
   });
 
   test("online, nothing is skipped", () => {

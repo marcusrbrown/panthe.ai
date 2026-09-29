@@ -42,7 +42,7 @@ The story shipped with three positive controls (`archive`, `catch-up`, `journal`
    | `pause` | The harness resumes the world just before stopping it, so it cannot come back paused. |
    | `underworld` | The second client follows the farmer in the mortal realm instead of the underworld, so it sees and receipts mortal events. |
 
-4. **A control that finishes clean is a failure.** If the story completes with a control enabled, the run exits 1 with `positive control <name> did not trip any invariant` (`run.ts:118-124`). Recording evidence runs each control in a child process and accepts only a failure line that starts `FAIL invariant violated`, so a crash or a typo cannot pass as a tripped control (`run.ts:131-137`).
+4. **A control that finishes clean is a failure.** If the story completes with a control enabled, the run exits 1 with `positive control <name> did not trip any invariant` (`run.ts:111-117`). Recording evidence runs each control in a child process and accepts only a failure line that starts `FAIL invariant violated`, so a crash or a typo cannot pass as a tripped control (`run.ts:124-130`).
 5. **Keep it out of the fast check, in the evidence path.** The scenario builds and spawns a binary and runs for minutes, so only its pure helpers are tested in `bun run check`. Its results, controls included, are written into its README (`--write-readme`) and cited from traceability.
 
 ## Why This Matters

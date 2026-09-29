@@ -189,12 +189,13 @@ export interface StepResult {
 
 export interface StepRecorder {
   readonly results: readonly StepResult[];
-  run(
+  /** Runs one step and returns whatever its body returns, so a step can hand facts to later ones. */
+  run<T>(
     id: string,
     title: string,
     invariant: string,
-    body: (report: StepReport) => Promise<void>,
-  ): Promise<void>;
+    body: (report: StepReport) => Promise<T>,
+  ): Promise<T>;
 }
 
 export interface StepReport {
@@ -227,7 +228,7 @@ export function createStepRecorder(
           recorded = { result, measurements, notes };
         },
       };
-      await body(report);
+      const value = await body(report);
       if (recorded === undefined) {
         throw new Error(`step ${id} finished without recording a result`);
       }
@@ -242,6 +243,7 @@ export function createStepRecorder(
       };
       results.push(step);
       onStep(step);
+      return value;
     },
   };
 }

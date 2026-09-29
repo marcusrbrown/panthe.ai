@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { captureEnvironment, renderReport } from "@panthea/tools-probes-shared";
 import { ScenarioFailure } from "./helpers";
 import { buildReportInput, type ControlResult } from "./report";
-import { killAllSidecars, REPO_ROOT } from "./sidecar";
+import { killAllSidecars } from "./sidecar";
 import {
   CONTROL_NAMES,
   type ControlName,
@@ -91,13 +91,6 @@ async function runControl(name: ControlName): Promise<ControlResult> {
   return { name, sabotage: CONTROL_SABOTAGE[name], exitCode, failure };
 }
 
-function commitHash(): string {
-  const result = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], {
-    cwd: REPO_ROOT,
-  });
-  return result.stdout.toString().trim() || "unknown";
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const startedAt = Date.now();
@@ -145,7 +138,6 @@ async function main(): Promise<void> {
           environment: captureEnvironment(),
           totalMs: Date.now() - startedAt,
           binaryBytes,
-          commit: commitHash(),
         }),
       );
       writeFileSync(

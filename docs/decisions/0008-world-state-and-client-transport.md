@@ -85,7 +85,7 @@ Context for the frame's `catchUpSummary`. Catch-up applies missed wall time in c
 
 [docs/plans/2026-09-27-001-feat-m1-persistent-living-world-plan.md](../plans/2026-09-27-001-feat-m1-persistent-living-world-plan.md) Key Technical Decisions; [tools/scenarios/m1-packaged-shell/README.md](../../tools/scenarios/m1-packaged-shell/README.md); [catch-up-summary-lost-between-polls-2026-09-28.md](../solutions/integration-issues/catch-up-summary-lost-between-polls-2026-09-28.md); [world-persistence-composition-broken-after-reopen-2026-09-27.md](../solutions/integration-issues/world-persistence-composition-broken-after-reopen-2026-09-27.md); [ADR-0003](0003-simulation-service.md); [ADR-0006](0006-telemetry-export.md).
 
-M1 living-world scenario: [tools/scenarios/m1-living-world/README.md](../../tools/scenarios/m1-living-world/README.md). It drives the compiled sidecar headlessly through the state-model, intake, catch-up, import/restore, and receipt paths above (S11–S16), with a positive control for each of the archive, catch-up, and journal claims.
+M1 living-world scenario: [tools/scenarios/m1-living-world/README.md](../../tools/scenarios/m1-living-world/README.md). It drives the compiled sidecar headlessly through the state-model, intake, catch-up, import/restore, and receipt paths above (S11–S16), with a positive control for every negative claim (seven: `archive`, `catch-up`, `journal`, `bad-proposals`, `claim-owner`, `pause`, `underworld`).
 
 ## Requirement IDs
 

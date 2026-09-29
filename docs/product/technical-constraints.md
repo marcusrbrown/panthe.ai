@@ -47,6 +47,8 @@ Fallback follows an explicit configured sequence.
 If every allowed provider fails, continue routines and show degraded status.
 Offline mode cannot silently switch to a hosted endpoint.
 
+2026-09-29 clarification (owner): providers are any OpenAI-compatible endpoint; the named hosted options are examples, all peers of local models, usable for any role and in any configured fallback order ([ADR-0005](../decisions/0005-model-providers.md)).
+
 Provide procedural visual creation plus local and optional hosted image adapters.
 Image jobs can take minutes and use coherent temporary art.
 Do not block authoritative actions or degrade all conversation to prioritize artwork.

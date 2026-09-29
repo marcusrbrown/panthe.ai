@@ -78,6 +78,12 @@ export function createSchema(db: Database): void {
         consumed_tick INTEGER
       ) STRICT
     `);
+    // Serves each tick's pending read (unconsumed, target reached, in input
+    // order) without walking the consumed history, which is never pruned.
+    db.exec(`
+      CREATE INDEX idx_external_proposals_pending
+      ON external_proposals (input_order) WHERE consumed_tick IS NULL
+    `);
     // At most one row, present only while a catch-up backlog is being
     // worked off. Written in the same transaction as the discard or chunk it
     // describes, so a restart resumes from exactly what committed.

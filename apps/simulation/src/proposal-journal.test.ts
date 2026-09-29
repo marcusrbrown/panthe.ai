@@ -490,6 +490,31 @@ describe("retrying a proposal", () => {
     }
   });
 
+  test("changed content for an id whose proposal was already consumed is a 409, and the journal row is unchanged", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const body = strike();
+      await post(world, body);
+      tick(world);
+      const before = getExternalProposal(world.store.db, body.proposalId);
+      expect(before?.consumedTick).toBe(1);
+
+      const changed = await post(world, {
+        ...body,
+        proposal: { ...body.proposal, power: 9 },
+      });
+
+      expect(changed.status).toBe(409);
+      expect(getExternalProposal(world.store.db, body.proposalId)).toEqual(
+        before,
+      );
+      expect(listExternalProposals(world.store.db)).toHaveLength(1);
+    } finally {
+      shutDown(world);
+    }
+  });
+
   test("a consumed entry with no recorded outcome is corruption: the retry is an error and nothing runs again", async () => {
     const world = openWorld(join(dir, "world.sqlite"));
     startServer(world);

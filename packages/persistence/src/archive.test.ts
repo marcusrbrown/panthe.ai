@@ -1073,6 +1073,11 @@ describe("the external proposal journal in an archive", () => {
     insertExternalProposal(store.db, journalEntry("a"));
     insertExternalProposal(store.db, journalEntry("b"));
     insertExternalProposal(store.db, journalEntry("c"));
+    // "a" was accepted before the store's three ticks and consumed by the
+    // last of them; "b" and "c" were accepted after and are still pending.
+    store.db.run(
+      "UPDATE external_proposals SET target_tick = 1 WHERE proposal_id = 'proposal-a'",
+    );
     markExternalProposalConsumed(store.db, "proposal-a", 3);
     return store;
   }
@@ -1155,6 +1160,55 @@ describe("the external proposal journal in an archive", () => {
     db.run(
       "UPDATE external_proposals SET proposal = ? WHERE proposal_id = 'proposal-b'",
       [JSON.stringify({ kind: "not-a-proposal" })],
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry whose proposal cites a different observation than the one stored beside it is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const mismatched = {
+      ...journalEntry("b").proposal,
+      observationId: "obs-someone-else",
+    };
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET proposal = ? WHERE proposal_id = 'proposal-b'",
+      [JSON.stringify(mismatched)],
+    );
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("a rehashed entry consumed before its own target tick is rejected as corrupt; no slot is created", () => {
+    const store = storeWithJournal(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    // The archive's clock is at tick 3, so consumed tick 2 is within it, but
+    // it is before the tick 3 the entry was targeted at.
+    const db = new Database(archivePath);
+    db.run(
+      "UPDATE external_proposals SET target_tick = 3, consumed_tick = 2 WHERE proposal_id = 'proposal-a'",
     );
     db.close();
     rehash(archivePath);

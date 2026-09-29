@@ -157,6 +157,27 @@ describe("insertExternalProposal", () => {
 });
 
 describe("readPendingExternalProposals", () => {
+  test("the per-tick pending read is served by an index, not a scan of the whole journal", () => {
+    const store = openStore(dbPath, reducer);
+    const plan = (
+      store.db
+        .query(
+          `EXPLAIN QUERY PLAN SELECT * FROM external_proposals
+           WHERE consumed_tick IS NULL AND target_tick <= ?
+           ORDER BY input_order ASC`,
+        )
+        .all(1) as { detail: string }[]
+    ).map((row) => row.detail);
+
+    expect(plan.some((detail) => /USING (COVERING )?INDEX/.test(detail))).toBe(
+      true,
+    );
+    expect(
+      plan.some((detail) => /^SCAN external_proposals$/.test(detail)),
+    ).toBe(false);
+    closeStore(store);
+  });
+
   test("returns pending entries targeted at or before the tick, in input order", () => {
     const store = openStore(dbPath, reducer);
     insertExternalProposal(store.db, entry("proposal-a"));

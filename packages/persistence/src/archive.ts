@@ -813,6 +813,14 @@ export function importArchive(
                   `journal entry ${row.proposal_id} failed to parse`,
                 );
               }
+              // Live intake requires the proposal to cite the observation
+              // it is stored with; an archive must hold the same pairing.
+              if (proposal.value.observationId !== observation.value.id) {
+                throw new ImportError(
+                  "corrupt",
+                  `journal entry ${row.proposal_id}: proposal.observationId does not match observation.id`,
+                );
+              }
               if (
                 typeof row.proposal_id !== "string" ||
                 row.proposal_id.length === 0 ||
@@ -821,11 +829,12 @@ export function importArchive(
                 (row.consumed_tick !== null &&
                   (!Number.isInteger(row.consumed_tick) ||
                     row.consumed_tick < 1 ||
+                    row.consumed_tick < row.target_tick ||
                     row.consumed_tick > clockRow.tick))
               ) {
                 throw new ImportError(
                   "corrupt",
-                  `journal entry ${String(row.proposal_id)} has an invalid id, target tick, or consumed tick`,
+                  `journal entry ${String(row.proposal_id)} has an invalid id, target tick, or consumed tick (a tick consumes an entry no earlier than its target)`,
                 );
               }
               stagingDb.run(

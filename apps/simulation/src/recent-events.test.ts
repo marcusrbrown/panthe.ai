@@ -17,7 +17,6 @@ import {
   type WorldState,
 } from "@panthea/world";
 import {
-  createExternalQueue,
   createServiceStatusRef,
   createSimulationServer,
   RECENT_EVENT_CAP,
@@ -222,7 +221,6 @@ test("GET /frame carries the strike's events, and the frame parses under the con
       traceDb: store.db,
       slotsDir,
       statusRef: createServiceStatusRef(chain.state),
-      externalQueue: createExternalQueue(),
       port: 0,
     });
     try {
@@ -257,7 +255,6 @@ test("a catch-up summary stays on every later frame, stamped with the sequence i
       traceDb: store.db,
       slotsDir,
       statusRef,
-      externalQueue: createExternalQueue(),
       port: 0,
     });
     const outcome = {

@@ -25,6 +25,8 @@ import {
   LATEST_EVENT_SCHEMA_VERSION,
   parseArchiveManifest,
   parseEvent,
+  parseObservationRecord,
+  parseProposal,
   type WorldEvent,
   type WorldId,
 } from "@panthea/contracts";
@@ -49,6 +51,7 @@ const HASHED_TABLES: readonly {
   { table: "genesis", pk: "id" },
   { table: "projections", pk: "id" },
   { table: "events", pk: "sequence" },
+  { table: "external_proposals", pk: "input_order" },
 ];
 
 function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -157,6 +160,17 @@ interface ExportData {
   readonly projectionsRevision: number;
   readonly projectionsData: string;
   readonly eventRows: readonly Record<string, unknown>[];
+  readonly journalRows: readonly JournalRow[];
+}
+
+/** One `external_proposals` row exactly as stored. */
+interface JournalRow {
+  readonly input_order: number;
+  readonly proposal_id: string;
+  readonly target_tick: number;
+  readonly proposal: string;
+  readonly observation: string;
+  readonly consumed_tick: number | null;
 }
 
 /** Reads everything export needs in one read transaction, pinned to a single committed sequence. */
@@ -190,6 +204,9 @@ function readExportData(store: Store): ExportData {
     const eventRows = store.db
       .query("SELECT * FROM events WHERE sequence <= ? ORDER BY sequence ASC")
       .all(sequence) as Record<string, unknown>[];
+    const journalRows = store.db
+      .query("SELECT * FROM external_proposals ORDER BY input_order ASC")
+      .all() as JournalRow[];
     return {
       worldId: store.worldId,
       sequence,
@@ -202,6 +219,7 @@ function readExportData(store: Store): ExportData {
       projectionsRevision: projectionsRow.revision,
       projectionsData: projectionsRow.data,
       eventRows,
+      journalRows,
     };
   });
   return run.deferred();
@@ -261,6 +279,20 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
               row.kind as string,
               row.approximate as number,
               row.payload as string,
+            ],
+          );
+        }
+        for (const row of data.journalRows) {
+          archiveDb.run(
+            `INSERT INTO external_proposals (input_order, proposal_id, target_tick, proposal, observation, consumed_tick)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              row.input_order,
+              row.proposal_id,
+              row.target_tick,
+              row.proposal,
+              row.observation,
+              row.consumed_tick,
             ],
           );
         }
@@ -743,6 +775,70 @@ export function importArchive(
               throw new ImportError(
                 "inconsistent-manifest",
                 `archive's event log ends at sequence ${lastWrittenSequence}, but its manifest declares ${manifest.eventSequence}`,
+              );
+            }
+            // The journal: every entry is parsed as the versioned proposal
+            // and observation it claims to be, must follow the previous
+            // entry's input order, and may only have been consumed by a
+            // tick this archive's own clock has reached.
+            const journalRows = db
+              .query(
+                "SELECT input_order, proposal_id, target_tick, proposal, observation, consumed_tick FROM external_proposals ORDER BY input_order ASC",
+              )
+              .iterate() as IterableIterator<JournalRow>;
+            let expectedOrder = 1;
+            for (const row of journalRows) {
+              if (row.input_order !== expectedOrder) {
+                throw new ImportError(
+                  "inconsistent-manifest",
+                  `archive journal is not contiguous: expected input order ${expectedOrder}, found ${row.input_order}`,
+                );
+              }
+              expectedOrder += 1;
+              const proposal = parseProposal(
+                readOrCorrupt(
+                  () => JSON.parse(row.proposal) as unknown,
+                  "journal entry has invalid JSON proposal",
+                ),
+              );
+              const observation = parseObservationRecord(
+                readOrCorrupt(
+                  () => JSON.parse(row.observation) as unknown,
+                  "journal entry has invalid JSON observation",
+                ),
+              );
+              if (!proposal.ok || !observation.ok) {
+                throw new ImportError(
+                  "corrupt",
+                  `journal entry ${row.proposal_id} failed to parse`,
+                );
+              }
+              if (
+                typeof row.proposal_id !== "string" ||
+                row.proposal_id.length === 0 ||
+                !Number.isInteger(row.target_tick) ||
+                row.target_tick < 1 ||
+                (row.consumed_tick !== null &&
+                  (!Number.isInteger(row.consumed_tick) ||
+                    row.consumed_tick < 1 ||
+                    row.consumed_tick > clockRow.tick))
+              ) {
+                throw new ImportError(
+                  "corrupt",
+                  `journal entry ${String(row.proposal_id)} has an invalid id, target tick, or consumed tick`,
+                );
+              }
+              stagingDb.run(
+                `INSERT INTO external_proposals (input_order, proposal_id, target_tick, proposal, observation, consumed_tick)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                  row.input_order,
+                  row.proposal_id,
+                  row.target_tick,
+                  JSON.stringify(proposal.value),
+                  JSON.stringify(observation.value),
+                  row.consumed_tick,
+                ],
               );
             }
           })

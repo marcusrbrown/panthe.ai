@@ -9,7 +9,9 @@ import {
 } from "@panthea/contracts";
 import {
   closeStore,
+  insertExternalProposal,
   listEvents,
+  listExternalProposals,
   openStore,
   readCatchUpProgress,
   readClock,
@@ -28,7 +30,6 @@ import { refreshStatusAfterCatchUp } from "./index";
 import {
   applyLiveTick,
   type CatchUpControl,
-  createExternalQueue,
   createServiceStatusRef,
   createSimulationServer,
 } from "./server";
@@ -98,7 +99,6 @@ function startHarness(
 
   const token = "the-launch-token";
   const statusRef = createServiceStatusRef(step.state);
-  const externalQueue = createExternalQueue();
 
   const handle = createSimulationServer({
     token,
@@ -107,7 +107,6 @@ function startHarness(
     traceDb: store.db,
     slotsDir,
     statusRef,
-    externalQueue,
     port: 0,
     ...(options.commitTick ? { commitTick: options.commitTick } : {}),
   });
@@ -230,72 +229,6 @@ function authed(harness: Harness, path: string, init: RequestInit = {}) {
     },
   });
 }
-
-describe("applyLiveTick", () => {
-  test("fixture proposals drained for a tick that fails to commit are put back, not lost -- the next successful tick processes them", () => {
-    const storeDir = tempDir("panthea-sim-server-live-tick-requeue-");
-    try {
-      const storePath = join(storeDir, "world.sqlite");
-      const seeded = loadGreekWorldState();
-      const reducers = createWorldProjectionReducers(seeded);
-      const store = openStore(storePath, reducers);
-      ensureTraceSchema(store.db);
-
-      const externalQueue = createExternalQueue();
-      const [fixtureProposal] = buildRoutineQueue(seeded);
-      if (!fixtureProposal) {
-        throw new Error(
-          "expected at least one routine-driven fixture proposal",
-        );
-      }
-      externalQueue.enqueue(fixtureProposal);
-
-      const failingDeps: TickDeps = {
-        store,
-        reducers,
-        traceDb: store.db,
-        commitTick: () => {
-          throw new Error("disk I/O error: SQLITE_FULL");
-        },
-      };
-
-      const failedStep = applyLiveTick(
-        externalQueue,
-        [],
-        seeded,
-        createPrng(1),
-        failingDeps,
-        { cursorWallMs: 1_000, paused: false },
-      );
-      expect(failedStep.kind).toBe("store-error");
-
-      // Lost if requeue-on-failure is missing: drain() already removed it
-      // from the queue before the commit was even attempted.
-      const workingDeps: TickDeps = { store, reducers, traceDb: store.db };
-      const successStep = applyLiveTick(
-        externalQueue,
-        [],
-        seeded,
-        createPrng(1),
-        workingDeps,
-        { cursorWallMs: 2_000, paused: false },
-      );
-      if (successStep.kind !== "committed") {
-        throw new Error(`expected a committed step, got ${successStep.kind}`);
-      }
-      expect(successStep.events).toBeGreaterThan(0);
-      const outcome = getProposalOutcomeByProposalId(
-        store.db,
-        fixtureProposal.id,
-      );
-      expect(outcome?.outcome).toBe("committed");
-
-      closeStore(store);
-    } finally {
-      rmSync(storeDir, { recursive: true, force: true });
-    }
-  });
-});
 
 test("GET /frame returns a running-status SyncFrame carrying the world's committed state", async () => {
   const harness = startHarness();
@@ -536,7 +469,6 @@ test("a real POST /pause request during an in-progress catch-up stops it at a ch
 
     const token = "the-launch-token";
     const statusRef = createServiceStatusRef(seededWithTinyChunks);
-    const externalQueue = createExternalQueue();
 
     let catchUpInProgress = true;
     let pauseRequestedDuringCatchUp = false;
@@ -555,7 +487,6 @@ test("a real POST /pause request during an in-progress catch-up stops it at a ch
       traceDb: store.db,
       slotsDir,
       statusRef,
-      externalQueue,
       catchUpControl,
       port: 0,
     });
@@ -650,7 +581,6 @@ test("a real POST /pause request whose mid-catch-up commit fails (injected trace
 
     const token = "the-launch-token";
     const statusRef = createServiceStatusRef(seededWithTinyChunks);
-    const externalQueue = createExternalQueue();
 
     let catchUpInProgress = true;
     let pauseRequestedDuringCatchUp = false;
@@ -674,7 +604,6 @@ test("a real POST /pause request whose mid-catch-up commit fails (injected trace
       traceDb: store.db,
       slotsDir,
       statusRef,
-      externalQueue,
       catchUpControl,
       port: 0,
     });
@@ -760,7 +689,6 @@ test("a trace failure during POST /pause rolls back the whole transition: 500, d
 
     const token = "the-launch-token";
     const statusRef = createServiceStatusRef(seeded);
-    const externalQueue = createExternalQueue();
 
     const handle = createSimulationServer({
       token,
@@ -769,7 +697,6 @@ test("a trace failure during POST /pause rolls back the whole transition: 500, d
       traceDb: store.db,
       slotsDir,
       statusRef,
-      externalQueue,
       port: 0,
     });
 
@@ -822,7 +749,6 @@ test("a trace failure during POST /resume rolls back the whole transition: 500, 
 
     const token = "the-launch-token";
     const statusRef = createServiceStatusRef(seeded);
-    const externalQueue = createExternalQueue();
 
     const handle = createSimulationServer({
       token,
@@ -831,7 +757,6 @@ test("a trace failure during POST /resume rolls back the whole transition: 500, 
       traceDb: store.db,
       slotsDir,
       statusRef,
-      externalQueue,
       port: 0,
     });
 
@@ -863,7 +788,7 @@ test("a trace failure during POST /resume rolls back the whole transition: 500, 
   }
 });
 
-test("POST /proposals with an unknown legend link is rejected at intake, never reaching the queue", async () => {
+test("POST /proposals with an unknown legend link is rejected at intake, never reaching the journal", async () => {
   const harness = startHarness();
   try {
     const observation = {
@@ -877,6 +802,7 @@ test("POST /proposals with an unknown legend link is rejected at intake, never r
     const response = await authed(harness, "/proposals", {
       method: "POST",
       body: JSON.stringify({
+        proposalId: "proposal-unknown-legend-link",
         observation,
         proposal: {
           schemaVersion: 1,
@@ -892,6 +818,7 @@ test("POST /proposals with an unknown legend link is rejected at intake, never r
       }),
     });
     expect(response.status).toBe(400);
+    expect(listExternalProposals(harness.db)).toEqual([]);
   } finally {
     harness.stop();
   }
@@ -1006,10 +933,14 @@ describe("applyLiveTick: an external proposal takes its actor's slot for the tic
     const store = openStore(join(storeDir, "world.sqlite"), reducers);
     ensureTraceSchema(store.db);
     const routine = buildRoutineQueue(seeded);
-    const externalQueue = createExternalQueue();
-    for (const proposal of external) externalQueue.enqueue(proposal);
+    for (const queued of external) {
+      insertExternalProposal(store.db, {
+        proposalId: queued.id,
+        proposal: queued.proposal,
+        observation: queued.observation,
+      });
+    }
     const step = applyLiveTick(
-      externalQueue,
       routine,
       seeded,
       createPrng(1),

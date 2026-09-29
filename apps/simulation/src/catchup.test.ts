@@ -1,9 +1,13 @@
+import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   closeStore,
+  getExternalProposal,
+  insertExternalProposal,
+  listEvents,
   openStore,
   commitTick as persistCommitTick,
   readCatchUpProgress,
@@ -352,7 +356,11 @@ interface Backlog {
   run(
     nowWallMs: number,
     commitTick?: TickDeps["commitTick"],
+    /** Called at each between-chunk yield, where a request could arrive; returning nothing lets catch-up go on. */
+    betweenChunks?: (db: Database) => void,
   ): Promise<Awaited<ReturnType<typeof runCatchUp>>>;
+  /** Runs `fn` against the store opened fresh from disk. */
+  withDb<T>(fn: (db: Database) => T): T;
   clock(): ReturnType<typeof readClock>;
   progress(): ReturnType<typeof readCatchUpProgress>;
   dispose(): void;
@@ -385,7 +393,7 @@ function openBacklog(prefix: string): Backlog {
   return {
     storePath,
     startCursor,
-    run: (nowWallMs, commitTick) =>
+    run: (nowWallMs, commitTick, betweenChunks) =>
       withStore((store) => {
         const reducers = createWorldProjectionReducers(loadGreekWorldState());
         ensureTraceSchema(store.db);
@@ -402,9 +410,30 @@ function openBacklog(prefix: string): Backlog {
             traceDb: store.db,
             ...(commitTick ? { commitTick } : {}),
           },
-          { nowWallMs },
+          {
+            nowWallMs,
+            ...(betweenChunks
+              ? {
+                  onChunkCommitted: () => {
+                    betweenChunks(store.db);
+                    return false;
+                  },
+                }
+              : {}),
+          },
         );
       }),
+    withDb: (fn) => {
+      const store = openStore(
+        storePath,
+        createWorldProjectionReducers(loadGreekWorldState()),
+      );
+      try {
+        return fn(store.db);
+      } finally {
+        closeStore(store);
+      }
+    },
     clock: () => {
       const store = openStore(
         storePath,
@@ -571,6 +600,137 @@ test("once a backlog completes, the next catch-up starts a new one: its summary 
 
     const second = await backlog.run(firstNow + 60 * 1000);
     expect(second.summary.appliedMs).toBe(60 * 1000);
+  } finally {
+    backlog.dispose();
+  }
+});
+
+/** A journal entry for a strike by zeus, which has no routine of its own. */
+function strikeEntry(id: string) {
+  return {
+    proposalId: `proposal-catchup-${id}`,
+    proposal: {
+      schemaVersion: 1,
+      kind: "strike",
+      actor: "zeus",
+      target: "the-tavern",
+      power: 3,
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId: `obs-catchup-${id}`,
+    },
+    observation: {
+      schemaVersion: 1,
+      id: `obs-catchup-${id}`,
+      observer: "zeus",
+      stateRevision: 0,
+      factsRead: [],
+      source: "fixture",
+    },
+  };
+}
+
+test("a pending external proposal runs in the first tick of the next catch-up chunk, marked approximate, and is consumed there", async () => {
+  const backlog = openBacklog("panthea-sim-catchup-journal-first-");
+  try {
+    backlog.withDb((db) => insertExternalProposal(db, strikeEntry("a")));
+
+    await backlog.run(backlog.startCursor + 3 * 60 * 1000);
+
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, "proposal-catchup-a")).toMatchObject({
+        targetTick: 1,
+        consumedTick: 1,
+      });
+      const caused = listEvents(db).filter(
+        (event) => String(event.correlationId) === "obs-catchup-a",
+      );
+      expect(caused.map((event) => event.kind)).toEqual([
+        "resource-consumed",
+        "building-ignited",
+      ]);
+      expect(caused.every((event) => event.approximate)).toBe(true);
+    });
+  } finally {
+    backlog.dispose();
+  }
+});
+
+test("a proposal accepted while catch-up yields between chunks targets the next committed tick and runs in the next chunk", async () => {
+  const backlog = openBacklog("panthea-sim-catchup-journal-between-");
+  try {
+    let accepted = false;
+    await backlog.run(backlog.startCursor + 3 * 60 * 1000, undefined, (db) => {
+      if (!accepted) {
+        accepted = true;
+        insertExternalProposal(db, strikeEntry("b"));
+      }
+    });
+
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, "proposal-catchup-b")).toMatchObject({
+        targetTick: 61,
+        consumedTick: 61,
+      });
+    });
+  } finally {
+    backlog.dispose();
+  }
+});
+
+test("the cap discard neither consumes nor reschedules a pending proposal: it stays targeted at its tick and runs when ticking resumes", async () => {
+  const backlog = openBacklog("panthea-sim-catchup-journal-discard-");
+  try {
+    const nowWallMs = backlog.startCursor + 5 * HOUR_MS;
+    backlog.withDb((db) => insertExternalProposal(db, strikeEntry("c")));
+
+    // The discard commits; the first chunk fails.
+    await backlog.run(nowWallMs, throwsAtCommit(2));
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, "proposal-catchup-c")).toMatchObject({
+        targetTick: 1,
+        consumedTick: undefined,
+      });
+    });
+
+    await backlog.run(nowWallMs);
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, "proposal-catchup-c")?.consumedTick).toBe(
+        1,
+      );
+    });
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a chunk that fails to commit leaves the pending proposal pending, with no outcome and no effects, and the retry runs it once", async () => {
+  const backlog = openBacklog("panthea-sim-catchup-journal-fail-");
+  try {
+    const nowWallMs = backlog.startCursor + 3 * 60 * 1000;
+    backlog.withDb((db) => insertExternalProposal(db, strikeEntry("d")));
+
+    const failed = await backlog.run(nowWallMs, throwsAtCommit(1));
+    expect(failed.degraded).toBeDefined();
+    backlog.withDb((db) => {
+      expect(
+        getExternalProposal(db, "proposal-catchup-d")?.consumedTick,
+      ).toBeUndefined();
+      expect(listEvents(db)).toEqual([]);
+    });
+
+    await backlog.run(nowWallMs);
+    backlog.withDb((db) => {
+      expect(getExternalProposal(db, "proposal-catchup-d")?.consumedTick).toBe(
+        1,
+      );
+      expect(
+        listEvents(db).filter(
+          (event) => String(event.correlationId) === "obs-catchup-d",
+        ),
+      ).toHaveLength(2);
+    });
   } finally {
     backlog.dispose();
   }

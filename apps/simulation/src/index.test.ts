@@ -3,12 +3,16 @@
 // established pattern. Compiled-binary behavior (offline bun:sqlite, no
 // build-host leakage) is covered by scripts/scan-binary.sh.
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   closeStore,
+  type ExternalProposalEntry,
+  listEvents,
+  listExternalProposals,
   openStore,
   commitTick as persistCommitTick,
   readClock,
@@ -298,7 +302,217 @@ async function spawnService(
   return { proc, port };
 }
 
+/** Runs `fn` against the active store's file: read-only while a service holds it, read-write once none does (a cleanly stopped WAL store cannot be opened read-only). */
+function withActiveDb<T>(
+  fn: (db: Database) => T,
+  options: { readonly write?: boolean } = {},
+): T {
+  const path = join(appDataDir, "active", "world.sqlite");
+  for (const readonly of options.write ? [false] : [true, false]) {
+    const db = new Database(
+      path,
+      readonly ? { readonly: true } : { readwrite: true },
+    );
+    try {
+      return fn(db);
+    } catch (error) {
+      if (readonly && (error as { code?: string }).code === "SQLITE_CANTOPEN") {
+        continue;
+      }
+      throw error;
+    } finally {
+      db.close();
+    }
+  }
+  throw new Error("unreachable");
+}
+
+async function waitUntil<T>(
+  what: string,
+  probe: () => T | undefined | Promise<T | undefined>,
+  timeoutMs = 30_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await probe();
+    if (value !== undefined) return value;
+    await Bun.sleep(50);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+function service(port: number, token: string) {
+  return (path: string, init: RequestInit = {}) =>
+    fetch(`http://127.0.0.1:${port}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+}
+
+function strikeBody(proposalId: string, observationId: string) {
+  return {
+    proposalId,
+    observation: {
+      schemaVersion: 1,
+      id: observationId,
+      observer: "zeus",
+      stateRevision: 0,
+      factsRead: [],
+      source: "fixture",
+    },
+    proposal: {
+      schemaVersion: 1,
+      kind: "strike",
+      actor: "zeus",
+      target: "the-tavern",
+      power: 3,
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId,
+    },
+  };
+}
+
 describe("service (bun run src/index.ts)", () => {
+  test("a proposal accepted and then the process SIGKILLed before any tick runs is still pending on restart and runs on a catch-up tick", async () => {
+    const first = await spawnService("kill-token-1");
+    const body = strikeBody("proposal-kill-1", "obs-kill-1");
+    const accepted = await service(first.port, "kill-token-1")("/proposals", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    expect(accepted.status).toBe(202);
+    first.proc.kill("SIGKILL");
+    await first.proc.exited;
+
+    const journaled = withActiveDb((db) => listExternalProposals(db));
+    expect(
+      journaled.map((entry) => [entry.proposalId, entry.consumedTick]),
+    ).toEqual([["proposal-kill-1", undefined]]);
+
+    // The machine "slept" while the service was down: the restart's startup
+    // catch-up is what runs the proposal.
+    withActiveDb(
+      (db) =>
+        db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+          Date.now() - 3 * 60 * 1000,
+        ]),
+      { write: true },
+    );
+    const second = await spawnService("kill-token-2");
+    try {
+      const consumed = await waitUntil("the proposal to be consumed", () =>
+        listExternalProposals(
+          new Database(join(appDataDir, "active", "world.sqlite"), {
+            readonly: true,
+          }),
+        ).find((entry) => entry.consumedTick !== undefined),
+      );
+      expect(consumed.proposalId).toBe("proposal-kill-1");
+
+      const caused = withActiveDb((db) =>
+        listEvents(db).filter(
+          (event) => String(event.correlationId) === "obs-kill-1",
+        ),
+      );
+      expect(caused.map((event) => event.kind)).toEqual([
+        "resource-consumed",
+        "building-ignited",
+      ]);
+      expect(caused.every((event) => event.approximate)).toBe(true);
+
+      const status = await service(second.port, "kill-token-2")("/proposals", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      expect(status.status).toBe(200);
+      expect(await status.json()).toMatchObject({
+        status: "committed",
+        proposalId: "proposal-kill-1",
+      });
+    } finally {
+      second.proc.kill();
+    }
+  }, 60_000);
+
+  test("proposals accepted while paused stay pending through a restart and run, in order, once the world resumes", async () => {
+    const first = await spawnService("pause-token-1");
+    const call1 = service(first.port, "pause-token-1");
+    expect((await call1("/pause", { method: "POST" })).status).toBe(200);
+    const a = strikeBody("proposal-pause-a", "obs-pause-a");
+    const b = {
+      ...strikeBody("proposal-pause-b", "obs-pause-b"),
+      proposal: {
+        ...strikeBody("x", "obs-pause-b").proposal,
+        kind: "worship",
+        actor: "farmer",
+        deity: "zeus",
+        offering: { resource: "currency", amount: 1 },
+        target: undefined,
+        power: undefined,
+      },
+    };
+    for (const body of [a, b]) {
+      const response = await call1("/proposals", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(202);
+    }
+    await Bun.sleep(2500);
+    const pausedTick = withActiveDb(
+      (db) =>
+        (db.query("SELECT tick FROM clock").get() as { tick: number }).tick,
+    );
+    expect(
+      withActiveDb((db) => listExternalProposals(db)).map(
+        (e) => e.consumedTick,
+      ),
+    ).toEqual([undefined, undefined]);
+
+    const stdin = first.proc.stdin;
+    if (typeof stdin === "number" || !stdin) throw new Error("stdin");
+    stdin.end();
+    expect(await first.proc.exited).toBe(0);
+
+    const second = await spawnService("pause-token-2");
+    const call2 = service(second.port, "pause-token-2");
+    try {
+      await Bun.sleep(2500);
+      const stillPending: readonly ExternalProposalEntry[] = withActiveDb(
+        (db) => listExternalProposals(db),
+      );
+      expect(
+        stillPending.map((e) => [e.proposalId, e.consumedTick, e.targetTick]),
+      ).toEqual([
+        ["proposal-pause-a", undefined, pausedTick + 1],
+        ["proposal-pause-b", undefined, pausedTick + 1],
+      ]);
+
+      expect((await call2("/resume", { method: "POST" })).status).toBe(200);
+      const consumed = await waitUntil("both proposals to be consumed", () => {
+        const rows = withActiveDb((db) => listExternalProposals(db));
+        return rows.every((row) => row.consumedTick !== undefined)
+          ? rows
+          : undefined;
+      });
+      expect(consumed.map((row) => row.consumedTick)).toEqual([
+        pausedTick + 1,
+        pausedTick + 1,
+      ]);
+      const sequenceOf = (observationId: string) =>
+        withActiveDb((db) =>
+          listEvents(db).find(
+            (event) => String(event.correlationId) === observationId,
+          ),
+        )?.sequence ?? Number.NaN;
+      expect(sequenceOf("obs-pause-a")).toBeLessThan(sequenceOf("obs-pause-b"));
+    } finally {
+      second.proc.kill();
+    }
+  }, 60_000);
+
   test("error path: a request without the launch token is rejected", async () => {
     const { proc, port } = await spawnService("test-token-1");
     try {

@@ -30,7 +30,10 @@ import {
 } from "@panthea/contracts";
 import {
   clearCatchUpProgress,
+  type ExternalProposalEntry,
   exportArchive,
+  getExternalProposal,
+  insertExternalProposal,
   listEvents,
   type ProjectionReducers,
   readClock,
@@ -38,9 +41,10 @@ import {
   type Store,
 } from "@panthea/persistence";
 import {
-  createProposalId,
   followEvent,
   followProposal,
+  getProposalOutcomeByProposalId,
+  type ProposalId,
   parseProposalId,
   recordReceipt,
   UnknownEventError,
@@ -57,6 +61,7 @@ import {
   intakeProposal,
   mergeTickQueue,
   type QueuedProposal,
+  readPendingExternalQueue,
   recordOperatorEvent,
   type TickDeps,
   type TickStepResult,
@@ -127,61 +132,40 @@ export function checkRequestGuards(
   return undefined;
 }
 
-// --- Fixture proposal queue --------------------------------------------------
-
-/** The queue `/proposals` appends to; the tick loop drains it alongside routine-produced proposals every tick. Internal routines never touch this -- only HTTP fixture intake does. */
-export interface ExternalQueue {
-  enqueue(proposal: QueuedProposal): void;
-  drain(): QueuedProposal[];
-  /** Puts `proposals` back at the front of the queue, ahead of anything enqueued since `drain()` returned them -- undoes a `drain()` whose consumer failed to commit them, so they're retried rather than lost. */
-  requeue(proposals: readonly QueuedProposal[]): void;
-}
-
-export function createExternalQueue(): ExternalQueue {
-  let pending: QueuedProposal[] = [];
-  return {
-    enqueue(proposal) {
-      pending.push(proposal);
-    },
-    drain() {
-      const drained = pending;
-      pending = [];
-      return drained;
-    },
-    requeue(proposals) {
-      pending = [...proposals, ...pending];
-    },
-  };
-}
+// --- Live tick -----------------------------------------------------------------
 
 /**
- * Drains `externalQueue` and runs one live tick against the routine queue
- * plus whatever fixture proposals `/proposals` enqueued since the last
- * tick; an actor with an external proposal has its routine yield (see
- * `mergeTickQueue`). A tick that fails to commit puts the drained fixture proposals
- * back at the front of `externalQueue` rather than losing them, so the
- * next successful tick processes them.
+ * Runs one live tick against the routine queue plus the pending entries of
+ * the durable proposal journal. The journal is read by the tick itself, at
+ * the tick number it is computing, and consumed in the same transaction that
+ * commits the tick, so a tick that fails to commit leaves every entry
+ * pending. An actor with an external proposal has its routine yield (see
+ * `mergeTickQueue`).
  */
 export function applyLiveTick(
-  externalQueue: ExternalQueue,
   routineQueue: readonly QueuedProposal[],
   state: WorldState,
   prng: PrngState,
   deps: TickDeps,
   commit: { readonly cursorWallMs: number; readonly paused: boolean },
 ): TickStepResult {
-  const drained = externalQueue.drain();
-  const step = applyOneTick(
+  let external: QueuedProposal[];
+  try {
+    external = readPendingExternalQueue(deps.store.db, state.tick + 1);
+  } catch (error) {
+    return {
+      kind: "store-error",
+      reason: "store-error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return applyOneTick(
     state,
     prng,
-    mergeTickQueue(routineQueue, drained),
+    mergeTickQueue(routineQueue, external),
     deps,
     commit,
   );
-  if (step.kind === "store-error") {
-    externalQueue.requeue(drained);
-  }
-  return step;
 }
 
 // --- Shared status, read by /frame and the WebSocket stream ------------------
@@ -345,7 +329,6 @@ export interface SimulationServerOptions {
   readonly traceDb: Database;
   readonly slotsDir: string;
   readonly statusRef: ServiceStatusRef;
-  readonly externalQueue: ExternalQueue;
   readonly port?: number;
   readonly commitTick?: TickDeps["commitTick"];
   readonly catchUpControl?: CatchUpControl;
@@ -372,8 +355,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 export function createSimulationServer(
   options: SimulationServerOptions,
 ): SimulationServerHandle {
-  const { store, reducers, traceDb, slotsDir, statusRef, externalQueue } =
-    options;
+  const { store, reducers, traceDb, slotsDir, statusRef } = options;
   const catchUpControl = options.catchUpControl ?? NOOP_CATCH_UP_CONTROL;
   const eventSource = createEventSource(store);
   const receiptLimited = createReceiptLimiter();
@@ -584,6 +566,41 @@ export function createSimulationServer(
     return jsonResponse({ ok: true });
   }
 
+  /** The journaled status of a proposal: pending, or the terminal outcome the trace recorded. A consumed entry with no outcome is corruption. */
+  function journalStatus(entry: ExternalProposalEntry): Response {
+    if (entry.consumedTick === undefined) {
+      return jsonResponse(
+        {
+          ok: true,
+          queued: true,
+          proposalId: entry.proposalId,
+          status: "pending",
+        },
+        202,
+      );
+    }
+    const outcome = getProposalOutcomeByProposalId(
+      traceDb,
+      entry.proposalId as ProposalId,
+    );
+    if (!outcome) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: `proposal ${entry.proposalId} was consumed at tick ${entry.consumedTick} but has no recorded outcome`,
+        },
+        500,
+      );
+    }
+    return jsonResponse({
+      ok: true,
+      queued: false,
+      proposalId: entry.proposalId,
+      status: outcome.outcome,
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+    });
+  }
+
   async function handleProposal(request: Request): Promise<Response> {
     let body: unknown;
     try {
@@ -594,16 +611,24 @@ export function createSimulationServer(
     if (
       typeof body !== "object" ||
       body === null ||
+      !("proposalId" in body) ||
       !("observation" in body) ||
       !("proposal" in body)
     ) {
       return jsonResponse(
-        { ok: false, error: "expected { observation, proposal }" },
+        { ok: false, error: "expected { proposalId, observation, proposal }" },
         400,
       );
     }
-    const { observation: rawObservation, proposal: rawProposal } =
-      body as Record<string, unknown>;
+    const {
+      proposalId: rawProposalId,
+      observation: rawObservation,
+      proposal: rawProposal,
+    } = body as Record<string, unknown>;
+    const proposalId = parseProposalId(rawProposalId, "proposalId");
+    if (!proposalId.ok) {
+      return jsonResponse({ ok: false, error: proposalId.message }, 400);
+    }
     const observationResult = parseObservationRecord(rawObservation);
     if (!observationResult.ok) {
       return jsonResponse({ ok: false, error: observationResult.message }, 400);
@@ -621,12 +646,47 @@ export function createSimulationServer(
         400,
       );
     }
-    externalQueue.enqueue({
-      id: createProposalId(),
-      proposal: intake.proposal,
-      observation: observationResult.value,
-    });
-    return jsonResponse({ ok: true, queued: true }, 202);
+
+    let result: ReturnType<typeof insertExternalProposal>;
+    try {
+      // An id the trace already holds for a proposal this journal never
+      // accepted (a routine's) would have its outcome silently dropped.
+      if (
+        getExternalProposal(store.db, proposalId.value) === undefined &&
+        getProposalOutcomeByProposalId(traceDb, proposalId.value) !== undefined
+      ) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: `proposalId ${proposalId.value} is already in use`,
+          },
+          409,
+        );
+      }
+      result = insertExternalProposal(store.db, {
+        proposalId: proposalId.value,
+        proposal: intake.proposal,
+        observation: observationResult.value,
+      });
+    } catch (error) {
+      return jsonResponse(
+        {
+          ok: false,
+          error: `could not journal the proposal: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        500,
+      );
+    }
+    if (result.kind === "conflict") {
+      return jsonResponse(
+        {
+          ok: false,
+          error: `proposalId ${proposalId.value} was already accepted with different content`,
+        },
+        409,
+      );
+    }
+    return journalStatus(result.entry);
   }
 
   async function handleExport(request: Request): Promise<Response> {

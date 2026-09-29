@@ -18,16 +18,23 @@ import type {
   Proposal,
   WorldEvent,
 } from "@panthea/contracts";
-import { createObservationId } from "@panthea/contracts";
+import {
+  createObservationId,
+  parseObservationRecord,
+  parseProposal,
+} from "@panthea/contracts";
 import {
   getEventRow,
+  markExternalProposalConsumed,
   type ProjectionReducers,
   commitTick as persistCommitTick,
+  readPendingExternalProposals,
   type Store,
 } from "@panthea/persistence";
 import {
   createProposalId,
   type ProposalId,
+  parseProposalId,
   recordObservation,
   recordProposalOutcome,
 } from "@panthea/telemetry";
@@ -48,6 +55,8 @@ export interface QueuedProposal {
   readonly id: ProposalId;
   readonly proposal: Proposal;
   readonly observation: ObservationRecord;
+  /** Set on a proposal read from the durable journal: the tick that runs it also marks it consumed, in its own transaction. */
+  readonly external?: true;
 }
 
 export interface TickDeps {
@@ -88,6 +97,34 @@ export function buildRoutineQueue(
     });
   }
   return queue;
+}
+
+/**
+ * The journaled external proposals a tick numbered `tick` runs: pending
+ * entries targeted at or before it, in input order. Entries are parsed again
+ * as the versioned proposal and observation they were stored as; one that no
+ * longer parses is a corrupt store and throws rather than being skipped.
+ */
+export function readPendingExternalQueue(
+  db: Database,
+  tick: number,
+): QueuedProposal[] {
+  return readPendingExternalProposals(db, tick).map((entry) => {
+    const id = parseProposalId(entry.proposalId, "proposalId");
+    const proposal = parseProposal(entry.proposal);
+    const observation = parseObservationRecord(entry.observation);
+    if (!id.ok || !proposal.ok || !observation.ok) {
+      throw new Error(
+        `journal entry ${entry.proposalId} no longer parses as a proposal and observation`,
+      );
+    }
+    return {
+      id: id.value,
+      proposal: proposal.value,
+      observation: observation.value,
+      external: true,
+    };
+  });
 }
 
 /**
@@ -278,7 +315,7 @@ export function commitWorldTick(
   }
 }
 
-/** Records every queued proposal's observation and outcome (committed, rejected, or over-limit) to the trace -- called only after the tick's events are actually committed, so trace rows never outlive a rolled-back transaction. */
+/** Records every queued proposal's observation and outcome (committed, rejected, or over-limit) to the trace, and consumes the external ones from the journal -- called inside the tick's own transaction, so neither trace rows nor consumption outlive a rolled-back tick. */
 export function traceWorldTick(
   traceDb: Database,
   outcome: WorldTickOutcome,
@@ -331,6 +368,18 @@ export function traceWorldTick(
       outcome: "rejected",
       reason: record.reason,
     });
+  }
+  // Every external proposal this tick took, committed, rejected, or over the
+  // limit, now has its terminal outcome above; consume it in the same
+  // transaction so it can never run again.
+  for (const queued of [...outcome.admitted, ...outcome.overflow]) {
+    if (queued.external) {
+      markExternalProposalConsumed(
+        traceDb,
+        queued.id,
+        outcome.result.state.tick,
+      );
+    }
   }
 }
 

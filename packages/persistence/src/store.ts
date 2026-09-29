@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -63,6 +63,19 @@ export function createSchema(db: Database): void {
         kind TEXT NOT NULL,
         approximate INTEGER NOT NULL,
         payload TEXT NOT NULL
+      ) STRICT
+    `);
+    // Every external (fixture or operator) proposal accepted over
+    // /proposals, in the order it arrived. Written by intake, consumed by
+    // the tick that runs it; kept afterwards (see journal.ts).
+    db.exec(`
+      CREATE TABLE external_proposals (
+        input_order INTEGER PRIMARY KEY,
+        proposal_id TEXT NOT NULL UNIQUE,
+        target_tick INTEGER NOT NULL,
+        proposal TEXT NOT NULL,
+        observation TEXT NOT NULL,
+        consumed_tick INTEGER
       ) STRICT
     `);
     // At most one row, present only while a catch-up backlog is being

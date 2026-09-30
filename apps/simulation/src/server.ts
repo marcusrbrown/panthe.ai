@@ -844,7 +844,7 @@ export function createSimulationServer(
   function handleTraceEvent(url: URL): Response {
     const raw = url.searchParams.get("id");
     const parsed = raw === null ? undefined : parseEventId(raw, "id");
-    if (!parsed || !parsed.ok) {
+    if (!parsed?.ok) {
       return jsonResponse({ ok: false, error: "expected ?id=<EventId>" }, 400);
     }
     const result = followEvent(traceDb, eventSource, parsed.value);
@@ -854,7 +854,7 @@ export function createSimulationServer(
   function handleTraceProposal(url: URL): Response {
     const raw = url.searchParams.get("id");
     const parsed = raw === null ? undefined : parseProposalId(raw, "id");
-    if (!parsed || !parsed.ok) {
+    if (!parsed?.ok) {
       return jsonResponse(
         { ok: false, error: "expected ?id=<ProposalId>" },
         400,

@@ -1,5 +1,7 @@
 # Requirement traceability
 
+Maintenance (2026-09-30): trace-query ID guards in `apps/simulation/src/server.ts` use optional chaining to resolve two lint warnings. Missing or invalid IDs still return HTTP 400; accepted IDs still reach the same local trace queries. Requirement status and acceptance evidence are unchanged.
+
 Update this table in every PR that touches a requirement. Milestone is the stage from [mvp-roadmap.md](mvp-roadmap.md) where the requirement's main implementation work happens; several requirements are re-verified at later milestones (see the roadmap's "Main requirements" column). Status starts at "planned" for every requirement and moves to "scaffolded", "implemented", or "verified" as work lands; amendments to accepted requirement wording are noted inline. Implementation is the primary source path once code exists; Evidence is the probe report, ADR, or test record backing the current status.
 
 | ID | Milestone | Status | Implementation | Evidence |

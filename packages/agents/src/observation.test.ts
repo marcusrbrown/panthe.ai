@@ -422,3 +422,86 @@ test("a model-built realm transition commits through the real tick from the auth
   );
   expect(getActor(tick.state, id("zeus"))?.locationId).toBe(id("olympus-gate"));
 });
+
+// --- report -----------------------------------------------------------------------------
+
+/** Zeus and the farmer at the tavern, where Zeus can tell the farmer something. */
+const withFarmer = () => actorAt(tavernState(), "farmer", "tavern");
+
+test("a report proposal names its listener as a target and pins the listener's revision; the claim and the words are the god's own", () => {
+  const snapshot = snapshotAt(withFarmer());
+  const { observation, proposal } = build(snapshot, {
+    action: "report",
+    listener: "farmer",
+    content: "Lightning found your tavern.",
+    claim: { effect: "harm", agent: "zeus", target: "the-tavern" },
+  });
+  expect(proposal).toMatchObject({
+    kind: "report",
+    actor: "zeus",
+    listener: "farmer",
+    content: "Lightning found your tavern.",
+    claim: { effect: "harm", agent: "zeus", target: "the-tavern" },
+    targets: ["farmer"],
+    source: "model",
+    observationId: observation.id,
+  });
+  expect(revisionsOf(proposal)).toContain("farmer@0");
+  expect(proposal.expectedRevisions.map((r) => r.entityId)).toContain(
+    id("farmer"),
+  );
+  // Every fact the observation cites is in the snapshot.
+  const facts = snapshotFacts(snapshot);
+  for (const fact of observation.factsRead) expect(facts.has(fact)).toBe(true);
+  expect(observation.factsRead).toContain("actor:farmer.location");
+  expect(submitProposal(proposal).ok).toBe(true);
+});
+
+test("a report against the real validator: it commits when the listener has not moved, and is stale-target when the listener has", () => {
+  const snapshot = snapshotAt(withFarmer());
+  const { proposal } = build(snapshot, {
+    action: "report",
+    listener: "farmer",
+    content: "A word.",
+  });
+
+  // Control: nothing changed since the snapshot, so it commits.
+  const committed = runTick(withFarmer(), createPrng(1), [proposal]);
+  expect(committed.rejected).toEqual([]);
+  expect(committed.events.map((e) => e.kind)).toContain("report-told");
+
+  // The farmer walks off before the proposal is admitted.
+  const moved = actorAt(withFarmer(), "farmer", "town-square");
+  const movedFarmer = getActor(moved, id("farmer"));
+  if (!movedFarmer) throw new Error("no farmer");
+  const stale = runTick(
+    {
+      ...moved,
+      actors: new Map(moved.actors).set(id("farmer"), {
+        ...movedFarmer,
+        revision: movedFarmer.revision + 1,
+      }),
+    },
+    createPrng(1),
+    [proposal],
+  );
+  expect(stale.rejected.map((r) => r.reason)).toEqual(["stale-target"]);
+});
+
+test("a report intent parsed against an older snapshot is refused when its listener is not in the one it is built from", () => {
+  const older = snapshotAt(withFarmer());
+  const intent = parsed(older, {
+    action: "report",
+    listener: "farmer",
+    content: "A word.",
+  });
+  // Zeus is alone now.
+  const newer = snapshotAt(tavernState());
+  const result = buildModelProposal(id("zeus"), newer, intent);
+  expect(result.ok).toBe(false);
+  // Control: built from the snapshot it was parsed against, it builds.
+  expect(buildModelProposal(id("zeus"), older, intent)).toMatchObject({
+    ok: true,
+    kind: "proposal",
+  });
+});

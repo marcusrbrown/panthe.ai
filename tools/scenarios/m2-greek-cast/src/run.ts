@@ -7,15 +7,14 @@
 //   bun run scenario:m2 --positive-control=<name>    break one check on purpose; must fail
 //   bun run scenario:m2 --write-readme               run the story and every control, rewrite README.md (uses real-run.json)
 //   bun run scenario:m2 --real [--seconds=N]         both gods through local Ollama, unscripted; asserts properties, writes real-run.json
+//                                                    (rebuilds the sidecar first, unless --skip-build)
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { captureEnvironment, renderReport } from "@panthea/tools-probes-shared";
 import { ScenarioFailure } from "../../m1-living-world/src/helpers";
-import {
-  killAllSidecars,
-  sidecarBinaryPath,
-} from "../../m1-living-world/src/sidecar";
+import { killAllSidecars } from "../../m1-living-world/src/sidecar";
+import { resolveSidecarBinary } from "./binary";
 import { OllamaUnreachable, type RealRecord, runReal } from "./real";
 import { buildReportInput, type ControlResult } from "./report";
 import {
@@ -107,7 +106,7 @@ async function runControl(name: ControlName): Promise<ControlResult> {
 
 async function runRealRun(args: Args): Promise<void> {
   const record = await runReal({
-    binary: sidecarBinaryPath(),
+    binary: resolveSidecarBinary(args.skipBuild),
     durationMs: args.seconds * 1000,
     ollama: "http://127.0.0.1:11434",
     model: "llama3.2-3b-4k",

@@ -131,10 +131,18 @@ function perceptionCompliance(
     requests.flatMap((r) => (r.proposalId ? [[r.proposalId, r] as const] : [])),
   );
   const missing: string[] = [];
+  const uncheckable: string[] = [];
   let checked = 0;
   for (const proposal of proposals) {
     const prompt = byProposal.get(proposal.proposalId)?.promptPayload;
-    if (prompt === undefined) continue;
+    if (prompt === undefined) {
+      // A committed proposal with no prompt behind it cannot be shown to have
+      // been grounded in what the god saw, so it fails rather than being skipped.
+      if (proposal.outcome === "committed") {
+        uncheckable.push(proposal.proposalId);
+      }
+      continue;
+    }
     checked += 1;
     for (const id of namedIds(proposal.proposal)) {
       if (!prompt.includes(id)) {
@@ -144,13 +152,21 @@ function perceptionCompliance(
   }
   return {
     name,
-    ok: checked > 0 && missing.length === 0,
-    detail:
-      checked === 0
-        ? "no proposal had its prompt to check against"
-        : missing.length === 0
-          ? `every id named by ${checked} proposals was in the prompt behind it`
-          : `not in the prompt: ${missing.join("; ")}`,
+    ok: checked > 0 && missing.length === 0 && uncheckable.length === 0,
+    detail: [
+      checked === 0 ? "no proposal had its prompt to check against" : undefined,
+      uncheckable.length > 0
+        ? `no request with a prompt for committed proposals: ${uncheckable.join(", ")}`
+        : undefined,
+      missing.length > 0
+        ? `not in the prompt: ${missing.join("; ")}`
+        : undefined,
+      checked > 0 && uncheckable.length === 0 && missing.length === 0
+        ? `every id named by ${checked} proposals was in the prompt behind it`
+        : undefined,
+    ]
+      .filter((part) => part !== undefined)
+      .join("; "),
   };
 }
 

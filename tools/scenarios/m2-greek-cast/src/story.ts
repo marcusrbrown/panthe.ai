@@ -11,11 +11,10 @@ import {
   type StepResult,
 } from "../../m1-living-world/src/helpers";
 import {
-  buildSidecar,
   killAllSidecars,
-  sidecarBinaryPath,
   startSidecar,
 } from "../../m1-living-world/src/sidecar";
+import { resolveSidecarBinary } from "./binary";
 import { startProvider } from "./provider";
 import {
   heraPolicy,
@@ -49,7 +48,7 @@ export async function runStory(
   onStep: (step: StepResult) => void,
 ): Promise<StoryResult> {
   const recorder = createStepRecorder(onStep);
-  const binary = options.skipBuild ? sidecarBinaryPath() : buildSidecar();
+  const binary = resolveSidecarBinary(options.skipBuild);
   const binaryBytes = Bun.file(binary).size;
   const root = mkdtempSync(join(tmpdir(), "panthea-m2-"));
   const dataDir = join(root, "app-data");

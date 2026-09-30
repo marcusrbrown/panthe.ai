@@ -111,6 +111,50 @@ test("perception compliance holds when every id a proposal names is in the promp
   expect(result?.detail).toContain("the-woodcutter");
 });
 
+test("perception compliance fails, naming the proposal, when a committed proposal has no matching request", () => {
+  const prompt = "Here with you:\n- hera (a god)";
+  const covered = proposal("p1", "zeus", {
+    kind: "report",
+    listener: "hera",
+    content: "x",
+  });
+  const uncovered = proposal("p2", "zeus", {
+    kind: "report",
+    listener: "hera",
+    content: "y",
+  });
+  const result = property(
+    base({
+      // p1 is covered; a request for some other proposal does not cover p2.
+      requests: [request("p1", prompt), request("p9", prompt)],
+      proposals: [covered, uncovered],
+    }),
+    "perception compliance",
+  );
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("p2");
+  expect(result?.detail).not.toContain("p1");
+});
+
+test("perception compliance fails, naming the proposal, when its matching request carries no prompt", () => {
+  const result = property(
+    base({
+      requests: [
+        request("p1", "- hera (a god)"),
+        { ...request("p2", ""), promptPayload: undefined },
+      ],
+      proposals: [
+        proposal("p1", "zeus", { kind: "report", listener: "hera" }),
+        proposal("p2", "zeus", { kind: "report", listener: "hera" }),
+      ],
+    }),
+    "perception compliance",
+  );
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("p2");
+  expect(result?.detail).not.toContain("p1");
+});
+
 test("valid actions: god actions that were not rejected as malformed", () => {
   const good = base({
     proposals: [proposal("p1", "zeus", { kind: "move", to: "x" })],

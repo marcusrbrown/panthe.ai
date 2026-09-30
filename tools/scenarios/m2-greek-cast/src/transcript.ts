@@ -3,6 +3,7 @@
 // and what the automated checks found, and leave the rubric and the decision
 // blank: the owner scores (docs/product/acceptance.md), the tool never does.
 
+import type { WorldEvent } from "@panthea/contracts";
 import type { StoredEvent } from "./checks";
 import {
   CONTEXT_ACTIONS,
@@ -61,6 +62,12 @@ const tickOf = (eventId: string): number =>
 const signed = (value: unknown): string =>
   `${Number(value) > 0 ? "+" : ""}${String(value)}`;
 
+function describeChange(
+  event: Extract<WorldEvent, { kind: "relationship-changed" }>,
+): string {
+  return `${event.entityId} → ${event.toward}: affinity ${signed(event.affinityDelta)}${event.grudgeDelta > 0 ? `, grudge +${event.grudgeDelta}` : ""}${event.allied === true ? ", allied" : event.allied === false ? ", no longer allied" : ""}`;
+}
+
 function describeCaused(event: StoredEvent): string {
   if (event.kind === "report-told") {
     return `report-told (${String(event.entityId)} → ${String(event.listenerId)})`;
@@ -98,9 +105,7 @@ export function buildActions(record: EpisodeRecord): ActionEntry[] {
       const changes: string[] = [];
       for (const event of influencedBy(caused, parsed)) {
         if (event.kind === "relationship-changed") {
-          changes.push(
-            `${event.entityId} → ${event.toward}: affinity ${signed(event.affinityDelta)}${event.grudgeDelta > 0 ? `, grudge +${event.grudgeDelta}` : ""}${event.allied === true ? ", allied" : event.allied === false ? ", no longer allied" : ""}`,
-          );
+          changes.push(describeChange(event));
         } else if (
           event.kind === "memory-recorded" &&
           event.memoryKind === "told"
@@ -127,6 +132,19 @@ export function buildActions(record: EpisodeRecord): ActionEntry[] {
         changes.push(
           `${owners.join(", ")} ${owners.length === 1 ? "remembers" : "remember"} ${kind}`,
         );
+      }
+      // A feeling that comes of a witnessed memory goes under the same action
+      // as that memory: the witness felt it because of what it saw.
+      for (const event of parsed.values()) {
+        if (event.kind !== "relationship-changed") continue;
+        const memory = parsed.get(event.memoryEventId);
+        if (
+          memory?.kind === "memory-recorded" &&
+          memory.memoryKind === "witnessed" &&
+          causedIds.has(memory.sourceEventId)
+        ) {
+          changes.push(describeChange(event));
+        }
       }
 
       const fields = proposal.proposal;
@@ -319,8 +337,8 @@ export function renderSummary(
       return `| ${record.index} | ${nameOf(record, g.god)} | ${g.actions} (${g.abilityBacked} ability, ${g.contextBacked} context) | ${g.longestRun?.length ?? 0} | ${g.influence} | ${failed.length === 0 ? "pass" : `FAIL: ${failed.join(", ")}`} |`;
     }),
   );
-  const failures = records.flatMap((record) =>
-    record.episode.gods.flatMap((g) =>
+  const failures = records.flatMap((record) => [
+    ...record.episode.gods.flatMap((g) =>
       g.checks
         .filter((c) => !c.ok)
         .map(
@@ -328,7 +346,10 @@ export function renderSummary(
             `episode ${record.index}, ${nameOf(record, g.god)}: ${c.name} (${c.detail})`,
         ),
     ),
-  );
+    ...record.analysis.properties
+      .filter((p) => !p.ok)
+      .map((p) => `episode ${record.index}, property ${p.name} (${p.detail})`),
+  ]);
   const runRows = records.map((record) => {
     const a = record.analysis;
     const held = a.properties.filter((p) => p.ok).length;
@@ -347,7 +368,7 @@ export function renderSummary(
     ...checkRows,
     "",
     failures.length === 0
-      ? "All automated checks held."
+      ? "All automated checks and real-run properties held."
       : `Automated checks failed:\n\n${failures.map((f) => `- ${f}`).join("\n")}`,
     "",
     "## Model runs",

@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
+import type { ContentPack } from "@panthea/contracts";
+import {
+  createInitialWorldState,
+  createPrng,
+  runTick,
+  submitProposal,
+} from "@panthea/world";
 import { analyzeEpisode } from "./episode-analysis";
 import { act, identities, input, memoryEvent, move } from "./episode-test-data";
-import { analyzeReal } from "./real-analysis";
+import { analyzeReal, type RealInput } from "./real-analysis";
 import {
   buildActions,
   type EpisodeRecord,
@@ -347,12 +354,204 @@ test("the summary covers every episode with each god's numbers and checks, and l
         ...good,
         identities: [zeus],
         input: passing,
-        analysis: analyzeReal(passing),
+        analysis: {
+          ...analyzeReal(passing),
+          properties: analyzeReal(passing).properties.map((p) => ({
+            ...p,
+            ok: true,
+          })),
+        },
         episode: analyzeEpisode(passing, identities, ["zeus"]),
       },
     ],
     { seconds: 300, model: "m", files: ["episode-1.md"] },
   );
-  expect(clean).toContain("All automated checks held.");
+  expect(clean).toContain("All automated checks and real-run properties held.");
   expect(clean).not.toContain("Automated checks failed");
+});
+
+// --- A real tick: a witnessed feeling is shown under the action that caused what was seen ---
+
+/** A small real world: Zeus, the farmer (who owns the tavern), and a bard at the tavern. */
+const tavernPack = (): ContentPack => ({
+  schemaVersion: 1,
+  realms: ["mortal"],
+  resources: [],
+  locations: [{ id: "tavern", realm: "mortal", name: "The Tavern", edges: [] }],
+  buildings: [
+    {
+      id: "the-tavern",
+      locationId: "tavern",
+      name: "The Tavern House",
+      material: "wood",
+      combustible: true,
+      services: ["drink"],
+      inventory: [],
+      owner: "farmer",
+    },
+  ],
+  inhabitants: [
+    {
+      id: "zeus",
+      name: "Zeus",
+      locationId: "tavern",
+      deity: true,
+      startingInventory: [{ resource: "divinity", amount: 100 }],
+    },
+    { id: "farmer", name: "The Farmer", locationId: "tavern" },
+  ],
+  rules: {
+    catchUpCapMs: 0,
+    catchUpChunkMs: 0,
+    checkpointIntervalMs: 0,
+    maxProposalsPerTick: 100,
+    fireBalance: {
+      igniteThreshold: 3,
+      intensityGrowthPerTick: 1,
+      destroyIntensity: 6,
+    },
+    economyBalance: { worshipCapacityGain: 1, favorDurationTicks: 5 },
+  },
+  recipes: {},
+});
+
+test("a witnessed relationship change from a real tick is rendered under the strike that caused what was seen", () => {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: "zeus",
+    kind: "strike",
+    target: "the-tavern",
+    power: 3,
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-strike",
+  });
+  if (!submitted.ok) throw new Error(submitted.rejection.message);
+  const ticked = runTick(createInitialWorldState(tavernPack()), createPrng(1), [
+    submitted.proposal,
+  ]);
+  // The world itself emitted the feeling: the farmer, whose tavern it was.
+  const change = ticked.events.find((e) => e.kind === "relationship-changed");
+  expect(change).toMatchObject({
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: -2,
+    grudgeDelta: 1,
+  });
+
+  const data: RealInput = {
+    requests: [
+      {
+        proposalId: "p1",
+        role: "zeus",
+        outcome: "intent",
+        elapsedMs: 1000,
+        promptPayload: "prompt",
+        steps: [{ mode: "native" }],
+      },
+    ],
+    proposals: [
+      {
+        proposalId: "p1",
+        actor: "zeus",
+        kind: "strike",
+        observationId: "obs-strike",
+        proposal: { actor: "zeus", kind: "strike", target: "the-tavern" },
+        outcome: "committed",
+      },
+    ],
+    events: JSON.parse(JSON.stringify(ticked.events)),
+    polls: { total: 1, degraded: 0 },
+  };
+  const zeus = identities.get("zeus");
+  if (!zeus) throw new Error("no zeus");
+  const text = renderTranscript({
+    index: 1,
+    total: 1,
+    settings: {
+      model: "m",
+      seconds: 1,
+      ranAt: "2026-09-30T00:00:00.000Z",
+      ticks: 1,
+      hardware: "h",
+    },
+    identities: [zeus],
+    input: data,
+    analysis: analyzeReal(data),
+    episode: analyzeEpisode(data, identities, ["zeus"]),
+  });
+  const [strike] = actionBlocks(text);
+  expect(strike?.god).toBe("Zeus");
+  expect(strike?.block).toContain("strike → the-tavern");
+  expect(strike?.block).toContain("remember building-ignited");
+  expect(strike?.block).toContain("farmer → zeus: affinity -2, grudge +1");
+});
+
+test("control: a witnessed feeling is listed once, and a belief-only feeling is not rendered as a witnessed one", () => {
+  // The Hera-cites-Zeus story has told feelings only: nothing new appears under Zeus's move.
+  const { zeusMove, heraReport, belief, change } = citedStory();
+  const blocks = actionBlocks(
+    renderTranscript(record([zeusMove, heraReport], [belief, change])),
+  );
+  expect(blocks[0]?.block).not.toContain("affinity");
+  expect(blocks[1]?.block.match(/affinity -1/g)).toHaveLength(1);
+});
+
+// --- The summary's verdict covers the real-run properties too ------------------------------
+
+test("the summary does not say everything held when a real-run property failed, and names it; when all held it says so", () => {
+  const passing = input(
+    [
+      act("zeus", { kind: "report", listener: "hera", content: "x" }, 1),
+      ...["b", "c", "d", "e"].map((to, i) => move("zeus", to, i + 2)),
+    ],
+    [
+      memoryEvent("evt-9-9", 9, {
+        memoryKind: "told",
+        entityId: "hera",
+        sourceEventId: "evt-1-1",
+        teller: "zeus",
+        content: "x",
+      }),
+    ],
+  );
+  const zeus = identities.get("zeus");
+  if (!zeus) throw new Error("no zeus");
+  const base = record([move("zeus", "a", 1)]);
+  const perGodPass = analyzeEpisode(passing, identities, ["zeus"]);
+  expect(perGodPass.ok).toBe(true);
+  const failing = analyzeReal(passing);
+  const failedProperty = failing.properties.find((p) => !p.ok);
+  // The data really has a failed property: the per-god checks pass and the run did not.
+  expect(failedProperty).toBeDefined();
+
+  const settings = { seconds: 300, model: "m", files: ["episode-1.md"] };
+  const one = {
+    ...base,
+    identities: [zeus],
+    input: passing,
+    analysis: failing,
+    episode: perGodPass,
+  };
+  const text = renderSummary([one], settings);
+  expect(text).not.toContain("All automated checks");
+  expect(text).toContain("Automated checks failed");
+  expect(text).toContain(`episode 1, property ${failedProperty?.name}`);
+
+  // Control: every check and every property held.
+  const held = renderSummary(
+    [
+      {
+        ...one,
+        analysis: {
+          ...failing,
+          properties: failing.properties.map((p) => ({ ...p, ok: true })),
+        },
+      },
+    ],
+    settings,
+  );
+  expect(held).toContain("All automated checks and real-run properties held.");
+  expect(held).not.toContain("Automated checks failed");
 });

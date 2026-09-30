@@ -382,20 +382,44 @@ jobs:
         )
       )
     steps:
+      # A PR comment carries no head SHA. Resolve it for same-repository PRs
+      # only; it anchors the action's brokered push, the only way a comment
+      # reply can update the PR branch. Fork PRs resolve to empty and keep
+      # the default checkout.
+      - name: Resolve same-repo PR head
+        id: prehead
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          IS_PR_COMMENT: ${{ github.event_name == 'issue_comment' && github.event.issue.pull_request != null }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          sha=""
+          if [ "${IS_PR_COMMENT}" = "true" ]; then
+            pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+            if [ "$(printf '%s' "${pr_json}" | jq -r '.head.repo.full_name // empty')" = "${REPO}" ]; then
+              sha="$(printf '%s' "${pr_json}" | jq -r '.head.sha // empty')"
+            fi
+          fi
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
           # Trust boundary: on pull_request this resolves to the PR merge ref
-          # (refs/pull/<n>/merge), so `bun install` below runs PR-controlled
+          # (refs/pull/<n>/merge), and on a same-repository PR comment to the
+          # PR head resolved above, so `bun install` below runs PR-controlled
           # code before the agent receives FRO_BOT_PAT. That is accepted only
-          # because the job `if:` admits same-repository, non-bot authors,
-          # who already hold write access. On issue_comment the event has no
-          # github.event.pull_request, so the fork guard cannot see PR fork
-          # status; the default checkout there is the workflow ref, never
-          # refs/pull/<n>/head, which keeps fork-controlled code away from
-          # the token.
+          # because the job `if:` admits same-repository, non-bot authors or
+          # owner/member/collaborator commenters, who already hold write
+          # access. A fork PR comment resolves no head and checks out the
+          # workflow ref, which keeps fork-controlled code away from the token.
+          ref: ${{ steps.prehead.outputs.sha }}
           token: ${{ secrets.FRO_BOT_PAT }}
+          # Required by the action: a persisted checkout credential would
+          # hand the agent the token it deliberately withholds.
           persist-credentials: false
 
       - name: Setup Bun
@@ -420,6 +444,10 @@ jobs:
             }}
         with:
           github-token: ${{ secrets.FRO_BOT_PAT }}
+          trusted-head-sha: ${{ steps.prehead.outputs.sha }}
+          # Default brokered-push paths are src/, packages/*/src/ and docs/.
+          # .github, package.json and lockfiles stay denied by the action.
+          brokered-push-extra-paths: apps,content,tools
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
           opencode-config: ${{ secrets.OPENCODE_CONFIG }}

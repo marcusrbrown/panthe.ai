@@ -3,10 +3,17 @@
 // world stands in for the authored pack: two mortal locations, one
 // Olympus location, and the Underworld gate.
 
-import { parseSyncFrame, type WorldRules } from "@panthea/contracts";
+import {
+  type EventId,
+  parseSyncFrame,
+  type WorldRules,
+} from "@panthea/contracts";
 import {
   type ActorState,
+  type BuildingBase,
+  type BuildingIgnition,
   type BuildingState,
+  buildingBase,
   decode,
   encode,
   toEntityId,
@@ -23,6 +30,12 @@ const RULES: WorldRules = {
   maxProposalsPerTick: 50,
   fireBalance: { destroyIntensity: 3 },
   economyBalance: { repairCostPlanks: 3 },
+};
+
+/** How the fixture tavern's fire started: a strike by Zeus. */
+const STRIKE_IGNITION = {
+  eventId: "evt-strike" as EventId,
+  actor: toEntityId("zeus"),
 };
 
 function inventory(
@@ -69,11 +82,23 @@ function actorOf(
   };
 }
 
+/** Where a building is in its lifecycle, with the fields that phase carries. */
+type Stage =
+  | { readonly status: "operational" | "damaged" | "destroyed" }
+  | {
+      readonly status: "burning";
+      readonly fireIntensity: number;
+      readonly ticksBurning: number;
+      readonly ignition: BuildingIgnition;
+    }
+  | { readonly status: "repairing"; readonly repairProgress: number };
+
 function buildingOf(
   id: string,
   locationId: string,
   name: string,
-  extra: Partial<BuildingState> = {},
+  extra: Partial<BuildingBase> = {},
+  stage: Stage = { status: "operational" },
 ): BuildingState {
   return {
     id: toEntityId(id),
@@ -83,9 +108,9 @@ function buildingOf(
     combustible: true,
     services: ["drink"],
     inventory: inventory({}),
-    status: "operational",
     revision: 0,
     ...extra,
+    ...stage,
   };
 }
 
@@ -104,6 +129,8 @@ function worldOf(
     actors: new Map(),
     buildings: new Map(),
     legends: new Map(),
+    memories: new Map(),
+    relationships: new Map(),
     rules: RULES,
     recipes: {},
   };
@@ -125,11 +152,18 @@ export function baseState(): WorldState {
       actorOf("zeus", "olympus-hall", { divinity: 10 }, { isDeity: true }),
     ],
     [
-      buildingOf("the-tavern", "town-square", "The Tavern", {
-        status: "burning",
-        fireIntensity: 2,
-        ticksBurning: 2,
-      }),
+      buildingOf(
+        "the-tavern",
+        "town-square",
+        "The Tavern",
+        {},
+        {
+          status: "burning",
+          fireIntensity: 2,
+          ticksBurning: 2,
+          ignition: STRIKE_IGNITION,
+        },
+      ),
       buildingOf("agora-shop", "agora", "Agora Shop", {
         inventory: inventory({ planks: 1 }),
         material: "stone",
@@ -194,9 +228,8 @@ export function repairingTavern(
 ): WorldState {
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("fixture has no tavern");
-  const { fireIntensity: _fire, ticksBurning: _burning, ...rest } = tavern;
   return withBuilding(state, {
-    ...rest,
+    ...buildingBase(tavern),
     status: "repairing",
     repairProgress: progress,
   });
@@ -273,11 +306,18 @@ export function previewView(): WorldViewModel {
       actorOf("zeus", "olympus-hall", { divinity: 10 }, { isDeity: true }),
     ],
     [
-      buildingOf("the-tavern", "town-square", "The Tavern", {
-        status: "burning",
-        fireIntensity: 2,
-        ticksBurning: 2,
-      }),
+      buildingOf(
+        "the-tavern",
+        "town-square",
+        "The Tavern",
+        {},
+        {
+          status: "burning",
+          fireIntensity: 2,
+          ticksBurning: 2,
+          ignition: STRIKE_IGNITION,
+        },
+      ),
       buildingOf("agora-shop", "agora", "Agora Shop", {
         inventory: inventory({ planks: 1 }),
       }),

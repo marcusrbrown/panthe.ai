@@ -26,6 +26,7 @@ import {
 import {
   createWorldProjectionReducers,
   loadGreekWorldState,
+  worldImportReducers,
 } from "./world-store";
 
 let dir: string;
@@ -271,7 +272,7 @@ describe("recordPartialSummary: a degraded catch-up keeps its backlog open", () 
     const slot = importArchive(
       archivePath,
       join(dir, "slots"),
-      createWorldProjectionReducers(loadGreekWorldState()).codec,
+      worldImportReducers,
     );
     const imported = openStore(
       join(slot.slotPath, "world.sqlite"),

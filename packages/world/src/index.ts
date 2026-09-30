@@ -13,6 +13,7 @@ export * from "./codec";
 export * from "./economy";
 export * from "./fire";
 export * from "./geography";
+export * from "./memory";
 export * from "./perception";
 export * from "./repair";
 export * from "./routines";

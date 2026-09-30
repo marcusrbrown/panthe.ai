@@ -26,6 +26,7 @@ import {
   type RecentEvent,
   type SessionId,
   type SyncFrame,
+  UNPLACED_EVENT_KINDS,
   type WorldId,
   type WorldStatus,
 } from "@panthea/contracts";
@@ -67,7 +68,11 @@ import {
   type TickDeps,
   type TickStepResult,
 } from "./tick";
-import { createEventSource, worldProjectionCodec } from "./world-store";
+import {
+  createEventSource,
+  worldImportReducers,
+  worldProjectionCodec,
+} from "./world-store";
 import { importWorldArchive, listWorldSlots, type WorldSlot } from "./worlds";
 
 // --- Request guards ----------------------------------------------------------
@@ -297,11 +302,15 @@ export function readRecentEvents(
   },
 ): readonly RecentEvent[] {
   const oldestTick = currentTick - limits.windowTicks;
-  // Sequences are contiguous across the whole log, so this range holds
-  // exactly the newest `cap` events at or before `throughSequence`.
+  // The newest `cap` events the client can draw. Events that happen at no place
+  // (a report, a memory, a feeling) are left out here, not merely capped
+  // behind: a crowd's worth of them in one tick must never push the events the
+  // client draws and receipts out of the window. The log and the trace still
+  // hold them.
   const candidates = listEvents(db, {
-    fromSequence: Math.max(0, throughSequence - limits.cap),
     toSequence: throughSequence,
+    excludeKinds: UNPLACED_EVENT_KINDS,
+    newest: limits.cap,
   });
   const recent: RecentEvent[] = [];
   for (const event of candidates) {
@@ -827,7 +836,7 @@ export function createSimulationServer(
       const result = importWorldArchive(
         archivePath,
         slotsDir,
-        worldProjectionCodec,
+        worldImportReducers,
       );
       return jsonResponse({ ok: true, result });
     } catch (error) {

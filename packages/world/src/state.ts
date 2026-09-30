@@ -14,6 +14,7 @@
 // packages/contracts' `SyncFrame.state`.
 
 import type {
+  Consequence,
   ContentPack,
   EntityId,
   EventEnvelope,
@@ -24,6 +25,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  WitnessedEventKind,
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
@@ -93,8 +95,14 @@ export const BUILDING_STATUSES = [
 ] as const;
 export type BuildingStatus = (typeof BUILDING_STATUSES)[number];
 
-/** A building's live state: the authored structure plus its current inventory, ownership, and fire/repair lifecycle. */
-export interface BuildingState {
+/** What started a building's current fire, stored when it ignites and never inferred later: the ignition event, and the actor whose strike began the fire (carried through any spread). */
+export interface BuildingIgnition {
+  readonly eventId: EventId;
+  readonly actor: EntityId;
+}
+
+/** What every building has, whatever its status. */
+export interface BuildingBase {
   readonly id: EntityId;
   readonly locationId: EntityId;
   readonly name: string;
@@ -104,15 +112,60 @@ export interface BuildingState {
   readonly services: readonly string[];
   readonly inventory: ReadonlyMap<string, number>;
   readonly owner?: EntityId;
-  /** operational -> damaged/burning -> destroyed -> repairing -> operational. Services and income are exposed only while operational. */
-  readonly status: BuildingStatus;
-  /** Severity while burning; grows each tick and drives destruction once it crosses the content-authored threshold. Absent outside "burning". */
-  readonly fireIntensity?: number;
-  /** Ticks spent burning so far, for observation. Absent outside "burning". */
-  readonly ticksBurning?: number;
-  /** Materials committed toward repair so far. Absent outside "repairing". */
-  readonly repairProgress?: number;
   readonly revision: number;
+}
+
+type NoFire = {
+  readonly fireIntensity?: never;
+  readonly ticksBurning?: never;
+  readonly ignition?: never;
+};
+type NoRepair = { readonly repairProgress?: never };
+
+/**
+ * A building's live state: the authored structure plus its current
+ * inventory, ownership, and fire/repair lifecycle: operational ->
+ * damaged/burning -> destroyed -> repairing -> operational. Services and
+ * income are exposed only while operational.
+ *
+ * A union on `status`, so the fields of a phase exist exactly in that phase. A
+ * burning building has its fire's severity (`fireIntensity`, growing each tick
+ * until it crosses the content-authored threshold and destroys the building),
+ * `ticksBurning`, and the `ignition` that started the fire (burn ticks,
+ * destruction, and spread all cite it). A repairing building has the
+ * materials committed toward repair so far. No other status has either.
+ */
+export type BuildingState = BuildingBase &
+  (
+    | ({
+        readonly status: "operational" | "damaged" | "destroyed";
+      } & NoFire &
+        NoRepair)
+    | ({
+        readonly status: "burning";
+        readonly fireIntensity: number;
+        readonly ticksBurning: number;
+        readonly ignition: BuildingIgnition;
+      } & NoRepair)
+    | ({
+        readonly status: "repairing";
+        readonly repairProgress: number;
+      } & NoFire)
+  );
+
+/** A building without its status or the fields of a status: what a transition starts from. */
+export function buildingBase(building: BuildingState): BuildingBase {
+  return {
+    id: building.id,
+    locationId: building.locationId,
+    name: building.name,
+    material: building.material,
+    combustible: building.combustible,
+    services: building.services,
+    inventory: building.inventory,
+    ...(building.owner === undefined ? {} : { owner: building.owner }),
+    revision: building.revision,
+  };
 }
 
 /**
@@ -137,6 +190,48 @@ export function isEventLinked(legend: LegendRecord): boolean {
   return legend.linkedEventId !== undefined;
 }
 
+/**
+ * One thing an actor remembers, in its own memory. `id` is the id of the
+ * `memory-recorded` event that formed it, so a memory is identified by, and
+ * explained by, the log. `sourceEventId` is the committed event it rests on: the
+ * event witnessed, or the report heard. `recordedAt` is the sequence of the
+ * recording event, which is what "older" means when memories tie in salience.
+ * A told memory is a belief: the teller's account, attributed and possibly
+ * false, held apart from the events and legends of the world.
+ */
+export type MemoryEntry = {
+  readonly id: EventId;
+  readonly sourceEventId: EventId;
+  readonly salience: number;
+  readonly recordedAt: number;
+  readonly subjects: readonly EntityId[];
+  readonly consequence?: Consequence;
+} & (
+  | { readonly kind: "witnessed"; readonly eventKind: WitnessedEventKind }
+  | {
+      readonly kind: "told";
+      readonly teller: EntityId;
+      readonly content: string;
+      readonly linkedEventId?: EventId;
+    }
+);
+
+/** How one actor feels toward another. Changed only by `relationship-changed` events, each citing the memory that caused it. */
+export interface RelationshipState {
+  readonly from: EntityId;
+  readonly toward: EntityId;
+  /** Whole number, positive for liking, negative for disliking, bounded by the world's affinity limit. */
+  readonly affinity: number;
+  /** How many times `toward` has personally wronged `from`. */
+  readonly grudge: number;
+  readonly allied: boolean;
+}
+
+/** The key a relationship is held under. */
+export function relationshipKey(from: EntityId, toward: EntityId): string {
+  return `${from}>${toward}`;
+}
+
 export interface WorldState {
   /** Monotonic tick counter; advances by exactly one per committed tick. */
   readonly tick: number;
@@ -156,6 +251,14 @@ export interface WorldState {
   readonly actors: ReadonlyMap<EntityId, ActorState>;
   readonly buildings: ReadonlyMap<EntityId, BuildingState>;
   readonly legends: ReadonlyMap<LegendId, LegendRecord>;
+  /**
+   * What each actor remembers, oldest first, bounded by the memory capacity.
+   * Deliberately outside `ActorState`: forming a memory must not bump an
+   * actor's revision, or every witness's delayed proposal would go stale.
+   */
+  readonly memories: ReadonlyMap<EntityId, readonly MemoryEntry[]>;
+  /** How actors feel toward one another, keyed by `relationshipKey`. */
+  readonly relationships: ReadonlyMap<string, RelationshipState>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -275,6 +378,8 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     actors,
     buildings,
     legends: new Map(),
+    memories: new Map(),
+    relationships: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };

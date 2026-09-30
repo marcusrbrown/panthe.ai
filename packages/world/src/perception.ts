@@ -193,6 +193,13 @@ function eventLocation(
     case "worship-performed":
     case "legend-recorded":
       return actorLocationAt(state, event.entityId, event, window);
+    // Private: a report is heard only by its listener, and memories and
+    // feelings are inside someone's head. None happens "in" a place, so no
+    // one perceives them.
+    case "report-told":
+    case "memory-recorded":
+    case "relationship-changed":
+      return undefined;
   }
 }
 
@@ -213,6 +220,29 @@ function wasPresent(
 ): boolean {
   if (isMove(event) && event.entityId === observer) return true;
   return actorLocationAt(state, observer, event, window) === at;
+}
+
+/**
+ * Whether `observer` perceives `event`: it happened at a place the observer
+ * perceives, while the observer was there. `window` is the events around it
+ * that place actors (see `actorLocationAt`); `state` is the world the
+ * observer is judged in. `perceive` judges the committed world against its
+ * recent-events window; a tick's memory derivation judges the world just
+ * before each event with no window, since it then knows exactly where
+ * everyone stood. One rule, so what an actor remembers and what it once
+ * perceived cannot drift apart.
+ */
+export function perceivesEvent(
+  state: WorldState,
+  observer: ActorState,
+  event: WorldEvent,
+  window: readonly WorldEvent[],
+): boolean {
+  const at = eventLocation(state, event, window);
+  if (at === undefined || !perceivedLocations(state, observer).has(at)) {
+    return false;
+  }
+  return wasPresent(state, observer.id, event, at, window);
 }
 
 function perceivedEvent(
@@ -328,11 +358,7 @@ export function perceive(
   // push older local ones out of the window.
   const events = [...recentEvents]
     .sort((a, b) => a.sequence - b.sequence)
-    .filter((event) => {
-      const at = eventLocation(state, event, recentEvents);
-      if (at === undefined || !locations.has(at)) return false;
-      return wasPresent(state, actorId, event, at, recentEvents);
-    })
+    .filter((event) => perceivesEvent(state, actor, event, recentEvents))
     .slice(-MAX_PERCEIVED_EVENTS)
     .map((event) => perceivedEvent(event, known));
 

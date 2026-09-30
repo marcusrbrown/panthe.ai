@@ -17,6 +17,7 @@ import {
   createEventId,
   type EntityMovedEvent,
   LATEST_EVENT_SCHEMA_VERSION,
+  type WorldEvent,
 } from "@panthea/contracts";
 import {
   computeContentHash,
@@ -43,6 +44,7 @@ import {
   readCatchUpSummary,
   readClock,
   readLiveProjections,
+  rebuildProjections,
   type Store,
   writeCatchUpProgress,
   writeCatchUpSummary,
@@ -233,7 +235,7 @@ describe("exportArchive: genesis", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -251,7 +253,7 @@ describe("importArchive: round-trip", () => {
     exportArchive(store, archivePath);
 
     const slotsDir = join(dir, "slots");
-    const result = importArchive(archivePath, slotsDir, projectionCodec);
+    const result = importArchive(archivePath, slotsDir, reducer);
 
     expect(existsSync(result.slotPath)).toBe(true);
     const importedStore = openStore(
@@ -280,10 +282,10 @@ describe("importArchive: round-trip", () => {
     exportArchive(store, archivePath);
     const slotsDir = join(dir, "slots");
 
-    const first = importArchive(archivePath, slotsDir, projectionCodec);
+    const first = importArchive(archivePath, slotsDir, reducer);
     const firstBytes = readFileSync(join(first.slotPath, "world.sqlite"));
 
-    const second = importArchive(archivePath, slotsDir, projectionCodec);
+    const second = importArchive(archivePath, slotsDir, reducer);
 
     expect(first.slotId).not.toBe(second.slotId);
     expect(existsSync(first.slotPath)).toBe(true);
@@ -311,7 +313,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(truncatedPath, slotsDir, projectionCodec),
+      () => importArchive(truncatedPath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -322,11 +324,7 @@ describe("importArchive: corruption", () => {
     const slotsDir = join(dir, "slots");
     expectRejected(
       () =>
-        importArchive(
-          join(dir, "does-not-exist.sqlite"),
-          slotsDir,
-          projectionCodec,
-        ),
+        importArchive(join(dir, "does-not-exist.sqlite"), slotsDir, reducer),
       "io",
       slotsDir,
     );
@@ -344,7 +342,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -363,7 +361,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -383,7 +381,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -415,7 +413,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -437,7 +435,7 @@ describe("importArchive: corruption", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -465,7 +463,10 @@ describe("importArchive: corruption", () => {
     };
 
     const slotsDir = join(dir, "slots");
-    const okResult = importArchive(archivePath, slotsDir, strictCodec);
+    const okResult = importArchive(archivePath, slotsDir, {
+      applyEvent: reducer.applyEvent,
+      codec: strictCodec,
+    });
     expect(existsSync(okResult.slotPath)).toBe(true);
 
     const db = new Database(archivePath);
@@ -476,9 +477,177 @@ describe("importArchive: corruption", () => {
     rehash(archivePath);
 
     expectRejected(
-      () => importArchive(archivePath, join(dir, "slots2"), strictCodec),
+      () =>
+        importArchive(archivePath, join(dir, "slots2"), {
+          applyEvent: reducer.applyEvent,
+          codec: strictCodec,
+        }),
       "corrupt",
       join(dir, "slots2"),
+    );
+    closeStore(store);
+  });
+});
+
+describe("importArchive: social events", () => {
+  function socialEvents(): WorldEvent[] {
+    const base = (sequence: number) => ({
+      schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
+      id: createEventId(),
+      sequence,
+      simTime: sequence,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      approximate: false,
+    });
+    const owner = createEntityId();
+    const strike = createEntityId();
+    const ignited: WorldEvent = {
+      ...base(1),
+      kind: "building-ignited",
+      entityId: createEntityId(),
+      cause: { kind: "strike", actor: strike },
+    };
+    const memory: WorldEvent = {
+      ...base(2),
+      kind: "memory-recorded",
+      memoryKind: "witnessed",
+      entityId: owner,
+      sourceEventId: ignited.id,
+      eventKind: "building-ignited",
+      subjects: [strike],
+      salience: 8,
+      consequence: { effect: "harm", agent: strike },
+    };
+    const change: WorldEvent = {
+      ...base(3),
+      kind: "relationship-changed",
+      entityId: owner,
+      toward: strike,
+      affinityDelta: -2,
+      grudgeDelta: 0,
+      memoryEventId: memory.id,
+    };
+    return [ignited, memory, change];
+  }
+
+  function commitAll(store: Store, events: readonly WorldEvent[]): void {
+    events.forEach((event, index) => {
+      commitTick(store, reducer, {
+        events: [event],
+        cursorWallMs: 1000 * (index + 1),
+        paused: false,
+        tick: index + 1,
+        simTimeMs: 1000 * (index + 1),
+        prngState: `seed-${index}`,
+      });
+    });
+  }
+
+  test("happy path: memory and relationship events, and the fire cause they cite, survive export and import unchanged", () => {
+    const store = openStore(join(dir, "world.sqlite"), reducer);
+    const events = socialEvents();
+    commitAll(store, events);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const result = importArchive(archivePath, join(dir, "slots"), reducer);
+    const imported = openStore(join(result.slotPath, "world.sqlite"), reducer);
+    expect(listEvents(imported.db)).toEqual(events);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("error path: a rehashed archive whose memory event lost its salience, or whose ignition lost its cause, is rejected as corrupt; no slot is created", () => {
+    for (const [sequence, damage] of [
+      [1, { cause: undefined }],
+      [2, { salience: undefined }],
+      [3, { memoryEventId: undefined }],
+    ] as const) {
+      const dbPath = join(dir, `world-${sequence}.sqlite`);
+      const store = openStore(dbPath, reducer);
+      commitAll(store, socialEvents());
+      const archivePath = join(dir, `archive-${sequence}.sqlite`);
+      exportArchive(store, archivePath);
+
+      const db = new Database(archivePath);
+      const row = db
+        .query("SELECT payload FROM events WHERE sequence = ?")
+        .get(sequence) as { payload: string };
+      db.run("UPDATE events SET payload = ? WHERE sequence = ?", [
+        JSON.stringify({ ...JSON.parse(row.payload), ...damage }),
+        sequence,
+      ]);
+      db.close();
+      rehash(archivePath);
+
+      const slotsDir = join(dir, `slots-${sequence}`);
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, reducer),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    }
+  });
+});
+
+describe("importArchive: the projection must be what the event log makes", () => {
+  test("error path: a rehashed archive whose live projection no event produced is rejected as corrupt; no slot is created", () => {
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    // Three events make a total of 3; the forged row says 99, with the
+    // revision, the manifest, and the content hash all still consistent.
+    const db = new Database(archivePath);
+    db.run("UPDATE projections SET data = ? WHERE id = 1", [
+      JSON.stringify({ total: 99 }),
+    ]);
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, reducer),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("happy path: an honest archive imports, and the imported projection is the one the log makes", () => {
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const result = importArchive(archivePath, join(dir, "slots"), reducer);
+    const imported = openStore(join(result.slotPath, "world.sqlite"), reducer);
+    expect(readLiveProjections(imported, reducer)).toEqual({ total: 3 });
+    expect(rebuildProjections(imported, reducer)).toEqual({ total: 3 });
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a rehashed archive whose events were edited after export no longer matches its projection", () => {
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    // The projection is left honest for three events; an event is then removed
+    // from the log and the manifest and revision follow, but the projection
+    // does not.
+    const db = new Database(archivePath);
+    db.run("DELETE FROM events WHERE sequence = 3");
+    db.run("UPDATE manifest SET event_sequence = 2");
+    db.run("UPDATE projections SET revision = 2 WHERE id = 1");
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, reducer),
+      "corrupt",
+      slotsDir,
     );
     closeStore(store);
   });
@@ -499,7 +668,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -518,7 +687,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -537,7 +706,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -556,7 +725,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -575,7 +744,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -596,7 +765,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -628,7 +797,7 @@ describe("importArchive: version mismatch", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "incompatible-version",
       slotsDir,
     );
@@ -650,7 +819,7 @@ describe("importArchive: manifest inconsistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -670,7 +839,7 @@ describe("importArchive: manifest inconsistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -709,7 +878,7 @@ describe("importArchive: manifest inconsistency", () => {
     const slotsDir = join(dir, "slots");
     let caught: unknown;
     try {
-      importArchive(flippedPath, slotsDir, projectionCodec);
+      importArchive(flippedPath, slotsDir, reducer);
     } catch (error) {
       caught = error;
     }
@@ -764,7 +933,7 @@ describe("importArchive: history consistency", () => {
     const slotsDir = join(dir, "slots");
     let caught: unknown;
     try {
-      importArchive(archivePath, slotsDir, projectionCodec);
+      importArchive(archivePath, slotsDir, reducer);
     } catch (error) {
       caught = error;
     }
@@ -817,7 +986,7 @@ describe("importArchive: history consistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, historyCodec),
+      () => importArchive(archivePath, slotsDir, historyReducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -847,7 +1016,7 @@ describe("importArchive: history consistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, historyCodec),
+      () => importArchive(archivePath, slotsDir, historyReducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -870,7 +1039,7 @@ describe("importArchive: history consistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -894,7 +1063,7 @@ describe("importArchive: history consistency", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -934,7 +1103,7 @@ describe("importArchive: interrupted staging leaves no slot, and existing slots 
     const slotsDir = join(dir, "slots");
     let caught: unknown;
     try {
-      importArchive(archivePath, slotsDir, projectionCodec);
+      importArchive(archivePath, slotsDir, reducer);
     } catch (error) {
       caught = error;
     }
@@ -950,10 +1119,10 @@ describe("importArchive: interrupted staging leaves no slot, and existing slots 
     exportArchive(store, archivePath);
     const slotsDir = join(dir, "slots");
 
-    const first = importArchive(archivePath, slotsDir, projectionCodec);
+    const first = importArchive(archivePath, slotsDir, reducer);
     const firstBytesBefore = readFileSync(join(first.slotPath, "world.sqlite"));
 
-    importArchive(archivePath, slotsDir, projectionCodec);
+    importArchive(archivePath, slotsDir, reducer);
 
     expect(readFileSync(join(first.slotPath, "world.sqlite"))).toEqual(
       firstBytesBefore,
@@ -1151,11 +1320,7 @@ describe("the external proposal journal in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(listExternalProposals(imported.db)).toEqual(
@@ -1189,11 +1354,7 @@ describe("the external proposal journal in an archive", () => {
     const store = storeWithJournal(join(dir, "world.sqlite"));
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     const next = insertExternalProposal(imported.db, journalEntry("e"));
@@ -1217,7 +1378,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -1239,7 +1400,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -1265,7 +1426,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -1300,7 +1461,7 @@ describe("the external proposal journal in an archive", () => {
 
       const slotsDir = join(dir, "slots");
       expectRejected(
-        () => importArchive(archivePath, slotsDir, projectionCodec),
+        () => importArchive(archivePath, slotsDir, reducer),
         "corrupt",
         slotsDir,
       );
@@ -1320,7 +1481,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -1343,7 +1504,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -1364,7 +1525,7 @@ describe("the external proposal journal in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -1390,11 +1551,7 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpProgress(imported.db)).toEqual(progress);
@@ -1417,11 +1574,7 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpProgress(imported.db)).toEqual(discardOnly);
@@ -1438,11 +1591,7 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpProgress(imported.db)).toBeUndefined();
@@ -1460,7 +1609,7 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -1485,7 +1634,7 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
 
       const slotsDir = join(dir, "slots");
       expectRejected(
-        () => importArchive(archivePath, slotsDir, projectionCodec),
+        () => importArchive(archivePath, slotsDir, reducer),
         "corrupt",
         slotsDir,
       );
@@ -1514,11 +1663,7 @@ describe("the catch-up summary in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpSummary(imported.db)).toEqual(summary);
@@ -1536,11 +1681,7 @@ describe("the catch-up summary in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpSummary(imported.db)).toEqual(summary);
@@ -1560,11 +1701,7 @@ describe("the catch-up summary in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpProgress(imported.db)?.summaryId).toBe(summary.id);
@@ -1589,7 +1726,7 @@ describe("the catch-up summary in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "corrupt",
       slotsDir,
     );
@@ -1601,11 +1738,7 @@ describe("the catch-up summary in an archive", () => {
     const archivePath = join(dir, "archive.sqlite");
     exportArchive(store, archivePath);
 
-    const slot = importArchive(
-      archivePath,
-      join(dir, "slots"),
-      projectionCodec,
-    );
+    const slot = importArchive(archivePath, join(dir, "slots"), reducer);
 
     const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
     expect(readCatchUpSummary(imported.db)).toBeUndefined();
@@ -1623,7 +1756,7 @@ describe("the catch-up summary in an archive", () => {
 
     const slotsDir = join(dir, "slots");
     expectRejected(
-      () => importArchive(archivePath, slotsDir, projectionCodec),
+      () => importArchive(archivePath, slotsDir, reducer),
       "inconsistent-manifest",
       slotsDir,
     );
@@ -1654,7 +1787,7 @@ describe("the catch-up summary in an archive", () => {
 
       const slotsDir = join(dir, "slots");
       expectRejected(
-        () => importArchive(archivePath, slotsDir, projectionCodec),
+        () => importArchive(archivePath, slotsDir, reducer),
         "corrupt",
         slotsDir,
       );

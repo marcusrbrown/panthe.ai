@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import type { ContentPack, Proposal } from "@panthea/contracts";
+import type { ContentPack, EventId, Proposal } from "@panthea/contracts";
 import { submitProposal } from "./actions";
 import {
+  buildingBase,
   createInitialWorldState,
   toEntityId,
   type WorldState,
@@ -808,7 +809,7 @@ test("a strike against a destroyed building is rejected and leaves it destroyed"
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
   const outcome = validateProposal(
     state,
     proposal({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 }),
@@ -824,7 +825,7 @@ test("a strike against a repairing building is rejected and leaves it repairing"
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
   state = withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "repairing",
     repairProgress: 1,
   });
@@ -843,10 +844,11 @@ test("a strike against a burning building is rejected and leaves its fire state 
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
   state = withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "burning",
     fireIntensity: 1,
     ticksBurning: 1,
+    ignition: { eventId: "evt-strike" as EventId, actor: toEntityId("zeus") },
   });
   const outcome = validateProposal(
     state,
@@ -864,7 +866,7 @@ test("a repair proposal against a damaged building progresses it toward operatio
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "damaged" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "damaged" });
   const outcome = validateProposal(
     state,
     proposal({ actor: "farmer", kind: "repair", structure: "the-tavern" }),
@@ -887,7 +889,7 @@ test("a weaker strike against a destroyed building does not move it to damaged",
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
   const outcome = validateProposal(
     state,
     proposal({ actor: "zeus", kind: "strike", target: "the-tavern", power: 1 }),
@@ -930,7 +932,7 @@ test("a repair proposal against a destroyed building with enough planks progress
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
 
   const first = validateProposal(
     state,
@@ -950,7 +952,7 @@ test("a repair proposal against a destroyed building with enough planks progress
   }
 
   state = withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "repairing",
     repairProgress: 1,
   });
@@ -971,7 +973,7 @@ test("a repair proposal without enough materials is rejected as insufficient-res
   let state = fireFixtureState();
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
   const farmer = state.actors.get(toEntityId("farmer"));
   if (!farmer) throw new Error("expected the farmer fixture actor");
   state = withActor(state, { ...farmer, inventory: new Map() });

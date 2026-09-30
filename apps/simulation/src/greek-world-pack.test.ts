@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { loadContentPack, loadGodProfiles } from "@panthea/content";
-import { createInitialWorldState } from "@panthea/world";
+import {
+  createInitialWorldState,
+  DEFAULT_MEMORY_BALANCE,
+} from "@panthea/world";
 import {
   loadEmbeddedGreekGodProfiles,
   loadEmbeddedGreekWorldPack,
@@ -55,4 +58,10 @@ test("the embedded Greek pack builds the same initial WorldState as loading cont
   const embeddedState = createInitialWorldState(embedded.value);
   const fromDiskState = createInitialWorldState(fromDisk.value);
   expect(embeddedState).toEqual(fromDiskState);
+});
+
+test("the Greek pack states the memory tunables the world rules default to, so a retune edits one place and shows in both", () => {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+  expect(pack.value.rules.memoryBalance).toEqual(DEFAULT_MEMORY_BALANCE);
 });

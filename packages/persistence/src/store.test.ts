@@ -581,6 +581,49 @@ describe("getEventRow / listEvents", () => {
     expect(listEvents(store.db)).toHaveLength(1);
     closeStore(store);
   });
+
+  test("excludeKinds leaves those kinds out and newest keeps only the newest of what remains, oldest first; without them every event is listed", () => {
+    const store = openStore(dbPath, countReducer);
+    const moved = (sequence: number): WorldEvent => makeMoveEvent(sequence);
+    const gathered = (sequence: number): WorldEvent =>
+      ({
+        ...makeMoveEvent(sequence),
+        kind: "resource-gathered",
+        resource: "wood",
+        amount: 1,
+      }) as unknown as WorldEvent;
+    const events = [moved(1), gathered(2), moved(3), gathered(4), moved(5)];
+    commitTick(store, countReducer, {
+      events,
+      cursorWallMs: 1000,
+      paused: false,
+      tick: 1,
+      simTimeMs: 1000,
+      prngState: "seed",
+    });
+
+    const sequences = (list: readonly WorldEvent[]) =>
+      list.map((event) => event.sequence);
+    expect(sequences(listEvents(store.db))).toEqual([1, 2, 3, 4, 5]);
+    expect(
+      sequences(listEvents(store.db, { excludeKinds: ["resource-gathered"] })),
+    ).toEqual([1, 3, 5]);
+    expect(sequences(listEvents(store.db, { newest: 2 }))).toEqual([4, 5]);
+    expect(
+      sequences(
+        listEvents(store.db, {
+          excludeKinds: ["resource-gathered"],
+          newest: 2,
+          toSequence: 4,
+        }),
+      ),
+    ).toEqual([1, 3]);
+    // A newest larger than what exists lists it all.
+    expect(sequences(listEvents(store.db, { newest: 99 }))).toEqual([
+      1, 2, 3, 4, 5,
+    ]);
+    closeStore(store);
+  });
 });
 
 describe("projection codec", () => {

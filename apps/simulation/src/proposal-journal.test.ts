@@ -36,6 +36,7 @@ import {
   deserializePrngState,
   loadGreekWorldState,
   restoreWorldTime,
+  worldImportReducers,
 } from "./world-store";
 import { importWorldArchive } from "./worlds";
 
@@ -872,7 +873,7 @@ describe("a restored branch", () => {
     const slot = importWorldArchive(
       archivePath,
       join(dir, "slots"),
-      createWorldProjectionReducers(loadGreekWorldState()).codec,
+      worldImportReducers,
     );
     // Reopened from the imported file alone: no trace rows came with it.
     const branch = openWorld(join(slot.slotPath, "world.sqlite"));
@@ -920,7 +921,7 @@ describe("a restored branch", () => {
     const slot = importWorldArchive(
       archivePath,
       join(dir, "slots"),
-      createWorldProjectionReducers(loadGreekWorldState()).codec,
+      worldImportReducers,
     );
     const branch = openWorld(join(slot.slotPath, "world.sqlite"));
     try {

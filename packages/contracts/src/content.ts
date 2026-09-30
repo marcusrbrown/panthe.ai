@@ -5,6 +5,7 @@
 // instantiates a pack. Invalid content fails loudly at load, so every
 // field here is parsed, never assumed.
 
+import { WITNESSED_EVENT_KINDS } from "./event";
 import {
   fail,
   isRecord,
@@ -101,6 +102,8 @@ export interface WorldRules {
   readonly maxProposalsPerTick: number;
   readonly fireBalance: Readonly<Record<string, number>>;
   readonly economyBalance: Readonly<Record<string, number>>;
+  /** Memory and relationship tunables (capacity, salience per event kind, affinity effects). Absent means every default in packages/world's memory rules. */
+  readonly memoryBalance?: Readonly<Record<string, number>>;
 }
 
 export interface ContentPack {
@@ -301,6 +304,50 @@ export function parseRecipes(
   return ok(recipes);
 }
 
+/** The keys of `rules.memoryBalance` whose value is a count (a whole number, never negative). */
+const MEMORY_COUNT_KEYS: ReadonlySet<string> = new Set([
+  "capacity",
+  "harmAffinity",
+  "kindnessAffinity",
+  "affinityLimit",
+  "grudgeLimit",
+  "allianceAffinity",
+  "salience_told",
+  ...WITNESSED_EVENT_KINDS.map((kind) => `salience_${kind}`),
+]);
+
+/** The one fractional memory tunable: what share of a witnessed effect a belief carries. */
+const MEMORY_FRACTION_KEY = "toldShare";
+
+/**
+ * `rules.memoryBalance`, checked key by key: a count is a non-negative whole
+ * number (capacity 0 is legal), `toldShare` a non-negative finite number, and
+ * any other key is refused, since a typo would silently leave the default in
+ * force. A salience exists only for a kind an actor can witness. Used for
+ * authored content and again when a stored world's rules are decoded.
+ */
+export function parseMemoryBalance(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, number>>> {
+  if (!isRecord(value)) return fail(path, "expected a balance object");
+  const balance: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const at = `${path}.${key}`;
+    let parsed: ParseResult<number>;
+    if (MEMORY_COUNT_KEYS.has(key)) {
+      parsed = parseNonNegativeInteger(entry, at);
+    } else if (key === MEMORY_FRACTION_KEY) {
+      parsed = parseNonNegativeNumber(entry, at);
+    } else {
+      return fail(at, "not a memory tunable");
+    }
+    if (!parsed.ok) return parsed;
+    balance[key] = parsed.value;
+  }
+  return ok(balance);
+}
+
 function parseBalanceRecord(
   value: unknown,
   path: string,
@@ -350,6 +397,11 @@ function parseWorldRules(
     `${path}.economyBalance`,
   );
   if (!economyBalance.ok) return economyBalance;
+  const memoryBalance =
+    value.memoryBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parseMemoryBalance(value.memoryBalance, `${path}.memoryBalance`);
+  if (!memoryBalance.ok) return memoryBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -357,6 +409,9 @@ function parseWorldRules(
     maxProposalsPerTick: maxProposalsPerTick.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
+    ...(memoryBalance.value === undefined
+      ? {}
+      : { memoryBalance: memoryBalance.value }),
   });
 }
 

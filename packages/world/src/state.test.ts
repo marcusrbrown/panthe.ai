@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import type { ContentPack } from "@panthea/contracts";
+import type { ContentPack, EventId } from "@panthea/contracts";
 import {
   activeFavors,
+  type BuildingState,
+  buildingBase,
   createInitialWorldState,
   createPrng,
   effectiveServices,
@@ -262,7 +264,7 @@ test("activeFavors filters out expired favors without mutating the actor", () =>
 });
 
 test("effectiveServices exposes the authored list only while operational", () => {
-  const operational = {
+  const operational: BuildingState = {
     id: toEntityId("the-tavern"),
     locationId: toEntityId("tavern"),
     name: "The Tavern",
@@ -274,13 +276,21 @@ test("effectiveServices exposes the authored list only while operational", () =>
     revision: 0,
   };
   expect(effectiveServices(operational)).toEqual(["drink"]);
-  for (const status of [
-    "damaged",
-    "burning",
-    "destroyed",
-    "repairing",
-  ] as const) {
-    expect(effectiveServices({ ...operational, status })).toEqual([]);
+  const base = buildingBase(operational);
+  const elsewhere: BuildingState[] = [
+    { ...base, status: "damaged" },
+    {
+      ...base,
+      status: "burning",
+      fireIntensity: 0,
+      ticksBurning: 0,
+      ignition: { eventId: "evt-1" as EventId, actor: toEntityId("zeus") },
+    },
+    { ...base, status: "destroyed" },
+    { ...base, status: "repairing", repairProgress: 1 },
+  ];
+  for (const building of elsewhere) {
+    expect(effectiveServices(building)).toEqual([]);
   }
 });
 

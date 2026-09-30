@@ -13,7 +13,9 @@
 import type { EntityId, ResourceAmount } from "@panthea/contracts";
 import { isAdjacent } from "./geography";
 import {
+  type BuildingIgnition,
   type BuildingState,
+  buildingBase,
   getBuilding,
   nextPrngValue,
   type PrngState,
@@ -64,6 +66,7 @@ export function planFireStep(
   );
 
   for (const building of burning) {
+    const cause = building.ignition.eventId;
     const nextIntensity = (building.fireIntensity ?? 0) + intensityGrowth;
     if (nextIntensity >= destroyIntensity) {
       const disposedInventory: ResourceAmount[] = [
@@ -73,6 +76,7 @@ export function planFireStep(
         kind: "building-destroyed",
         entityId: building.id,
         disposedInventory,
+        cause,
       });
     } else {
       events.push({
@@ -80,6 +84,7 @@ export function planFireStep(
         entityId: building.id,
         fireIntensity: nextIntensity,
         ticksBurning: (building.ticksBurning ?? 0) + 1,
+        cause,
       });
     }
   }
@@ -104,7 +109,12 @@ export function planFireStep(
       const draw = nextPrngValue(currentPrng);
       currentPrng = draw.state;
       if (draw.value < spreadChance) {
-        events.push({ kind: "building-ignited", entityId: candidateId });
+        const { eventId, actor } = source.ignition;
+        events.push({
+          kind: "building-ignited",
+          entityId: candidateId,
+          cause: { kind: "spread", from: eventId, actor },
+        });
         ignitedThisStep.add(candidateId);
         spreadCount += 1;
       }
@@ -127,23 +137,26 @@ export function applyBuildingDamaged(
   const building = getBuilding(state, entityId);
   if (!building) return state;
   return setBuilding(state, {
-    ...building,
+    ...buildingBase(building),
     status: "damaged",
     revision: building.revision + 1,
   });
 }
 
+/** Starts a fresh burn at zero, recording what started it. */
 export function applyBuildingIgnited(
   state: WorldState,
   entityId: EntityId,
+  ignition: BuildingIgnition,
 ): WorldState {
   const building = getBuilding(state, entityId);
   if (!building) return state;
   return setBuilding(state, {
-    ...building,
+    ...buildingBase(building),
     status: "burning",
     fireIntensity: 0,
     ticksBurning: 0,
+    ignition,
     revision: building.revision + 1,
   });
 }
@@ -155,11 +168,13 @@ export function applyBuildingBurnTicked(
   ticksBurning: number,
 ): WorldState {
   const building = getBuilding(state, entityId);
-  if (!building) return state;
+  if (building?.status !== "burning") return state;
   return setBuilding(state, {
-    ...building,
+    ...buildingBase(building),
+    status: "burning",
     fireIntensity,
     ticksBurning,
+    ignition: building.ignition,
     revision: building.revision + 1,
   });
 }

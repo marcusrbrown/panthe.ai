@@ -219,6 +219,7 @@ function seedStrike(): {
     sequence: 11,
     kind: "building-ignited",
     entityId: tavern,
+    cause: { kind: "strike", actor: createEntityId() },
   };
   events.set(spend.id, spend);
   events.set(ignition.id, ignition);
@@ -318,26 +319,33 @@ describe("a proposal that committed several events", () => {
 });
 
 describe("events no proposal committed", () => {
-  test("an environment event (a fire's burn or destruction) is caused by the tick's automatic rules, so its chain has no observation or proposal hop", () => {
-    seedStrike();
-    const burn: WorldEvent = {
+  const later = (overrides: Record<string, unknown>): WorldEvent => {
+    const event = {
       schemaVersion: 2,
       id: createEventId(),
-      sequence: 12,
+      sequence: 12 + events.size,
       simTime: 2000,
       correlationId: createCorrelationId(),
       causationId: createCausationId(),
       approximate: false,
-      kind: "building-burn-ticked",
-      entityId: createEntityId(),
-      fireIntensity: 1,
-      ticksBurning: 1,
-    };
-    events.set(burn.id, burn);
-    const sessionId = createSessionId();
-    recordReceipt(db, eventSource, { eventId: burn.id, sessionId });
+      ...overrides,
+    } as WorldEvent;
+    events.set(event.id, event);
+    return event;
+  };
 
-    const result = followEvent(db, eventSource, burn.id);
+  test("an event nothing else caused (income) is caused by the tick's automatic rules, so its chain has no observation or proposal hop", () => {
+    seedStrike();
+    const income = later({
+      kind: "income-earned",
+      entityId: createEntityId(),
+      buildingId: createEntityId(),
+      amount: 1,
+    });
+    const sessionId = createSessionId();
+    recordReceipt(db, eventSource, { eventId: income.id, sessionId });
+
+    const result = followEvent(db, eventSource, income.id);
     expect(result.found).toBe(true);
     expect(result.steps.map((s) => s.step)).toEqual([
       "event",
@@ -346,8 +354,193 @@ describe("events no proposal committed", () => {
     ]);
     expect(result.steps[1]).toMatchObject({
       step: "projection-change",
-      revision: burn.sequence,
+      revision: income.sequence,
     });
+  });
+
+  test("a fire's burn tick walks back to the ignition and, through it, to the strike's observation and proposal", () => {
+    const { observation, proposalId, ignition } = seedStrike();
+    const burn = later({
+      kind: "building-burn-ticked",
+      entityId: ignition.kind === "building-ignited" ? ignition.entityId : "",
+      fireIntensity: 1,
+      ticksBurning: 1,
+      cause: ignition.id,
+    });
+
+    const result = followEvent(db, eventSource, burn.id);
+    expect(result.found).toBe(true);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+    ]);
+    expect(result.steps[0]).toMatchObject({
+      step: "observation",
+      record: { id: observation.id },
+    });
+    expect(result.steps[1]).toMatchObject({ step: "proposal", proposalId });
+    expect(
+      result.steps.filter((s) => s.step === "event").map((s) => s.eventId),
+    ).toEqual([ignition.id, burn.id]);
+  });
+
+  test("a destruction walks back through the spread and the ignition it followed from to the strike", () => {
+    const { proposalId, ignition } = seedStrike();
+    const spread = later({
+      kind: "building-ignited",
+      entityId: createEntityId(),
+      cause: { kind: "spread", from: ignition.id, actor: createEntityId() },
+    });
+    const destroyed = later({
+      kind: "building-destroyed",
+      entityId: createEntityId(),
+      disposedInventory: [],
+      cause: spread.id,
+    });
+
+    const result = followEvent(db, eventSource, destroyed.id);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+    ]);
+    expect(result.steps[1]).toMatchObject({ step: "proposal", proposalId });
+    expect(
+      result.steps.filter((s) => s.step === "event").map((s) => s.eventId),
+    ).toEqual([ignition.id, spread.id, destroyed.id]);
+  });
+
+  test("a burn tick whose ignition is not in the log is just its own chain: nothing is invented", () => {
+    seedStrike();
+    const burn = later({
+      kind: "building-burn-ticked",
+      entityId: createEntityId(),
+      fireIntensity: 1,
+      ticksBurning: 1,
+      cause: createEventId(),
+    });
+    const result = followEvent(db, eventSource, burn.id);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "event",
+      "projection-change",
+    ]);
+  });
+
+  test("a relationship change walks back through the memory that caused it to the strike a witness saw, with no trace of its own", () => {
+    const { proposalId, ignition } = seedStrike();
+    const memory = later({
+      kind: "memory-recorded",
+      memoryKind: "witnessed",
+      entityId: createEntityId(),
+      sourceEventId: ignition.id,
+      eventKind: "building-ignited",
+      subjects: [],
+      salience: 8,
+    });
+    const change = later({
+      kind: "relationship-changed",
+      entityId: memory.kind === "memory-recorded" ? memory.entityId : "",
+      toward: createEntityId(),
+      affinityDelta: -2,
+      grudgeDelta: 1,
+      memoryEventId: memory.id,
+    });
+
+    const result = followEvent(db, eventSource, change.id);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation",
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+      "event",
+      "projection-change",
+    ]);
+    expect(result.steps[1]).toMatchObject({ step: "proposal", proposalId });
+    expect(
+      result.steps.filter((s) => s.step === "event").map((s) => s.eventId),
+    ).toEqual([ignition.id, memory.id, change.id]);
+  });
+
+  test("a heard report shows the report's own proposal in the middle of the chain, between the strike it cites and the belief", () => {
+    const { ignition } = seedStrike();
+
+    const reportObservation: ObservationRecord = {
+      schemaVersion: 1,
+      id: createObservationId(),
+      observer: createEntityId(),
+      stateRevision: 0,
+      factsRead: [],
+      source: "fixture",
+    };
+    recordObservation(db, reportObservation);
+    const report = later({
+      kind: "report-told",
+      entityId: createEntityId(),
+      listenerId: createEntityId(),
+      content: "Zeus burned it all",
+      linkedEventId: ignition.id,
+    });
+    const reportProposalId = createProposalId();
+    recordProposalOutcome(db, {
+      proposalId: reportProposalId,
+      observationId: reportObservation.id,
+      correlationId: report.correlationId,
+      causationId: report.causationId,
+      proposal: {
+        schemaVersion: 1,
+        actor: createEntityId(),
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        observationId: reportObservation.id,
+        kind: "report",
+        listener: createEntityId(),
+        content: "Zeus burned it all",
+      },
+      outcome: "committed",
+      eventIds: [report.id],
+    });
+    const belief = later({
+      kind: "memory-recorded",
+      memoryKind: "told",
+      entityId: createEntityId(),
+      sourceEventId: report.id,
+      teller: createEntityId(),
+      content: "Zeus burned it all",
+      subjects: [],
+      salience: 4,
+    });
+
+    const result = followEvent(db, eventSource, belief.id);
+    expect(result.steps.map((s) => s.step)).toEqual([
+      "observation", // the strike
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "observation", // the report
+      "proposal",
+      "validation",
+      "event",
+      "projection-change",
+      "event", // the belief
+      "projection-change",
+    ]);
+    expect(result.steps.filter((s) => s.step === "proposal").length).toBe(2);
   });
 });
 

@@ -13,6 +13,11 @@
 // it was made from, so the two shapes are tightly coupled.
 
 import {
+  type Consequence,
+  parseConsequence,
+  parseReportContent,
+} from "./event";
+import {
   type Brand,
   type EntityId,
   type EntityRevision,
@@ -205,6 +210,23 @@ export interface LegendProposal extends ProposalBase {
   readonly linkedEventId?: EventId;
 }
 
+/**
+ * One actor tells another, at the same place, something it says happened.
+ * The content is the teller's own account and may be wrong or invented: the
+ * world records that it was told, never that it is true. `linkedEventId`
+ * cites an event the teller witnessed; the rules refuse a citation the teller
+ * has no first-hand memory of.
+ */
+export interface ReportProposal extends ProposalBase {
+  readonly kind: "report";
+  readonly listener: EntityId;
+  readonly content: string;
+  /** What the teller asserts happened, in structure. It may be false: the rules check its shape and that the ids exist, never its truth. It, and only it, gives the listener a consequence. */
+  readonly claim?: Consequence;
+  /** Provenance only: an event the teller witnessed. Teaches the listener nothing by itself. */
+  readonly linkedEventId?: EventId;
+}
+
 export type Proposal =
   | MoveProposal
   | RealmTransitionProposal
@@ -216,7 +238,8 @@ export type Proposal =
   | RepairProposal
   | WorshipProposal
   | ClaimProposal
-  | LegendProposal;
+  | LegendProposal
+  | ReportProposal;
 
 export type ProposalKind = Proposal["kind"];
 
@@ -235,6 +258,7 @@ const PROPOSAL_KIND_SET = {
   worship: true,
   claim: true,
   legend: true,
+  report: true,
 } as const satisfies Record<ProposalKind, true>;
 
 export const PROPOSAL_KINDS = Object.keys(
@@ -418,6 +442,29 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
         ...base,
         kind: "legend",
         assertion: assertion.value,
+        ...(linkedEventId.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventId.value }),
+      });
+    }
+    case "report": {
+      const listener = parseEntityId(input.listener, "listener");
+      if (!listener.ok) return listener;
+      const content = parseReportContent(input.content, "content");
+      if (!content.ok) return content;
+      const claim = parseConsequence(input.claim, "claim");
+      if (!claim.ok) return claim;
+      const linkedEventId =
+        input.linkedEventId === undefined
+          ? ok<EventId | undefined>(undefined)
+          : parseEventId(input.linkedEventId, "linkedEventId");
+      if (!linkedEventId.ok) return linkedEventId;
+      return ok({
+        ...base,
+        kind: "report",
+        listener: listener.value,
+        content: content.value,
+        ...(claim.value === undefined ? {} : { claim: claim.value }),
         ...(linkedEventId.value === undefined
           ? {}
           : { linkedEventId: linkedEventId.value }),

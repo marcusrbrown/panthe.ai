@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { parseObservationRecord, parseProposal } from "./proposal";
+import { MAX_REPORT_LENGTH } from "./event";
+import {
+  PROPOSAL_KINDS,
+  parseObservationRecord,
+  parseProposal,
+} from "./proposal";
 
 function base(
   overrides: Record<string, unknown> = {},
@@ -372,4 +377,108 @@ test("an unknown source is still rejected, naming the source", () => {
   if (!result.ok) {
     expect(result.message).toContain("oracle");
   }
+});
+
+test("a valid report proposal names its listener and the content told, citing an event or not", () => {
+  const bare = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "Zeus burned down the agora",
+    }),
+  );
+  expect(bare.ok).toBe(true);
+  if (bare.ok && bare.value.kind === "report") {
+    expect(String(bare.value.listener)).toBe("hera");
+    expect(bare.value.content).toBe("Zeus burned down the agora");
+    expect(bare.value.linkedEventId).toBeUndefined();
+  }
+
+  const cited = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "Zeus burned down the agora",
+      linkedEventId: "evt-9",
+    }),
+  );
+  expect(cited.ok).toBe(true);
+  if (cited.ok && cited.value.kind === "report") {
+    expect(String(cited.value.linkedEventId)).toBe("evt-9");
+  }
+});
+
+test("a report proposal without a listener or content, or with a malformed link, is rejected", () => {
+  expect(parseProposal(base({ kind: "report", content: "x" })).ok).toBe(false);
+  expect(parseProposal(base({ kind: "report", listener: "hera" })).ok).toBe(
+    false,
+  );
+  expect(
+    parseProposal(
+      base({
+        kind: "report",
+        listener: "hera",
+        content: "x",
+        linkedEventId: 9,
+      }),
+    ).ok,
+  ).toBe(false);
+});
+
+test("report is a proposal kind content can name as an ability", () => {
+  expect(PROPOSAL_KINDS).toContain("report");
+});
+
+test("a report may carry a structured claim about who did what to whom; the claim is the teller's assertion and is parsed for shape only", () => {
+  const result = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "Zeus wronged the farmer",
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "report") {
+    expect(result.value.claim as unknown).toEqual({
+      effect: "harm",
+      agent: "zeus",
+      target: "farmer",
+    });
+  }
+  // A claim needs no target, and a report needs no claim.
+  expect(
+    parseProposal(
+      base({
+        kind: "report",
+        listener: "hera",
+        content: "x",
+        claim: { effect: "kindness", agent: "zeus" },
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a report whose claim is malformed is rejected", () => {
+  for (const claim of [
+    { effect: "worship", agent: "zeus" },
+    { effect: "harm" },
+    { agent: "zeus" },
+    "zeus harmed the farmer",
+    { effect: "harm", agent: "zeus", target: 7 },
+  ]) {
+    expect(
+      parseProposal(
+        base({ kind: "report", listener: "hera", content: "x", claim }),
+      ).ok,
+    ).toBe(false);
+  }
+});
+
+test("report text is bounded: exactly the limit is accepted, one more is rejected", () => {
+  const report = (content: string) =>
+    parseProposal(base({ kind: "report", listener: "hera", content }));
+  expect(report("x".repeat(MAX_REPORT_LENGTH)).ok).toBe(true);
+  expect(report("x".repeat(MAX_REPORT_LENGTH + 1)).ok).toBe(false);
+  expect(MAX_REPORT_LENGTH).toBe(280);
 });

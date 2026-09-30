@@ -71,6 +71,20 @@ export const worldProjectionCodec: ProjectionCodec<WorldState> = {
 };
 
 /**
+ * What archive import needs of the world: the codec that validates a stored
+ * projection and the reducer that rebuilds one from the event log, so an
+ * imported archive's projection is checked against its own history.
+ */
+export const worldImportReducers: Pick<
+  ProjectionReducers<unknown>,
+  "applyEvent" | "codec"
+> = {
+  applyEvent: (projections, event) =>
+    applyEvent(projections as WorldState, event),
+  codec: worldProjectionCodec,
+};
+
+/**
  * Builds the `ProjectionReducers<WorldState>` packages/persistence's
  * `commitTick`/`rebuildProjections`/`readLiveProjections` inject into:
  * `applyEvent` is packages/world's own plain event-application function --

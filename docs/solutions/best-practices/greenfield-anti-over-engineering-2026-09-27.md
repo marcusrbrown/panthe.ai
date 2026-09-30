@@ -1,7 +1,7 @@
 ---
 title: Build the direct version first in a greenfield, single-user codebase
 date: 2026-09-27
-last_updated: 2026-09-28
+last_updated: 2026-09-29
 category: best-practices
 module: workspace
 problem_type: best_practice
@@ -90,6 +90,38 @@ A finding is real when it comes with a concrete failing sequence of supported ca
 - **Unicode normalization of retries:** strings that differ in normalization form are different bytes, so the same `proposalId` with them is different content and a 409 is correct (`journal.ts:92-119`).
 
 The findings that were fixed each had a sequence: with a cap of 1, an external claim took the tick's only slot and its actor's routine went `over-limit` ([tick admission](../logic-errors/tick-admission-starved-external-proposals-2026-09-28.md)); after an archive restore, retrying a consumed proposal returned 500 ([durable journal](../integration-issues/proposal-accepted-then-lost-before-durable-2026-09-28.md)).
+
+## Gate review findings on requirements or live failures (2026-09-29)
+
+A review finding becomes work only if it passes one of two gates:
+
+1. It breaks a named requirement ID, and the requirement's text is what makes it a violation.
+2. It fails reproducibly through code that runs today.
+
+Everything else is dropped outright. "Confirmed" only means the code does what the finding says. It doesn't prove the behavior matters, breaks a requirement, or has a producer.
+
+M2 Unit 6 made the difference concrete. It added memory, reports, relationships and fire cause. W04 reads: "A character cannot use an unseen private event without a perception/power/report path; remembered outcomes influence later behavior" (`docs/product/requirements.md`). That gates the use of unseen *events*. A report claim that names someone the teller never met cites no event and is allowed to be false, so it isn't a W04 violation. Several other findings failed both gates:
+
+- a refactor presented as a bug;
+- a prediction about full-cast scale;
+- guards against a producer, model-written reports, that didn't exist yet.
+
+Don't keep a speculative finding alive as deferred work. On a pre-release project with no shipped data or archives, deferring just moves the speculation into the backlog. If a finding is real, fix it now. If it depends on a producer that doesn't exist yet, or on a predicted scale problem without a failing sequence, drop it. The future producer or measurement can raise it again.
+
+Unit 7 applied the same rule:
+
+- **Dropped:** a request for a real process kill during inference. A killed process can't journal anything, and an in-process abort already proves an aborted turn journals nothing.
+- **Kept:** a failure that could happen in the running service. A store read outside the handled path turned an unawaited god-turn promise into an unhandled rejection that crashed the sidecar ([unawaited god-turn promise](../runtime-errors/unawaited-god-turn-store-fault-2026-09-29.md)).
+
+| Finding shape | Outcome |
+|---|---|
+| Names a requirement and shows the code breaks it | Fix |
+| Shows a failing sequence through supported calls today | Fix |
+| Predicts a future scale or producer problem | Drop |
+| Proposes a cleaner shape without a failing behavior | Drop |
+| Is justified only by "might be useful later" | Drop |
+
+Severity labels and "is it real in the code" checks are not the gate.
 
 ## Related
 

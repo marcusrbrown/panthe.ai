@@ -242,7 +242,7 @@ sequenceDiagram
 
 ### Phase A — Production model routing (Unit 3 runs alongside Phase B)
 
-- [ ] **Unit 1: Local routing, repair, and configured fallback**
+- [x] **Unit 1: Local routing, repair, and configured fallback**
 
 **Goal:** a production router in `packages/agents` that turns a context into a parsed intent through configured providers.
 
@@ -278,7 +278,7 @@ sequenceDiagram
 
 **Verification:** router tests pass; one recorded real local call through the production path.
 
-- [ ] **Unit 2: Model-request trace and `model-degraded`**
+- [x] **Unit 2: Model-request trace and `model-degraded`**
 
 **Goal:** model requests become part of the causal trace, and an outage keeps the world ticking.
 
@@ -342,7 +342,7 @@ sequenceDiagram
 
 ### Phase B — Zeus and Hera causal slice
 
-- [ ] **Unit 4: God profile contract and two sourced profiles**
+- [x] **Unit 4: God profile contract and two sourced profiles**
 
 **Goal:** a content contract for gods and authored profiles for Zeus and Hera.
 
@@ -363,7 +363,7 @@ sequenceDiagram
 
 **Verification:** content tests; lore sources cited per the lore-sources rule in [open-decisions.md](../product/open-decisions.md).
 
-- [ ] **Unit 5: Perception snapshot and trusted observation builder**
+- [x] **Unit 5: Perception snapshot and trusted observation builder**
 
 **Goal:** per-actor perception and a service-built observation for model proposals.
 
@@ -393,7 +393,7 @@ sequenceDiagram
 
 **Verification:** tests; a context dump for the slice shows no unperceived facts.
 
-- [ ] **Unit 6: Memory, beliefs, relationships, reports, and fire provenance**
+- [x] **Unit 6: Memory, beliefs, relationships, reports, and fire provenance**
 
 **Goal:** world-state memory and relationships changed by events, a report action, and fire events that carry their cause.
 
@@ -426,7 +426,7 @@ sequenceDiagram
 
 **Verification:** tests; `bun run check`.
 
-- [ ] **Unit 7: God turn runner**
+- [x] **Unit 7: God turn runner**
 
 **Goal:** a god's decision cycle wired into the live service without touching the tick transaction.
 

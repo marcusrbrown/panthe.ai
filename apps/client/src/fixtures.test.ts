@@ -11,6 +11,7 @@ test("the preview world keeps the actors, buildings, statuses, and summary the p
   expect(view.tick).toBe(17);
   expect(view.status).toBe("running");
   expect(view.catchUpSummary).toEqual({
+    id: "preview-summary",
     appliedMs: 7_200_000,
     skippedMs: 10_800_000,
     majorOutcomes: [

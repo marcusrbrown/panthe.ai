@@ -6,6 +6,7 @@ import {
   createObservationId,
   createSessionId,
   type EventId,
+  parseSyncFrame,
 } from "@panthea/contracts";
 import {
   closeStore,
@@ -14,8 +15,10 @@ import {
   listExternalProposals,
   openStore,
   readCatchUpProgress,
+  readCatchUpSummary,
   readClock,
   writeCatchUpProgress,
+  writeCatchUpSummary,
 } from "@panthea/persistence";
 import {
   createProposalId,
@@ -26,6 +29,7 @@ import {
 } from "@panthea/telemetry";
 import { createPrng, submitProposal, toEntityId } from "@panthea/world";
 import { runCatchUp } from "./catchup";
+import { recordPartialSummary } from "./catchup-summary";
 import { refreshStatusAfterCatchUp } from "./index";
 import {
   applyLiveTick,
@@ -860,6 +864,145 @@ test("POST /resume ends an unfinished catch-up backlog: paused wall time never b
     );
 
     expect(readCatchUpProgress(harness.db)).toBeUndefined();
+  } finally {
+    harness.stop();
+  }
+});
+
+/** GET /frame, parsed through the contract, and its catch-up summary. */
+async function frameSummary(harness: Harness) {
+  const response = await authed(harness, "/frame");
+  const parsed = parseSyncFrame(await response.json());
+  if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+  return parsed.value.catchUpSummary;
+}
+
+/** An open backlog as a degraded run leaves it, then the world paused: the state /resume has to close. */
+async function pauseWithOpenBacklog(
+  harness: Harness,
+  progress: Parameters<typeof writeCatchUpProgress>[1],
+) {
+  writeCatchUpProgress(harness.db, progress);
+  expect((await authed(harness, "/pause", { method: "POST" })).status).toBe(
+    200,
+  );
+}
+
+const resume = (harness: Harness) =>
+  authed(harness, "/resume", { method: "POST" });
+
+test("POST /resume ends an open backlog by the same rules as any ending: with no summary persisted yet, it persists one, clears the progress, and the frame carries it", async () => {
+  const harness = startHarness();
+  try {
+    await pauseWithOpenBacklog(harness, {
+      appliedMs: 120_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    expect(readCatchUpSummary(harness.db)).toBeUndefined();
+
+    expect((await resume(harness)).status).toBe(200);
+
+    const persisted = readCatchUpSummary(harness.db);
+    expect(persisted).toMatchObject({ appliedMs: 120_000, skippedMs: 0 });
+    expect(readCatchUpProgress(harness.db)).toBeUndefined();
+    expect(await frameSummary(harness)).toEqual(persisted);
+  } finally {
+    harness.stop();
+  }
+});
+
+test("POST /resume of a degraded partial backlog whose summary was already persisted keeps that summary's id: nothing about it changed, so a client that dismissed it is not shown it again", async () => {
+  const harness = startHarness();
+  try {
+    await pauseWithOpenBacklog(harness, {
+      appliedMs: 120_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    // What the degraded run persisted for that backlog.
+    const partial = recordPartialSummary(harness.db);
+    expect(partial).toBeDefined();
+
+    expect((await resume(harness)).status).toBe(200);
+
+    expect(readCatchUpSummary(harness.db)?.id).toBe(partial?.id);
+    expect(readCatchUpProgress(harness.db)).toBeUndefined();
+    expect((await frameSummary(harness))?.id).toBe(partial?.id);
+  } finally {
+    harness.stop();
+  }
+});
+
+test("POST /resume of a backlog that moved on since its summary was persisted mints a new id", async () => {
+  const harness = startHarness();
+  try {
+    await pauseWithOpenBacklog(harness, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    const partial = recordPartialSummary(harness.db);
+    // Progress committed after that summary was written.
+    writeCatchUpProgress(harness.db, {
+      appliedMs: 180_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+
+    expect((await resume(harness)).status).toBe(200);
+
+    const persisted = readCatchUpSummary(harness.db);
+    expect(persisted?.id).not.toBe(partial?.id);
+    expect(persisted?.appliedMs).toBe(180_000);
+    expect(await frameSummary(harness)).toEqual(persisted);
+  } finally {
+    harness.stop();
+  }
+});
+
+test("POST /resume with no open backlog leaves the persisted summary and the frame alone", async () => {
+  const harness = startHarness();
+  try {
+    const earlier = {
+      id: "earlier",
+      atSequence: 0,
+      appliedMs: 60_000,
+      skippedMs: 0,
+      majorOutcomes: [],
+    };
+    writeCatchUpSummary(harness.db, earlier);
+    expect((await authed(harness, "/pause", { method: "POST" })).status).toBe(
+      200,
+    );
+
+    expect((await resume(harness)).status).toBe(200);
+
+    expect(readCatchUpSummary(harness.db)).toEqual(earlier);
+  } finally {
+    harness.stop();
+  }
+});
+
+test("POST /resume whose commit fails keeps the backlog open and persists no summary", async () => {
+  const harness = startHarness();
+  try {
+    await pauseWithOpenBacklog(harness, {
+      appliedMs: 120_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    // The store refuses the summary write, so the resume commit rolls back whole.
+    harness.db.exec(
+      "CREATE TRIGGER refuse_summary BEFORE INSERT ON catch_up_summary BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL: simulated'); END",
+    );
+
+    const response = await resume(harness);
+
+    expect(response.status).toBe(500);
+    expect(readCatchUpSummary(harness.db)).toBeUndefined();
+    expect(readCatchUpProgress(harness.db)).toBeDefined();
+    expect(readClock(harness.db).paused).toBe(true);
   } finally {
     harness.stop();
   }

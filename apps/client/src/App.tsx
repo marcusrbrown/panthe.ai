@@ -22,7 +22,13 @@ import { rebuildAfterDeviceLoss } from "./renderer/recovery";
 import { SceneHost } from "./renderer/SceneHost";
 import type { RendererFactory } from "./renderer/scene";
 import { createWorldStore, type WorldViewModel } from "./store";
-import { isSummaryDismissed, summaryKey } from "./summary";
+import {
+  browserDismissalStorage,
+  createSummaryDismissal,
+  type DismissalStorage,
+  dismissSummary,
+  isSummaryDismissed,
+} from "./summary";
 import { ClientSurface } from "./ui/surface";
 
 export interface ClientDependencies {
@@ -35,6 +41,8 @@ export interface ClientDependencies {
   readonly rendererFactory?: RendererFactory;
   readonly initialView?: WorldViewModel;
   readonly fixture?: boolean;
+  /** Where a dismissed catch-up summary is remembered; defaults to the browser's localStorage. */
+  readonly summaryStorage?: DismissalStorage;
 }
 
 export function App({
@@ -52,7 +60,16 @@ export function App({
     kind: "idle",
   });
   const [receiptErrors, setReceiptErrors] = useState<string[]>([]);
-  const [dismissedSummaryKey, setDismissedSummaryKey] = useState<string>();
+  const summaryDismissal = useMemo(
+    () =>
+      createSummaryDismissal(
+        dependencies.summaryStorage ?? browserDismissalStorage(),
+      ),
+    [dependencies.summaryStorage],
+  );
+  // Re-renders the surface after an explicit Dismiss; the dismissal itself
+  // lives in `summaryDismissal` and its storage.
+  const [, setDismissals] = useState(0);
   const [rendererEpoch, setRendererEpoch] = useState(0);
   const fixtureMode =
     dependencies.fixture ??
@@ -140,8 +157,7 @@ export function App({
     [observer, view],
   );
 
-  const currentSummaryKey = summaryKey(view);
-  const dismissedSummary = isSummaryDismissed(view, dismissedSummaryKey);
+  const dismissedSummary = isSummaryDismissed(view, summaryDismissal);
   const realm: Realm =
     observation.kind === "following"
       ? observation.realm
@@ -177,7 +193,8 @@ export function App({
       observation={observation}
       onPick={onPick}
       onDismissCatchUp={() => {
-        if (currentSummaryKey) setDismissedSummaryKey(currentSummaryKey);
+        dismissSummary(view, summaryDismissal);
+        setDismissals((count) => count + 1);
       }}
       dismissedSummary={dismissedSummary}
       receiptErrors={receiptErrors}

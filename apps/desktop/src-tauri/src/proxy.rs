@@ -566,10 +566,11 @@ mod tests {
         let plain = polled(5, 10, "running");
         let mut summarized = plain.clone();
         summarized["catchUpSummary"] = serde_json::json!({
-            "appliedMs": 60000, "skippedMs": 0, "majorOutcomes": [], "atSequence": 4
+            "id": "summary-a", "appliedMs": 60000, "skippedMs": 0, "majorOutcomes": [], "atSequence": 4
         });
         let mut replaced = summarized.clone();
         replaced["catchUpSummary"]["atSequence"] = serde_json::json!(5);
+        replaced["catchUpSummary"]["id"] = serde_json::json!("summary-b");
 
         apply_frame(&mut lifecycle, 1, plain.clone());
         apply_frame(&mut lifecycle, 1, summarized.clone());
@@ -577,6 +578,25 @@ mod tests {
 
         let received = delivered.lock().expect("delivered mutex poisoned");
         assert_eq!(*received, vec![plain, summarized, replaced]);
+    }
+
+    #[test]
+    fn a_replacement_summary_at_the_same_sequence_is_forwarded_when_only_its_id_differs() {
+        let (mut lifecycle, delivered) = subscribed();
+        let mut first = polled(5, 10, "running");
+        first["catchUpSummary"] = serde_json::json!({
+            "id": "summary-a", "appliedMs": 60000, "skippedMs": 0, "majorOutcomes": [], "atSequence": 4
+        });
+        let mut replacement = first.clone();
+        replacement["catchUpSummary"]["id"] = serde_json::json!("summary-b");
+
+        apply_frame(&mut lifecycle, 1, first.clone());
+        // The same summary, repeated by the next poll: nothing to send.
+        apply_frame(&mut lifecycle, 1, first.clone());
+        apply_frame(&mut lifecycle, 1, replacement.clone());
+
+        let received = delivered.lock().expect("delivered mutex poisoned");
+        assert_eq!(*received, vec![first, replacement]);
     }
 
     #[test]

@@ -54,6 +54,7 @@ const HASHED_TABLES: readonly {
   { table: "events", pk: "sequence" },
   { table: "external_proposals", pk: "input_order" },
   { table: "catch_up_progress", pk: "id" },
+  { table: "catch_up_summary", pk: "id" },
 ];
 
 function normalizeRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -164,6 +165,16 @@ interface ExportData {
   readonly eventRows: readonly Record<string, unknown>[];
   readonly journalRows: readonly JournalRow[];
   readonly catchUpProgress: CatchUpProgressRow | undefined;
+  readonly catchUpSummary: CatchUpSummaryRow | undefined;
+}
+
+/** The `catch_up_summary` row exactly as stored. */
+interface CatchUpSummaryRow {
+  readonly summary_id: string;
+  readonly at_sequence: number;
+  readonly applied_ms: number;
+  readonly skipped_ms: number;
+  readonly major_outcomes: string;
 }
 
 /** The `catch_up_progress` row exactly as stored. */
@@ -171,6 +182,19 @@ interface CatchUpProgressRow {
   readonly applied_ms: number;
   readonly discarded_ms: number;
   readonly start_sequence: number;
+}
+
+/** The outcome list a `major_outcomes` column holds, or `undefined` when it is not a JSON array of strings. */
+function parseOutcomeList(text: string): string[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return Array.isArray(parsed) &&
+      parsed.every((entry) => typeof entry === "string")
+      ? (parsed as string[])
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** One `external_proposals` row exactly as stored. */
@@ -224,6 +248,11 @@ function readExportData(store: Store): ExportData {
         "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
       )
       .get() as CatchUpProgressRow | null;
+    const catchUpSummary = store.db
+      .query(
+        "SELECT summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes FROM catch_up_summary WHERE id = 1",
+      )
+      .get() as CatchUpSummaryRow | null;
     return {
       worldId: store.worldId,
       sequence,
@@ -238,6 +267,7 @@ function readExportData(store: Store): ExportData {
       eventRows,
       journalRows,
       catchUpProgress: catchUpProgress ?? undefined,
+      catchUpSummary: catchUpSummary ?? undefined,
     };
   });
   return run.deferred();
@@ -323,6 +353,18 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
               data.catchUpProgress.applied_ms,
               data.catchUpProgress.discarded_ms,
               data.catchUpProgress.start_sequence,
+            ],
+          );
+        }
+        if (data.catchUpSummary) {
+          archiveDb.run(
+            "INSERT INTO catch_up_summary (id, summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes) VALUES (1, ?, ?, ?, ?, ?)",
+            [
+              data.catchUpSummary.summary_id,
+              data.catchUpSummary.at_sequence,
+              data.catchUpSummary.applied_ms,
+              data.catchUpSummary.skipped_ms,
+              data.catchUpSummary.major_outcomes,
             ],
           );
         }
@@ -927,6 +969,43 @@ export function importArchive(
                   progress.applied_ms,
                   progress.discarded_ms,
                   progress.start_sequence,
+                ],
+              );
+            }
+            // The latest delivered summary: what a client is shown, with the
+            // identity it acknowledges. Its outcomes are frozen at the
+            // sequence its backlog ended at, so it cannot name a sequence the
+            // archive does not hold.
+            const summary = db
+              .query(
+                "SELECT summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes FROM catch_up_summary WHERE id = 1",
+              )
+              .get() as CatchUpSummaryRow | null;
+            if (summary) {
+              const outcomes = parseOutcomeList(summary.major_outcomes);
+              const valid =
+                typeof summary.summary_id === "string" &&
+                summary.summary_id !== "" &&
+                [
+                  summary.at_sequence,
+                  summary.applied_ms,
+                  summary.skipped_ms,
+                ].every((value) => Number.isInteger(value) && value >= 0) &&
+                outcomes !== undefined;
+              if (!valid || summary.at_sequence > manifest.eventSequence) {
+                throw new ImportError(
+                  "corrupt",
+                  "archive catch-up summary has an empty id, an invalid count or outcome list, or ends after the archive's last event",
+                );
+              }
+              stagingDb.run(
+                "INSERT INTO catch_up_summary (id, summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes) VALUES (1, ?, ?, ?, ?, ?)",
+                [
+                  summary.summary_id,
+                  summary.at_sequence,
+                  summary.applied_ms,
+                  summary.skipped_ms,
+                  JSON.stringify(outcomes),
                 ],
               );
             }

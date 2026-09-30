@@ -97,11 +97,13 @@ const NOT_COVERED = `- **The packaged desktop app and the view.** No Tauri, no r
   journals and event histories across export, import, and restore; it does not
   (and cannot) compare causal trace, so a restored branch has none for history
   before the restore.
-- **The W03 catch-up summary limit.** A backlog closes when its summary is
-  published, not when a client has fetched it, so a kill after publication and
-  before the next frame loses that summary. It is not provoked here, and no
-  export is taken while a backlog is open, so archives carrying an open
-  backlog's progress are not driven either.
+- **A kill after the catch-up summary was published.** The service persists
+  the summary in the commit that ends the backlog and serves it from the first
+  frame after a restart, so the old window is closed. That is covered by the
+  subprocess tests in \`apps/simulation/src/index.test.ts\`, not by this run: S13
+  kills mid catch-up, not after the backlog ended. No export is taken while a
+  backlog is open, so archives carrying an open backlog's progress are not
+  driven here either.
 - **Time between a kill and its restart.** The cap bounds the remaining
   backlog, so seconds that pass while the service is down are new gap, applied
   once on top of the capped total. S13 measures that extra (0 s in the recorded

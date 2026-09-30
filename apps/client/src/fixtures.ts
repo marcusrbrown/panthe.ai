@@ -221,6 +221,7 @@ export interface FrameOptions {
   readonly status?: "running" | "paused" | "degraded";
   readonly degradedReason?: string;
   readonly catchUpSummary?: {
+    readonly id: string;
     readonly appliedMs: number;
     readonly skippedMs: number;
     readonly majorOutcomes: readonly string[];
@@ -288,6 +289,7 @@ export function previewView(): WorldViewModel {
     framePayload(state, {
       sessionId: "preview-session",
       catchUpSummary: {
+        id: "preview-summary",
         appliedMs: 7_200_000,
         skippedMs: 10_800_000,
         majorOutcomes: [

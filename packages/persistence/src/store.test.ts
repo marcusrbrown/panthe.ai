@@ -29,10 +29,12 @@ import {
   openStore,
   type ProjectionReducers,
   readCatchUpProgress,
+  readCatchUpSummary,
   readClock,
   readLiveProjections,
   rebuildProjections,
   writeCatchUpProgress,
+  writeCatchUpSummary,
 } from "./store";
 
 let dir: string;
@@ -234,7 +236,25 @@ describe("openStore", () => {
     expect(readdirSync(dir).sort()).toEqual(filesBefore);
   });
 
-  test("this build stamps schema version 5", () => {
+  test("an existing version 5 store is refused and left untouched: same bytes, no new files, no reset", () => {
+    const v5 = new Database(dbPath, { create: true });
+    v5.exec("PRAGMA journal_mode = WAL");
+    v5.exec(
+      "CREATE TABLE world (id INTEGER PRIMARY KEY CHECK (id = 1), world_id TEXT NOT NULL) STRICT",
+    );
+    v5.run("INSERT INTO world (id, world_id) VALUES (1, 'world-from-v5')");
+    v5.exec("PRAGMA user_version = 5");
+    v5.close();
+    const bytesBefore = readFileSync(dbPath);
+    const filesBefore = readdirSync(dir).sort();
+
+    expect(() => openStore(dbPath, countReducer)).toThrow(/schema version 5/);
+
+    expect(readFileSync(dbPath).equals(bytesBefore)).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(filesBefore);
+  });
+
+  test("this build stamps schema version 6", () => {
     const store = openStore(dbPath, countReducer);
     expect(
       (
@@ -242,7 +262,7 @@ describe("openStore", () => {
           user_version: number;
         }
       ).user_version,
-    ).toBe(5);
+    ).toBe(6);
     closeStore(store);
   });
 
@@ -684,6 +704,132 @@ describe("catch-up progress", () => {
     ).toThrow();
     expect(readCatchUpProgress(store.db)).toBeUndefined();
     expect(readClock(store.db).tick).toBe(0);
+    closeStore(store);
+  });
+});
+
+describe("catch-up summary", () => {
+  function tick(store: ReturnType<typeof openStore>, n: number, extra = {}) {
+    commitTick(store, countReducer, {
+      events: [makeMoveEvent(n)],
+      cursorWallMs: 1000 * n,
+      paused: false,
+      tick: n,
+      simTimeMs: 1000 * n,
+      prngState: "seed",
+      ...extra,
+    });
+  }
+
+  const summary = {
+    id: "3f2c9d64-1a5e-4c8b-9a53-2e6f0b7d1c11",
+    atSequence: 7,
+    appliedMs: 3_600_000,
+    skippedMs: 7_200_000,
+    majorOutcomes: ["building-ignited:the-tavern", "legend-recorded:zeus"],
+  };
+
+  test("a new store has no catch-up summary", () => {
+    const store = openStore(dbPath, countReducer);
+    expect(readCatchUpSummary(store.db)).toBeUndefined();
+    closeStore(store);
+  });
+
+  test("a summary written in a tick's transaction survives a reopen exactly, id and outcomes included", () => {
+    const store = openStore(dbPath, countReducer);
+    tick(store, 1, {
+      onCommitted: (db: Database) => writeCatchUpSummary(db, summary),
+    });
+    closeStore(store);
+
+    const reopened = openStore(dbPath, countReducer);
+    expect(readCatchUpSummary(reopened.db)).toEqual(summary);
+    closeStore(reopened);
+  });
+
+  test("a summary with no outcomes round-trips as an empty list, not as missing", () => {
+    const store = openStore(dbPath, countReducer);
+    writeCatchUpSummary(store.db, { ...summary, majorOutcomes: [] });
+
+    expect(readCatchUpSummary(store.db)?.majorOutcomes).toEqual([]);
+    closeStore(store);
+  });
+
+  test("there is one summary: writing another replaces the first", () => {
+    const store = openStore(dbPath, countReducer);
+    writeCatchUpSummary(store.db, summary);
+    writeCatchUpSummary(store.db, {
+      ...summary,
+      id: "second",
+      appliedMs: 60_000,
+    });
+
+    expect(readCatchUpSummary(store.db)).toMatchObject({
+      id: "second",
+      appliedMs: 60_000,
+    });
+    expect(
+      (
+        store.db.query("SELECT COUNT(*) AS n FROM catch_up_summary").get() as {
+          n: number;
+        }
+      ).n,
+    ).toBe(1);
+    closeStore(store);
+  });
+
+  test("a summary is rolled back with the tick when the transaction fails: no half-written summary", () => {
+    const store = openStore(dbPath, countReducer);
+    expect(() =>
+      tick(store, 1, {
+        onCommitted: (db: Database) => {
+          writeCatchUpSummary(db, summary);
+          throw new Error("fail after writing the summary");
+        },
+      }),
+    ).toThrow();
+
+    expect(readCatchUpSummary(store.db)).toBeUndefined();
+    expect(readClock(store.db).tick).toBe(0);
+    closeStore(store);
+  });
+
+  test("the summary lives apart from the progress: clearing progress leaves the summary, and writing a summary leaves the progress", () => {
+    const store = openStore(dbPath, countReducer);
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    writeCatchUpSummary(store.db, summary);
+
+    clearCatchUpProgress(store.db);
+
+    expect(readCatchUpSummary(store.db)).toEqual(summary);
+    writeCatchUpProgress(store.db, {
+      appliedMs: 1_000,
+      discardedMs: 0,
+      startSequence: 0,
+    });
+    writeCatchUpSummary(store.db, { ...summary, id: "next" });
+    expect(readCatchUpProgress(store.db)?.appliedMs).toBe(1_000);
+    closeStore(store);
+  });
+
+  test("the schema refuses a malformed row: an empty id, a negative count, a non-list outcomes column", () => {
+    const store = openStore(dbPath, countReducer);
+    const insert = (set: string) => () =>
+      store.db.run(
+        `INSERT INTO catch_up_summary (id, summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes) VALUES (1, ${set})`,
+      );
+
+    expect(insert("'', 0, 0, 0, '[]'")).toThrow();
+    expect(insert("'x', -1, 0, 0, '[]'")).toThrow();
+    expect(insert("'x', 0, -1, 0, '[]'")).toThrow();
+    expect(insert("'x', 0, 0, -1, '[]'")).toThrow();
+    expect(insert("'x', 0, 0, 0, '{}'")).toThrow();
+    expect(insert("'x', 0, 0, 0, 'not json'")).toThrow();
+    expect(readCatchUpSummary(store.db)).toBeUndefined();
     closeStore(store);
   });
 });

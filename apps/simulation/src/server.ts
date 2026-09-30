@@ -30,13 +30,13 @@ import {
   type WorldStatus,
 } from "@panthea/contracts";
 import {
-  clearCatchUpProgress,
   type ExternalProposalEntry,
   exportArchive,
   getExternalProposal,
   insertExternalProposal,
   listEvents,
   type ProjectionReducers,
+  readCatchUpSummary,
   readClock,
   readPrngState,
   type Store,
@@ -55,7 +55,7 @@ import {
   type PrngState,
   type WorldState,
 } from "@panthea/world";
-import type { CatchUpOutcome } from "./catchup";
+import { closeCatchUpBacklog } from "./catchup-summary";
 import {
   applyOneTick,
   commitWorldTick,
@@ -185,15 +185,25 @@ export interface ServiceStatusRef {
   /** The tick of the state `sequence` and `encodedState` describe; the recent-event window is measured back from it. */
   tick: number;
   encodedState: unknown;
+  /** The latest persisted catch-up summary, with the identity a client acknowledges. Only ever a summary read back from the store. */
   catchUpSummary?: CatchUpSummary;
 }
 
-export function createServiceStatusRef(state: WorldState): ServiceStatusRef {
+/**
+ * A fresh status for `state`. `catchUpSummary` is the summary persisted in
+ * the store, if any: a service passes it on start so the first frame it
+ * serves already carries the summary it delivered before it last stopped.
+ */
+export function createServiceStatusRef(
+  state: WorldState,
+  catchUpSummary?: CatchUpSummary,
+): ServiceStatusRef {
   return {
     status: "running",
     sequence: state.lastSequence,
     tick: state.tick,
     encodedState: worldProjectionCodec.encode(state),
+    ...(catchUpSummary === undefined ? {} : { catchUpSummary }),
   };
 }
 
@@ -239,15 +249,16 @@ function displayedStatus(ref: ServiceStatusRef): {
  * must pass the persisted clock's actual `paused` flag, or a mid-run
  * pause would be silently reported as running.
  *
- * A catch-up summary, stamped with the sequence `state` finished at, stays
- * on every later frame until another catch-up's summary replaces it; an
- * ordinary update never clears it.
+ * A catch-up summary stays on every later frame until another catch-up's
+ * summary replaces it; an ordinary update never clears it. It must be one read
+ * back from the store, with its persisted id and ending sequence: this only
+ * carries it to the frame and never stamps or mints anything.
  */
 export function updateServiceStatus(
   ref: ServiceStatusRef,
   state: WorldState,
   options: {
-    readonly catchUpSummary?: CatchUpOutcome;
+    readonly catchUpSummary?: CatchUpSummary;
     readonly paused?: boolean;
   } = {},
 ): void {
@@ -257,10 +268,7 @@ export function updateServiceStatus(
   ref.tick = state.tick;
   ref.encodedState = worldProjectionCodec.encode(state);
   if (options.catchUpSummary) {
-    ref.catchUpSummary = {
-      ...options.catchUpSummary,
-      atSequence: state.lastSequence,
-    };
+    ref.catchUpSummary = options.catchUpSummary;
   }
 }
 
@@ -590,9 +598,11 @@ export function createSimulationServer(
       [],
       (db) => {
         recordOperatorEvent("resume")(db);
-        // The paused interval is discarded, never caught up, so a backlog
-        // left unfinished before the pause ends here.
-        clearCatchUpProgress(db);
+        // The paused interval is discarded, never caught up, so a backlog a
+        // degraded run left open ends here, by the same rules as any other
+        // ending: its summary is persisted (keeping its id if nothing about
+        // it changed) and its progress cleared, in this commit.
+        closeCatchUpBacklog(db);
       },
     );
     if (!commit.ok) {
@@ -603,6 +613,9 @@ export function createSimulationServer(
     }
     statusRef.status = "running";
     statusRef.degradedReason = undefined;
+    // Publish only what the commit persisted.
+    const persisted = readCatchUpSummary(store.db);
+    if (persisted) statusRef.catchUpSummary = persisted;
     publishFrame();
     return jsonResponse({ ok: true });
   }

@@ -165,6 +165,7 @@ test("a lost target shows its held location and reason", () => {
 test("catch-up summary is presented as a dismissible panel", () => {
   const summaryView = view({
     catchUpSummary: {
+      id: "summary-9",
       appliedMs: 7_200_000,
       skippedMs: 10_800_000,
       majorOutcomes: ["tavern fire spread"],

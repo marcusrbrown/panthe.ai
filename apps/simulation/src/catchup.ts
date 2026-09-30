@@ -15,17 +15,11 @@
 // HTTP request (e.g. `/pause`) is actually served while a long catch-up
 // run is in progress, rather than only after it finishes.
 
-import type {
-  CatchUpSummary,
-  DegradedReason,
-  WorldEvent,
-} from "@panthea/contracts";
+import type { DegradedReason, WorldEvent } from "@panthea/contracts";
 import {
-  type CatchUpProgress,
   type ClockConfig,
   computeTick,
   getCurrentSequence,
-  listEvents,
   readCatchUpProgress,
   readClock,
   writeCatchUpProgress,
@@ -35,6 +29,14 @@ import {
   type PrngState,
   type WorldState,
 } from "@panthea/world";
+import {
+  type BacklogAccount,
+  type ClosedBacklog,
+  closeCatchUpBacklog,
+  EMPTY_ACCOUNT,
+  openBacklogAccount,
+  recordPartialSummary,
+} from "./catchup-summary";
 import {
   buildRoutineQueue,
   commitWorldTick,
@@ -49,49 +51,65 @@ import {
 } from "./tick";
 import { serializePrngState } from "./world-store";
 
-/** Event kinds worth naming in the catch-up summary's `majorOutcomes`. */
-const MAJOR_EVENT_KINDS = new Set<string>([
-  "building-ignited",
-  "building-destroyed",
-  "building-repaired",
-  "legend-recorded",
-]);
-
 export type CatchUpDeps = TickDeps;
 
-const EMPTY_SUMMARY: CatchUpOutcome = {
-  appliedMs: 0,
-  skippedMs: 0,
-  majorOutcomes: [],
-};
+/** The account of what the open backlog has committed so far, or an empty one when it has committed nothing. */
+function committedAccountOf(deps: CatchUpDeps): BacklogAccount {
+  try {
+    return openBacklogAccount(deps.store.db) ?? EMPTY_ACCOUNT;
+  } catch {
+    // The store is what is failing; there is nothing more to read from it.
+    return EMPTY_ACCOUNT;
+  }
+}
 
 /**
- * A backlog's summary, read from what it committed: time applied and
- * discarded from its progress row, and its notable outcomes from the events
- * committed after the sequence it started at. Nothing is kept in memory
- * between runs, so a summary is the same whether one run or several (with
- * restarts, crashes, or a restore in between) worked on the backlog.
+ * A commit failed after some of the backlog committed. What it committed is
+ * persisted as the summary in a transaction of its own, and the backlog stays
+ * open so a retry continues it; the frame then shows a summary that survives a
+ * kill. If the store is what failed, that write may fail too: nothing
+ * unpersisted is ever published, so the previous summary stays.
  */
-function summaryOf(
+function degradedPartial(
   deps: CatchUpDeps,
-  progress: CatchUpProgress,
-): CatchUpOutcome {
+  state: WorldState,
+  prng: PrngState,
+  reason: DegradedReason,
+  message: string,
+): CatchUpResult {
+  try {
+    recordPartialSummary(deps.store.db);
+  } catch {
+    // See above.
+  }
   return {
-    appliedMs: progress.appliedMs,
-    skippedMs: progress.discardedMs,
-    majorOutcomes: listEvents(deps.store.db, {
-      fromSequence: progress.startSequence,
-    })
-      .filter((event) => MAJOR_EVENT_KINDS.has(event.kind))
-      .map((event) => `${event.kind}:${String(event.entityId)}`),
+    summary: committedAccountOf(deps),
+    state,
+    prng,
+    degraded: { reason, message },
   };
 }
 
-/** The summary of everything the open backlog has committed so far, or an empty one when it has committed nothing. */
-function committedSummaryOf(deps: CatchUpDeps): CatchUpOutcome {
-  const progress = readCatchUpProgress(deps.store.db);
-  return progress ? summaryOf(deps, progress) : EMPTY_SUMMARY;
+/**
+ * The commit that would have ended the backlog failed. It rolled back whole,
+ * summary included, so the backlog stays open with nothing new persisted and
+ * nothing to publish; the retry (a restart, say) ends it.
+ */
+function degradedCompletion(
+  deps: CatchUpDeps,
+  state: WorldState,
+  prng: PrngState,
+  reason: DegradedReason,
+  message: string,
+): CatchUpResult {
+  return {
+    summary: committedAccountOf(deps),
+    state,
+    prng,
+    degraded: { reason, message },
+  };
 }
+
 export interface CatchUpOptions {
   readonly nowWallMs: number;
   /**
@@ -107,8 +125,8 @@ export interface CatchUpOptions {
   }) => boolean;
 }
 
-/** What a catch-up run applied, skipped, and found notable; the service stamps it with the sequence it finished at when it publishes it. */
-export type CatchUpOutcome = Omit<CatchUpSummary, "atSequence">;
+/** What a backlog applied, skipped, and found notable, before it has an identity or an ending sequence (those come when it is persisted). */
+export type CatchUpOutcome = BacklogAccount;
 
 export interface CatchUpResult {
   readonly summary: CatchUpOutcome;
@@ -145,13 +163,26 @@ function yieldToEventLoop(): Promise<void> {
  *
  * The backlog's progress (time applied, time discarded, and the event
  * sequence it started after) is committed in the same transaction as each
- * discard and chunk, so a restart continues it, and the summary this
- * returns is derived from it and from the backlog's committed events: it
- * covers the whole backlog, not only this run, and includes its notable
- * outcomes. The progress stays open after the backlog's last commit, or
- * after a pause ends it, until the caller has published the summary and
- * closes it (`refreshStatusAfterCatchUp`); a process that dies before then
- * finds the same summary waiting on its next start.
+ * discard and chunk, so a restart continues it.
+ *
+ * The backlog ends in one commit: the final cursor jump, a mid-catch-up
+ * pause, or (on a restart with nothing left to apply) a commit of its own.
+ * That same transaction persists the backlog's summary, frozen at the
+ * committed ending sequence with a service-minted id, and clears the
+ * progress. So a summary exists on disk before anything can expose it, a
+ * kill at any point leaves either the whole ending or none of it, and the
+ * summary never changes afterwards however many live ticks follow. If that
+ * commit fails the backlog stays open, the run reports degraded, and no
+ * summary is persisted or published.
+ *
+ * A degraded run (a chunk, the discard, or the pause failed to commit)
+ * persists what the backlog committed as its summary in a transaction of its
+ * own and keeps the progress open. A retry with nothing new committed reuses
+ * that summary's id; one that changes it mints a new id.
+ *
+ * `summary` is the backlog's account as of return (for a closed backlog, as
+ * persisted); what a client sees is read back from the store
+ * (`refreshStatusAfterCatchUp`), never taken from here.
  */
 export async function runCatchUp(
   initialState: WorldState,
@@ -161,10 +192,10 @@ export async function runCatchUp(
 ): Promise<CatchUpResult> {
   const clock = readClock(deps.store.db);
   if (clock.paused) {
-    // Paused wall time never becomes catch-up. A backlog a pause already
-    // ended can still be waiting for its summary to be published.
+    // Paused wall time never becomes catch-up. A backlog left open by a
+    // degraded run is closed when the world resumes.
     return {
-      summary: committedSummaryOf(deps),
+      summary: committedAccountOf(deps),
       state: initialState,
       prng: initialPrng,
     };
@@ -192,11 +223,45 @@ export async function runCatchUp(
   const tickMs = DEFAULT_TICK_ELAPSED_MS;
   const totalTicks = Math.floor(totalAppliedMs / tickMs);
 
+  // What ended backlog this run closed, once it has: set by the ending
+  // commit's callback, so it is only meaningful after that commit succeeded.
+  let closed: ClosedBacklog | undefined;
+
   if (totalTicks === 0) {
-    // Nothing more to apply. If a previous run finished the backlog and died
-    // before its summary was published, that summary is what this returns.
+    if (!prior) {
+      return { summary: EMPTY_ACCOUNT, state: initialState, prng: initialPrng };
+    }
+    // Nothing more to apply, but a previous run left the backlog open (it
+    // applied everything and its ending commit did not happen, or it degraded
+    // and a retry has nothing new). End it now: persist its summary and clear
+    // the progress in one transaction, exactly as the run that finished it
+    // would have.
+    const finish = commitWorldTick(
+      deps,
+      [],
+      {
+        tick: initialState.tick,
+        simTimeMs: initialState.simTime,
+        prngState: serializePrngState(initialPrng),
+        cursorWallMs: clock.cursorWallMs,
+        paused: false,
+      },
+      [],
+      (db) => {
+        closed = closeCatchUpBacklog(db);
+      },
+    );
+    if (!finish.ok) {
+      return degradedCompletion(
+        deps,
+        initialState,
+        initialPrng,
+        finish.reason,
+        finish.message,
+      );
+    }
     return {
-      summary: prior ? summaryOf(deps, prior) : EMPTY_SUMMARY,
+      summary: closed?.account ?? EMPTY_ACCOUNT,
       state: initialState,
       prng: initialPrng,
     };
@@ -228,12 +293,13 @@ export async function runCatchUp(
       },
     );
     if (!discard.ok) {
-      return {
-        summary: committedSummaryOf(deps),
-        state: initialState,
-        prng: initialPrng,
-        degraded: { reason: discard.reason, message: discard.message },
-      };
+      return degradedPartial(
+        deps,
+        initialState,
+        initialPrng,
+        discard.reason,
+        discard.message,
+      );
     }
     cursorWallMs = discardedCursor;
     discardedMs += excessMs;
@@ -245,12 +311,6 @@ export async function runCatchUp(
   let committedPrng = initialPrng;
   let ticksDone = 0;
   let pausedMidCatchUp = false;
-
-  // What the backlog has committed so far. A run that stops because a
-  // commit failed reports exactly this: a restart still applies the rest,
-  // so nothing more is skipped. Once paused, the chunks it will not apply
-  // are discarded for good and count as skipped (recorded by the pause).
-  const committedSummary = (): CatchUpOutcome => committedSummaryOf(deps);
 
   while (ticksDone < totalTicks) {
     const ticksThisChunk = Math.min(chunkTicks, totalTicks - ticksDone);
@@ -265,15 +325,13 @@ export async function runCatchUp(
         committedState.tick + 1,
       );
     } catch (error) {
-      return {
-        summary: committedSummary(),
-        state: committedState,
-        prng: committedPrng,
-        degraded: {
-          reason: "store-error",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      };
+      return degradedPartial(
+        deps,
+        committedState,
+        committedPrng,
+        "store-error",
+        error instanceof Error ? error.message : String(error),
+      );
     }
 
     let workingState = committedState;
@@ -288,15 +346,13 @@ export async function runCatchUp(
         mergeTickQueue(buildRoutineQueue(workingState), pending),
       );
     } catch (error) {
-      return {
-        summary: committedSummary(),
-        state: committedState,
-        prng: committedPrng,
-        degraded: {
-          reason: "store-error",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      };
+      return degradedPartial(
+        deps,
+        committedState,
+        committedPrng,
+        "store-error",
+        error instanceof Error ? error.message : String(error),
+      );
     }
     let workingQueue: readonly QueuedProposal[] = screened.runnable;
     const chunkOutcomes: WorldTickOutcome[] = [];
@@ -336,12 +392,13 @@ export async function runCatchUp(
     );
 
     if (!commit.ok) {
-      return {
-        summary: committedSummary(),
-        state: committedState,
-        prng: committedPrng,
-        degraded: { reason: commit.reason, message: commit.message },
-      };
+      return degradedPartial(
+        deps,
+        committedState,
+        committedPrng,
+        commit.reason,
+        commit.message,
+      );
     }
 
     committedState = workingState;
@@ -367,7 +424,8 @@ export async function runCatchUp(
       // so a trace failure here rolls the pause transition back exactly
       // like it would for a live `/pause` request, rather than being
       // swallowed. The backlog ends here: the remainder is discarded, which
-      // the progress records so the summary stays true until it is published.
+      // the progress records, and the backlog is closed in this same commit:
+      // its summary is persisted and its progress cleared with the pause.
       const pauseCommit = commitWorldTick(
         deps,
         [],
@@ -386,18 +444,17 @@ export async function runCatchUp(
             discardedMs: discardedMs + (totalTicks - ticksDone) * tickMs,
             startSequence,
           });
+          closed = closeCatchUpBacklog(db);
         },
       );
       if (!pauseCommit.ok) {
-        return {
-          summary: committedSummary(),
-          state: committedState,
-          prng: committedPrng,
-          degraded: {
-            reason: pauseCommit.reason,
-            message: pauseCommit.message,
-          },
-        };
+        return degradedPartial(
+          deps,
+          committedState,
+          committedPrng,
+          pauseCommit.reason,
+          pauseCommit.message,
+        );
       }
       pausedMidCatchUp = true;
       break;
@@ -410,7 +467,9 @@ export async function runCatchUp(
     // (matching what `computeTick` itself would have persisted for an
     // ordinary, uncapped tick), dropping the sub-tick remainder so it does
     // not look like still-missed time to whatever calls catch-up next. The
-    // backlog itself stays open until its summary is published.
+    // same commit ends the backlog: its summary is persisted and its progress
+    // cleared, so the summary exists on disk before anything can expose it,
+    // and a failure here rolls all three back together.
     const adjust = commitWorldTick(
       deps,
       [],
@@ -422,19 +481,23 @@ export async function runCatchUp(
         paused: false,
       },
       [],
+      (db) => {
+        closed = closeCatchUpBacklog(db);
+      },
     );
     if (!adjust.ok) {
-      return {
-        summary: committedSummary(),
-        state: committedState,
-        prng: committedPrng,
-        degraded: { reason: adjust.reason, message: adjust.message },
-      };
+      return degradedCompletion(
+        deps,
+        committedState,
+        committedPrng,
+        adjust.reason,
+        adjust.message,
+      );
     }
   }
 
   return {
-    summary: committedSummary(),
+    summary: closed?.account ?? EMPTY_ACCOUNT,
     state: committedState,
     prng: committedPrng,
   };

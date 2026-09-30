@@ -257,7 +257,12 @@ test("a catch-up summary stays on every later frame, stamped with the sequence i
       statusRef,
       port: 0,
     });
-    const outcome = {
+    // A persisted summary: it carries its own id and the sequence its backlog
+    // ended at, and the frame repeats exactly that, never a value stamped
+    // from whichever tick happens to be current.
+    const summary = {
+      id: "summary-a",
+      atSequence: first.state.lastSequence,
       appliedMs: 3_600_000,
       skippedMs: 60_000,
       majorOutcomes: ["tavern fire spread"],
@@ -271,32 +276,30 @@ test("a catch-up summary stays on every later frame, stamped with the sequence i
       return parsed.value.catchUpSummary;
     };
     try {
-      updateServiceStatus(statusRef, first.state, { catchUpSummary: outcome });
-      const stamped = { ...outcome, atSequence: first.state.lastSequence };
-      expect(await fetchSummary()).toEqual(stamped);
+      updateServiceStatus(statusRef, first.state, { catchUpSummary: summary });
+      expect(await fetchSummary()).toEqual(summary);
 
       let state = first.state;
       for (let tickIndex = 0; tickIndex < 3; tickIndex += 1) {
         state = commitTicks(store, reducers, state, [[]]).state;
         updateServiceStatus(statusRef, state);
-        expect(await fetchSummary()).toEqual(stamped);
+        expect(await fetchSummary()).toEqual(summary);
       }
       expect(state.lastSequence).toBeGreaterThan(first.state.lastSequence);
 
       const replacement = {
+        id: "summary-b",
+        atSequence: state.lastSequence,
         appliedMs: 120_000,
         skippedMs: 0,
         majorOutcomes: [],
       };
       updateServiceStatus(statusRef, state, { catchUpSummary: replacement });
-      expect(await fetchSummary()).toEqual({
-        ...replacement,
-        atSequence: state.lastSequence,
-      });
+      expect(await fetchSummary()).toEqual(replacement);
 
       state = commitTicks(store, reducers, state, [[]]).state;
       updateServiceStatus(statusRef, state);
-      expect((await fetchSummary())?.appliedMs).toBe(120_000);
+      expect(await fetchSummary()).toEqual(replacement);
     } finally {
       handle.stop(true);
       rmSync(slotsDir, { recursive: true, force: true });

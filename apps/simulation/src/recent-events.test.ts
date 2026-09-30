@@ -8,13 +8,20 @@ import {
   parseSyncFrame,
   type WorldEvent,
 } from "@panthea/contracts";
-import { closeStore, commitTick, openStore } from "@panthea/persistence";
+import {
+  closeStore,
+  commitTick,
+  listEvents,
+  openStore,
+} from "@panthea/persistence";
 import {
   createPrng,
   type PrngState,
   runTick,
   submitProposal,
+  toEntityId,
   type WorldState,
+  withActor,
 } from "@panthea/world";
 import {
   createServiceStatusRef,
@@ -305,3 +312,113 @@ test("a catch-up summary stays on every later frame, stamped with the sequence i
       rmSync(slotsDir, { recursive: true, force: true });
     }
   }));
+
+// --- Derived events stay out of the window ---------------------------------------------
+
+/** The Greek world with Zeus and `crowd` bystanders at the tavern, so one strike is witnessed many times over. */
+function crowdedSeed(crowd: number): WorldState {
+  let state = loadGreekWorldState();
+  const zeus = state.actors.get(toEntityId("zeus"));
+  if (!zeus) throw new Error("expected Zeus in the pack");
+  state = withActor(state, { ...zeus, locationId: toEntityId("tavern") });
+  for (let index = 0; index < crowd; index += 1) {
+    state = withActor(state, {
+      id: toEntityId(`onlooker-${index}`),
+      locationId: toEntityId("tavern"),
+      alive: true,
+      capabilities: [],
+      inventory: new Map(),
+      revision: 0,
+    });
+  }
+  return state;
+}
+
+test("a burst of memories and feelings never displaces the events the client draws and receipts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "panthea-sim-recent-burst-"));
+  try {
+    const seeded = crowdedSeed(70);
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(dir, "world.sqlite"), reducers);
+    // The strike, then the fire burning down with the crowd watching: well over
+    // a window's worth of derived events on top of a handful of primary ones.
+    const chain = commitTicks(store, reducers, seeded, [
+      [strikeProposal("the-tavern", 3)],
+      [],
+      [],
+    ]);
+    const all = chain.eventsByTick.flat();
+    const derived: readonly WorldEvent[] = all.filter(
+      (event) =>
+        event.kind === "memory-recorded" ||
+        event.kind === "relationship-changed",
+    );
+    const primary = all.filter((event) => !derived.includes(event));
+    expect(derived.length).toBeGreaterThan(RECENT_EVENT_CAP);
+    expect(primary.some((event) => event.kind === "building-ignited")).toBe(
+      true,
+    );
+    expect(primary.some((event) => event.kind === "building-destroyed")).toBe(
+      true,
+    );
+
+    const recent = readRecentEvents(
+      store.db,
+      chain.state.lastSequence,
+      chain.state.tick,
+    );
+
+    // Every primary event is in the window, in order; no derived one is.
+    expect(recent.map((event) => event.id)).toEqual(
+      primary.map((event) => event.id),
+    );
+    // They are still in the log, for the trace and follow-event to reach.
+    const logged = listEvents(store.db).map((event) => event.id);
+    for (const event of derived) {
+      expect(logged).toContain(event.id);
+    }
+    closeStore(store);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("positive control: with fewer derived events the window is the same primary events, and the cap still keeps the newest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "panthea-sim-recent-small-"));
+  try {
+    const seeded = crowdedSeed(1);
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(join(dir, "world.sqlite"), reducers);
+    const chain = commitTicks(store, reducers, seeded, [
+      [strikeProposal("the-tavern", 3)],
+      [],
+    ]);
+    const primary = chain.eventsByTick
+      .flat()
+      .filter(
+        (event) =>
+          event.kind !== "memory-recorded" &&
+          event.kind !== "relationship-changed",
+      );
+    const recent = readRecentEvents(
+      store.db,
+      chain.state.lastSequence,
+      chain.state.tick,
+    );
+    expect(recent.map((event) => event.id)).toEqual(
+      primary.map((event) => event.id),
+    );
+    const capped = readRecentEvents(
+      store.db,
+      chain.state.lastSequence,
+      chain.state.tick,
+      { windowTicks: 100, cap: 2 },
+    );
+    expect(capped.map((event) => event.id)).toEqual(
+      primary.slice(-2).map((event) => event.id),
+    );
+    closeStore(store);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import type { ContentPack } from "@panthea/contracts";
+import type { ContentPack, EventId, WorldEvent } from "@panthea/contracts";
+import { causalChain } from "@panthea/contracts";
 import { runTick, submitProposal } from "./actions";
 import {
   applyBuildingBurnTicked,
@@ -13,6 +14,7 @@ import { decideRoutineProposal } from "./routines";
 import {
   BUILDING_STATUSES,
   type BuildingStatus,
+  buildingBase,
   createInitialWorldState,
   createPrng,
   type PrngState,
@@ -91,14 +93,21 @@ function townPack(fireBalance: Record<string, number> = {}): ContentPack {
   };
 }
 
+/** How the fixture's fires started: a strike by Zeus, recorded at ignition. */
+const IGNITION = {
+  eventId: "evt-ignite" as EventId,
+  actor: toEntityId("zeus"),
+};
+
 function burning(state: WorldState): WorldState {
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
   return withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "burning",
     fireIntensity: 0,
     ticksBurning: 0,
+    ignition: IGNITION,
   });
 }
 
@@ -271,19 +280,26 @@ function buildingInStatus(status: BuildingStatus): WorldState {
     case "operational":
       return state;
     case "damaged":
-      return withBuilding(state, { ...tavern, status: "damaged" });
+      return withBuilding(state, {
+        ...buildingBase(tavern),
+        status: "damaged",
+      });
     case "burning":
       return withBuilding(state, {
-        ...tavern,
+        ...buildingBase(tavern),
         status: "burning",
         fireIntensity: 0,
         ticksBurning: 0,
+        ignition: IGNITION,
       });
     case "destroyed":
-      return withBuilding(state, { ...tavern, status: "destroyed" });
+      return withBuilding(state, {
+        ...buildingBase(tavern),
+        status: "destroyed",
+      });
     case "repairing":
       return withBuilding(state, {
-        ...tavern,
+        ...buildingBase(tavern),
         status: "repairing",
         repairProgress: 1,
       });
@@ -422,11 +438,12 @@ test("applyBuildingDamaged marks a building damaged without touching its invento
 
 test("applyBuildingIgnited starts a fresh burn at zero intensity and ticks", () => {
   const state = createInitialWorldState(townPack());
-  const next = applyBuildingIgnited(state, toEntityId("the-tavern"));
+  const next = applyBuildingIgnited(state, toEntityId("the-tavern"), IGNITION);
   expect(next.buildings.get(toEntityId("the-tavern"))).toMatchObject({
     status: "burning",
     fireIntensity: 0,
     ticksBurning: 0,
+    ignition: IGNITION,
   });
 });
 
@@ -445,4 +462,181 @@ test("applyBuildingDestroyed disposes inventory and exposes no services", () => 
   const tavern = next.buildings.get(toEntityId("the-tavern"));
   expect(tavern?.status).toBe("destroyed");
   expect(tavern?.inventory.size).toBe(0);
+});
+
+// --- Fire carries its cause ---------------------------------------------------
+
+test("the ignition stays on the burning building; destruction clears it", () => {
+  const ignited = applyBuildingIgnited(
+    createInitialWorldState(townPack()),
+    toEntityId("the-tavern"),
+    IGNITION,
+  );
+  expect(ignited.buildings.get(toEntityId("the-tavern"))?.ignition).toEqual(
+    IGNITION,
+  );
+  const destroyed = applyBuildingDestroyed(ignited, toEntityId("the-tavern"));
+  expect(
+    destroyed.buildings.get(toEntityId("the-tavern"))?.ignition,
+  ).toBeUndefined();
+});
+
+test("burn ticks and destruction carry the ignition event that started the fire", () => {
+  const ticking = planFireStep(
+    burning(
+      createInitialWorldState(
+        townPack({ intensityGrowthPerTick: 1, destroyIntensity: 3 }),
+      ),
+    ),
+    createPrng(1),
+  );
+  expect(ticking.events).toContainEqual(
+    expect.objectContaining({
+      kind: "building-burn-ticked",
+      cause: "evt-ignite",
+    }),
+  );
+  const ending = planFireStep(
+    burning(
+      createInitialWorldState(
+        townPack({ intensityGrowthPerTick: 5, destroyIntensity: 3 }),
+      ),
+    ),
+    createPrng(1),
+  );
+  expect(ending.events).toContainEqual(
+    expect.objectContaining({
+      kind: "building-destroyed",
+      cause: "evt-ignite",
+    }),
+  );
+});
+
+test("a spread ignition names the source building's ignition and who started the fire", () => {
+  const step = planFireStep(
+    burning(
+      createInitialWorldState(
+        townPack({ spreadChancePerTick: 1, maxSpreadPerTick: 1 }),
+      ),
+    ),
+    createPrng(1),
+  );
+  const spread = step.events.find((event) => event.kind === "building-ignited");
+  expect(spread).toMatchObject({
+    entityId: "old-oak",
+    cause: { kind: "spread", from: "evt-ignite", actor: "zeus" },
+  });
+});
+
+function spreadPack(): ContentPack {
+  const pack = lifecyclePack();
+  return {
+    ...pack,
+    buildings: [
+      ...pack.buildings,
+      {
+        id: "old-oak",
+        locationId: "town-square",
+        name: "The Old Oak",
+        material: "wood",
+        combustible: true,
+        services: [],
+        inventory: [],
+      },
+    ],
+    rules: {
+      ...pack.rules,
+      fireBalance: {
+        ...pack.rules.fireBalance,
+        spreadChancePerTick: 1,
+        maxSpreadPerTick: 1,
+      },
+    },
+  };
+}
+
+test("a strike's ignition and damage name the striker", () => {
+  let state = createInitialWorldState(lifecyclePack());
+  const struck = runTick(state, createPrng(1), [
+    lifecycleStrike("the-tavern", 3, "obs-ignite"),
+  ]);
+  const ignition = struck.events.find(
+    (event) => event.kind === "building-ignited",
+  );
+  expect(ignition).toMatchObject({
+    cause: { kind: "strike", actor: "zeus" },
+  });
+  state = struck.state;
+  expect(
+    state.buildings.get(toEntityId("the-tavern"))?.ignition as unknown,
+  ).toEqual({ eventId: ignition?.id, actor: "zeus" });
+
+  const grazed = runTick(
+    createInitialWorldState(lifecyclePack()),
+    createPrng(1),
+    [lifecycleStrike("the-tavern", 1, "obs-graze")],
+  );
+  expect(
+    grazed.events.find((e) => e.kind === "building-damaged"),
+  ).toMatchObject({ actor: "zeus", amount: 1 });
+});
+
+test("destruction walks back through spread and ignition to the strike, from the log alone", () => {
+  let state = createInitialWorldState(spreadPack());
+  let prng = createPrng(1);
+  const log = new Map<string, WorldEvent>();
+  const record = (events: readonly WorldEvent[]) => {
+    for (const event of events) log.set(event.id, event);
+  };
+
+  const struck = runTick(state, prng, [
+    lifecycleStrike("the-tavern", 3, "obs-ignite"),
+  ]);
+  record(struck.events);
+  state = struck.state;
+  prng = struck.prng;
+  const strikeIgnition = struck.events.find(
+    (event) => event.kind === "building-ignited",
+  );
+  // The strike's own fire step already spread it to the oak.
+  const oakIgnition = struck.events.find(
+    (event) =>
+      event.kind === "building-ignited" && event.entityId === "old-oak",
+  );
+  expect(oakIgnition).toMatchObject({
+    cause: { kind: "spread", from: strikeIgnition?.id, actor: "zeus" },
+  });
+
+  let destroyed: WorldEvent | undefined;
+  for (let guard = 0; guard < 6 && destroyed === undefined; guard += 1) {
+    const tick = runTick(state, prng, []);
+    record(tick.events);
+    state = tick.state;
+    prng = tick.prng;
+    destroyed = tick.events.find(
+      (event) =>
+        event.kind === "building-destroyed" && event.entityId === "old-oak",
+    );
+  }
+  if (!destroyed) throw new Error("the oak never burned down");
+
+  const chain = causalChain((id) => log.get(id), destroyed.id);
+  expect(chain.map((event) => event.kind)).toEqual([
+    "building-ignited",
+    "building-ignited",
+    "building-destroyed",
+  ]);
+  expect(chain.map((event) => String(event.id))).toEqual([
+    String(strikeIgnition?.id),
+    String(oakIgnition?.id),
+    String(destroyed.id),
+  ]);
+  // Every burn tick of either building has a cause too.
+  for (const event of log.values()) {
+    if (event.kind === "building-burn-ticked") {
+      expect(causalChain((id) => log.get(id), event.id).length).toBeGreaterThan(
+        1,
+      );
+    }
+  }
 });

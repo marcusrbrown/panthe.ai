@@ -39,6 +39,22 @@
       "favorDurationTicks": 10,
       "favorGatherBonus": 1,
       "incomePerTick": 1
+    },
+    "memoryBalance": {
+      "capacity": 24,
+      "salience_building-damaged": 5,
+      "salience_building-ignited": 8,
+      "salience_building-destroyed": 9,
+      "salience_building-repaired": 4,
+      "salience_worship-performed": 4,
+      "salience_legend-recorded": 3,
+      "salience_told": 4,
+      "harmAffinity": 2,
+      "kindnessAffinity": 1,
+      "toldShare": 0.5,
+      "affinityLimit": 10,
+      "grudgeLimit": 10,
+      "allianceAffinity": 5
     }
   }
 }

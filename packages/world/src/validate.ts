@@ -22,6 +22,7 @@ import type {
   RealmTransitionProposal,
   RejectionReasonCode,
   RepairProposal,
+  ReportProposal,
   ResourceAmount,
   StrikeProposal,
   TradeProposal,
@@ -35,6 +36,7 @@ import {
 } from "./economy";
 import { igniteThresholdOf } from "./fire";
 import { crossesRealm, findEdge, isAdjacent } from "./geography";
+import { getMemories } from "./memory";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -406,12 +408,17 @@ function handleStrike(
     },
   ];
   if (target.combustible && proposal.power >= igniteThresholdOf(state)) {
-    events.push({ kind: "building-ignited", entityId: target.id });
+    events.push({
+      kind: "building-ignited",
+      entityId: target.id,
+      cause: { kind: "strike", actor: proposal.actor },
+    });
   } else {
     events.push({
       kind: "building-damaged",
       entityId: target.id,
       amount: proposal.power,
+      actor: proposal.actor,
     });
   }
   return commit(events);
@@ -527,6 +534,79 @@ function handleLegend(
 }
 
 /**
+ * A report commits when the teller could really say it: the listener is a
+ * living actor at the teller's own place, and any event the teller cites is
+ * one it witnessed. The content and the claim are never judged, since they may
+ * be wrong (a claim's shape and that the ids it names exist are all that is
+ * checked); a citation is judged, since it is a claim to have been there. Only first-hand
+ * memory backs one, so a rumor stops at one hop: someone who was only told may
+ * retell the story, but not cite the event as their own evidence.
+ */
+function handleReport(
+  state: WorldState,
+  proposal: ReportProposal,
+): RuleOutcome {
+  if (proposal.actor === proposal.listener) {
+    return reject("malformed", "an actor cannot report to itself");
+  }
+  const teller = getActor(state, proposal.actor);
+  if (!teller) {
+    return reject("malformed", "actor has no known location");
+  }
+  const listener = getActor(state, proposal.listener);
+  if (!listener?.alive) {
+    return reject(
+      "dead-actor",
+      `listener ${proposal.listener} is not a living, known actor`,
+    );
+  }
+  if (teller.locationId !== listener.locationId) {
+    return reject(
+      "not-adjacent",
+      "a report requires teller and listener to be at the same location",
+    );
+  }
+  if (
+    proposal.linkedEventId !== undefined &&
+    !getMemories(state, proposal.actor).some(
+      (memory) =>
+        memory.kind === "witnessed" &&
+        memory.sourceEventId === proposal.linkedEventId,
+    )
+  ) {
+    return reject(
+      "unauthorized-claim",
+      `${proposal.actor} did not witness ${proposal.linkedEventId}, so cannot cite it`,
+    );
+  }
+  const claim = proposal.claim;
+  if (
+    claim !== undefined &&
+    (!getActor(state, claim.agent) ||
+      (claim.target !== undefined &&
+        !getActor(state, claim.target) &&
+        !getBuilding(state, claim.target)))
+  ) {
+    return reject(
+      "malformed",
+      "a claim must name an actor as its agent and an actor or building as its target",
+    );
+  }
+  return commit([
+    {
+      kind: "report-told",
+      entityId: proposal.actor,
+      listenerId: proposal.listener,
+      content: proposal.content,
+      ...(claim === undefined ? {} : { claim }),
+      ...(proposal.linkedEventId === undefined
+        ? {}
+        : { linkedEventId: proposal.linkedEventId }),
+    },
+  ]);
+}
+
+/**
  * Runs the shared pre-checks (actor alive, expected revisions) and then
  * the kind-specific handler.
  */
@@ -575,6 +655,8 @@ export function validateProposal(
       return handleWorship(state, proposal);
     case "legend":
       return handleLegend(state, proposal);
+    case "report":
+      return handleReport(state, proposal);
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

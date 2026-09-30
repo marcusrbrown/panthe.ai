@@ -30,6 +30,7 @@ import {
   deserializePrngState,
   loadGreekWorldState,
   restoreWorldTime,
+  worldImportReducers,
 } from "./world-store";
 import { importWorldArchive } from "./worlds";
 
@@ -1039,7 +1040,7 @@ test("an archive exported mid-backlog, imported, and resumed reports the same su
     const slot = importWorldArchive(
       archivePath,
       join(slotsDir, "slots"),
-      createWorldProjectionReducers(loadGreekWorldState()).codec,
+      worldImportReducers,
     );
     const restored = backlogAt(join(slot.slotPath, "world.sqlite"));
     const resumed = await restored.run(nowWallMs);
@@ -1328,7 +1329,7 @@ test("an archive exported after a completed catch-up, imported, and reopened car
     const slot = importWorldArchive(
       archivePath,
       join(slotsDir, "slots"),
-      createWorldProjectionReducers(loadGreekWorldState()).codec,
+      worldImportReducers,
     );
     const restored = backlogAt(join(slot.slotPath, "world.sqlite"));
 

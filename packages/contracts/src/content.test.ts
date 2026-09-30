@@ -321,3 +321,66 @@ test("duplicate location ids fail referential integrity", () => {
     expect(result.path).toBe("locations[2].id");
   }
 });
+
+function packWithMemoryBalance(
+  memoryBalance: unknown,
+): Record<string, unknown> {
+  const pack = validPack();
+  (pack.rules as Record<string, unknown>).memoryBalance = memoryBalance;
+  return pack;
+}
+
+test("memory tunables are checked key by key: whole non-negative numbers where a count is meant, a non-negative fraction only for toldShare", () => {
+  expect(
+    parseContentPack(
+      packWithMemoryBalance({
+        capacity: 24,
+        "salience_building-ignited": 8,
+        salience_told: 4,
+        harmAffinity: 2,
+        kindnessAffinity: 1,
+        toldShare: 0.5,
+        affinityLimit: 10,
+        grudgeLimit: 10,
+        allianceAffinity: 5,
+      }),
+    ).ok,
+  ).toBe(true);
+  // Capacity zero is a legal, if forgetful, world.
+  expect(parseContentPack(packWithMemoryBalance({ capacity: 0 })).ok).toBe(
+    true,
+  );
+  expect(parseContentPack(packWithMemoryBalance({ toldShare: 1.5 })).ok).toBe(
+    true,
+  );
+
+  const rejected: Record<string, unknown>[] = [
+    { capacity: -1 },
+    { capacity: 2.5 },
+    { capacity: "many" },
+    { "salience_building-ignited": 1.5 },
+    { "salience_building-ignited": -1 },
+    { harmAffinity: 1.5 },
+    { harmAffinity: -2 },
+    { kindnessAffinity: 0.5 },
+    { affinityLimit: -1 },
+    { affinityLimit: 2.5 },
+    { grudgeLimit: -1 },
+    { allianceAffinity: 1.5 },
+    { toldShare: -0.1 },
+    { toldShare: Number.POSITIVE_INFINITY },
+    // A typo would silently leave the default in force.
+    { capcity: 24 },
+    { "salience_building-ignitd": 8 },
+    // No one can witness these, so a salience for them means nothing.
+    { "salience_report-told": 4 },
+    { "salience_memory-recorded": 4 },
+    { "salience_relationship-changed": 4 },
+  ];
+  for (const memoryBalance of rejected) {
+    expect(parseContentPack(packWithMemoryBalance(memoryBalance)).ok).toBe(
+      false,
+    );
+  }
+  expect(parseContentPack(packWithMemoryBalance(["capacity"])).ok).toBe(false);
+});

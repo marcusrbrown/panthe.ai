@@ -6,6 +6,7 @@ Solved problems and practices, organized by category directory:
 - `integration-issues/`
 - `logic-errors/`
 - `performance-issues/`
+- `runtime-errors/`
 - `security-issues/`
 - `test-failures/`
 

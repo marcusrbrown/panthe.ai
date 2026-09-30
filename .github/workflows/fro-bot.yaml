@@ -211,7 +211,8 @@ env:
          bun run lint
          bun run test
        Apply safe mechanical fixes (lint/format autofixes) on a PR branch —
-       NEVER commit directly to main. If a gate fails and the fix is not
+       NEVER commit directly to main. A mechanical fix changes no
+       requirement, so it does not touch docs/product/traceability.md. If a gate fails and the fix is not
        minimal/reversible, open or update an issue and log it under "Needs
        Human Attention".
 
@@ -230,7 +231,8 @@ env:
          appears exactly once in docs/product/traceability.md;
          implementation/evidence paths cited actually exist; no status
          promoted without linked evidence; PRs merged since the last run
-         that touched apps/ or packages/ without updating traceability.
+         that changed a requirement's behavior or evidence without updating
+         that requirement's row.
        - ADR sweep: docs/decisions/*.md have Status/Context/Decision/
          Consequences/Evidence/Requirement IDs; the index in
          docs/decisions/README.md matches each ADR's status; proposed ADRs

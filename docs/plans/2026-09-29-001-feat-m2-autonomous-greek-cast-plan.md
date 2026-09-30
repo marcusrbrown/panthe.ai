@@ -479,6 +479,12 @@ sequenceDiagram
 
 **Experience gate (after Unit 8, before Unit 9):** a set of real-inference Zeus and Hera episodes on the M1 Pro. Automated checks: each god's committed actions trace to its own drives or abilities, repetition stays under the starting cap, and each god causes at least one relationship or belief change. The owner rates the episodes with the acceptance rubric and chooses continue, tune, or replan. The starting exit thresholds in Unit 13 are revisited here with the measured numbers.
 
+Gate parameters and checks (owner, 2026-09-30):
+
+- Three episodes of five minutes each. Each is a fresh world from the initial authored Greek state, with Zeus and Hera on llama3.2:3b at 4K through the real-run configuration, and no fixture staging and no seeds. The tooling is `scenario:m2 --episodes=3 --episode-seconds=300`, which writes one transcript per episode and a summary.
+- The rubric is novelty, causality, recognizable identity, pacing, and inspectability (acceptance.md), each scored 0, 1, or 2 by the owner: 0 is replan pressure, 1 needs tuning, 2 is good enough to continue. The owner scores and decides; the tool never scores.
+- Automated checks, per god per episode, on top of the real-run properties: (a) profile trace: every committed model proposal has a model request for its actor, and its kind is one of the actor's profile abilities (ability-backed: strike, legend) or a context action (context-backed: move, realm-transition, report), reported as a split, and anything else fails; (b) repetition: ordered by the first event each proposal caused, the longest run of the same (kind, primary target) is at most 3, so a fourth identical choice in a row fails; (c) minimum activity: at least 5 committed model actions; (d) influence: at least one told belief or relationship change traced through the causal chain to that god's committed proposals.
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**

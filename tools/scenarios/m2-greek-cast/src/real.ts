@@ -14,7 +14,11 @@ import {
 import { readFrame } from "../../m1-living-world/src/steps/api";
 import { activeStorePath } from "../../m1-living-world/src/world-db";
 import { readProposals, readRealRequests, readStoredEvents } from "./db";
-import { analyzeReal, type RealAnalysis } from "./real-analysis";
+import {
+  analyzeReal,
+  type RealAnalysis,
+  type RealInput,
+} from "./real-analysis";
 
 export interface RealOptions {
   readonly binary: string;
@@ -35,7 +39,7 @@ export interface RealRecord {
 export class OllamaUnreachable extends Error {}
 
 /** Confirms Ollama answers and has the model, loads it, and returns. Throws with the exact error otherwise. */
-async function prepareOllama(options: RealOptions): Promise<void> {
+export async function prepareOllama(options: RealOptions): Promise<void> {
   const tags = `${options.ollama}/api/tags`;
   let names: string[];
   try {
@@ -71,8 +75,26 @@ async function prepareOllama(options: RealOptions): Promise<void> {
   });
 }
 
+/** One run's record, and the data it was analyzed from. */
+export interface CollectedRun {
+  readonly record: RealRecord;
+  readonly input: RealInput;
+}
+
 export async function runReal(options: RealOptions): Promise<RealRecord> {
   await prepareOllama(options);
+  return (await collectRun(options)).record;
+}
+
+/**
+ * One fresh world (a temporary app-data directory, the initial authored
+ * state) with both gods on the model for `durationMs`. `beforeCleanup` sees the
+ * collected data before the temporary store is deleted.
+ */
+export async function collectRun(
+  options: RealOptions,
+  beforeCleanup?: (run: CollectedRun) => void,
+): Promise<CollectedRun> {
   const root = mkdtempSync(join(tmpdir(), "panthea-m2-real-"));
   const dataDir = join(root, "app-data");
   const configPath = join(root, "models.json");
@@ -113,20 +135,25 @@ export async function runReal(options: RealOptions): Promise<RealRecord> {
         outcome: entry.outcome as "committed" | "rejected" | undefined,
         ...(entry.reason === undefined ? {} : { reason: entry.reason }),
       }));
-    const analysis = analyzeReal({
+    const input: RealInput = {
       requests: readRealRequests(path),
       proposals,
       events: readStoredEvents(path),
       polls,
-    });
-    return {
-      ranAt: new Date().toISOString(),
-      model: options.model,
-      durationMs: options.durationMs,
-      ticks,
-      analysis,
-      hardware: captureEnvironment().hardware.brand,
     };
+    const run: CollectedRun = {
+      record: {
+        ranAt: new Date().toISOString(),
+        model: options.model,
+        durationMs: options.durationMs,
+        ticks,
+        analysis: analyzeReal(input),
+        hardware: captureEnvironment().hardware.brand,
+      },
+      input,
+    };
+    beforeCleanup?.(run);
+    return run;
   } finally {
     killAllSidecars();
     rmSync(root, { recursive: true, force: true });

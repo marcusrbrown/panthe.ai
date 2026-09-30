@@ -235,7 +235,9 @@ export async function runCatchUp(
     // applied everything and its ending commit did not happen, or it degraded
     // and a retry has nothing new). End it now: persist its summary and clear
     // the progress in one transaction, exactly as the run that finished it
-    // would have.
+    // would have. That includes the cursor: the sub-tick remainder is dropped
+    // here for the same reason the normal ending drops it, so it cannot be
+    // left behind to add up to an extra tick later.
     const finish = commitWorldTick(
       deps,
       [],
@@ -243,7 +245,7 @@ export async function runCatchUp(
         tick: initialState.tick,
         simTimeMs: initialState.simTime,
         prngState: serializePrngState(initialPrng),
-        cursorWallMs: clock.cursorWallMs,
+        cursorWallMs: sampledNowCursor,
         paused: false,
       },
       [],

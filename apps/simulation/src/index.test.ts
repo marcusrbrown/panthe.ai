@@ -312,6 +312,8 @@ afterEach(() => {
 interface SpawnedService {
   readonly proc: ReturnType<typeof Bun.spawn>;
   readonly port: number;
+  /** Everything the service has written to stdout so far, the port line included. */
+  output(): string;
 }
 
 /** Spawns the service, writes `token` to stdin, and resolves once the port line is seen. */
@@ -361,9 +363,22 @@ async function spawnService(
       ),
     ),
   ]);
-  reader.releaseLock();
+  // Keep draining: a test waits on lines the service prints after its port
+  // (a line that arrived in the same chunk as the port line is already in
+  // `buffer`), and an undrained pipe would eventually block the service.
+  void (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // The process was killed; there is nothing more to read.
+    }
+  })();
 
-  return { proc, port };
+  return { proc, port, output: () => buffer };
 }
 
 /** Runs `fn` against the active store's file: read-only while a service holds it, read-write once none does (a cleanly stopped WAL store cannot be opened read-only). */
@@ -465,17 +480,24 @@ describe("service (bun run src/index.ts)", () => {
   }
 
   /**
-   * Seeds three minutes of downtime, starts a service, and waits until its
-   * catch-up has persisted the summary (read from the store, never through
-   * /frame). Returns the running service and the persisted summary.
+   * Seeds three minutes of downtime, starts a service, and waits until it has
+   * published the summary, without ever fetching /frame. The barrier is the
+   * service's own `startup catch-up complete` line, which it prints only after
+   * the catch-up ran, the status was refreshed from the store, and the frame
+   * was broadcast (in that order, in `startService`). Then the persisted row is
+   * read from the store. Returns the running service and the persisted summary.
    */
   async function serviceThatCaughtUp(token: string) {
     await createStore();
     setCursor(Date.now() - 3 * 60 * 1000);
     const running = await spawnService(token);
-    const persisted = await waitUntil("the summary to be persisted", () =>
-      withActiveDb((db) => readCatchUpSummary(db)),
+    await waitUntil("the service to have published its summary", () =>
+      running.output().includes("startup catch-up complete") ? true : undefined,
     );
+    const persisted = withActiveDb((db) => readCatchUpSummary(db));
+    if (!persisted) {
+      throw new Error("the service published but no summary is persisted");
+    }
     expect(persisted.appliedMs).toBe(3 * 60 * 1000);
     // Persisted with the backlog closed, in the same commit.
     expect(withActiveDb((db) => readCatchUpProgress(db))).toBeUndefined();
@@ -524,6 +546,89 @@ describe("service (bun run src/index.ts)", () => {
       expect(await fetchSummary(restarted.port, "summary-token-4")).toEqual(
         persisted,
       );
+    } finally {
+      restarted.proc.kill();
+    }
+  }, 60_000);
+
+  test("the service's own startup line is an honest publication barrier: when it appears, the first frame already carries the summary, and it is the persisted one", async () => {
+    await createStore();
+    setCursor(Date.now() - 3 * 60 * 1000);
+    const running = await spawnService("summary-barrier-token");
+    try {
+      await waitUntil("the service to have published its summary", () =>
+        running.output().includes("startup catch-up complete")
+          ? true
+          : undefined,
+      );
+
+      const persisted = withActiveDb((db) => readCatchUpSummary(db));
+      expect(persisted).toBeDefined();
+      // Fetched only now, after the barrier: had the line been printed before
+      // the status was refreshed and the frame broadcast, this would be empty.
+      expect(await fetchSummary(running.port, "summary-barrier-token")).toEqual(
+        persisted,
+      );
+    } finally {
+      running.proc.kill();
+    }
+  }, 60_000);
+
+  test("a degraded partial summary meets a restart with nothing new to apply: every frame carries that same summary, id and applied time, because the closing commit reuses the id", async () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(
+      join(appDataDir, "active", "world.sqlite"),
+      reducers,
+    );
+    ensureTraceSchema(store.db);
+    store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+      Date.now() - 5 * HOUR_MS,
+    ]);
+    let attempt = 0;
+    const interrupted = await runCatchUp(
+      seeded,
+      createPrng(1),
+      {
+        store,
+        reducers,
+        traceDb: store.db,
+        commitTick: (storeArg, reducersArg, input) => {
+          attempt += 1;
+          if (attempt === 2) throw new Error("simulated commit failure");
+          return persistCommitTick(storeArg, reducersArg, input);
+        },
+      },
+      { nowWallMs: Date.now() },
+    );
+    expect(interrupted.degraded).toBeDefined();
+    const partial = readCatchUpSummary(store.db);
+    expect(partial).toMatchObject({ appliedMs: 0, skippedMs: 4 * HOUR_MS });
+    expect(readCatchUpProgress(store.db)).toBeDefined();
+    closeStore(store);
+    // The restart has nothing new to apply, so the summary cannot be replaced
+    // by a completed backlog: it can only be kept.
+    setCursor(Date.now() + 10 * 60 * 1000);
+
+    const restarted = await spawnService("summary-partial-token");
+    try {
+      // Whether this frame is served before or after the restart's closing
+      // commit, it must be that one summary.
+      expect(
+        await fetchSummary(restarted.port, "summary-partial-token"),
+      ).toEqual(partial);
+
+      await waitUntil("the restart to close the backlog", () =>
+        restarted.output().includes("startup catch-up complete")
+          ? true
+          : undefined,
+      );
+      expect(withActiveDb((db) => readCatchUpProgress(db))).toBeUndefined();
+      expect(withActiveDb((db) => readCatchUpSummary(db))).toEqual(partial);
+      expect(
+        await fetchSummary(restarted.port, "summary-partial-token"),
+      ).toEqual(partial);
     } finally {
       restarted.proc.kill();
     }
@@ -787,7 +892,7 @@ describe("service (bun run src/index.ts)", () => {
     expect(exitCode).toBe(0);
   });
 
-  test("a five hour gap whose first chunk never committed after the discard: the restarted service's /frame reports the whole backlog, discard included", async () => {
+  test("a five hour gap whose first chunk never committed after the discard: the restarted service completes the backlog and its /frame reports all of it, discard included, under a new id", async () => {
     const HOUR_MS = 60 * 60 * 1000;
     const seeded = loadGreekWorldState();
     const reducers = createWorldProjectionReducers(seeded);
@@ -831,12 +936,6 @@ describe("service (bun run src/index.ts)", () => {
         if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
         return parsed.value.catchUpSummary;
       };
-      // Until the restart's own catch-up completes, the frame carries the
-      // persisted partial summary; it never shows nothing.
-      const seenFirst = await frameSummary();
-      expect(seenFirst).toBeDefined();
-      expect(seenFirst?.skippedMs).toBeGreaterThanOrEqual(4 * HOUR_MS);
-
       const summary = await waitUntil(
         "the completed backlog's summary",
         async () => {

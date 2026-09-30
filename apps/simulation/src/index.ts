@@ -302,9 +302,12 @@ export function startService(options: StartOptions): ServiceHandle {
   // `/pause` and every other request are served while this chunks
   // through the backlog.
   void runCatchUpNow(Date.now()).then(() => {
-    log("panthea-simulation: startup catch-up complete");
     queue = [...buildRoutineQueue(state)];
     serverHandle.broadcastFrame();
+    // Printed last on purpose: by this line the catch-up has run, the status
+    // was refreshed from the store (`runCatchUpNow`), and the frame was
+    // broadcast, so a reader of this line knows the summary was published.
+    log("panthea-simulation: startup catch-up complete");
   });
 
   let shuttingDown = false;

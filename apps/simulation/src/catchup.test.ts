@@ -1434,3 +1434,44 @@ test("the summary write and the progress clear are one step: if clearing the pro
     backlog.dispose();
   }
 }, 30_000);
+
+test("a restart that closes a backlog after a failed ending commit also moves the cursor to now: the sub-tick remainder is not left behind to add up to an extra tick later", async () => {
+  const backlog = openBacklog("panthea-sim-summary-remainder-");
+  try {
+    // Two whole chunks and half a tick over.
+    const nowWallMs = backlog.startCursor + 2 * 60 * 1000 + 500;
+
+    // The ending commit (the third) fails before it runs, so the cursor stays
+    // where the last chunk left it, half a tick behind now.
+    const failed = await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.clock().cursorWallMs).toBe(
+      backlog.startCursor + 2 * 60 * 1000,
+    );
+
+    // The restart has less than a tick to apply, so its only commit is the
+    // closing one. It ends the backlog exactly as the normal ending does,
+    // cursor included.
+    const closed = await backlog.run(nowWallMs);
+    expect(closed.degraded).toBeUndefined();
+    expect(backlog.progress()).toBeUndefined();
+    const summary = backlog.summary();
+    expect(summary).toMatchObject({ appliedMs: 120_000 });
+    expect(backlog.clock().cursorWallMs).toBe(nowWallMs);
+
+    // Less than a full tick later: nothing to apply. With the remainder left
+    // behind, the two halves would add up to a whole tick here.
+    const tickBefore = backlog.clock().tick;
+    const next = await backlog.run(nowWallMs + 999);
+
+    expect(next.summary).toEqual({
+      appliedMs: 0,
+      skippedMs: 0,
+      majorOutcomes: [],
+    });
+    expect(backlog.clock().tick).toBe(tickBefore);
+    expect(backlog.summary()).toEqual(summary);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);

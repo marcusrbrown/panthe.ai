@@ -1,81 +1,71 @@
 {
-  "ranAt": "2026-09-30T05:47:48.028Z",
+  "ranAt": "2026-09-30T10:13:22.819Z",
   "model": "llama3.2-3b-4k",
   "durationMs": 180000,
   "ticks": 180,
   "analysis": {
     "requests": {
-      "total": 62,
-      "intent": 49,
-      "exhausted": 13,
-      "native": 49,
+      "total": 75,
+      "intent": 64,
+      "exhausted": 11,
+      "native": 64,
       "repaired": 0
     },
     "latencyMs": {
-      "p50": 2131,
-      "p95": 4038
+      "p50": 1569,
+      "p95": 3590
     },
     "promptChars": {
-      "p50": 4264,
-      "max": 5443
+      "p50": 3912,
+      "max": 4752
     },
     "proposals": {
-      "move": 8,
-      "legend": 1,
-      "realm-transition": 12,
-      "report": 15
+      "move": 22,
+      "legend": 3,
+      "realm-transition": 16,
+      "report": 8
     },
     "outcomes": {
-      "committed": 36
+      "committed": 49
     },
     "exhaustion": [
       {
         "reason": "invalid-output",
         "detail": "content: content must be 1 to 280 characters",
-        "count": 9
-      },
-      {
-        "reason": "invalid-output",
-        "detail": "linkedEventId: linkedEventId must be one of the ids you can see: evt-4-13",
-        "count": 1
-      },
-      {
-        "reason": "invalid-output",
-        "detail": "assertion: assertion must be 1 to 280 characters",
-        "count": 1
-      },
-      {
-        "reason": "invalid-output",
-        "detail": "linkedEventId: linkedEventId must be one of the ids you can see: (none)",
-        "count": 1
+        "count": 5
       },
       {
         "reason": "invalid-output",
         "detail": "to: to must be one of the ids you can see: great-hall",
+        "count": 5
+      },
+      {
+        "reason": "invalid-output",
+        "detail": "linkedEventId: linkedEventId must be one of the ids you can see: evt-8-28, evt-80-338",
         "count": 1
       }
     ],
-    "degradedShare": 0.2222222222222222,
+    "degradedShare": 0.14444444444444443,
     "properties": [
       {
         "name": "valid actions",
         "ok": true,
-        "detail": "36 proposals, all god actions, none rejected as malformed"
+        "detail": "49 proposals, all god actions, none rejected as malformed"
       },
       {
         "name": "perception compliance",
         "ok": true,
-        "detail": "every id named by 36 proposals was in the prompt behind it"
+        "detail": "every id named by 49 proposals was in the prompt behind it"
       },
       {
         "name": "relationship change with provenance",
         "ok": true,
-        "detail": "1 changes, 1 explained from the log alone, e.g. report-told > memory-recorded > relationship-changed"
+        "detail": "3 changes, 3 explained from the log alone, e.g. report-told > memory-recorded > relationship-changed"
       },
       {
         "name": "changed next action",
         "ok": true,
-        "detail": "hera: realm-transition:olympus-gate before its first belief, report:zeus after (changed); zeus: report:hera before its first belief, report:hera after (same)"
+        "detail": "hera: realm-transition:olympus-gate before its first belief, realm-transition:mountain-path after (changed); zeus: report:hera before its first belief, report:hera,zeus,hera after (changed)"
       }
     ]
   },

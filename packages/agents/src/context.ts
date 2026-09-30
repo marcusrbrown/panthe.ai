@@ -623,6 +623,7 @@ export function buildGodContext(
           'You may also tell someone here something (action "report", naming the listener, your words, and optionally a claim of who harmed or did a kindness to whom, and an event you saw). It is your own account, told as you choose.',
         ]
       : []),
+    `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
     'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");

@@ -76,7 +76,8 @@ export function commit(events: readonly WorldEventDraft[]): RuleCommit {
   return { ok: true, events };
 }
 
-function hasCapability(
+/** Whether `capabilities` satisfy a location's `requiredCapability`; the one rule move and realm-transition validation apply, exported so a caller can offer only what the rules would allow. */
+export function hasCapability(
   capabilities: readonly string[],
   required: string | undefined,
 ): boolean {

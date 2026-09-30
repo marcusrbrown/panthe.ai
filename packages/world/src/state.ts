@@ -202,6 +202,9 @@ function toInventoryMap(
   return inventory;
 }
 
+/** The capability every deity inhabitant starts with. A location's `requiredCapability` names it, and it is what opens the divine realms. */
+export const DIVINE_CAPABILITY = "divine";
+
 /**
  * Builds the initial live world state from a validated content pack: every
  * authored location becomes a `LocationState` at revision 0, every
@@ -234,7 +237,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       locationId: toEntityId(inhabitant.locationId),
       alive: true,
       ...(inhabitant.deity ? { isDeity: true } : {}),
-      capabilities: [],
+      capabilities: inhabitant.deity ? [DIVINE_CAPABILITY] : [],
       inventory: toInventoryMap(inhabitant.startingInventory),
       ...(inhabitant.drives === undefined ? {} : { drives: inhabitant.drives }),
       ...(inhabitant.gathers === undefined

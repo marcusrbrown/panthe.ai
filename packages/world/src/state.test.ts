@@ -314,3 +314,34 @@ test("createInitialWorldState seeds every building as operational with no fire o
   expect(building?.ticksBurning).toBeUndefined();
   expect(building?.repairProgress).toBeUndefined();
 });
+
+test("a deity inhabitant starts with the divine capability; a mortal starts with none", () => {
+  const pack: ContentPack = {
+    schemaVersion: 1,
+    realms: ["mortal", "olympus"],
+    resources: [],
+    locations: [
+      { id: "great-hall", realm: "olympus", name: "Great Hall", edges: [] },
+      { id: "square", realm: "mortal", name: "Square", edges: [] },
+    ],
+    buildings: [],
+    inhabitants: [
+      { id: "zeus", name: "Zeus", locationId: "great-hall", deity: true },
+      { id: "farmer", name: "The Farmer", locationId: "square" },
+      {
+        id: "pretender",
+        name: "Pretender",
+        locationId: "square",
+        deity: false,
+      },
+    ],
+    rules: minimalRules(),
+    recipes: {},
+  };
+  const state = createInitialWorldState(pack);
+  expect(state.actors.get(toEntityId("zeus"))?.capabilities).toEqual([
+    "divine",
+  ]);
+  expect(state.actors.get(toEntityId("farmer"))?.capabilities).toEqual([]);
+  expect(state.actors.get(toEntityId("pretender"))?.capabilities).toEqual([]);
+});

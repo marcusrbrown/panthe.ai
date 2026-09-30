@@ -10,6 +10,9 @@ import { check, type FixtureValues, instantiate, waitFor } from "../helpers";
 import type { Sidecar } from "../sidecar";
 import type { Story } from "./context";
 
+/** What these helpers read from a story: only its sidecar, so another scenario's story fits. */
+type HasSidecar = Pick<Story, "sidecar">;
+
 export const FRAME_TIMEOUT_MS = 10_000;
 
 export const fmt = (value: unknown): string =>
@@ -35,7 +38,7 @@ export async function readFrame(sidecar: Sidecar) {
 
 /** Waits until the committed tick has advanced by `count`, and returns the tick reached. */
 export async function waitForTicks(
-  story: Story,
+  story: HasSidecar,
   count: number,
   why: string,
 ): Promise<number> {
@@ -61,14 +64,14 @@ export async function waitForLog(
   });
 }
 
-export async function stopClean(story: Story, why: string): Promise<void> {
+export async function stopClean(story: HasSidecar, why: string): Promise<void> {
   const code = await story.sidecar.stop("SIGTERM");
   check(code === 0, why, `exit code ${code}`);
 }
 
 /** Instantiates a fixture against the latest committed frame and posts it under a fresh producer-generated proposal id. */
 export async function postFixture(
-  story: Story,
+  story: HasSidecar,
   template: unknown,
   extra: FixtureValues = {},
   proposalId: string = createProposalId(),
@@ -108,7 +111,7 @@ const encode = encodeURIComponent;
 
 /** The proposal's recorded outcome as `/trace/proposal` reports it, once the tick that took it has committed. */
 export async function outcomeOf(
-  story: Story,
+  story: HasSidecar,
   proposalId: string,
   why: string,
 ): Promise<TracedOutcome> {
@@ -151,13 +154,13 @@ async function getJson(sidecar: Sidecar, path: string) {
 }
 
 /** `GET /trace/event`: the causal chain of one committed event, through its presentation receipts. */
-export async function traceEvent(story: Story, eventId: string) {
+export async function traceEvent(story: HasSidecar, eventId: string) {
   return (await getJson(story.sidecar, `/trace/event?id=${encode(eventId)}`))
     .result;
 }
 
 /** `GET /trace/proposal`: the causal chain of one proposal, through every event it committed. */
-export async function traceProposal(story: Story, proposalId: string) {
+export async function traceProposal(story: HasSidecar, proposalId: string) {
   return (
     await getJson(story.sidecar, `/trace/proposal?id=${encode(proposalId)}`)
   ).result;
@@ -170,7 +173,7 @@ export interface ReceiptSeen {
 
 /** The earliest presentation receipt the trace holds for `eventId`, or undefined when none is stored. */
 export async function receiptOf(
-  story: Story,
+  story: HasSidecar,
   eventId: string | undefined,
 ): Promise<ReceiptSeen | undefined> {
   if (eventId === undefined) return undefined;
@@ -188,7 +191,7 @@ export async function receiptOf(
  * intake is refused again. It is traced when `/trace/proposal` finds a chain.
  */
 export async function knowsProposal(
-  story: Story,
+  story: HasSidecar,
   proposalId: string,
   envelope: unknown,
 ) {

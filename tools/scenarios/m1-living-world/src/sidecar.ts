@@ -56,6 +56,8 @@ export interface Sidecar {
   readonly dataDir: string;
   /** Combined stdout/stderr the child has written so far. */
   log(): string;
+  /** The same output line by line, each with the wall time it was read. */
+  lines(): readonly { readonly at: number; readonly text: string }[];
   request(
     method: "GET" | "POST",
     path: string,
@@ -94,6 +96,8 @@ export interface StartOptions {
   readonly startTimeoutMs?: number;
   /** Called with the child's pid as soon as it is spawned (for tests). */
   readonly onSpawn?: (pid: number) => void;
+  /** Extra environment for the child, on top of this process's and `PANTHEA_APP_DATA_DIR`. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** How many sidecars this module started that are still running. */
@@ -113,18 +117,24 @@ export async function startSidecar(
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, PANTHEA_APP_DATA_DIR: dataDir },
+    env: { ...process.env, ...options.env, PANTHEA_APP_DATA_DIR: dataDir },
   });
   live.add(child);
   options.onSpawn?.(child.pid);
 
   let output = "";
+  const lines: { at: number; text: string }[] = [];
+  let partial = "";
   let resolvePort!: (port: number) => void;
   const portPromise = new Promise<number>((resolvePromise) => {
     resolvePort = resolvePromise;
   });
   const onText = (text: string): void => {
     output += text;
+    const at = Date.now();
+    const parts = (partial + text).split("\n");
+    partial = parts.pop() ?? "";
+    for (const line of parts) lines.push({ at, text: line });
     const match = PORT_PATTERN.exec(output);
     if (match?.[1]) {
       resolvePort(Number(match[1]));
@@ -179,6 +189,7 @@ export async function startSidecar(
     token,
     dataDir,
     log: () => output,
+    lines: () => lines,
     exited,
     async request(method, path, body) {
       const response = await fetch(`${base}${path}`, {

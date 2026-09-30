@@ -166,6 +166,7 @@
       "dependencies": {
         "@panthea/client": "workspace:*",
         "@panthea/contracts": "workspace:*",
+        "@panthea/persistence": "workspace:*",
         "@panthea/telemetry": "workspace:*",
         "@panthea/tools-probes-shared": "workspace:*",
         "@panthea/world": "workspace:*",

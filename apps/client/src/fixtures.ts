@@ -3,7 +3,11 @@
 // world stands in for the authored pack: two mortal locations, one
 // Olympus location, and the Underworld gate.
 
-import { parseSyncFrame, type WorldRules } from "@panthea/contracts";
+import {
+  type EventId,
+  parseSyncFrame,
+  type WorldRules,
+} from "@panthea/contracts";
 import {
   type ActorState,
   type BuildingState,
@@ -23,6 +27,12 @@ const RULES: WorldRules = {
   maxProposalsPerTick: 50,
   fireBalance: { destroyIntensity: 3 },
   economyBalance: { repairCostPlanks: 3 },
+};
+
+/** How the fixture tavern's fire started: a strike by Zeus. */
+const STRIKE_IGNITION = {
+  eventId: "evt-strike" as EventId,
+  actor: toEntityId("zeus"),
 };
 
 function inventory(
@@ -104,6 +114,8 @@ function worldOf(
     actors: new Map(),
     buildings: new Map(),
     legends: new Map(),
+    memories: new Map(),
+    relationships: new Map(),
     rules: RULES,
     recipes: {},
   };
@@ -129,6 +141,7 @@ export function baseState(): WorldState {
         status: "burning",
         fireIntensity: 2,
         ticksBurning: 2,
+        ignition: STRIKE_IGNITION,
       }),
       buildingOf("agora-shop", "agora", "Agora Shop", {
         inventory: inventory({ planks: 1 }),
@@ -194,7 +207,12 @@ export function repairingTavern(
 ): WorldState {
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("fixture has no tavern");
-  const { fireIntensity: _fire, ticksBurning: _burning, ...rest } = tavern;
+  const {
+    fireIntensity: _fire,
+    ticksBurning: _burning,
+    ignition: _ignition,
+    ...rest
+  } = tavern;
   return withBuilding(state, {
     ...rest,
     status: "repairing",
@@ -277,6 +295,7 @@ export function previewView(): WorldViewModel {
         status: "burning",
         fireIntensity: 2,
         ticksBurning: 2,
+        ignition: STRIKE_IGNITION,
       }),
       buildingOf("agora-shop", "agora", "Agora Shop", {
         inventory: inventory({ planks: 1 }),

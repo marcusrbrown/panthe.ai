@@ -205,6 +205,20 @@ export interface LegendProposal extends ProposalBase {
   readonly linkedEventId?: EventId;
 }
 
+/**
+ * One actor tells another, at the same place, something it says happened.
+ * The content is the teller's own account and may be wrong or invented: the
+ * world records that it was told, never that it is true. `linkedEventId`
+ * cites an event the teller witnessed; the rules refuse a citation the teller
+ * has no first-hand memory of.
+ */
+export interface ReportProposal extends ProposalBase {
+  readonly kind: "report";
+  readonly listener: EntityId;
+  readonly content: string;
+  readonly linkedEventId?: EventId;
+}
+
 export type Proposal =
   | MoveProposal
   | RealmTransitionProposal
@@ -216,7 +230,8 @@ export type Proposal =
   | RepairProposal
   | WorshipProposal
   | ClaimProposal
-  | LegendProposal;
+  | LegendProposal
+  | ReportProposal;
 
 export type ProposalKind = Proposal["kind"];
 
@@ -235,6 +250,7 @@ const PROPOSAL_KIND_SET = {
   worship: true,
   claim: true,
   legend: true,
+  report: true,
 } as const satisfies Record<ProposalKind, true>;
 
 export const PROPOSAL_KINDS = Object.keys(
@@ -418,6 +434,26 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
         ...base,
         kind: "legend",
         assertion: assertion.value,
+        ...(linkedEventId.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventId.value }),
+      });
+    }
+    case "report": {
+      const listener = parseEntityId(input.listener, "listener");
+      if (!listener.ok) return listener;
+      const content = parseString(input.content, "content");
+      if (!content.ok) return content;
+      const linkedEventId =
+        input.linkedEventId === undefined
+          ? ok<EventId | undefined>(undefined)
+          : parseEventId(input.linkedEventId, "linkedEventId");
+      if (!linkedEventId.ok) return linkedEventId;
+      return ok({
+        ...base,
+        kind: "report",
+        listener: listener.value,
+        content: content.value,
         ...(linkedEventId.value === undefined
           ? {}
           : { linkedEventId: linkedEventId.value }),

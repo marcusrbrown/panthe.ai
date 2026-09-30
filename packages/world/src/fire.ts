@@ -13,6 +13,7 @@
 import type { EntityId, ResourceAmount } from "@panthea/contracts";
 import { isAdjacent } from "./geography";
 import {
+  type BuildingIgnition,
   type BuildingState,
   getBuilding,
   nextPrngValue,
@@ -32,6 +33,16 @@ function fireBalanceNumber(
 /** The minimum strike power that ignites a combustible target outright, rather than merely damaging it. */
 export function igniteThresholdOf(state: WorldState): number {
   return fireBalanceNumber(state, "igniteThreshold", Number.POSITIVE_INFINITY);
+}
+
+/** What started a burning building's fire. Every burning building has one, set by the event that ignited it; one without it is a corrupt world. */
+function ignitionOf(building: BuildingState): BuildingIgnition {
+  if (building.ignition === undefined) {
+    throw new Error(
+      `building ${building.id} is burning with no recorded ignition`,
+    );
+  }
+  return building.ignition;
 }
 
 export interface FireStepResult {
@@ -64,6 +75,7 @@ export function planFireStep(
   );
 
   for (const building of burning) {
+    const { eventId: cause } = ignitionOf(building);
     const nextIntensity = (building.fireIntensity ?? 0) + intensityGrowth;
     if (nextIntensity >= destroyIntensity) {
       const disposedInventory: ResourceAmount[] = [
@@ -73,6 +85,7 @@ export function planFireStep(
         kind: "building-destroyed",
         entityId: building.id,
         disposedInventory,
+        cause,
       });
     } else {
       events.push({
@@ -80,6 +93,7 @@ export function planFireStep(
         entityId: building.id,
         fireIntensity: nextIntensity,
         ticksBurning: (building.ticksBurning ?? 0) + 1,
+        cause,
       });
     }
   }
@@ -104,7 +118,12 @@ export function planFireStep(
       const draw = nextPrngValue(currentPrng);
       currentPrng = draw.state;
       if (draw.value < spreadChance) {
-        events.push({ kind: "building-ignited", entityId: candidateId });
+        const { eventId, actor } = ignitionOf(source);
+        events.push({
+          kind: "building-ignited",
+          entityId: candidateId,
+          cause: { kind: "spread", from: eventId, actor },
+        });
         ignitedThisStep.add(candidateId);
         spreadCount += 1;
       }
@@ -133,9 +152,11 @@ export function applyBuildingDamaged(
   });
 }
 
+/** Starts a fresh burn at zero, recording what started it. */
 export function applyBuildingIgnited(
   state: WorldState,
   entityId: EntityId,
+  ignition: BuildingIgnition,
 ): WorldState {
   const building = getBuilding(state, entityId);
   if (!building) return state;
@@ -144,6 +165,7 @@ export function applyBuildingIgnited(
     status: "burning",
     fireIntensity: 0,
     ticksBurning: 0,
+    ignition,
     revision: building.revision + 1,
   });
 }

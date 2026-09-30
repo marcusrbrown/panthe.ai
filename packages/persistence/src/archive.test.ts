@@ -17,6 +17,7 @@ import {
   createEventId,
   type EntityMovedEvent,
   LATEST_EVENT_SCHEMA_VERSION,
+  type WorldEvent,
 } from "@panthea/contracts";
 import {
   computeContentHash,
@@ -481,6 +482,113 @@ describe("importArchive: corruption", () => {
       join(dir, "slots2"),
     );
     closeStore(store);
+  });
+});
+
+describe("importArchive: social events", () => {
+  function socialEvents(): WorldEvent[] {
+    const base = (sequence: number) => ({
+      schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
+      id: createEventId(),
+      sequence,
+      simTime: sequence,
+      correlationId: createCorrelationId(),
+      causationId: createCausationId(),
+      approximate: false,
+    });
+    const owner = createEntityId();
+    const strike = createEntityId();
+    const ignited: WorldEvent = {
+      ...base(1),
+      kind: "building-ignited",
+      entityId: createEntityId(),
+      cause: { kind: "strike", actor: strike },
+    };
+    const memory: WorldEvent = {
+      ...base(2),
+      kind: "memory-recorded",
+      memoryKind: "witnessed",
+      entityId: owner,
+      sourceEventId: ignited.id,
+      eventKind: "building-ignited",
+      subjects: [strike],
+      salience: 8,
+      consequence: { effect: "harm", agent: strike },
+    };
+    const change: WorldEvent = {
+      ...base(3),
+      kind: "relationship-changed",
+      entityId: owner,
+      toward: strike,
+      affinityDelta: -2,
+      grudgeDelta: 0,
+      memoryEventId: memory.id,
+    };
+    return [ignited, memory, change];
+  }
+
+  function commitAll(store: Store, events: readonly WorldEvent[]): void {
+    events.forEach((event, index) => {
+      commitTick(store, reducer, {
+        events: [event],
+        cursorWallMs: 1000 * (index + 1),
+        paused: false,
+        tick: index + 1,
+        simTimeMs: 1000 * (index + 1),
+        prngState: `seed-${index}`,
+      });
+    });
+  }
+
+  test("happy path: memory and relationship events, and the fire cause they cite, survive export and import unchanged", () => {
+    const store = openStore(join(dir, "world.sqlite"), reducer);
+    const events = socialEvents();
+    commitAll(store, events);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const result = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+    const imported = openStore(join(result.slotPath, "world.sqlite"), reducer);
+    expect(listEvents(imported.db)).toEqual(events);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("error path: a rehashed archive whose memory event lost its salience, or whose ignition lost its cause, is rejected as corrupt; no slot is created", () => {
+    for (const [sequence, damage] of [
+      [1, { cause: undefined }],
+      [2, { salience: undefined }],
+      [3, { memoryEventId: undefined }],
+    ] as const) {
+      const dbPath = join(dir, `world-${sequence}.sqlite`);
+      const store = openStore(dbPath, reducer);
+      commitAll(store, socialEvents());
+      const archivePath = join(dir, `archive-${sequence}.sqlite`);
+      exportArchive(store, archivePath);
+
+      const db = new Database(archivePath);
+      const row = db
+        .query("SELECT payload FROM events WHERE sequence = ?")
+        .get(sequence) as { payload: string };
+      db.run("UPDATE events SET payload = ? WHERE sequence = ?", [
+        JSON.stringify({ ...JSON.parse(row.payload), ...damage }),
+        sequence,
+      ]);
+      db.close();
+      rehash(archivePath);
+
+      const slotsDir = join(dir, `slots-${sequence}`);
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, projectionCodec),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    }
   });
 });
 

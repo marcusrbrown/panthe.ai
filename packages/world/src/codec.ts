@@ -25,26 +25,34 @@ import {
   type ParseResult,
   parseArray,
   parseBoolean,
+  parseConsequence,
   parseEntityId,
   parseEnum,
+  parseEventId,
   parseLegendId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalBoolean,
   parseOptionalString,
   parseRecipes,
+  parseSalience,
   parseString,
   REALMS,
   type RejectionReasonCode,
   TRANSPORT_KINDS,
+  WORLD_EVENT_KINDS,
 } from "@panthea/contracts";
 import {
   type ActorState,
   BUILDING_STATUSES,
+  type BuildingIgnition,
   type BuildingState,
   type FavorState,
   type LegendRecord,
   type LocationState,
+  type MemoryEntry,
+  type RelationshipState,
+  relationshipKey,
   type WorldState,
 } from "./state";
 
@@ -61,6 +69,8 @@ export interface EncodedWorldState {
   readonly actors: readonly (readonly [EntityId, EncodedActorState])[];
   readonly buildings: readonly (readonly [EntityId, EncodedBuildingState])[];
   readonly legends: readonly (readonly [LegendId, LegendRecord])[];
+  readonly memories: readonly (readonly [EntityId, readonly MemoryEntry[]])[];
+  readonly relationships: readonly (readonly [string, RelationshipState])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -103,6 +113,8 @@ export function encode(state: WorldState): EncodedWorldState {
         ] as const,
     ),
     legends: [...state.legends.entries()],
+    memories: [...state.memories.entries()],
+    relationships: [...state.relationships.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -405,6 +417,14 @@ function parseBuildingState(
     `${path}.repairProgress`,
   );
   if (!repairProgress.ok) return repairProgress;
+  const ignition = parseIgnition(value.ignition, `${path}.ignition`);
+  if (!ignition.ok) return ignition;
+  if ((status.value === "burning") !== (ignition.value !== undefined)) {
+    return fail(
+      `${path}.ignition`,
+      "a building has a recorded ignition exactly while it is burning",
+    );
+  }
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
   return ok({
@@ -428,8 +448,22 @@ function parseBuildingState(
     ...(repairProgress.value === undefined
       ? {}
       : { repairProgress: repairProgress.value }),
+    ...(ignition.value === undefined ? {} : { ignition: ignition.value }),
     revision: revision.value,
   });
+}
+
+function parseIgnition(
+  value: unknown,
+  path: string,
+): ParseResult<BuildingIgnition | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (!isRecord(value)) return fail(path, "expected an ignition object");
+  const eventId = parseEventId(value.eventId, `${path}.eventId`);
+  if (!eventId.ok) return eventId;
+  const actor = parseEntityId(value.actor, `${path}.actor`);
+  if (!actor.ok) return actor;
+  return ok({ eventId: eventId.value, actor: actor.value });
 }
 
 function parseOptionalNonNegativeNumber(
@@ -524,6 +558,11 @@ function parseWorldRules(
     `${path}.economyBalance`,
   );
   if (!economyBalance.ok) return economyBalance;
+  const memoryBalance =
+    value.memoryBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parseNumberRecord(value.memoryBalance, `${path}.memoryBalance`);
+  if (!memoryBalance.ok) return memoryBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -531,6 +570,9 @@ function parseWorldRules(
     maxProposalsPerTick: maxProposalsPerTick.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
+    ...(memoryBalance.value === undefined
+      ? {}
+      : { memoryBalance: memoryBalance.value }),
   });
 }
 
@@ -578,6 +620,153 @@ function parseLegendEntry(
     );
   }
   return ok([id.value, record.value] as const);
+}
+
+function parseMemoryEntry(
+  value: unknown,
+  path: string,
+): ParseResult<MemoryEntry> {
+  if (!isRecord(value)) return fail(path, "expected a memory entry object");
+  const id = parseEventId(value.id, `${path}.id`);
+  if (!id.ok) return id;
+  const sourceEventId = parseEventId(
+    value.sourceEventId,
+    `${path}.sourceEventId`,
+  );
+  if (!sourceEventId.ok) return sourceEventId;
+  const salience = parseSalience(value.salience, `${path}.salience`);
+  if (!salience.ok) return salience;
+  const recordedAt = parseNonNegativeInteger(
+    value.recordedAt,
+    `${path}.recordedAt`,
+  );
+  if (!recordedAt.ok) return recordedAt;
+  const subjects = parseArray(
+    value.subjects,
+    `${path}.subjects`,
+    parseEntityId,
+  );
+  if (!subjects.ok) return subjects;
+  const consequence = parseConsequence(
+    value.consequence,
+    `${path}.consequence`,
+  );
+  if (!consequence.ok) return consequence;
+  const base = {
+    id: id.value,
+    sourceEventId: sourceEventId.value,
+    salience: salience.value,
+    recordedAt: recordedAt.value,
+    subjects: subjects.value,
+    ...(consequence.value === undefined
+      ? {}
+      : { consequence: consequence.value }),
+  };
+
+  switch (value.kind) {
+    case "witnessed": {
+      const eventKind = parseEnum(
+        value.eventKind,
+        `${path}.eventKind`,
+        WORLD_EVENT_KINDS,
+      );
+      if (!eventKind.ok) return eventKind;
+      return ok({ ...base, kind: "witnessed", eventKind: eventKind.value });
+    }
+    case "told": {
+      const teller = parseEntityId(value.teller, `${path}.teller`);
+      if (!teller.ok) return teller;
+      const content = parseString(value.content, `${path}.content`);
+      if (!content.ok) return content;
+      const linkedEventIdRaw = parseOptionalString(
+        value.linkedEventId,
+        `${path}.linkedEventId`,
+      );
+      if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
+      return ok({
+        ...base,
+        kind: "told",
+        teller: teller.value,
+        content: content.value,
+        ...(linkedEventIdRaw.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventIdRaw.value as EventId }),
+      });
+    }
+    default:
+      return fail(`${path}.kind`, "expected a witnessed or told memory");
+  }
+}
+
+function parseMemoryEntries(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EntityId, readonly MemoryEntry[]]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [actor, memories] entry");
+  }
+  const owner = parseEntityId(value[0], `${path}[0]`);
+  if (!owner.ok) return owner;
+  if (!knownActorIds.has(owner.value)) {
+    return fail(
+      `${path}[0]`,
+      `memories belong to unknown actor: ${owner.value}`,
+    );
+  }
+  const entries = parseArray(value[1], `${path}[1]`, parseMemoryEntry);
+  if (!entries.ok) return entries;
+  return ok([owner.value, entries.value] as const);
+}
+
+function parseRelationshipEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [string, RelationshipState]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected a [key, relationship] entry");
+  }
+  const key = parseString(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a relationship");
+  const from = parseEntityId(record.from, `${path}[1].from`);
+  if (!from.ok) return from;
+  const toward = parseEntityId(record.toward, `${path}[1].toward`);
+  if (!toward.ok) return toward;
+  for (const actor of [from.value, toward.value]) {
+    if (!knownActorIds.has(actor)) {
+      return fail(
+        `${path}[1]`,
+        `relationship references unknown actor: ${actor}`,
+      );
+    }
+  }
+  if (key.value !== relationshipKey(from.value, toward.value)) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${key.value}" does not match its own actors`,
+    );
+  }
+  const affinity = record.affinity;
+  if (typeof affinity !== "number" || !Number.isInteger(affinity)) {
+    return fail(`${path}[1].affinity`, "expected an integer");
+  }
+  const grudge = parseNonNegativeInteger(record.grudge, `${path}[1].grudge`);
+  if (!grudge.ok) return grudge;
+  const allied = parseBoolean(record.allied, `${path}[1].allied`);
+  if (!allied.ok) return allied;
+  return ok([
+    key.value,
+    {
+      from: from.value,
+      toward: toward.value,
+      affinity,
+      grudge: grudge.value,
+      allied: allied.value,
+    },
+  ] as const);
 }
 
 function parseNumberRecord(
@@ -665,6 +854,31 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const legends = new Map(legendEntries.value);
 
+  const memoryEntries = parseArray(value.memories, "memories", (item, path) =>
+    parseMemoryEntries(item, path, knownActorIds),
+  );
+  if (!memoryEntries.ok) return memoryEntries;
+  const duplicateMemoryOwner = findDuplicateKey(memoryEntries.value);
+  if (duplicateMemoryOwner !== undefined) {
+    return fail("memories", `duplicate memory owner: ${duplicateMemoryOwner}`);
+  }
+  const memories = new Map(memoryEntries.value);
+
+  const relationshipEntries = parseArray(
+    value.relationships,
+    "relationships",
+    (item, path) => parseRelationshipEntry(item, path, knownActorIds),
+  );
+  if (!relationshipEntries.ok) return relationshipEntries;
+  const duplicateRelationship = findDuplicateKey(relationshipEntries.value);
+  if (duplicateRelationship !== undefined) {
+    return fail(
+      "relationships",
+      `duplicate relationship: ${duplicateRelationship}`,
+    );
+  }
+  const relationships = new Map(relationshipEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -679,6 +893,8 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     actors,
     buildings,
     legends,
+    memories,
+    relationships,
     rules: rules.value,
     recipes: recipes.value,
   });

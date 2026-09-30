@@ -4,7 +4,11 @@
 // receipts, in order.
 
 import type { Database } from "bun:sqlite";
-import type { EventId, RejectionReasonCode } from "@panthea/contracts";
+import {
+  causalChain,
+  type EventId,
+  type RejectionReasonCode,
+} from "@panthea/contracts";
 import {
   type EventSource,
   getModelRequestByProposalId,
@@ -103,35 +107,38 @@ function causeSteps(db: Database, outcome: ProposalOutcomeRow): TraceStep[] {
 }
 
 /**
- * Walks the causal chain of one committed event: the observation,
- * proposal, and validation that produced it, the event itself, its
- * projection change, and every presentation receipt recorded against that
- * event, in that order. Works for any event a proposal committed, not only
- * its first.
+ * Walks the causal chain of one committed event, root first: for each event
+ * on the chain, the observation, model request, proposal, and validation that
+ * produced it (when a proposal committed it), the event itself, its projection
+ * change, and every presentation receipt recorded against it. Works for any
+ * event a proposal committed, not only its first.
  *
- * An event no proposal committed (income, and a fire's burn ticks and
- * destruction) was caused by its tick's automatic rules. It has no
- * observation or proposal to walk, so its chain is the event, its
- * projection change, and its receipts. The fire is not chained back to the
- * strike that ignited it: the log records the tick as the cause, not the
- * ignition.
+ * The chain comes from the events themselves (`causalChain`): a fire's burn
+ * ticks and destruction walk back through any spread to the ignition, and the
+ * ignition is the strike's own event with its proposal; a relationship change
+ * walks back through the memory that caused it to the event witnessed, or to
+ * the report heard and the event it cited. An event nothing else caused (an
+ * income event, a strike, a proposal's own event) is a chain of one: its own
+ * proposal hops, if it has them, then the event.
  */
 export function followEvent(
   db: Database,
   eventSource: EventSource,
   eventId: EventId,
 ): FollowResult {
-  const event = eventSource.getEvent(eventId);
-  if (event === undefined) {
+  const chain = causalChain((id) => eventSource.getEvent(id), eventId);
+  if (chain.length === 0) {
     return { found: false, steps: [] };
   }
-  const outcome = getProposalOutcomeByEventId(db, eventId);
   return {
     found: true,
-    steps: [
-      ...(outcome ? causeSteps(db, outcome) : []),
-      ...eventSteps(db, eventSource, eventId),
-    ],
+    steps: chain.flatMap((event) => {
+      const outcome = getProposalOutcomeByEventId(db, event.id);
+      return [
+        ...(outcome ? causeSteps(db, outcome) : []),
+        ...eventSteps(db, eventSource, event.id),
+      ];
+    }),
   };
 }
 

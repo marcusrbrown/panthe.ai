@@ -1,0 +1,388 @@
+// Memory, beliefs, and relationships: world state changed only by events.
+//
+// Three event kinds carry it. `memory-recorded` gives one actor one memory
+// (witnessed: it was there; told: it holds someone's account as a belief).
+// `report-told` is the primary event of a `report` proposal. `relationship-
+// changed` moves one actor's feeling toward another and cites the memory that
+// caused it. None of them is authored by a rule handler: a tick derives them
+// after its primary events have ids (see `runTick`), from committed state and
+// those events alone, so replay and rebuild reproduce them exactly.
+//
+// Derived events never trigger derivation: a memory is never formed of a
+// memory, a relationship change, or a report's content (reports are private:
+// only the listener learns of one, as a belief). That is not a list kept here
+// but a consequence of perception: those kinds happen at no place
+// (`eventLocation`), so nobody perceives them, whatever salience a pack gives.
+//
+// Every number here is a D23 tunable (docs/product/defaults.md). It is read
+// from `rules.memoryBalance`, falling back to `DEFAULT_MEMORY_BALANCE`, so a
+// content pack can retune it and none of it lives in a prompt.
+
+import type {
+  Consequence,
+  EntityId,
+  EventId,
+  MemoryRecordedEvent,
+  ReportToldEvent,
+  WorldEvent,
+} from "@panthea/contracts";
+import { eventSubjects } from "@panthea/contracts";
+import { perceivesEvent } from "./perception";
+import {
+  type MemoryEntry,
+  type RelationshipState,
+  relationshipKey,
+  type WorldEventDraft,
+  type WorldState,
+} from "./state";
+
+/** Defaults for `rules.memoryBalance`. A `salience_<event-kind>` entry makes that kind memorable; a kind with none (or 0) is never remembered. */
+export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
+  /** Most memories one actor keeps. */
+  capacity: 24,
+  "salience_building-damaged": 5,
+  "salience_building-ignited": 8,
+  "salience_building-destroyed": 9,
+  "salience_building-repaired": 4,
+  "salience_worship-performed": 4,
+  "salience_legend-recorded": 3,
+  /** A belief formed from a report. */
+  salience_told: 4,
+  /** Affinity lost toward whoever did harm one witnessed. */
+  harmAffinity: 2,
+  /** Affinity gained toward whoever did one a kindness. */
+  kindnessAffinity: 1,
+  /** What a belief moves affinity by, as a share of what witnessing it would. */
+  toldShare: 0.5,
+  /** Affinity never goes beyond plus or minus this. */
+  affinityLimit: 10,
+  /** Affinity at which two actors count as allied. */
+  allianceAffinity: 5,
+};
+
+function balanceOf(state: WorldState, key: string): number {
+  return state.rules.memoryBalance?.[key] ?? DEFAULT_MEMORY_BALANCE[key] ?? 0;
+}
+
+/** Most memories one actor holds. */
+export function memoryCapacityOf(state: WorldState): number {
+  return balanceOf(state, "capacity");
+}
+
+const NO_MEMORIES: readonly MemoryEntry[] = [];
+
+/** What `actor` remembers, oldest first. */
+export function getMemories(
+  state: WorldState,
+  actor: EntityId,
+): readonly MemoryEntry[] {
+  return state.memories.get(actor) ?? NO_MEMORIES;
+}
+
+export function getRelationship(
+  state: WorldState,
+  from: EntityId,
+  toward: EntityId,
+): RelationshipState | undefined {
+  return state.relationships.get(relationshipKey(from, toward));
+}
+
+// --- Reducers -----------------------------------------------------------------
+
+function memoryEntryOf(event: MemoryRecordedEvent): MemoryEntry {
+  const base = {
+    id: event.id,
+    sourceEventId: event.sourceEventId,
+    salience: event.salience,
+    recordedAt: event.sequence,
+    subjects: event.subjects,
+    ...(event.consequence === undefined
+      ? {}
+      : { consequence: event.consequence }),
+  };
+  return event.memoryKind === "witnessed"
+    ? { ...base, kind: "witnessed", eventKind: event.eventKind }
+    : {
+        ...base,
+        kind: "told",
+        teller: event.teller,
+        content: event.content,
+        ...(event.linkedEventId === undefined
+          ? {}
+          : { linkedEventId: event.linkedEventId }),
+      };
+}
+
+/**
+ * Forgets entries until `entries` fits `capacity`: the least salient goes
+ * first, and among equals the oldest. Purely a function of the entries, so
+ * replaying the log forgets exactly what the live world forgot. A new memory
+ * less salient than everything held is the one forgotten.
+ */
+function evict(
+  entries: readonly MemoryEntry[],
+  capacity: number,
+): readonly MemoryEntry[] {
+  const kept = [...entries];
+  while (kept.length > capacity) {
+    let victim = 0;
+    for (const [index, entry] of kept.entries()) {
+      const current = kept[victim];
+      if (
+        entry.salience < current.salience ||
+        (entry.salience === current.salience &&
+          entry.recordedAt < current.recordedAt)
+      ) {
+        victim = index;
+      }
+    }
+    kept.splice(victim, 1);
+  }
+  return kept;
+}
+
+export function applyMemoryRecorded(
+  state: WorldState,
+  event: MemoryRecordedEvent,
+): WorldState {
+  const memories = new Map(state.memories);
+  memories.set(
+    event.entityId,
+    evict(
+      [...getMemories(state, event.entityId), memoryEntryOf(event)],
+      memoryCapacityOf(state),
+    ),
+  );
+  return { ...state, memories };
+}
+
+function clampAffinity(state: WorldState, affinity: number): number {
+  const limit = balanceOf(state, "affinityLimit");
+  return Math.max(-limit, Math.min(limit, affinity));
+}
+
+const freshRelationship = (
+  from: EntityId,
+  toward: EntityId,
+): RelationshipState => ({
+  from,
+  toward,
+  affinity: 0,
+  grudge: 0,
+  allied: false,
+});
+
+export function applyRelationshipChanged(
+  state: WorldState,
+  event: Extract<WorldEvent, { kind: "relationship-changed" }>,
+): WorldState {
+  const held =
+    getRelationship(state, event.entityId, event.toward) ??
+    freshRelationship(event.entityId, event.toward);
+  const relationships = new Map(state.relationships);
+  relationships.set(relationshipKey(event.entityId, event.toward), {
+    ...held,
+    affinity: clampAffinity(state, held.affinity + event.affinityDelta),
+    grudge: held.grudge + event.grudgeDelta,
+    allied: event.allied ?? held.allied,
+  });
+  return { ...state, relationships };
+}
+
+// --- Derivation ---------------------------------------------------------------
+
+/** A derived event before it has an id, with the committed event it follows from. */
+export interface DerivedDraft {
+  readonly draft: WorldEventDraft;
+  readonly cause: WorldEvent;
+}
+
+function unique(ids: readonly EntityId[]): readonly EntityId[] {
+  return [...new Set(ids)];
+}
+
+/**
+ * What `event` did to someone, worked out against the world as it stood just
+ * before the event. A strike's damage and a fire it started harm whoever owns
+ * the building, and the harm belongs to the actor whose strike began it (fire
+ * carries that from ignition, through spread, to destruction). A worshipper
+ * does the worshipped deity a kindness.
+ */
+function consequenceOf(
+  before: WorldState,
+  event: WorldEvent,
+): Consequence | undefined {
+  const harm = (
+    agent: EntityId | undefined,
+    building: EntityId,
+  ): Consequence | undefined => {
+    if (agent === undefined) return undefined;
+    const owner = before.buildings.get(building)?.owner;
+    return {
+      effect: "harm",
+      agent,
+      ...(owner === undefined ? {} : { target: owner }),
+    };
+  };
+  switch (event.kind) {
+    case "building-damaged":
+      return harm(event.actor, event.entityId);
+    case "building-ignited":
+      return harm(event.cause.actor, event.entityId);
+    case "building-destroyed":
+      return harm(
+        before.buildings.get(event.entityId)?.ignition?.actor,
+        event.entityId,
+      );
+    case "worship-performed":
+      return { effect: "kindness", agent: event.entityId, target: event.deity };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The memories one primary event gives. `before` is the world just before the
+ * event, so who was there is exact even when actors move within the tick, and
+ * presence is judged by the same rule perception uses (`perceivesEvent`), not
+ * by where anyone ended up. Every living actor that perceived a memorable
+ * event remembers it, citing the event.
+ */
+export function witnessMemories(
+  before: WorldState,
+  event: WorldEvent,
+): readonly DerivedDraft[] {
+  const salience = balanceOf(before, `salience_${event.kind}`);
+  if (salience < 1) return [];
+
+  const consequence = consequenceOf(before, event);
+  const subjects = unique([
+    ...eventSubjects(event),
+    ...(consequence === undefined
+      ? []
+      : [
+          consequence.agent,
+          ...(consequence.target === undefined ? [] : [consequence.target]),
+        ]),
+  ]);
+  const witnesses = [...before.actors.values()]
+    .filter((actor) => actor.alive && perceivesEvent(before, actor, event, []))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return witnesses.map((actor) => ({
+    cause: event,
+    draft: {
+      kind: "memory-recorded",
+      memoryKind: "witnessed",
+      entityId: actor.id,
+      sourceEventId: event.id,
+      eventKind: event.kind,
+      subjects,
+      salience,
+      ...(consequence === undefined ? {} : { consequence }),
+    },
+  }));
+}
+
+/**
+ * The belief a report gives its listener: the teller's account, verbatim and
+ * attributed, never checked against what happened. When the teller cited an
+ * event it witnessed, the belief carries what the teller took that event to
+ * have done, so a listener can feel about the people in it. That comes from
+ * the teller's own memory in `after`, which the tick's primary events do not
+ * change.
+ */
+export function toldMemory(
+  after: WorldState,
+  report: ReportToldEvent,
+): DerivedDraft {
+  const cited =
+    report.linkedEventId === undefined
+      ? undefined
+      : getMemories(after, report.entityId).find(
+          (memory) =>
+            memory.kind === "witnessed" &&
+            memory.sourceEventId === report.linkedEventId,
+        );
+  return {
+    cause: report,
+    draft: {
+      kind: "memory-recorded",
+      memoryKind: "told",
+      entityId: report.listenerId,
+      sourceEventId: report.id,
+      teller: report.entityId,
+      content: report.content,
+      ...(report.linkedEventId === undefined
+        ? {}
+        : { linkedEventId: report.linkedEventId }),
+      subjects: unique([report.entityId, ...(cited?.subjects ?? [])]),
+      salience: balanceOf(after, "salience_told"),
+      ...(cited?.consequence === undefined
+        ? {}
+        : { consequence: cited.consequence }),
+    },
+  };
+}
+
+/**
+ * The relationship changes this tick's new memories cause, each citing its
+ * memory. Harm one remembers lowers affinity toward whoever did it, and adds a
+ * grudge when the rememberer was the one wronged; a kindness raises affinity
+ * only in the one it served. A belief moves affinity by `toldShare` of what
+ * witnessing would. Nobody feels anything about their own acts. `state` is the
+ * world with these memories already applied; changes to one pair within a tick
+ * build on each other.
+ */
+export function planRelationships(
+  state: WorldState,
+  memories: readonly (MemoryRecordedEvent & { readonly id: EventId })[],
+): readonly DerivedDraft[] {
+  const harm = balanceOf(state, "harmAffinity");
+  const kindness = balanceOf(state, "kindnessAffinity");
+  const toldShare = balanceOf(state, "toldShare");
+  const allianceAffinity = balanceOf(state, "allianceAffinity");
+
+  const running = new Map<string, RelationshipState>();
+  const drafts: DerivedDraft[] = [];
+  for (const memory of memories) {
+    const c = memory.consequence;
+    const owner = memory.entityId;
+    if (c === undefined || c.agent === owner) continue;
+    if (c.effect === "kindness" && c.target !== owner) continue;
+
+    const strength = c.effect === "harm" ? harm : kindness;
+    const scaled =
+      memory.memoryKind === "told"
+        ? Math.max(1, Math.round(strength * toldShare))
+        : strength;
+    const affinityDelta = c.effect === "harm" ? -scaled : scaled;
+    const grudgeDelta = c.effect === "harm" && c.target === owner ? 1 : 0;
+
+    const key = relationshipKey(owner, c.agent);
+    const held =
+      running.get(key) ??
+      getRelationship(state, owner, c.agent) ??
+      freshRelationship(owner, c.agent);
+    const affinity = clampAffinity(state, held.affinity + affinityDelta);
+    const allied = affinity >= allianceAffinity;
+    running.set(key, {
+      ...held,
+      affinity,
+      grudge: held.grudge + grudgeDelta,
+      allied,
+    });
+    drafts.push({
+      cause: memory,
+      draft: {
+        kind: "relationship-changed",
+        entityId: owner,
+        toward: c.agent,
+        affinityDelta,
+        grudgeDelta,
+        ...(allied === held.allied ? {} : { allied }),
+        memoryEventId: memory.id,
+      },
+    });
+  }
+  return drafts;
+}

@@ -41,6 +41,14 @@ import {
   applyBuildingIgnited,
   planFireStep,
 } from "./fire";
+import {
+  applyMemoryRecorded,
+  applyRelationshipChanged,
+  type DerivedDraft,
+  planRelationships,
+  toldMemory,
+  witnessMemories,
+} from "./memory";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -133,7 +141,10 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       next = applyBuildingDamaged(state, event.entityId);
       break;
     case "building-ignited":
-      next = applyBuildingIgnited(state, event.entityId);
+      next = applyBuildingIgnited(state, event.entityId, {
+        eventId: event.id,
+        actor: event.cause.actor,
+      });
       break;
     case "building-burn-ticked":
       next = applyBuildingBurnTicked(
@@ -184,6 +195,17 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
         assertion: event.assertion,
         ...(event.linkedEventId ? { linkedEventId: event.linkedEventId } : {}),
       });
+      break;
+    case "report-told":
+      // A report changes nothing by itself: the listener's belief is a
+      // separate `memory-recorded` event the same tick derives from it.
+      next = state;
+      break;
+    case "memory-recorded":
+      next = applyMemoryRecorded(state, event);
+      break;
+    case "relationship-changed":
+      next = applyRelationshipChanged(state, event);
       break;
     default: {
       const exhaustiveCheck: never = event;
@@ -263,7 +285,13 @@ export interface TickResult {
   readonly rejected: readonly RejectedRecord[];
   /** Events from this tick's automatic income and fire steps -- caused by no proposal, so they never appear in `committed`. */
   readonly environmentEvents: readonly WorldEvent[];
-  /** Every event this tick produced, proposal-caused and environmental, in commit order -- what a caller persists (e.g. `commitTick`'s `events`). */
+  /**
+   * The memory and relationship events derived from this tick's primary events
+   * (proposal-caused and environmental), in the order derived. They follow
+   * those events in `events`, cite them, and belong to no proposal.
+   */
+  readonly derivedEvents: readonly WorldEvent[];
+  /** Every event this tick produced, in commit order: proposal-caused, environmental, then derived -- what a caller persists (e.g. `commitTick`'s `events`). */
   readonly events: readonly WorldEvent[];
 }
 
@@ -295,23 +323,43 @@ function completeEvent(
     readonly tick: number;
     readonly sequence: number;
     readonly simTime: number;
-    readonly observationId: string;
+    readonly correlationId: string;
+    readonly causationId: string;
     readonly approximate: boolean;
   },
 ): WorldEvent {
-  // Correlation and causation both trace back to the observation that
-  // caused the proposal: every event this proposal produces shares one
-  // correlation id rooted at its cause.
   return {
     ...draft,
     schemaVersion: LATEST_EVENT_SCHEMA_VERSION,
     id: toEventId(`evt-${meta.tick}-${meta.sequence}`),
     sequence: meta.sequence,
     simTime: meta.simTime,
-    correlationId: toCorrelationId(meta.observationId),
-    causationId: toCausationId(meta.observationId),
+    correlationId: toCorrelationId(meta.correlationId),
+    causationId: toCausationId(meta.causationId),
     approximate: meta.approximate,
   } as WorldEvent;
+}
+
+/**
+ * The memories this tick's primary events give, in the order the events
+ * happened. The world is replayed from `before` (the tick's starting state)
+ * one event at a time, so each event is judged against exactly who stood
+ * where when it happened; `after` is the world once every primary event has
+ * applied, which is where a report finds its teller's memory.
+ */
+function planMemories(
+  before: WorldState,
+  primary: readonly WorldEvent[],
+  after: WorldState,
+): readonly DerivedDraft[] {
+  const drafts: DerivedDraft[] = [];
+  let running = before;
+  for (const event of primary) {
+    drafts.push(...witnessMemories(running, event));
+    if (event.kind === "report-told") drafts.push(toldMemory(after, event));
+    running = applyEvent(running, event);
+  }
+  return drafts;
 }
 
 /** A building's per-tick service revenue while operational, from `rules.economyBalance.incomePerTick`; 0 when unset, in which case no income event is drafted at all. */
@@ -378,6 +426,21 @@ export function runTick(
   // to whatever the last committed tick (or a restored state) left it at.
   let sequence = working.lastSequence;
 
+  const completePrimary = (draft: WorldEventDraft, observationId: string) => {
+    sequence += 1;
+    // Correlation and causation both trace back to the observation that
+    // caused the proposal: every event this proposal produces shares one
+    // correlation id rooted at its cause.
+    return completeEvent(draft, {
+      tick: working.tick,
+      sequence,
+      simTime: working.simTime,
+      correlationId: observationId,
+      causationId: observationId,
+      approximate,
+    });
+  };
+
   for (const proposal of queue) {
     if (
       proposal.kind !== "claim" &&
@@ -401,16 +464,9 @@ export function runTick(
       continue;
     }
 
-    const events = outcome.events.map((draft) => {
-      sequence += 1;
-      return completeEvent(draft, {
-        tick: working.tick,
-        sequence,
-        simTime: working.simTime,
-        observationId: String(proposal.observationId),
-        approximate,
-      });
-    });
+    const events = outcome.events.map((draft) =>
+      completePrimary(draft, String(proposal.observationId)),
+    );
 
     working = applyEvents(working, events);
     committed.push({ proposal, events });
@@ -421,40 +477,55 @@ export function runTick(
 
   const environmentCause = `tick-${working.tick}`;
 
-  const incomeEvents = planIncomeStep(working).map((draft) => {
-    sequence += 1;
-    return completeEvent(draft, {
-      tick: working.tick,
-      sequence,
-      simTime: working.simTime,
-      observationId: environmentCause,
-      approximate,
-    });
-  });
+  const incomeEvents = planIncomeStep(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
   working = applyEvents(working, incomeEvents);
 
   const fireStep = planFireStep(working, prng);
-  const fireEvents = fireStep.events.map((draft) => {
-    sequence += 1;
-    return completeEvent(draft, {
-      tick: working.tick,
-      sequence,
-      simTime: working.simTime,
-      observationId: environmentCause,
-      approximate,
-    });
-  });
+  const fireEvents = fireStep.events.map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
   working = applyEvents(working, fireEvents);
 
   const proposalEvents = committed.flatMap((record) => record.events);
   const environmentEvents = [...incomeEvents, ...fireEvents];
 
+  // Derivation phase: with the primary events numbered and applied, memories
+  // and then the relationship changes they cause are derived and committed in
+  // this same tick. A derived event is caused by the event it rests on and
+  // shares no proposal's observation; none of them is ever a source of more.
+  const derive = (drafts: readonly DerivedDraft[]) =>
+    drafts.map(({ draft, cause }) => {
+      sequence += 1;
+      return completeEvent(draft, {
+        tick: working.tick,
+        sequence,
+        simTime: working.simTime,
+        correlationId: environmentCause,
+        causationId: String(cause.id),
+        approximate,
+      });
+    });
+  const memoryEvents = derive(
+    planMemories(state, [...proposalEvents, ...environmentEvents], working),
+  );
+  working = applyEvents(working, memoryEvents);
+  const relationshipEvents = derive(
+    planRelationships(
+      working,
+      memoryEvents.filter((event) => event.kind === "memory-recorded"),
+    ),
+  );
+  working = applyEvents(working, relationshipEvents);
+  const derivedEvents = [...memoryEvents, ...relationshipEvents];
   return {
     state: working,
     prng: fireStep.prng,
     committed,
     rejected,
     environmentEvents,
-    events: [...proposalEvents, ...environmentEvents],
+    derivedEvents,
+    events: [...proposalEvents, ...environmentEvents, ...derivedEvents],
   };
 }

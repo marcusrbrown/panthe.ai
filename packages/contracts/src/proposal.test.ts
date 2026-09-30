@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { parseObservationRecord, parseProposal } from "./proposal";
+import {
+  PROPOSAL_KINDS,
+  parseObservationRecord,
+  parseProposal,
+} from "./proposal";
 
 function base(
   overrides: Record<string, unknown> = {},
@@ -372,4 +376,54 @@ test("an unknown source is still rejected, naming the source", () => {
   if (!result.ok) {
     expect(result.message).toContain("oracle");
   }
+});
+
+test("a valid report proposal names its listener and the content told, citing an event or not", () => {
+  const bare = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "Zeus burned down the agora",
+    }),
+  );
+  expect(bare.ok).toBe(true);
+  if (bare.ok && bare.value.kind === "report") {
+    expect(String(bare.value.listener)).toBe("hera");
+    expect(bare.value.content).toBe("Zeus burned down the agora");
+    expect(bare.value.linkedEventId).toBeUndefined();
+  }
+
+  const cited = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "Zeus burned down the agora",
+      linkedEventId: "evt-9",
+    }),
+  );
+  expect(cited.ok).toBe(true);
+  if (cited.ok && cited.value.kind === "report") {
+    expect(String(cited.value.linkedEventId)).toBe("evt-9");
+  }
+});
+
+test("a report proposal without a listener or content, or with a malformed link, is rejected", () => {
+  expect(parseProposal(base({ kind: "report", content: "x" })).ok).toBe(false);
+  expect(parseProposal(base({ kind: "report", listener: "hera" })).ok).toBe(
+    false,
+  );
+  expect(
+    parseProposal(
+      base({
+        kind: "report",
+        listener: "hera",
+        content: "x",
+        linkedEventId: 9,
+      }),
+    ).ok,
+  ).toBe(false);
+});
+
+test("report is a proposal kind content can name as an ability", () => {
+  expect(PROPOSAL_KINDS).toContain("report");
 });

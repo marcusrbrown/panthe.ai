@@ -515,3 +515,37 @@ test("an event witnessed at a place Zeus has since left is not in the snapshot: 
   const snapshot = perceive(inSquare, id("zeus"), events);
   expect(snapshot?.events.map((e) => e.sequence)).toEqual([261]);
 });
+
+test("reports, memories, and feelings are private: no snapshot carries them, even one taken at the place they were made", () => {
+  const events = [
+    ignited("the-tavern"),
+    event({
+      kind: "report-told",
+      entityId: "farmer",
+      listenerId: "zeus",
+      content: "a private word",
+    }),
+    event({
+      kind: "memory-recorded",
+      memoryKind: "told",
+      entityId: "zeus",
+      sourceEventId: "evt-2",
+      teller: "farmer",
+      content: "a private word",
+      subjects: ["farmer"],
+      salience: 4,
+    }),
+    event({
+      kind: "relationship-changed",
+      entityId: "zeus",
+      toward: "farmer",
+      affinityDelta: 1,
+      grudgeDelta: 0,
+      memoryEventId: "evt-3",
+    }),
+  ];
+  const snapshot = perceive(fixtureState(), id("zeus"), events);
+  // The ignition beside them is seen; nothing of the three is.
+  expect(snapshot?.events.map((e) => e.kind)).toEqual(["building-ignited"]);
+  expect(JSON.stringify(snapshot)).not.toContain("a private word");
+});

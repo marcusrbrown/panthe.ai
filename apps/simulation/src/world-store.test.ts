@@ -8,14 +8,23 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Proposal } from "@panthea/contracts";
+import {
+  causalChain,
+  createObservationId,
+  type ObservationRecord,
+  type Proposal,
+  type WorldEvent,
+} from "@panthea/contracts";
 import {
   closeStore,
   commitTick,
   computeContentHash,
   exportArchive,
+  getCurrentSequence,
+  getEventRow,
   ImportError,
   importArchive,
+  listEvents,
   openStore,
   type ProjectionCodec,
   readClock,
@@ -24,9 +33,18 @@ import {
   rebuildProjections,
 } from "@panthea/persistence";
 import {
+  createProposalId,
+  ensureTraceSchema,
+  followEvent,
+  getProposalOutcomeByProposalId,
+} from "@panthea/telemetry";
+import {
   createPrng,
+  DEFAULT_MEMORY_BALANCE,
   decideRoutineProposal,
   effectiveServices,
+  getMemories,
+  getRelationship,
   getResourceAmount,
   isEventLinked,
   runTick,
@@ -35,7 +53,9 @@ import {
   type WorldState,
   withActor,
 } from "@panthea/world";
+import { applyOneTick, type QueuedProposal, stepWorldTick } from "./tick";
 import {
+  createEventSource,
   createWorldProjectionReducers,
   deserializePrngState,
   loadGreekWorldState,
@@ -1051,4 +1071,420 @@ test("startup fails with a clear diagnostic when an embedded god profile matches
 
 test("startup succeeds with the embedded god profiles by default", () => {
   expect(() => loadGreekWorldState()).not.toThrow();
+});
+
+// --- Memory, beliefs, and relationships through the real store ----------------------
+
+const id = toEntityId;
+
+/**
+ * The Greek world with the story's cast in place: Zeus and a bard at the
+ * tavern (the tavern is the farmer's), Hera in the square. None of them has
+ * drives, so nothing acts unless a test queues it.
+ */
+function socialSeed(memoryBalance?: Record<string, number>): WorldState {
+  const greek = loadGreekWorldState();
+  const zeus = greek.actors.get(id("zeus"));
+  const hera = greek.actors.get(id("hera"));
+  if (!zeus || !hera) throw new Error("expected Zeus and Hera in the pack");
+  const placed = withActor(
+    withActor(greek, { ...zeus, locationId: id("tavern") }),
+    { ...hera, locationId: id("town-square") },
+  );
+  const seeded = withActor(placed, {
+    id: id("bard"),
+    locationId: id("tavern"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map(),
+    revision: 0,
+  });
+  return memoryBalance === undefined
+    ? seeded
+    : {
+        ...seeded,
+        rules: {
+          ...seeded.rules,
+          memoryBalance: { ...DEFAULT_MEMORY_BALANCE, ...memoryBalance },
+        },
+      };
+}
+
+function queuedProposal(
+  actor: string,
+  raw: Record<string, unknown>,
+): QueuedProposal {
+  const observation: ObservationRecord = {
+    schemaVersion: 1,
+    id: createObservationId(),
+    observer: id(actor),
+    stateRevision: 0,
+    factsRead: [],
+    source: "fixture",
+  };
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor,
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: observation.id,
+    ...raw,
+  });
+  if (!submitted.ok) {
+    throw new Error(`fixture proposal failed: ${submitted.rejection.message}`);
+  }
+  return { id: createProposalId(), proposal: submitted.proposal, observation };
+}
+
+/** A live world over a real store and trace: each `run` is one committed tick. */
+function liveWorld(storePath: string, seed: WorldState) {
+  const reducers = createWorldProjectionReducers(seed);
+  const store = openStore(storePath, reducers);
+  ensureTraceSchema(store.db);
+  let state = seed;
+  let prng = createPrng(1);
+  let wallMs = 0;
+  return {
+    store,
+    reducers,
+    get state() {
+      return state;
+    },
+    run(...queue: QueuedProposal[]) {
+      wallMs += 1_000;
+      const step = applyOneTick(
+        state,
+        prng,
+        queue,
+        { store, reducers, traceDb: store.db },
+        { cursorWallMs: wallMs, paused: false },
+      );
+      if (step.kind !== "committed") {
+        throw new Error(`tick did not commit: ${step.message}`);
+      }
+      state = step.state;
+      prng = step.prng;
+      return step;
+    },
+  };
+}
+
+function eventOfKindAll<K extends WorldEvent["kind"]>(
+  events: readonly WorldEvent[],
+  kind: K,
+): Extract<WorldEvent, { kind: K }>[] {
+  return events.filter(
+    (event): event is Extract<WorldEvent, { kind: K }> => event.kind === kind,
+  );
+}
+
+function eventOfKind<K extends WorldEvent["kind"]>(
+  events: readonly WorldEvent[],
+  kind: K,
+  predicate: (event: Extract<WorldEvent, { kind: K }>) => boolean = () => true,
+): Extract<WorldEvent, { kind: K }> {
+  const found = events.find(
+    (event): event is Extract<WorldEvent, { kind: K }> =>
+      event.kind === kind &&
+      predicate(event as Extract<WorldEvent, { kind: K }>),
+  );
+  if (!found) throw new Error(`expected a ${kind} event`);
+  return found;
+}
+
+test("a witnessed strike, a report, and a relationship change survive reopen, rebuild, and archive import; the restored branch explains the change from its events, with no trace rows", () => {
+  const storeDir = tempDir("panthea-sim-social-");
+  const exportDir = tempDir("panthea-sim-social-export-");
+  const slotsDir = tempDir("panthea-sim-social-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seed = socialSeed();
+    const world = liveWorld(storePath, seed);
+
+    // Zeus strikes the tavern with the bard beside him; the bard walks to the
+    // square and tells Hera something that is not what happened.
+    const strike = queuedProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    world.run(strike);
+    const ignition = eventOfKind(
+      listEvents(world.store.db),
+      "building-ignited",
+    );
+    world.run(queuedProposal("bard", { kind: "move", to: "town-square" }));
+    const told = "Zeus burned down the whole agora";
+    const report = queuedProposal("bard", {
+      kind: "report",
+      listener: "hera",
+      content: told,
+      linkedEventId: ignition.id,
+    });
+    world.run(report);
+    const state = world.state;
+
+    // What the world holds. (The fire also spread to the oak in the square,
+    // which the bard and Hera saw, so each remembers more than the tavern.)
+    expect(getMemories(state, id("bard"))).toContainEqual(
+      expect.objectContaining({
+        kind: "witnessed",
+        sourceEventId: ignition.id,
+      }),
+    );
+    const belief = getMemories(state, id("hera")).find(
+      (memory) => memory.kind === "told",
+    );
+    expect(belief).toMatchObject({
+      kind: "told",
+      teller: "bard",
+      content: told,
+      linkedEventId: ignition.id,
+    });
+    const changes = eventOfKindAll(
+      listEvents(world.store.db),
+      "relationship-changed",
+    );
+    const fromBelief = changes.filter(
+      (event) => event.memoryEventId === belief?.id,
+    );
+    expect(fromBelief).toMatchObject([
+      { entityId: "hera", toward: "zeus", affinityDelta: -1, grudgeDelta: 0 },
+    ]);
+    const heraTowardZeus = changes
+      .filter(
+        (event) => event.entityId === id("hera") && event.toward === id("zeus"),
+      )
+      .reduce((sum, event) => sum + event.affinityDelta, 0);
+    expect(getRelationship(state, id("hera"), id("zeus"))?.affinity).toBe(
+      heraTowardZeus,
+    );
+    // The woodcutter, in the square all along, saw the oak catch but was told nothing and never saw the tavern.
+    expect(
+      getMemories(state, id("woodcutter")).map((m) => m.kind),
+    ).not.toContain("told");
+    expect(
+      getMemories(state, id("woodcutter")).some(
+        (memory) => memory.sourceEventId === ignition.id,
+      ),
+    ).toBe(false);
+
+    // Live equals reopened equals rebuilt.
+    closeStore(world.store);
+    const freshReducers = createWorldProjectionReducers(socialSeed());
+    const reopened = openStore(storePath, freshReducers);
+    const clock = readClock(reopened.db);
+    expect(
+      restoreWorldTime(readLiveProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+    expect(
+      restoreWorldTime(rebuildProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+
+    // Export, import into a new slot: the branch holds the same memories and relationships.
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(reopened, exportPath);
+    const validating: ProjectionCodec<unknown> = {
+      encode: (value) => value,
+      decode: (value) => worldProjectionCodec.decode(value),
+    };
+    const imported = importArchive(exportPath, slotsDir, validating);
+    const branch = openStore(
+      join(imported.slotPath, "world.sqlite"),
+      freshReducers,
+    );
+    const branchClock = readClock(branch.db);
+    const restored = restoreWorldTime(
+      readLiveProjections(branch, freshReducers),
+      branchClock,
+    );
+    expect(restored.memories).toEqual(state.memories);
+    expect(restored.relationships).toEqual(state.relationships);
+    expect(
+      restoreWorldTime(rebuildProjections(branch, freshReducers), branchClock),
+    ).toEqual(state);
+
+    // The branch has no trace, and still explains why Hera distrusts Zeus.
+    ensureTraceSchema(branch.db);
+    expect(
+      getProposalOutcomeByProposalId(branch.db, report.id),
+    ).toBeUndefined();
+    expect(
+      getProposalOutcomeByProposalId(branch.db, strike.id),
+    ).toBeUndefined();
+    const events = listEvents(branch.db);
+    const change = eventOfKind(
+      events,
+      "relationship-changed",
+      (event) => event.memoryEventId === belief?.id,
+    );
+    const chain = causalChain(
+      (eventId) => getEventRow(branch.db, eventId),
+      change.id,
+    );
+    expect(chain.map((event) => event.kind)).toEqual([
+      "building-ignited",
+      "report-told",
+      "memory-recorded",
+      "relationship-changed",
+    ]);
+    expect(eventOfKind(chain, "report-told")).toMatchObject({
+      entityId: "bard",
+      listenerId: "hera",
+      content: told,
+    });
+    // The memory the restored state carries names the same events the chain does.
+    expect(
+      getMemories(restored, id("hera")).find(
+        (memory) => memory.id === change.memoryEventId,
+      ),
+    ).toMatchObject({
+      id: change.memoryEventId,
+      sourceEventId: eventOfKind(chain, "report-told").id,
+      linkedEventId: ignition.id,
+    });
+    const followed = followEvent(
+      branch.db,
+      createEventSource(branch),
+      change.id,
+    );
+    expect(followed.found).toBe(true);
+    expect(
+      followed.steps.every(
+        (step) => step.step === "event" || step.step === "projection-change",
+      ),
+    ).toBe(true);
+
+    // Control: on the live world, where the trace exists, the same chain reaches the strike's proposal.
+    const liveTrace = openStore(storePath, freshReducers);
+    const liveFollow = followEvent(
+      liveTrace.db,
+      createEventSource(liveTrace),
+      change.id,
+    );
+    expect(
+      liveFollow.steps.filter((step) => step.step === "proposal"),
+    ).toHaveLength(2);
+    closeStore(liveTrace);
+
+    closeStore(branch);
+    closeStore(reopened);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+test("live equals rebuild through the store when the world forgets: the same memory is evicted either way", () => {
+  const storeDir = tempDir("panthea-sim-evict-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const world = liveWorld(storePath, socialSeed({ capacity: 1 }));
+    world.run(
+      queuedProposal("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 3,
+      }),
+    );
+    for (let index = 0; index < 3; index += 1) world.run();
+
+    const recorded = listEvents(world.store.db).filter(
+      (event) => event.kind === "memory-recorded" && event.entityId === "zeus",
+    );
+    // Zeus saw the tavern ignite and then burn down; with room for one memory he keeps the worse.
+    expect(
+      recorded.map((event) => (event as { eventKind: string }).eventKind),
+    ).toEqual(["building-ignited", "building-destroyed"]);
+    expect(getMemories(world.state, id("zeus"))).toMatchObject([
+      { kind: "witnessed", eventKind: "building-destroyed" },
+    ]);
+
+    const clock = readClock(world.store.db);
+    expect(
+      restoreWorldTime(readLiveProjections(world.store, world.reducers), clock),
+    ).toEqual(world.state);
+    expect(
+      restoreWorldTime(rebuildProjections(world.store, world.reducers), clock),
+    ).toEqual(world.state);
+    closeStore(world.store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+test("a tick's memories and relationship changes commit with the events they cite, or not at all", () => {
+  const storeDir = tempDir("panthea-sim-atomic-");
+  try {
+    const seed = socialSeed();
+    const reducers = createWorldProjectionReducers(seed);
+    const store = openStore(join(storeDir, "world.sqlite"), reducers);
+    // No trace tables yet: the tick's trace write will fail inside its transaction.
+
+    const strike = queuedProposal("zeus", {
+      kind: "strike",
+      target: "the-tavern",
+      power: 3,
+    });
+    const deps = { store, reducers, traceDb: store.db };
+
+    // The tick does derive memories and feelings, or rolling them back proves nothing.
+    const planned = stepWorldTick(seed, createPrng(1), [strike]).result;
+    expect(
+      planned.derivedEvents.some((e) => e.kind === "memory-recorded"),
+    ).toBe(true);
+    expect(
+      planned.derivedEvents.some((e) => e.kind === "relationship-changed"),
+    ).toBe(true);
+
+    const failed = applyOneTick(seed, createPrng(1), [strike], deps, {
+      cursorWallMs: 1_000,
+      paused: false,
+    });
+    expect(failed.kind).toBe("store-error");
+    expect(listEvents(store.db)).toEqual([]);
+    expect(getCurrentSequence(store.db)).toBe(0);
+    const afterFailure = readLiveProjections(store, reducers);
+    expect(afterFailure.memories.size).toBe(0);
+    expect(afterFailure.relationships.size).toBe(0);
+    expect(afterFailure.buildings.get(id("the-tavern"))?.status).toBe(
+      "operational",
+    );
+
+    // Control: with the trace in place, the same tick commits the strike, its memories, and the changes together.
+    ensureTraceSchema(store.db);
+    const committed = applyOneTick(seed, createPrng(1), [strike], deps, {
+      cursorWallMs: 1_000,
+      paused: false,
+    });
+    expect(committed.kind).toBe("committed");
+    const events = listEvents(store.db);
+    expect(events.map((event) => event.sequence)).toEqual(
+      events.map((_, index) => index + 1),
+    );
+    const kinds = events.map((event) => event.kind);
+    expect(kinds.indexOf("building-ignited")).toBeLessThan(
+      kinds.indexOf("memory-recorded"),
+    );
+    expect(kinds.indexOf("memory-recorded")).toBeLessThan(
+      kinds.indexOf("relationship-changed"),
+    );
+    const live = readLiveProjections(store, reducers);
+    expect(getMemories(live, id("zeus"))).toHaveLength(1);
+    expect(getMemories(live, id("bard"))).toHaveLength(1);
+    // Every memory event in the log is in the projection, by the event's own id.
+    for (const event of events) {
+      if (event.kind !== "memory-recorded") continue;
+      expect(
+        getMemories(live, event.entityId).some(
+          (memory) => memory.id === event.id,
+        ),
+      ).toBe(true);
+    }
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
 });

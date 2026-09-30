@@ -101,6 +101,8 @@ export interface WorldRules {
   readonly maxProposalsPerTick: number;
   readonly fireBalance: Readonly<Record<string, number>>;
   readonly economyBalance: Readonly<Record<string, number>>;
+  /** Memory and relationship tunables (capacity, salience per event kind, affinity effects). Absent means every default in packages/world's memory rules. */
+  readonly memoryBalance?: Readonly<Record<string, number>>;
 }
 
 export interface ContentPack {
@@ -350,6 +352,11 @@ function parseWorldRules(
     `${path}.economyBalance`,
   );
   if (!economyBalance.ok) return economyBalance;
+  const memoryBalance =
+    value.memoryBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parseBalanceRecord(value.memoryBalance, `${path}.memoryBalance`);
+  if (!memoryBalance.ok) return memoryBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -357,6 +364,9 @@ function parseWorldRules(
     maxProposalsPerTick: maxProposalsPerTick.value,
     fireBalance: fireBalance.value,
     economyBalance: economyBalance.value,
+    ...(memoryBalance.value === undefined
+      ? {}
+      : { memoryBalance: memoryBalance.value }),
   });
 }
 

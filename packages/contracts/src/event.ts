@@ -16,10 +16,12 @@ import {
   parseCausationId,
   parseCorrelationId,
   parseEntityId,
+  parseEnum,
   parseEventId,
   parseFiniteNumber,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
+  parseOptionalBoolean,
   parseOptionalString,
   parseResourceAmount,
   parseSchemaVersion,
@@ -79,28 +81,49 @@ export interface ResourceConsumedEvent extends EventEnvelope {
   readonly amount: number;
 }
 
+/** A deity's strike damaged a building that did not catch fire. `actor` is the deity, so what witnesses remember can name who did it. */
 export interface BuildingDamagedEvent extends EventEnvelope {
   readonly kind: "building-damaged";
   readonly entityId: EntityId;
   readonly amount: number;
+  readonly actor: EntityId;
 }
+
+/**
+ * What started a fire, stored on the ignition event itself and never worked
+ * out later. A strike is a root: the proposal that committed it is its cause.
+ * A spread names the source building's own ignition event, and carries the
+ * actor forward from it, so a chain of fires still answers who began it.
+ */
+export type FireCause =
+  | { readonly kind: "strike"; readonly actor: EntityId }
+  | {
+      readonly kind: "spread";
+      readonly from: EventId;
+      readonly actor: EntityId;
+    };
 
 export interface BuildingIgnitedEvent extends EventEnvelope {
   readonly kind: "building-ignited";
   readonly entityId: EntityId;
+  readonly cause: FireCause;
 }
 
+/** `cause` is the ignition event that started this building's fire. */
 export interface BuildingBurnTickedEvent extends EventEnvelope {
   readonly kind: "building-burn-ticked";
   readonly entityId: EntityId;
   readonly fireIntensity: number;
   readonly ticksBurning: number;
+  readonly cause: EventId;
 }
 
+/** `cause` is the ignition event that started this building's fire. */
 export interface BuildingDestroyedEvent extends EventEnvelope {
   readonly kind: "building-destroyed";
   readonly entityId: EntityId;
   readonly disposedInventory: readonly ResourceAmount[];
+  readonly cause: EventId;
 }
 
 export interface RepairProgressedEvent extends EventEnvelope {
@@ -147,6 +170,73 @@ export interface LegendRecordedEvent extends EventEnvelope {
   readonly linkedEventId?: EventId;
 }
 
+/**
+ * One actor told another something, at the same place. The content is the
+ * teller's own account: possibly wrong, never certified, and never rewritten
+ * by the world. `linkedEventId`, when present, is an event the teller
+ * witnessed and cites as evidence.
+ */
+export interface ReportToldEvent extends EventEnvelope {
+  readonly kind: "report-told";
+  readonly entityId: EntityId;
+  readonly listenerId: EntityId;
+  readonly content: string;
+  readonly linkedEventId?: EventId;
+}
+
+/** What a happening did to someone, as a witness or a listener understands it. `target` is who or what suffered or was served, when someone was. */
+export interface Consequence {
+  readonly effect: "harm" | "kindness";
+  readonly agent: EntityId;
+  readonly target?: EntityId;
+}
+
+export interface MemoryRecordedBase extends EventEnvelope {
+  readonly kind: "memory-recorded";
+  /** Whose memory this is. */
+  readonly entityId: EntityId;
+  /** The committed event this memory rests on: the event witnessed, or the report heard. */
+  readonly sourceEventId: EventId;
+  /** How memorable this is; a full memory evicts its least salient entry first. A positive whole number. */
+  readonly salience: number;
+  readonly subjects: readonly EntityId[];
+  readonly consequence?: Consequence;
+}
+
+/** The actor was there when the event happened. */
+export interface WitnessedMemoryRecordedEvent extends MemoryRecordedBase {
+  readonly memoryKind: "witnessed";
+  readonly eventKind: WorldEvent["kind"];
+}
+
+/** The actor was told, and holds the teller's account as a belief: attributed, possibly false, never resolved to the truth. */
+export interface ToldMemoryRecordedEvent extends MemoryRecordedBase {
+  readonly memoryKind: "told";
+  readonly teller: EntityId;
+  readonly content: string;
+  readonly linkedEventId?: EventId;
+}
+
+export type MemoryRecordedEvent =
+  | WitnessedMemoryRecordedEvent
+  | ToldMemoryRecordedEvent;
+
+/**
+ * A relationship changed because of one memory: `entityId` now feels
+ * differently toward `toward`. `memoryEventId` is the `memory-recorded` event
+ * that formed the memory, so the change explains itself from the log alone.
+ * `allied` is present only when the change flipped the alliance.
+ */
+export interface RelationshipChangedEvent extends EventEnvelope {
+  readonly kind: "relationship-changed";
+  readonly entityId: EntityId;
+  readonly toward: EntityId;
+  readonly affinityDelta: number;
+  readonly grudgeDelta: number;
+  readonly allied?: boolean;
+  readonly memoryEventId: EventId;
+}
+
 export type WorldEvent =
   | EntityMovedEvent
   | RealmTransitionedEvent
@@ -162,7 +252,10 @@ export type WorldEvent =
   | BuildingRepairedEvent
   | WorshipPerformedEvent
   | IncomeEarnedEvent
-  | LegendRecordedEvent;
+  | LegendRecordedEvent
+  | ReportToldEvent
+  | MemoryRecordedEvent
+  | RelationshipChangedEvent;
 
 const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "entity-moved": true,
@@ -180,6 +273,9 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "worship-performed": true,
   "income-earned": true,
   "legend-recorded": true,
+  "report-told": true,
+  "memory-recorded": true,
+  "relationship-changed": true,
 };
 
 /** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
@@ -207,6 +303,11 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
         return [event.entityId, event.deity];
       case "income-earned":
         return [event.entityId, event.buildingId];
+      case "report-told":
+        return [event.entityId, event.listenerId];
+      case "relationship-changed":
+        return [event.entityId, event.toward];
+      case "memory-recorded":
       case "resource-gathered":
       case "resource-produced":
       case "resource-consumed":
@@ -222,8 +323,190 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
   return [...new Set(ids)];
 }
 
+/**
+ * The event `event` follows from, when it names one: a burn or destruction
+ * follows the ignition that started the fire; a spread follows the source
+ * building's ignition; a memory follows the event it rests on; a report
+ * follows the event it cites; a relationship change follows the memory that
+ * caused it. A strike ignition, or any event a proposal committed with nothing
+ * cited, is a root: its own proposal is its cause, and the trace holds that.
+ */
+export function eventCause(event: WorldEvent): EventId | undefined {
+  switch (event.kind) {
+    case "building-burn-ticked":
+    case "building-destroyed":
+      return event.cause;
+    case "building-ignited":
+      return event.cause.kind === "spread" ? event.cause.from : undefined;
+    case "memory-recorded":
+      return event.sourceEventId;
+    case "report-told":
+      return event.linkedEventId;
+    case "relationship-changed":
+      return event.memoryEventId;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The chain of events that led to `eventId`, root first and ending at that
+ * event, walked from the log alone with `getEvent` (so it needs no trace).
+ * The chain ends early where the log has no such event; an unknown
+ * `eventId` gives an empty chain.
+ */
+export function causalChain(
+  getEvent: (id: EventId) => WorldEvent | undefined,
+  eventId: EventId,
+): readonly WorldEvent[] {
+  const chain: WorldEvent[] = [];
+  const seen = new Set<EventId>();
+  let current = getEvent(eventId);
+  while (current !== undefined && !seen.has(current.id)) {
+    seen.add(current.id);
+    chain.unshift(current);
+    const cause = eventCause(current);
+    current = cause === undefined ? undefined : getEvent(cause);
+  }
+  return chain;
+}
+
 export const LATEST_EVENT_SCHEMA_VERSION = 1;
 const EVENT_SCHEMA_VERSIONS = [LATEST_EVENT_SCHEMA_VERSION] as const;
+
+function parseInteger(value: unknown, path: string): ParseResult<number> {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return fail(path, "expected an integer");
+  }
+  return ok(value);
+}
+
+function parseOptionalEventId(
+  value: unknown,
+  path: string,
+): ParseResult<EventId | undefined> {
+  if (value === undefined) return ok(undefined);
+  return parseEventId(value, path);
+}
+
+function parseFireCause(value: unknown, path: string): ParseResult<FireCause> {
+  if (!isRecord(value)) return fail(path, "expected a fire cause object");
+  const actor = parseEntityId(value.actor, `${path}.actor`);
+  if (!actor.ok) return actor;
+  if (value.kind === "strike") {
+    return ok({ kind: "strike", actor: actor.value });
+  }
+  if (value.kind === "spread") {
+    const from = parseEventId(value.from, `${path}.from`);
+    if (!from.ok) return from;
+    return ok({ kind: "spread", from: from.value, actor: actor.value });
+  }
+  return fail(path, `unknown fire cause: ${String(value.kind)}`);
+}
+
+const CONSEQUENCE_EFFECTS = ["harm", "kindness"] as const;
+
+/** Parses a memory's optional consequence; `undefined` when absent. */
+export function parseConsequence(
+  value: unknown,
+  path: string,
+): ParseResult<Consequence | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (!isRecord(value)) return fail(path, "expected a consequence object");
+  const effect = parseEnum(value.effect, `${path}.effect`, CONSEQUENCE_EFFECTS);
+  if (!effect.ok) return effect;
+  const agent = parseEntityId(value.agent, `${path}.agent`);
+  if (!agent.ok) return agent;
+  const target =
+    value.target === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.target, `${path}.target`);
+  if (!target.ok) return target;
+  return ok({
+    effect: effect.value,
+    agent: agent.value,
+    ...(target.value === undefined ? {} : { target: target.value }),
+  });
+}
+
+/** A memory's salience: a positive whole number. */
+export function parseSalience(
+  value: unknown,
+  path: string,
+): ParseResult<number> {
+  const salience = parseNonNegativeInteger(value, path);
+  if (!salience.ok) return salience;
+  if (salience.value < 1) return fail(path, "expected a positive integer");
+  return salience;
+}
+
+function parseMemoryRecorded(
+  input: Record<string, unknown>,
+  envelope: EventEnvelope,
+): ParseResult<MemoryRecordedEvent> {
+  const entityId = parseEntityId(input.entityId, "entityId");
+  if (!entityId.ok) return entityId;
+  const sourceEventId = parseEventId(input.sourceEventId, "sourceEventId");
+  if (!sourceEventId.ok) return sourceEventId;
+  const salience = parseSalience(input.salience, "salience");
+  if (!salience.ok) return salience;
+  const subjects = parseArray(input.subjects, "subjects", parseEntityId);
+  if (!subjects.ok) return subjects;
+  const consequence = parseConsequence(input.consequence, "consequence");
+  if (!consequence.ok) return consequence;
+  const base = {
+    ...envelope,
+    kind: "memory-recorded" as const,
+    entityId: entityId.value,
+    sourceEventId: sourceEventId.value,
+    salience: salience.value,
+    subjects: subjects.value,
+    ...(consequence.value === undefined
+      ? {}
+      : { consequence: consequence.value }),
+  };
+
+  switch (input.memoryKind) {
+    case "witnessed": {
+      const eventKind = parseEnum(
+        input.eventKind,
+        "eventKind",
+        WORLD_EVENT_KINDS,
+      );
+      if (!eventKind.ok) return eventKind;
+      return ok({
+        ...base,
+        memoryKind: "witnessed",
+        eventKind: eventKind.value,
+      });
+    }
+    case "told": {
+      const teller = parseEntityId(input.teller, "teller");
+      if (!teller.ok) return teller;
+      const content = parseString(input.content, "content");
+      if (!content.ok) return content;
+      const linkedEventId = parseOptionalEventId(
+        input.linkedEventId,
+        "linkedEventId",
+      );
+      if (!linkedEventId.ok) return linkedEventId;
+      return ok({
+        ...base,
+        memoryKind: "told",
+        teller: teller.value,
+        content: content.value,
+        ...(linkedEventId.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventId.value }),
+      });
+    }
+    default:
+      return fail(
+        "memoryKind",
+        `unknown memory kind: ${String(input.memoryKind)}`,
+      );
+  }
+}
 
 export function parseEvent(input: unknown): ParseResult<WorldEvent> {
   if (!isRecord(input)) {
@@ -361,20 +644,26 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       if (!entityId.ok) return entityId;
       const amount = parseNonNegativeNumber(input.amount, "amount");
       if (!amount.ok) return amount;
+      const actor = parseEntityId(input.actor, "actor");
+      if (!actor.ok) return actor;
       return ok({
         ...envelope,
         kind: "building-damaged",
         entityId: entityId.value,
         amount: amount.value,
+        actor: actor.value,
       });
     }
     case "building-ignited": {
       const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
+      const cause = parseFireCause(input.cause, "cause");
+      if (!cause.ok) return cause;
       return ok({
         ...envelope,
         kind: "building-ignited",
         entityId: entityId.value,
+        cause: cause.value,
       });
     }
     case "building-burn-ticked": {
@@ -390,12 +679,15 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         "ticksBurning",
       );
       if (!ticksBurning.ok) return ticksBurning;
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
       return ok({
         ...envelope,
         kind: "building-burn-ticked",
         entityId: entityId.value,
         fireIntensity: fireIntensity.value,
         ticksBurning: ticksBurning.value,
+        cause: cause.value,
       });
     }
     case "building-destroyed": {
@@ -407,11 +699,14 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         parseResourceAmount,
       );
       if (!disposedInventory.ok) return disposedInventory;
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
       return ok({
         ...envelope,
         kind: "building-destroyed",
         entityId: entityId.value,
         disposedInventory: disposedInventory.value,
+        cause: cause.value,
       });
     }
     case "repair-progressed": {
@@ -501,6 +796,58 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         ...(linkedEventIdRaw.value === undefined
           ? {}
           : { linkedEventId: linkedEventIdRaw.value as EventId }),
+      });
+    }
+    case "report-told": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const listenerId = parseEntityId(input.listenerId, "listenerId");
+      if (!listenerId.ok) return listenerId;
+      const content = parseString(input.content, "content");
+      if (!content.ok) return content;
+      const linkedEventId = parseOptionalEventId(
+        input.linkedEventId,
+        "linkedEventId",
+      );
+      if (!linkedEventId.ok) return linkedEventId;
+      return ok({
+        ...envelope,
+        kind: "report-told",
+        entityId: entityId.value,
+        listenerId: listenerId.value,
+        content: content.value,
+        ...(linkedEventId.value === undefined
+          ? {}
+          : { linkedEventId: linkedEventId.value }),
+      });
+    }
+    case "memory-recorded":
+      return parseMemoryRecorded(input, envelope);
+    case "relationship-changed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const toward = parseEntityId(input.toward, "toward");
+      if (!toward.ok) return toward;
+      const affinityDelta = parseInteger(input.affinityDelta, "affinityDelta");
+      if (!affinityDelta.ok) return affinityDelta;
+      const grudgeDelta = parseNonNegativeInteger(
+        input.grudgeDelta,
+        "grudgeDelta",
+      );
+      if (!grudgeDelta.ok) return grudgeDelta;
+      const allied = parseOptionalBoolean(input.allied, "allied");
+      if (!allied.ok) return allied;
+      const memoryEventId = parseEventId(input.memoryEventId, "memoryEventId");
+      if (!memoryEventId.ok) return memoryEventId;
+      return ok({
+        ...envelope,
+        kind: "relationship-changed",
+        entityId: entityId.value,
+        toward: toward.value,
+        affinityDelta: affinityDelta.value,
+        grudgeDelta: grudgeDelta.value,
+        ...(allied.value === undefined ? {} : { allied: allied.value }),
+        memoryEventId: memoryEventId.value,
       });
     }
     default:

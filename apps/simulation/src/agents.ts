@@ -125,13 +125,19 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
     });
   }
 
+  /**
+   * One turn, start to finish, with every store read and write inside the
+   * handled path: whatever goes wrong is logged and the turn abandoned, so the
+   * promise `dispatch` keeps never rejects. Nothing awaits it, and a rejection
+   * nobody handles would end the process.
+   */
   async function turn(god: EntityId, state: WorldState, signal: AbortSignal) {
-    const recentEvents = listEvents(deps.store.db, {
-      toSequence: state.lastSequence,
-      excludeKinds: UNPLACED_EVENT_KINDS,
-      newest: RECENT_EVENT_CAP,
-    });
     try {
+      const recentEvents = listEvents(deps.store.db, {
+        toSequence: state.lastSequence,
+        excludeKinds: UNPLACED_EVENT_KINDS,
+        newest: RECENT_EVENT_CAP,
+      });
       const result = await runGodTurn(deps, {
         state,
         actorId: god,
@@ -157,8 +163,19 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
       ) {
         return false;
       }
-      const state = deps.getState();
-      const god = nextGod(state);
+      // Called from the tick loop's timer: reading state or the journal must
+      // never throw into it. A failed read is logged and no turn starts.
+      let state: WorldState;
+      let god: EntityId | undefined;
+      try {
+        state = deps.getState();
+        god = nextGod(state);
+      } catch (error) {
+        log(
+          `god turn not started: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return false;
+      }
       if (god === undefined) return false;
       lastServed = god;
       abort = new AbortController();

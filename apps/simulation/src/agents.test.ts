@@ -4,7 +4,7 @@
 // entry point with a model config and drive it over HTTP.
 
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,7 @@ import {
   type GodTurnRunner,
   type Lifecycle,
 } from "./agents";
+import { runCatchUp } from "./catchup";
 import {
   loadEmbeddedGreekGodProfiles,
   loadEmbeddedGreekWorldPack,
@@ -67,7 +68,12 @@ type Reply = string | 500;
 interface Provider {
   readonly baseUrl: string;
   /** Every request the provider received, in order: which god asked, and the whole body. */
-  readonly requests: { readonly god: string; readonly body: string }[];
+  readonly requests: {
+    readonly god: string;
+    readonly body: string;
+    /** Wall time the request arrived. */
+    readonly at: number;
+  }[];
   /** How the provider answers; replaceable mid-test. */
   respond: (god: string, n: number) => Promise<Reply> | Reply;
   stop(): void;
@@ -100,7 +106,7 @@ function startProvider(
       const body = await request.text();
       const god = godOf(body);
       const n = requests.length;
-      requests.push({ god, body });
+      requests.push({ god, body, at: Date.now() });
       const reply = await provider.respond(god, n);
       if (reply === 500) return new Response("down", { status: 500 });
       return Response.json({
@@ -614,6 +620,54 @@ describe("the lifecycle seam", () => {
     expect(provider.requests).toHaveLength(1);
   });
 
+  test("through a real catch-up run no turn starts, on every chunk it commits; with the gate removed the same probe sees one start", async () => {
+    const probe = async (lifecycleFor: (world: World) => Lifecycle) => {
+      const world = newWorld();
+      const provider = startProvider();
+      const runner = runnerFor(
+        world,
+        provider,
+        ["zeus", "hera"],
+        lifecycleFor(world),
+      );
+      // Ten minutes behind: a real run of chunks, each committed to the real store.
+      world.store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+        Date.now() - 10 * 60 * 1000,
+      ]);
+      const dispatched: boolean[] = [];
+      world.flags.catchUpRunning = true;
+      const result = await runCatchUp(world.state, world.prng, world.deps, {
+        nowWallMs: Date.now(),
+        onChunkCommitted: () => {
+          dispatched.push(runner.dispatch());
+          return false;
+        },
+      });
+      world.flags.catchUpRunning = false;
+      await runner.idle();
+      return { world, provider, runner, dispatched, result };
+    };
+
+    const gated = await probe((world) => world.lifecycle);
+    expect(gated.result.degraded).toBeUndefined();
+    expect(gated.dispatched.length).toBeGreaterThan(1);
+    expect(gated.dispatched.every((started) => !started)).toBe(true);
+    expect(gated.provider.requests).toHaveLength(0);
+    // Control: once the catch-up is over the same runner takes its turn.
+    expect(gated.runner.dispatch()).toBe(true);
+    await gated.runner.idle();
+    expect(gated.provider.requests).toHaveLength(1);
+
+    // The probe can fail: a runner that does not consult the catch-up flag starts a turn inside it.
+    const ungated = await probe(() => ({
+      startupCatchUpComplete: () => true,
+      catchUpRunning: () => false,
+      paused: () => false,
+    }));
+    expect(ungated.dispatched.some((started) => started)).toBe(true);
+    expect(ungated.provider.requests.length).toBeGreaterThan(0);
+  });
+
   test("control: a runner with no gate dispatches during a catch-up, so the check above would catch one", async () => {
     const world = newWorld();
     world.flags.catchUpRunning = true;
@@ -656,6 +710,113 @@ describe("the lifecycle seam", () => {
 });
 
 // --- Outage ---------------------------------------------------------------------------------------------------
+
+// --- A store fault in a turn --------------------------------------------------------------------------------
+
+/**
+ * A store whose reads fail while `failing.on` is set, for the statements whose
+ * SQL contains `failing.match`: the real database underneath, so once the
+ * fault clears the same runner works against the same journal.
+ */
+function faultyStore(store: Store, failing: { on: boolean; match: string }) {
+  const db = new Proxy(store.db, {
+    get(target, property) {
+      if (property === "query") {
+        return (sql: string) => {
+          if (failing.on && sql.includes(failing.match)) {
+            throw new Error(`injected read failure: ${failing.match}`);
+          }
+          return target.query(sql);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { ...store, db } as Store;
+}
+
+describe("a store fault", () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  beforeEach(() => {
+    unhandled.length = 0;
+    process.on("unhandledRejection", onUnhandled);
+  });
+  afterEach(() => {
+    process.off("unhandledRejection", onUnhandled);
+  });
+
+  test("while a turn prepares is logged and abandoned: nothing rejects, the flag clears, and the next dispatch works", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const failing = { on: true, match: "FROM events" };
+    const logs: string[] = [];
+    const runner = createGodTurnRunner({
+      ...deps(provider, ["zeus"]),
+      store: faultyStore(world.store, failing),
+      getState: () => world.state,
+      lifecycle: world.lifecycle,
+      statusRef: world.statusRef,
+      onLog: (message) => logs.push(message),
+    });
+
+    expect(runner.dispatch()).toBe(true);
+    // The promise the service never awaits must not reject.
+    await runner.idle();
+    await Bun.sleep(20);
+    expect(unhandled).toEqual([]);
+    expect(runner.inFlight()).toBe(false);
+    expect(logs.join("\n")).toContain("injected read failure");
+    expect(provider.requests).toHaveLength(0);
+    expect(listExternalProposals(world.store.db)).toEqual([]);
+
+    // Control: the fault clears, and the same runner takes its turn.
+    failing.on = false;
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+    expect(pendingModelProposals(world)).toHaveLength(1);
+  });
+
+  test("while dispatch chooses a god never throws into the tick: dispatch says no, and works again once the read does", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const failing = { on: true, match: "FROM external_proposals" };
+    const logs: string[] = [];
+    let stateFails = false;
+    const runner = createGodTurnRunner({
+      ...deps(provider, ["zeus"]),
+      store: faultyStore(world.store, failing),
+      getState: () => {
+        if (stateFails) throw new Error("injected state failure");
+        return world.state;
+      },
+      lifecycle: world.lifecycle,
+      statusRef: world.statusRef,
+      onLog: (message) => logs.push(message),
+    });
+
+    // The pending-entries read fails while choosing a god.
+    expect(runner.dispatch()).toBe(false);
+    expect(runner.inFlight()).toBe(false);
+    // So does reading the state.
+    failing.on = false;
+    stateFails = true;
+    expect(runner.dispatch()).toBe(false);
+    expect(runner.inFlight()).toBe(false);
+    expect(logs.join("\n")).toContain("injected read failure");
+    expect(logs.join("\n")).toContain("injected state failure");
+    expect(provider.requests).toHaveLength(0);
+
+    // Control: with both reads healthy the same runner dispatches.
+    stateFails = false;
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
+});
 
 describe("an outage", () => {
   test("idles the gods but never the world: nothing is journaled, routines keep committing, model-degraded is set and then cleared on recovery", async () => {
@@ -701,6 +862,8 @@ interface Spawned {
   readonly proc: ReturnType<typeof Bun.spawn>;
   readonly port: number;
   output(): string;
+  /** Each line the service printed, with the wall time it was read. */
+  lines(): readonly { readonly at: number; readonly text: string }[];
 }
 
 const spawned: Spawned[] = [];
@@ -744,6 +907,15 @@ async function spawnService(
   await writer.flush();
 
   let buffer = "";
+  const lines: { at: number; text: string }[] = [];
+  let partial = "";
+  const take = (chunk: string) => {
+    buffer += chunk;
+    const at = Date.now();
+    const parts = (partial + chunk).split("\n");
+    partial = parts.pop() ?? "";
+    for (const text of parts) lines.push({ at, text });
+  };
   const reader = proc.stdout.getReader();
   const decoder = new TextDecoder();
   const port = await new Promise<number>((resolve, reject) => {
@@ -756,7 +928,7 @@ async function spawnService(
         for (;;) {
           const { value, done } = await reader.read();
           if (done) return reject(new Error("service exited early"));
-          buffer += decoder.decode(value, { stream: true });
+          take(decoder.decode(value, { stream: true }));
           const match = /PANTHEA_PORT=(\d+)/.exec(buffer);
           if (match?.[1]) {
             clearTimeout(timer);
@@ -767,14 +939,20 @@ async function spawnService(
         for (;;) {
           const { value, done } = await reader.read();
           if (done) return;
-          buffer += decoder.decode(value, { stream: true });
+          take(decoder.decode(value, { stream: true }));
         }
       } catch {
         // Killed; nothing more to read.
       }
     })();
   });
-  const service = { proc, port, output: () => buffer, appDataDir };
+  const service = {
+    proc,
+    port,
+    output: () => buffer,
+    lines: () => lines,
+    appDataDir,
+  };
   spawned.push(service);
   return service;
 }
@@ -943,9 +1121,8 @@ describe("the service with model routing configured", () => {
     );
   }, 40_000);
 
-  test("takes no turn until startup catch-up has completed", async () => {
-    const provider = startProvider();
-    // A store three minutes behind: the restart's catch-up has work to do.
+  /** A store `behindMs` behind the wall clock, left by a service that was killed: the next start has that much to catch up. */
+  async function storeBehind(behindMs: number): Promise<string> {
     const appDataDir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-svc-"));
     const first = await spawnService(
       startProvider(() => '{"action":"wait"}'),
@@ -956,14 +1133,93 @@ describe("the service with model routing configured", () => {
     spawned.splice(spawned.indexOf(first), 1);
     const db = new Database(join(appDataDir, "active", "world.sqlite"));
     db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
-      Date.now() - 3 * 60 * 1000,
+      Date.now() - behindMs,
     ]);
     db.close();
+    return appDataDir;
+  }
+
+  const catchUps = (service: Spawned) => {
+    const starts = service
+      .lines()
+      .filter((l) => l.text.endsWith("catch-up started"));
+    const ends = service
+      .lines()
+      .filter((l) => l.text.endsWith("catch-up finished"));
+    return { starts, ends };
+  };
+
+  test("takes no turn until startup catch-up has finished: every provider request arrives after the catch-up's own finish line", async () => {
+    const provider = startProvider();
+    // An hour behind, the most a catch-up applies: a long backlog to get through.
+    const appDataDir = await storeBehind(60 * 60 * 1000);
 
     const second = await spawnService(provider, appDataDir);
     await until("the first model request", () =>
       provider.requests.length > 0 ? true : undefined,
     );
+    const { starts, ends } = catchUps(second);
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
     expect(second.output()).toContain("startup catch-up complete");
-  }, 40_000);
+    const finished = ends[0]?.at ?? Number.POSITIVE_INFINITY;
+    const early = provider.requests.filter((request) => request.at < finished);
+    expect(early).toEqual([]);
+  }, 60_000);
+
+  test("takes no turn while a sleep-wake catch-up runs, and resumes after: a clock gap forced mid-run", async () => {
+    const provider = startProvider();
+    const service = await spawnService(provider);
+    // Turns are flowing: gods have asked and their proposals have run.
+    await until("gods taking turns", () =>
+      provider.requests.length >= 2 &&
+      journalOf(service.appDataDir).some(
+        (entry) => entry.outcome?.status === "committed",
+      )
+        ? true
+        : undefined,
+    );
+    const before = catchUps(service).starts.length;
+
+    // The seam is the persisted clock the tick loop reads every second: put
+    // its cursor an hour behind, as a sleeping machine would leave it. A tick
+    // already in flight can overwrite it, so it is set again until the
+    // service's own catch-up starts.
+    const gap = new Database(
+      join(service.appDataDir, "active", "world.sqlite"),
+      {
+        readwrite: true,
+      },
+    );
+    gap.run("PRAGMA busy_timeout = 2000");
+    try {
+      await until("a sleep-wake catch-up to start", () => {
+        if (catchUps(service).starts.length > before) return true;
+        gap.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+          Date.now() - 60 * 60 * 1000,
+        ]);
+        return undefined;
+      });
+    } finally {
+      gap.close();
+    }
+    await until("that catch-up to finish", () =>
+      catchUps(service).ends.length > before ? true : undefined,
+    );
+    const start = catchUps(service).starts[before]?.at ?? 0;
+    const end = catchUps(service).ends[before]?.at ?? 0;
+    expect(end).toBeGreaterThan(start);
+    // Turns were flowing before it (control for the assertion below) ...
+    expect(provider.requests.some((request) => request.at < start)).toBe(true);
+    // ... none started inside it ...
+    expect(
+      provider.requests.filter(
+        (request) => request.at > start && request.at < end,
+      ),
+    ).toEqual([]);
+    // ... and they resume after it.
+    await until("turns to resume", () =>
+      provider.requests.some((request) => request.at > end) ? true : undefined,
+    );
+  }, 60_000);
 });

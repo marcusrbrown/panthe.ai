@@ -224,6 +224,9 @@ export function startService(options: StartOptions): ServiceHandle {
   async function runCatchUpNow(nowWallMs: number): Promise<boolean> {
     catchUpInProgress = true;
     pauseRequestedDuringCatchUp = false;
+    // Bracketed in the log so an operator, and a test reading the service's
+    // output, can tell exactly when a catch-up (startup or after sleep) ran.
+    log("panthea-simulation: catch-up started");
     try {
       const result = await runCatchUp(state, prng, tickDeps, {
         nowWallMs,
@@ -235,6 +238,7 @@ export function startService(options: StartOptions): ServiceHandle {
       return Boolean(result.degraded);
     } finally {
       catchUpInProgress = false;
+      log("panthea-simulation: catch-up finished");
     }
   }
 

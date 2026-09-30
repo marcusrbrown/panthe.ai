@@ -137,6 +137,110 @@ test("each action lists the events it caused and the beliefs and feelings that f
   expect(move?.changes).toEqual([]);
 });
 
+/** The "## What happened" block split into its numbered action blocks, each with the god named on its first line. */
+function actionBlocks(text: string) {
+  const happened = text.slice(
+    text.indexOf("## What happened"),
+    text.indexOf("## Repetition"),
+  );
+  return happened
+    .split(/\n(?=\d+\. \*\*)/)
+    .filter((block) => /^\d+\. \*\*/.test(block))
+    .map((block) => {
+      const head = /^\d+\. \*\*tick (\d+), (\w+):\*\*/.exec(block);
+      return { tick: Number(head?.[1]), god: head?.[2], block };
+    });
+}
+
+const citedStory = () => {
+  const zeusMove = move("zeus", "town-square", 10);
+  const heraReport = act(
+    "hera",
+    {
+      kind: "report",
+      listener: "farmer",
+      content: "I saw Zeus arrive.",
+      linkedEventId: zeusMove.event.id,
+    },
+    12,
+  );
+  const belief = memoryEvent("evt-12-13", 13, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: heraReport.event.id,
+    teller: "hera",
+    content: "I saw Zeus arrive.",
+  });
+  const change = {
+    schemaVersion: 1,
+    id: "evt-12-14",
+    sequence: 14,
+    simTime: 0,
+    correlationId: "tick-12",
+    causationId: "x",
+    approximate: false,
+    kind: "relationship-changed",
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: -1,
+    grudgeDelta: 0,
+    memoryEventId: belief.id,
+  };
+  return { zeusMove, heraReport, belief, change };
+};
+
+test("a belief caused by Hera's report appears under Hera's line, not under Zeus's action she cited", () => {
+  const { zeusMove, heraReport, belief, change } = citedStory();
+  const text = renderTranscript(
+    record([zeusMove, heraReport], [belief, change]),
+  );
+  const blocks = actionBlocks(text);
+  // The right gods, in the order the world applied them.
+  expect(blocks.map((b) => [b.tick, b.god])).toEqual([
+    [10, "Zeus"],
+    [12, "Hera"],
+  ]);
+  const [zeus, hera] = blocks;
+  expect(hera?.block).toContain(
+    'then: farmer now believes hera: "I saw Zeus arrive."',
+  );
+  expect(hera?.block).toContain("then: farmer → zeus: affinity -1");
+  expect(zeus?.block).not.toContain("then:");
+  expect(zeus?.block).not.toContain("farmer now believes");
+  expect(zeus?.block).not.toContain("affinity");
+});
+
+test("control: Zeus's own report puts the belief under Zeus's line, and the rule holds for both gods at once", () => {
+  const { zeusMove, heraReport, belief, change } = citedStory();
+  const zeusReport = act(
+    "zeus",
+    { kind: "report", listener: "farmer", content: "I arrived." },
+    20,
+  );
+  const zeusBelief = memoryEvent("evt-20-21", 21, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: zeusReport.event.id,
+    teller: "zeus",
+    content: "I arrived.",
+  });
+  const text = renderTranscript(
+    record([zeusMove, heraReport, zeusReport], [belief, change, zeusBelief]),
+  );
+  const blocks = actionBlocks(text);
+  expect(blocks.map((b) => [b.tick, b.god])).toEqual([
+    [10, "Zeus"],
+    [12, "Hera"],
+    [20, "Zeus"],
+  ]);
+  expect(blocks[0]?.block).not.toContain("then:");
+  expect(blocks[1]?.block).toContain("farmer now believes hera");
+  expect(blocks[2]?.block).toContain(
+    'then: farmer now believes zeus: "I arrived."',
+  );
+  expect(blocks[2]?.block).not.toContain("farmer now believes hera");
+});
+
 test("a memory of what was witnessed is listed under the action that caused what was seen", () => {
   const strike = act(
     "zeus",
@@ -221,7 +325,10 @@ test("the summary covers every episode with each god's numbers and checks, and l
   expect(text).toContain("Decision: continue / tune / replan:");
   // Control: a set that passes every check says none failed.
   const passing = input(
-    ["a", "b", "c", "d", "e"].map((to, i) => move("zeus", to, i + 1)),
+    [
+      act("zeus", { kind: "report", listener: "hera", content: "x" }, 1),
+      ...["b", "c", "d", "e"].map((to, i) => move("zeus", to, i + 2)),
+    ],
     [
       memoryEvent("evt-9-9", 9, {
         memoryKind: "told",

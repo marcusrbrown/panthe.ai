@@ -4,7 +4,7 @@
 // owner scores, docs/product/acceptance.md). Thresholds are the owner's
 // decisions of 2026-09-30.
 
-import { causalChain, parseEvent, type WorldEvent } from "@panthea/contracts";
+import { parseEvent, type WorldEvent } from "@panthea/contracts";
 import type { StoredEvent } from "./checks";
 import {
   committedInOrder,
@@ -156,32 +156,56 @@ function longestRun(
   return best;
 }
 
-/** Caused told beliefs and relationship changes, by the event kind, walked back through each one's causal chain to an event a proposal of the god caused. */
-function influenceOf(
-  ordered: readonly { readonly caused: readonly StoredEvent[] }[],
+/** Every event that parses, by id, in the order given. */
+export function parseEvents(
   events: readonly StoredEvent[],
-): { count: number; kinds: string[] } {
-  const rootIds = new Set(ordered.flatMap((a) => a.caused.map((e) => e.id)));
+): Map<string, WorldEvent> {
   const parsed = new Map<string, WorldEvent>();
   for (const stored of events) {
     const result = parseEvent(stored);
     if (result.ok) parsed.set(stored.id, result.value);
   }
-  const kinds: string[] = [];
-  for (const event of parsed.values()) {
-    const felt =
-      event.kind === "relationship-changed" ||
-      (event.kind === "memory-recorded" && event.memoryKind === "told");
-    if (!felt) continue;
-    const chain = causalChain((id) => parsed.get(id), event.id);
-    if (chain.some((link) => link.id !== event.id && rootIds.has(link.id))) {
-      kinds.push(
-        event.kind === "memory-recorded"
-          ? "told belief"
-          : "relationship-changed",
-      );
-    }
-  }
+  return parsed;
+}
+
+/**
+ * The told beliefs and relationship changes the events in `caused` are the
+ * immediate cause of, in event order. A told belief belongs to the action whose
+ * `report-told` is its `sourceEventId`; a relationship change belongs to the
+ * action that caused the belief its `memoryEventId` names. A witnessed memory
+ * is not among them, and `report-told.linkedEventId` is never followed, so a
+ * report that cites another god's event credits only its own teller.
+ */
+export function influencedBy(
+  caused: readonly StoredEvent[],
+  parsed: ReadonlyMap<string, WorldEvent>,
+): WorldEvent[] {
+  const reportIds = new Set(
+    caused.filter((e) => e.kind === "report-told").map((e) => e.id),
+  );
+  const isReportedBelief = (event: WorldEvent | undefined): boolean =>
+    event?.kind === "memory-recorded" &&
+    event.memoryKind === "told" &&
+    reportIds.has(event.sourceEventId);
+  return [...parsed.values()].filter(
+    (event) =>
+      isReportedBelief(event) ||
+      (event.kind === "relationship-changed" &&
+        isReportedBelief(parsed.get(event.memoryEventId))),
+  );
+}
+
+function influenceOf(
+  ordered: readonly { readonly caused: readonly StoredEvent[] }[],
+  events: readonly StoredEvent[],
+): { count: number; kinds: string[] } {
+  const credited = influencedBy(
+    ordered.flatMap((a) => a.caused),
+    parseEvents(events),
+  );
+  const kinds = credited.map((event) =>
+    event.kind === "memory-recorded" ? "told belief" : "relationship-changed",
+  );
   return { count: kinds.length, kinds };
 }
 

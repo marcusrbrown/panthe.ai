@@ -3,13 +3,14 @@
 // and what the automated checks found, and leave the rubric and the decision
 // blank: the owner scores (docs/product/acceptance.md), the tool never does.
 
-import { causalChain, parseEvent, type WorldEvent } from "@panthea/contracts";
 import type { StoredEvent } from "./checks";
 import {
   CONTEXT_ACTIONS,
   choiceKey,
   type EpisodeAnalysis,
   type GodIdentity,
+  influencedBy,
+  parseEvents,
   primaryTarget,
   REPETITION_CAP,
 } from "./episode-analysis";
@@ -76,46 +77,50 @@ function describeClaim(claim: unknown): string | undefined {
 }
 
 /** Every committed model action of the gods, in the order the world applied them. */
+/**
+ * Every committed model action of the gods, in the order the world applied
+ * them. What followed from an action is attributed by immediate cause, as the
+ * influence check does (`influencedBy`): a belief goes under the action whose
+ * report it rests on, and a feeling under the action behind the belief it
+ * cites, never through a report's `linkedEventId`. A witnessed memory goes
+ * under the action that caused the event witnessed, since the witness saw
+ * that happen.
+ */
 export function buildActions(record: EpisodeRecord): ActionEntry[] {
   const { events, proposals } = record.input;
-  const parsed = new Map<string, WorldEvent>();
-  for (const stored of events) {
-    const result = parseEvent(stored);
-    if (result.ok) parsed.set(stored.id, result.value);
-  }
-  const derived = [...parsed.values()].filter(
-    (event) =>
-      event.kind === "memory-recorded" || event.kind === "relationship-changed",
-  );
+  const parsed = parseEvents(events);
 
   const entries: ActionEntry[] = [];
   for (const identity of record.identities) {
     const abilities = new Set(identity.abilities.map((a) => a.action));
     for (const action of committedInOrder(identity.id, proposals, events)) {
       const { proposal, caused, sequence } = action;
-      const roots = new Set(caused.map((e) => e.id));
-
-      const witnessed = new Map<string, string[]>();
       const changes: string[] = [];
-      for (const event of derived) {
-        const chain = causalChain((id) => parsed.get(id), event.id);
-        if (!chain.some((link) => link.id !== event.id && roots.has(link.id))) {
-          continue;
-        }
+      for (const event of influencedBy(caused, parsed)) {
         if (event.kind === "relationship-changed") {
           changes.push(
             `${event.entityId} → ${event.toward}: affinity ${signed(event.affinityDelta)}${event.grudgeDelta > 0 ? `, grudge +${event.grudgeDelta}` : ""}${event.allied === true ? ", allied" : event.allied === false ? ", no longer allied" : ""}`,
           );
-        } else if (event.kind === "memory-recorded") {
-          if (event.memoryKind === "told") {
-            changes.push(
-              `${event.entityId} now believes ${event.teller}: "${event.content}"`,
-            );
-          } else {
-            const owners = witnessed.get(event.eventKind) ?? [];
-            owners.push(event.entityId);
-            witnessed.set(event.eventKind, owners);
-          }
+        } else if (
+          event.kind === "memory-recorded" &&
+          event.memoryKind === "told"
+        ) {
+          changes.push(
+            `${event.entityId} now believes ${event.teller}: "${event.content}"`,
+          );
+        }
+      }
+      const causedIds = new Set(caused.map((e) => e.id));
+      const witnessed = new Map<string, string[]>();
+      for (const event of parsed.values()) {
+        if (
+          event.kind === "memory-recorded" &&
+          event.memoryKind === "witnessed" &&
+          causedIds.has(event.sourceEventId)
+        ) {
+          const owners = witnessed.get(event.eventKind) ?? [];
+          owners.push(event.entityId);
+          witnessed.set(event.eventKind, owners);
         }
       }
       for (const [kind, owners] of witnessed) {

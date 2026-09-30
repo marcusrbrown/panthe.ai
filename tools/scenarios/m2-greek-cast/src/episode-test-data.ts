@@ -71,7 +71,13 @@ export function act(
     kind: fields.kind === "report" ? "report-told" : "entity-moved",
     entityId: actor,
     ...(fields.kind === "report"
-      ? { listenerId: fields.listener, content: fields.content }
+      ? {
+          listenerId: fields.listener,
+          content: fields.content,
+          ...(fields.linkedEventId === undefined
+            ? {}
+            : { linkedEventId: fields.linkedEventId }),
+        }
       : { from: "here", to: "there" }),
   };
   return { proposal, request, event };

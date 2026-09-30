@@ -252,7 +252,75 @@ test("influence: a told belief caused by the god's own report passes; a belief c
   expect(check(both, "hera", "influence")?.ok).toBe(false);
 });
 
-test("influence: a relationship change traced back through a memory to the god's proposal counts; a witnessed memory alone does not", () => {
+test("influence is credited to the immediate cause only: Hera reporting a Zeus event she witnessed, citing it, gives Hera the influence and Zeus none", () => {
+  const zeusMove = move("zeus", "town-square", 10);
+  const heraReport = act(
+    "hera",
+    {
+      kind: "report",
+      listener: "farmer",
+      content: "I saw Zeus arrive.",
+      linkedEventId: zeusMove.event.id,
+    },
+    12,
+  );
+  const belief = memoryEvent("evt-12-13", 13, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: heraReport.event.id,
+    teller: "hera",
+    content: "I saw Zeus arrive.",
+  });
+  const change = {
+    schemaVersion: 1,
+    id: "evt-12-14",
+    sequence: 14,
+    simTime: 0,
+    correlationId: "tick-12",
+    causationId: "x",
+    approximate: false,
+    kind: "relationship-changed",
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: -1,
+    grudgeDelta: 0,
+    memoryEventId: belief.id,
+  };
+  const episode = analyzeEpisode(
+    input([zeusMove, heraReport], [belief, change]),
+    identities,
+    ["zeus", "hera"],
+  );
+  // Hera's report caused the belief and, through it, the change.
+  expect(check(episode, "hera", "influence")?.ok).toBe(true);
+  expect(check(episode, "hera", "influence")?.detail).toContain("2 caused");
+  // Zeus's only link is being cited.
+  expect(check(episode, "zeus", "influence")?.ok).toBe(false);
+
+  // Control: Zeus's own report causing a belief still counts for him.
+  const zeusReport = act(
+    "zeus",
+    { kind: "report", listener: "farmer", content: "I arrived." },
+    20,
+  );
+  const zeusBelief = memoryEvent("evt-20-21", 21, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: zeusReport.event.id,
+    teller: "zeus",
+    content: "I arrived.",
+  });
+  const withOwn = analyzeEpisode(
+    input([zeusMove, heraReport, zeusReport], [belief, change, zeusBelief]),
+    identities,
+    ["zeus", "hera"],
+  );
+  expect(check(withOwn, "zeus", "influence")?.ok).toBe(true);
+  expect(check(withOwn, "zeus", "influence")?.detail).toContain("1 caused");
+  expect(check(withOwn, "hera", "influence")?.detail).toContain("2 caused");
+});
+
+test("influence: a relationship change counts through the told belief it cites; one that rests on a witnessed memory does not", () => {
   const strike = act(
     "zeus",
     { kind: "strike", target: "the-tavern", power: 3 },
@@ -264,15 +332,10 @@ test("influence: a relationship change traced back through a memory to the god's
     sourceEventId: strike.event.id,
     eventKind: "entity-moved",
   });
-  const alone = analyzeEpisode(input([strike], [witnessed]), identities, [
-    "zeus",
-  ]);
-  expect(check(alone, "zeus", "influence")?.ok).toBe(false);
-
-  const change = {
+  const change = (id: string, sequence: number, memoryEventId: string) => ({
     schemaVersion: 1,
-    id: "evt-20-22",
-    sequence: 22,
+    id,
+    sequence,
     simTime: 0,
     correlationId: "tick-1",
     causationId: "x",
@@ -282,31 +345,61 @@ test("influence: a relationship change traced back through a memory to the god's
     toward: "zeus",
     affinityDelta: -2,
     grudgeDelta: 1,
-    memoryEventId: witnessed.id,
-  };
-  const felt = analyzeEpisode(
-    input([strike], [witnessed, change]),
+    memoryEventId,
+  });
+  // A witnessed memory alone, and a change resting on it: not influence.
+  const alone = analyzeEpisode(input([strike], [witnessed]), identities, [
+    "zeus",
+  ]);
+  expect(check(alone, "zeus", "influence")?.ok).toBe(false);
+  const seen = analyzeEpisode(
+    input([strike], [witnessed, change("evt-20-22", 22, witnessed.id)]),
     identities,
     ["zeus"],
   );
-  expect(check(felt, "zeus", "influence")?.ok).toBe(true);
-  expect(check(felt, "zeus", "influence")?.detail).toContain(
+  expect(check(seen, "zeus", "influence")?.ok).toBe(false);
+
+  // Control: the same change resting on a belief from his own report counts.
+  const report = act(
+    "zeus",
+    { kind: "report", listener: "farmer", content: "I struck it." },
+    30,
+  );
+  const belief = memoryEvent("evt-30-31", 31, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: report.event.id,
+    teller: "zeus",
+    content: "I struck it.",
+  });
+  const told = analyzeEpisode(
+    input([report], [belief, change("evt-30-32", 32, belief.id)]),
+    identities,
+    ["zeus"],
+  );
+  expect(check(told, "zeus", "influence")?.ok).toBe(true);
+  expect(check(told, "zeus", "influence")?.detail).toContain(
     "relationship-changed",
   );
 });
 
 test("the episode is ok only when every check of every god holds", () => {
-  const good = ["a", "b", "c", "d", "e"].map((to, i) =>
-    move("zeus", to, i + 1),
+  const report = act(
+    "zeus",
+    { kind: "report", listener: "hera", content: "x" },
+    1,
   );
+  const good = [
+    report,
+    ...["b", "c", "d", "e"].map((to, i) => move("zeus", to, i + 2)),
+  ];
   const belief = memoryEvent("evt-9-9", 9, {
     memoryKind: "told",
     entityId: "hera",
-    sourceEventId: good[0]?.event.id,
+    sourceEventId: report.event.id,
     teller: "zeus",
     content: "x",
   });
-  // The first move's event is not a report, but a told belief citing it is a caused belief by chain.
   const ok = analyzeEpisode(input(good, [belief]), identities, ["zeus"]);
   expect(ok.ok).toBe(true);
   const bad = analyzeEpisode(input(good.slice(0, 4), [belief]), identities, [

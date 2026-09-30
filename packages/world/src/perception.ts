@@ -5,8 +5,8 @@
 // that actor.
 //
 // The rule today is co-location: an actor perceives the location it stands
-// in, the living actors and the buildings there, and events that happened
-// there. `perceivedLocations` is the one place that rule lives. A sensing
+// in, the living actors and the buildings there, and the events that happened
+// there while it was there (an event before it arrived is not witnessed). `perceivedLocations` is the one place that rule lives. A sensing
 // power (a costed divine sense reaching other locations) widens the set it
 // returns; the rest of this module filters by that set and already carries a
 // `locationId` on everything it reports.
@@ -196,6 +196,25 @@ function eventLocation(
   }
 }
 
+/**
+ * Whether `observer` was at `at` when `event` happened, so it witnessed the
+ * event rather than merely standing where it once took place. The observer's
+ * own arrival counts as witnessed. Otherwise this walks the observer's own
+ * moves and realm transitions through the window, exactly as an actor's event
+ * is placed; when the window cannot say where the observer was, the answer is
+ * no. A later sensing power would exempt the locations it reaches.
+ */
+function wasPresent(
+  state: WorldState,
+  observer: EntityId,
+  event: WorldEvent,
+  at: EntityId,
+  window: readonly WorldEvent[],
+): boolean {
+  if (isMove(event) && event.entityId === observer) return true;
+  return actorLocationAt(state, observer, event, window) === at;
+}
+
 function perceivedEvent(
   event: WorldEvent,
   known: ReadonlySet<EntityId>,
@@ -311,7 +330,8 @@ export function perceive(
     .sort((a, b) => a.sequence - b.sequence)
     .filter((event) => {
       const at = eventLocation(state, event, recentEvents);
-      return at !== undefined && locations.has(at);
+      if (at === undefined || !locations.has(at)) return false;
+      return wasPresent(state, actorId, event, at, recentEvents);
     })
     .slice(-MAX_PERCEIVED_EVENTS)
     .map((event) => perceivedEvent(event, known));

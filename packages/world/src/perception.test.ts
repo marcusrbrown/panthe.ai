@@ -452,3 +452,66 @@ test("the snapshot carries the observer's capabilities and each exit's required 
     "requiredCapability",
   );
 });
+
+// --- Presence: an event is perceived only if the observer was there when it happened ---------
+
+test("a private event in the tavern before Zeus arrives is not perceived; his own arrival is", () => {
+  // Zeus stood in the square, the farmer gathered in the tavern, then Zeus walked in.
+  const events = [gathered("farmer", 200), moved("zeus", "tavern", 201)];
+  const snapshot = perceive(fixtureState(), id("zeus"), events);
+  expect(snapshot?.events.map((e) => e.sequence)).toEqual([201]);
+  expect(JSON.stringify(snapshot?.events)).not.toContain("evt-200");
+});
+
+test("positive control: Zeus already in the tavern when the farmer gathers perceives it", () => {
+  // Zeus arrived first (sequence 210), then the farmer gathered (211).
+  const events = [moved("zeus", "tavern", 210), gathered("farmer", 211)];
+  const snapshot = perceive(fixtureState(), id("zeus"), events);
+  expect(snapshot?.events.map((e) => e.sequence)).toEqual([210, 211]);
+});
+
+test("with no moves by the observer in the window, it was here throughout and perceives what happened here", () => {
+  const events = [gathered("farmer", 220), ignited("the-tavern", 221)];
+  expect(
+    perceive(fixtureState(), id("zeus"), events)?.events.map((e) => e.sequence),
+  ).toEqual([220, 221]);
+});
+
+test("a building event in the tavern before Zeus arrives is not perceived either", () => {
+  const events = [ignited("the-tavern", 230), moved("zeus", "tavern", 231)];
+  expect(
+    perceive(fixtureState(), id("zeus"), events)?.events.map((e) => e.sequence),
+  ).toEqual([231]);
+});
+
+test("when the window cannot say where the observer was, the event is dropped", () => {
+  // The window holds only Zeus's arrival, never where he came from, so
+  // nothing before it can be placed against him.
+  const events = [ignited("the-tavern", 240), moved("zeus", "tavern", 241)];
+  const seen = perceive(fixtureState(), id("zeus"), events)?.events ?? [];
+  expect(seen.map((e) => e.sequence)).toEqual([241]);
+});
+
+test("Zeus left and came back: what happened while he was away is missed; before his first move the window cannot place him, so that is dropped too", () => {
+  const events = [
+    gathered("farmer", 250), // before any move of his in the window: unplaceable
+    moved("zeus", "square", 251),
+    gathered("farmer", 252), // Zeus in the square: missed
+    moved("zeus", "tavern", 253),
+    gathered("farmer", 254), // back in the tavern
+  ];
+  expect(
+    perceive(fixtureState(), id("zeus"), events)?.events.map((e) => e.sequence),
+  ).toEqual([253, 254]);
+});
+
+test("an event witnessed at a place Zeus has since left is not in the snapshot: the snapshot is what he perceives where he stands now", () => {
+  // Zeus gathered-with-the-farmer in the tavern (260), then went to the square.
+  // He was present, but the snapshot's "recent events here", subjects and exits
+  // all describe his current place, so the old event would appear with its
+  // subjects stripped. It belongs to a memory of the tavern, not to this view.
+  const events = [gathered("farmer", 260), moved("zeus", "square", 261)];
+  const inSquare = actorAt(fixtureState(), "zeus", "square");
+  const snapshot = perceive(inSquare, id("zeus"), events);
+  expect(snapshot?.events.map((e) => e.sequence)).toEqual([261]);
+});

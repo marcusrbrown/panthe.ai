@@ -346,6 +346,10 @@ export function toldMemory(
         : sameClaim(memory.consequence, claim)),
   );
   if (heard) return undefined;
+  // Like a witnessed kind with no salience, a belief with none is not formed:
+  // a memory's salience is a positive whole number.
+  const salience = balanceOf(after, "salience_told");
+  if (salience < 1) return undefined;
   return {
     cause: report,
     draft: {
@@ -367,7 +371,7 @@ export function toldMemory(
               ...(claim.target === undefined ? [] : [claim.target]),
             ]),
       ]),
-      salience: balanceOf(after, "salience_told"),
+      salience,
       ...(claim === undefined ? {} : { consequence: claim }),
     },
   };

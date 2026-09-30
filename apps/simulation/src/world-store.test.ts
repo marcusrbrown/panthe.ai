@@ -1669,3 +1669,60 @@ test("a rehashed archive that carries hostile memory tunables, or more memories 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a report told with zero belief salience commits, and the world survives reopen and export then import", () => {
+  const dir = tempDir("panthea-sim-zero-told-");
+  try {
+    const storePath = join(dir, "world.sqlite");
+    const world = liveWorld(storePath, socialSeed({ salience_told: 0 }));
+    world.run(
+      queuedProposal("bard", {
+        kind: "report",
+        listener: "zeus",
+        content: "The farmer grumbles",
+        claim: { effect: "harm", agent: "farmer", target: "bard" },
+      }),
+    );
+    const state = world.state;
+    const events = listEvents(world.store.db);
+    expect(events.some((event) => event.kind === "report-told")).toBe(true);
+    expect(events.some((event) => event.kind === "memory-recorded")).toBe(
+      false,
+    );
+    expect(getMemories(state, id("zeus"))).toEqual([]);
+
+    // Reopen from disk with a fresh composition root.
+    closeStore(world.store);
+    const fresh = createWorldProjectionReducers(
+      socialSeed({ salience_told: 0 }),
+    );
+    const reopened = openStore(storePath, fresh);
+    const clock = readClock(reopened.db);
+    expect(
+      restoreWorldTime(readLiveProjections(reopened, fresh), clock),
+    ).toEqual(state);
+    expect(
+      restoreWorldTime(rebuildProjections(reopened, fresh), clock),
+    ).toEqual(state);
+
+    // Export, then import: the archive parses every event and rebuilds the projection.
+    const archive = join(dir, "archive.sqlite");
+    exportArchive(reopened, archive);
+    const imported = importArchive(
+      archive,
+      join(dir, "slots"),
+      worldImportReducers,
+    );
+    const branch = openStore(join(imported.slotPath, "world.sqlite"), fresh);
+    expect(
+      restoreWorldTime(
+        readLiveProjections(branch, fresh),
+        readClock(branch.db),
+      ),
+    ).toEqual(state);
+    closeStore(branch);
+    closeStore(reopened);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

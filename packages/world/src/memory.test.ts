@@ -5,6 +5,7 @@ import {
   type EventId,
   MAX_REPORT_LENGTH,
   type Proposal,
+  parseEvent,
   type WorldEvent,
 } from "@panthea/contracts";
 import { applyEvent, applyEvents, runTick, submitProposal } from "./actions";
@@ -694,6 +695,40 @@ test("positive control: a different claim, or the same claim from a different te
   expect(world.memories("hera")).toHaveLength(held);
   world.tick(report("farmer", "hera", "another story"));
   expect(world.memories("hera")).toHaveLength(held + 1);
+});
+
+test("a report told with zero belief salience is recorded but forms no belief and no feeling; every event it emits parses and the world decodes", () => {
+  const reportTick = (memoryBalance: Record<string, number>) => {
+    const world = new World(memoryBalance);
+    world.tick(move("farmer", "square"));
+    const told = world.tick(
+      report("farmer", "hera", "Zeus wronged me", undefined, HARM_BY_ZEUS),
+    );
+    return { world, told };
+  };
+
+  const { world, told } = reportTick({ salience_told: 0 });
+  expect(world.lastRejected).toEqual([]);
+  expect(ofKind(told.events, "report-told")).toHaveLength(1);
+  expect(ofKind(told.events, "memory-recorded")).toEqual([]);
+  expect(ofKind(told.events, "relationship-changed")).toEqual([]);
+  expect(world.memories("hera")).toEqual([]);
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toBeUndefined();
+  for (const event of told.events) {
+    expect(parseEvent(JSON.parse(JSON.stringify(event))).ok).toBe(true);
+  }
+  expect(() =>
+    decode(JSON.parse(JSON.stringify(encode(world.state)))),
+  ).not.toThrow();
+
+  // Control: the same report with a positive salience derives the belief.
+  const control = reportTick({ salience_told: 4 });
+  expect(ofKind(control.told.events, "memory-recorded")).toHaveLength(1);
+  expect(ofKind(control.told.events, "relationship-changed")).toHaveLength(1);
+  expect(control.world.memories("hera")).toHaveLength(1);
+  for (const event of control.told.events) {
+    expect(parseEvent(JSON.parse(JSON.stringify(event))).ok).toBe(true);
+  }
 });
 
 // --- Tunables the rules read ---------------------------------------------------------------

@@ -111,6 +111,65 @@ test("perception compliance holds when every id a proposal names is in the promp
   expect(result?.detail).toContain("the-woodcutter");
 });
 
+test('perception compliance counts a god\'s own id as present: the prompt says "You are Hera" and never prints the id, and a claim may name the god itself', () => {
+  // Hera's prompt names her by name only; the schema still lets her claim name herself.
+  const prompt =
+    "You are Hera, a Greek god of marriage.\nHere with you:\n- zeus (a god)";
+  const selfClaim = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "hera", {
+        kind: "report",
+        listener: "zeus",
+        content: "x",
+        claim: { effect: "harm", agent: "zeus", target: "hera" },
+      }),
+    ],
+  });
+  expect(property(selfClaim, "perception compliance")?.ok).toBe(true);
+  const asAgent = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "hera", {
+        kind: "report",
+        listener: "zeus",
+        content: "x",
+        claim: { effect: "kindness", agent: "hera" },
+      }),
+    ],
+  });
+  expect(property(asAgent, "perception compliance")?.ok).toBe(true);
+
+  // Control: an id that is neither the actor nor in the prompt still fails.
+  const stranger = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "hera", {
+        kind: "report",
+        listener: "zeus",
+        content: "x",
+        claim: { effect: "harm", agent: "zeus", target: "the-woodcutter" },
+      }),
+    ],
+  });
+  const result = property(stranger, "perception compliance");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("the-woodcutter");
+  // Only the actor's own id is exempt: another god's id, absent from the prompt, fails.
+  const other = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "zeus", {
+        kind: "report",
+        listener: "zeus",
+        content: "x",
+        claim: { effect: "harm", agent: "hera" },
+      }),
+    ],
+  });
+  expect(property(other, "perception compliance")?.ok).toBe(false);
+});
+
 test("perception compliance fails, naming the proposal, when a committed proposal has no matching request", () => {
   const prompt = "Here with you:\n- hera (a god)";
   const covered = proposal("p1", "zeus", {

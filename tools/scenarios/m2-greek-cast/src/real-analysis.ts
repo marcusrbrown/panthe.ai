@@ -145,7 +145,9 @@ function perceptionCompliance(
     }
     checked += 1;
     for (const id of namedIds(proposal.proposal)) {
-      if (!prompt.includes(id)) {
+      // The god's own id is always in scope (the schema offers it as a claim's
+      // agent and target), but its prompt says "You are <Name>", not the id.
+      if (id !== proposal.actor && !prompt.includes(id)) {
         missing.push(`${proposal.actor}'s ${proposal.kind} names ${id}`);
       }
     }
@@ -188,28 +190,50 @@ function relationshipProvenance(events: readonly StoredEvent[]): Property {
   };
 }
 
+/** A committed god proposal, the events it caused, and the first of their sequences. */
+export interface CommittedAction {
+  readonly proposal: RealProposal;
+  readonly caused: readonly StoredEvent[];
+  readonly sequence: number;
+}
+
+/**
+ * A god's committed proposals in the order the world applied them: sorted by
+ * the sequence of the first event each caused. A proposal that caused no
+ * event has no place in that order and is left out.
+ */
+export function committedInOrder(
+  actor: string,
+  proposals: readonly RealProposal[],
+  events: readonly StoredEvent[],
+): CommittedAction[] {
+  return proposals
+    .filter((p) => p.actor === actor && p.outcome === "committed")
+    .flatMap((proposal) => {
+      const caused = events.filter(
+        (e) => e.correlationId === proposal.observationId,
+      );
+      const first = caused[0];
+      return first
+        ? [{ proposal, caused, sequence: Number(first.sequence) }]
+        : [];
+    })
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
 /** A god's committed actions in order, each with the first event sequence it caused. */
 function actionsOf(
   actor: string,
   proposals: readonly RealProposal[],
   events: readonly StoredEvent[],
 ) {
-  return proposals
-    .filter((p) => p.actor === actor && p.outcome === "committed")
-    .flatMap((p) => {
-      const caused = events.filter((e) => e.correlationId === p.observationId);
-      const first = caused[0];
-      return first
-        ? [
-            {
-              key: `${p.kind}:${namedIds(p.proposal).join(",")}`,
-              kind: p.kind,
-              sequence: Number(first.sequence),
-            },
-          ]
-        : [];
-    })
-    .sort((a, b) => a.sequence - b.sequence);
+  return committedInOrder(actor, proposals, events).map(
+    ({ proposal, sequence }) => ({
+      key: `${proposal.kind}:${namedIds(proposal.proposal).join(",")}`,
+      kind: proposal.kind,
+      sequence,
+    }),
+  );
 }
 
 function changedNextAction(

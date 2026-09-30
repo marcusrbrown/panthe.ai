@@ -8,6 +8,10 @@
 //   bun run scenario:m2 --write-readme               run the story and every control, rewrite README.md (uses real-run.json)
 //   bun run scenario:m2 --real [--seconds=N]         both gods through local Ollama, unscripted; asserts properties, writes real-run.json
 //                                                    (rebuilds the sidecar first, unless --skip-build)
+//   bun run scenario:m2 --episodes=N [--episode-seconds=300] [--out=DIR]
+//                                                    experience gate: N fresh worlds, Zeus and Hera on local Ollama for the same time each;
+//                                                    writes episode-N.md and summary.md to DIR (default m2-greek-cast/episodes/<timestamp>/)
+//                                                    (rebuilds the sidecar first, unless --skip-build)
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +19,7 @@ import { captureEnvironment, renderReport } from "@panthea/tools-probes-shared";
 import { ScenarioFailure } from "../../m1-living-world/src/helpers";
 import { killAllSidecars } from "../../m1-living-world/src/sidecar";
 import { resolveSidecarBinary } from "./binary";
+import { defaultOutDir, runEpisodes } from "./episodes";
 import { OllamaUnreachable, type RealRecord, runReal } from "./real";
 import { buildReportInput, type ControlResult } from "./report";
 import {
@@ -28,6 +33,18 @@ interface Args extends StoryOptions {
   readonly real: boolean;
   readonly seconds: number;
   readonly writeReadme: boolean;
+  /** Experience-gate episodes to run; 0 when not asked for. */
+  readonly episodes: number;
+  readonly episodeSeconds: number;
+  readonly out: string | undefined;
+}
+
+function positiveInt(flag: string, text: string): number {
+  const value = Number(text);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${flag} must be a positive whole number, got ${text}`);
+  }
+  return value;
 }
 
 function parseArgs(argv: readonly string[]): Args {
@@ -36,11 +53,19 @@ function parseArgs(argv: readonly string[]): Args {
   let real = false;
   let writeReadme = false;
   let seconds = 180;
+  let episodes = 0;
+  let episodeSeconds = 300;
+  let out: string | undefined;
   for (const arg of argv) {
     if (arg === "--skip-build") skipBuild = true;
     else if (arg === "--real") real = true;
     else if (arg === "--write-readme") writeReadme = true;
     else if (arg.startsWith("--seconds=")) seconds = Number(arg.slice(10));
+    else if (arg.startsWith("--episodes=")) {
+      episodes = positiveInt("--episodes", arg.slice(11));
+    } else if (arg.startsWith("--episode-seconds=")) {
+      episodeSeconds = positiveInt("--episode-seconds", arg.slice(18));
+    } else if (arg.startsWith("--out=")) out = arg.slice(6);
     else if (arg.startsWith("--positive-control=")) {
       const name = arg.slice("--positive-control=".length);
       if (!(CONTROL_NAMES as readonly string[]).includes(name)) {
@@ -59,6 +84,9 @@ function parseArgs(argv: readonly string[]): Args {
     real,
     seconds,
     writeReadme,
+    episodes,
+    episodeSeconds,
+    out,
   };
 }
 
@@ -129,6 +157,45 @@ async function runRealRun(args: Args): Promise<void> {
   }
 }
 
+async function runEpisodeGate(args: Args): Promise<void> {
+  const outDir = args.out ?? defaultOutDir();
+  const records = await runEpisodes({
+    binary: resolveSidecarBinary(args.skipBuild),
+    durationMs: args.episodeSeconds * 1000,
+    ollama: "http://127.0.0.1:11434",
+    model: "llama3.2-3b-4k",
+    episodes: args.episodes,
+    outDir,
+  });
+  console.log(
+    `wrote ${records.length} transcripts and summary.md to ${outDir}`,
+  );
+  let failed = 0;
+  for (const record of records) {
+    for (const god of record.episode.gods) {
+      for (const check of god.checks) {
+        if (!check.ok) failed += 1;
+        console.log(
+          `${check.ok ? "PASS" : "FAIL"} episode ${record.index} ${god.god} ${check.name}: ${check.detail}`,
+        );
+      }
+    }
+    for (const property of record.analysis.properties) {
+      if (!property.ok) failed += 1;
+      console.log(
+        `${property.ok ? "PASS" : "FAIL"} episode ${record.index} ${property.name}: ${property.detail}`,
+      );
+    }
+  }
+  if (failed > 0) {
+    // The transcripts are kept: an unsuccessful episode is tuning evidence.
+    console.error(
+      `\nFAIL invariant violated: ${failed} automated checks did not hold (transcripts kept in ${outDir})`,
+    );
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(Bun.argv.slice(2));
   const startedAt = Date.now();
@@ -137,6 +204,10 @@ async function main(): Promise<void> {
     process.exit(130);
   });
   try {
+    if (args.episodes > 0) {
+      await runEpisodeGate(args);
+      return;
+    }
     if (args.real) {
       await runRealRun(args);
       return;

@@ -30,6 +30,7 @@ import {
   markExternalProposalConsumed,
 } from "./journal";
 import {
+  bindCatchUpProgressSummary,
   CURRENT_SCHEMA_VERSION,
   closeStore,
   commitTick,
@@ -1545,6 +1546,53 @@ describe("the catch-up summary in an archive", () => {
     expect(readCatchUpSummary(imported.db)).toEqual(summary);
     expect(readCatchUpProgress(imported.db)?.appliedMs).toBe(60_000);
     closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a backlog bound to its partial summary keeps the binding across an import, so closing it there still keeps the summary's id", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 1,
+    });
+    bindCatchUpProgressSummary(store.db, summary.id);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)?.summaryId).toBe(summary.id);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a rehashed archive whose open backlog is bound to a summary the archive does not carry is rejected as corrupt; no slot is created", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 1,
+    });
+    bindCatchUpProgressSummary(store.db, summary.id);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run("UPDATE catch_up_progress SET summary_id = 'someone-else'");
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
     closeStore(store);
   });
 

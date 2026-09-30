@@ -613,10 +613,13 @@ test("the excess over the cap is discarded in its own commit before any chunk: a
       skippedMs: 4 * HOUR_MS,
       majorOutcomes: [],
     });
+    // The degraded run persisted its partial summary and bound the still-open
+    // backlog to it.
     expect(backlog.progress()).toEqual({
       appliedMs: 0,
       discardedMs: 4 * HOUR_MS,
       startSequence: 0,
+      summaryId: backlog.summary()?.id,
     });
   } finally {
     backlog.dispose();

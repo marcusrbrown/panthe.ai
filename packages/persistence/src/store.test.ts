@@ -19,6 +19,7 @@ import {
   type WorldEvent,
 } from "@panthea/contracts";
 import {
+  bindCatchUpProgressSummary,
   clearCatchUpProgress,
   closeStore,
   commitTick,
@@ -686,6 +687,26 @@ describe("catch-up progress", () => {
     tick(reopened, 3, { onCommitted: clearCatchUpProgress });
     expect(readCatchUpProgress(reopened.db)).toBeUndefined();
     closeStore(reopened);
+  });
+
+  test("the summary binding survives further progress and goes with the row when the backlog is cleared", () => {
+    const store = openStore(dbPath, countReducer);
+    const backlog = { appliedMs: 60_000, discardedMs: 0, startSequence: 0 };
+    writeCatchUpProgress(store.db, backlog);
+    expect(readCatchUpProgress(store.db)?.summaryId).toBeUndefined();
+
+    bindCatchUpProgressSummary(store.db, "summary-a");
+    writeCatchUpProgress(store.db, { ...backlog, appliedMs: 120_000 });
+
+    expect(readCatchUpProgress(store.db)).toEqual({
+      ...backlog,
+      appliedMs: 120_000,
+      summaryId: "summary-a",
+    });
+    clearCatchUpProgress(store.db);
+    writeCatchUpProgress(store.db, backlog);
+    expect(readCatchUpProgress(store.db)?.summaryId).toBeUndefined();
+    closeStore(store);
   });
 
   test("progress is rolled back with the tick when the transaction fails", () => {

@@ -3,7 +3,9 @@
 // backlog (`catch_up_progress`) and the events it committed, and is then
 // stored as its own row (`catch_up_summary`) with a service-minted id. It is
 // never re-derived: a summary persisted at a backlog's ending sequence stays
-// exactly that while live ticks go on and later backlogs come and go.
+// exactly that while live ticks go on and later backlogs come and go. Its id
+// names the backlog that produced it: only that backlog, still open, may keep
+// the id it already persisted; every later backlog mints its own.
 //
 // Every write here is meant to run inside the transaction that ends (or
 // partially records) the backlog, so the summary row and the progress delete
@@ -11,6 +13,7 @@
 
 import type { Database } from "bun:sqlite";
 import {
+  bindCatchUpProgressSummary,
   type CatchUpProgress,
   type CatchUpSummaryRecord,
   clearCatchUpProgress,
@@ -87,7 +90,7 @@ export function openBacklogAccount(db: Database): BacklogAccount | undefined {
   return progress ? accountOf(db, progress, getCurrentSequence(db)) : undefined;
 }
 
-function sameAccount(
+function sameSummary(
   existing: CatchUpSummaryRecord,
   account: BacklogAccount,
   atSequence: number,
@@ -104,18 +107,30 @@ function sameAccount(
 }
 
 /**
- * Persists `account` as the latest summary. If it is exactly the summary
- * already persisted (a retry with no new committed progress), the id is
- * reused and nothing is written, so a client that acknowledged it is not shown
- * it again. Any difference mints a new id, even at the same sequence.
+ * Persists `account` as the latest summary of the open backlog `progress`.
+ * The id belongs to the backlog, not to the account's content: it is reused,
+ * with nothing written, only when the summary already persisted is the one
+ * this same open backlog recorded as a degraded partial (`progress.summaryId`)
+ * and nothing about it changed, so a client that acknowledged it is not shown
+ * it again. Any other case mints a new id: a difference in the account, even
+ * at the same sequence, or a backlog that has not persisted a summary yet,
+ * even when its account is identical to the last closed backlog's. When the
+ * backlog stays open (`bind`), the new id is tied to it so a retry or the
+ * closing commit can recognise it.
  */
 function persistAccount(
   db: Database,
+  progress: CatchUpProgress,
   account: BacklogAccount,
   atSequence: number,
+  bind: boolean,
 ): CatchUpSummaryRecord {
   const existing = readCatchUpSummary(db);
-  if (existing && sameAccount(existing, account, atSequence)) {
+  if (
+    existing &&
+    existing.id === progress.summaryId &&
+    sameSummary(existing, account, atSequence)
+  ) {
     return existing;
   }
   const record: CatchUpSummaryRecord = {
@@ -126,6 +141,9 @@ function persistAccount(
     majorOutcomes: [...account.majorOutcomes],
   };
   writeCatchUpSummary(db, record);
+  if (bind) {
+    bindCatchUpProgressSummary(db, record.id);
+  }
   return record;
 }
 
@@ -146,7 +164,7 @@ export function recordPartialSummary(
   const endSequence = getCurrentSequence(db);
   const account = accountOf(db, progress, endSequence);
   return isNonEmptyAccount(account)
-    ? persistAccount(db, account, endSequence)
+    ? persistAccount(db, progress, account, endSequence, true)
     : undefined;
 }
 
@@ -172,7 +190,7 @@ export function closeCatchUpBacklog(db: Database): ClosedBacklog | undefined {
   const endSequence = getCurrentSequence(db);
   const account = accountOf(db, progress, endSequence);
   const delivered = isNonEmptyAccount(account)
-    ? persistAccount(db, account, endSequence)
+    ? persistAccount(db, progress, account, endSequence, false)
     : undefined;
   clearCatchUpProgress(db);
   return { account, delivered };

@@ -182,6 +182,7 @@ interface CatchUpProgressRow {
   readonly applied_ms: number;
   readonly discarded_ms: number;
   readonly start_sequence: number;
+  readonly summary_id: string | null;
 }
 
 /** The outcome list a `major_outcomes` column holds, or `undefined` when it is not a JSON array of strings. */
@@ -245,7 +246,7 @@ function readExportData(store: Store): ExportData {
       .all() as JournalRow[];
     const catchUpProgress = store.db
       .query(
-        "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
+        "SELECT applied_ms, discarded_ms, start_sequence, summary_id FROM catch_up_progress WHERE id = 1",
       )
       .get() as CatchUpProgressRow | null;
     const catchUpSummary = store.db
@@ -348,11 +349,12 @@ export function exportArchive(store: Store, destPath: string): ArchiveManifest {
         }
         if (data.catchUpProgress) {
           archiveDb.run(
-            "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)",
+            "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence, summary_id) VALUES (1, ?, ?, ?, ?)",
             [
               data.catchUpProgress.applied_ms,
               data.catchUpProgress.discarded_ms,
               data.catchUpProgress.start_sequence,
+              data.catchUpProgress.summary_id,
             ],
           );
         }
@@ -946,9 +948,11 @@ export function importArchive(
             // An open catch-up backlog: the accounting a restore resumes
             // from. Counts must be plain non-negative integers, and the
             // backlog cannot have started after the archive's last event.
+            // A backlog bound to a partial summary (`summary_id`) must be
+            // bound to the summary the archive carries.
             const progress = db
               .query(
-                "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
+                "SELECT applied_ms, discarded_ms, start_sequence, summary_id FROM catch_up_progress WHERE id = 1",
               )
               .get() as CatchUpProgressRow | null;
             if (progress) {
@@ -963,12 +967,28 @@ export function importArchive(
                   "archive catch-up progress has an invalid count or starts after the archive's last event",
                 );
               }
+              if (progress.summary_id !== null) {
+                const carried = db
+                  .query("SELECT summary_id FROM catch_up_summary WHERE id = 1")
+                  .get() as { summary_id: string } | null;
+                if (
+                  typeof progress.summary_id !== "string" ||
+                  progress.summary_id === "" ||
+                  carried?.summary_id !== progress.summary_id
+                ) {
+                  throw new ImportError(
+                    "corrupt",
+                    "archive catch-up progress is bound to a summary the archive does not carry",
+                  );
+                }
+              }
               stagingDb.run(
-                "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)",
+                "INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence, summary_id) VALUES (1, ?, ?, ?, ?)",
                 [
                   progress.applied_ms,
                   progress.discarded_ms,
                   progress.start_sequence,
+                  progress.summary_id,
                 ],
               );
             }

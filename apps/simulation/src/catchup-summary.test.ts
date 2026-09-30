@@ -150,6 +150,24 @@ describe("closeCatchUpBacklog", () => {
     expect(second?.id).not.toBe(first?.id);
     expect(readCatchUpSummary(store.db)).toEqual(second);
   });
+
+  test("a new backlog gets a new id even when its account is identical to the closed previous one: the id names the backlog, not its content", () => {
+    writeCatchUpProgress(store.db, backlog());
+    const first = closeCatchUpBacklog(store.db)?.delivered;
+
+    // An eventless second backlog with the same amounts, ending at the same
+    // sequence: content-identical, but a different backlog.
+    writeCatchUpProgress(store.db, backlog());
+    const second = closeCatchUpBacklog(store.db)?.delivered;
+
+    expect(second).toMatchObject({
+      atSequence: first?.atSequence,
+      appliedMs: first?.appliedMs,
+      skippedMs: first?.skippedMs,
+    });
+    expect(second?.id).not.toBe(first?.id);
+    expect(readCatchUpSummary(store.db)?.id).toBe(second?.id);
+  });
 });
 
 describe("recordPartialSummary: a degraded catch-up keeps its backlog open", () => {
@@ -191,6 +209,19 @@ describe("recordPartialSummary: a degraded catch-up keeps its backlog open", () 
 
     expect(closed?.delivered?.id).toBe(partial?.id);
     expect(readCatchUpProgress(store.db)).toBeUndefined();
+  });
+
+  test("a new backlog's partial summary is not the closed previous backlog's, even with an identical account, and closing it keeps its own id", () => {
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 60 * TICK }));
+    const first = recordPartialSummary(store.db);
+    closeCatchUpBacklog(store.db);
+
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 60 * TICK }));
+    const secondPartial = recordPartialSummary(store.db);
+    const secondClosed = closeCatchUpBacklog(store.db)?.delivered;
+
+    expect(secondPartial?.id).not.toBe(first?.id);
+    expect(secondClosed?.id).toBe(secondPartial?.id);
   });
 
   test("closing after more progress mints a new id", () => {

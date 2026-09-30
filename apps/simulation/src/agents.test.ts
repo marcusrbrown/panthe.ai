@@ -1,0 +1,969 @@
+// The god turn runner against a real store, journal, trace, and tick loop.
+// The only scripted piece is the model provider, a loopback OpenAI-compatible
+// endpoint the production router talks to. Service-level tests spawn the real
+// entry point with a model config and drive it over HTTP.
+
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  createRouter,
+  type GodTurnDeps,
+  parseRoutingConfig,
+} from "@panthea/agents";
+import { parseSyncFrame } from "@panthea/contracts";
+import {
+  closeStore,
+  listEvents,
+  listExternalProposals,
+  openStore,
+  readClock,
+  type Store,
+} from "@panthea/persistence";
+import {
+  ensureTraceSchema,
+  followProposal,
+  getModelRequestByProposalId,
+  getProposalOutcomeByProposalId,
+  type ProposalId,
+} from "@panthea/telemetry";
+import {
+  createPrng,
+  getActor,
+  type PrngState,
+  toEntityId,
+  type WorldState,
+  withActor,
+} from "@panthea/world";
+import {
+  createGodTurnRunner,
+  type GodTurnRunner,
+  type Lifecycle,
+} from "./agents";
+import {
+  loadEmbeddedGreekGodProfiles,
+  loadEmbeddedGreekWorldPack,
+} from "./greek-world-pack";
+import {
+  applyLiveTick,
+  createServiceStatusRef,
+  type ServiceStatusRef,
+} from "./server";
+import { buildRoutineQueue, type TickDeps } from "./tick";
+import {
+  createEventSource,
+  createWorldProjectionReducers,
+  loadGreekWorldState,
+} from "./world-store";
+
+const id = toEntityId;
+
+// --- The scripted provider ---------------------------------------------------------------
+
+type Reply = string | 500;
+
+interface Provider {
+  readonly baseUrl: string;
+  /** Every request the provider received, in order: which god asked, and the whole body. */
+  readonly requests: { readonly god: string; readonly body: string }[];
+  /** How the provider answers; replaceable mid-test. */
+  respond: (god: string, n: number) => Promise<Reply> | Reply;
+  stop(): void;
+}
+
+const providers: Provider[] = [];
+
+const LEGEND = (god: string) =>
+  JSON.stringify({
+    action: "legend",
+    assertion: `${god} speaks of what was seen.`,
+  });
+
+function godOf(body: string): string {
+  return body.includes("You are Zeus")
+    ? "zeus"
+    : body.includes("You are Hera")
+      ? "hera"
+      : "unknown";
+}
+
+function startProvider(
+  respond: Provider["respond"] = (god) => LEGEND(god),
+): Provider {
+  const requests: Provider["requests"][number][] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const body = await request.text();
+      const god = godOf(body);
+      const n = requests.length;
+      requests.push({ god, body });
+      const reply = await provider.respond(god, n);
+      if (reply === 500) return new Response("down", { status: 500 });
+      return Response.json({
+        id: "chatcmpl-1",
+        object: "chat.completion",
+        created: 1,
+        model: "scripted",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: reply },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    },
+  });
+  const provider: Provider = {
+    baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    requests,
+    respond,
+    stop: () => server.stop(true),
+  };
+  providers.push(provider);
+  return provider;
+}
+
+/** A reply the test releases by hand, so a turn stays in flight as long as it likes. */
+function held() {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { gate, release: () => release() };
+}
+
+afterEach(() => {
+  for (const provider of providers.splice(0)) provider.stop();
+});
+
+function deps(provider: Provider, gods: string[]): GodTurnDeps {
+  const config = parseRoutingConfig({
+    endpoints: [{ id: "local", baseUrl: provider.baseUrl, model: "scripted" }],
+    roles: Object.fromEntries(gods.map((god) => [god, { endpoint: "local" }])),
+  });
+  if (!config.ok) throw new Error(`${config.path}: ${config.message}`);
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+  const all = loadEmbeddedGreekGodProfiles(pack.value);
+  if (!all.ok) throw new Error(all.message);
+  return {
+    router: createRouter({
+      config: config.value,
+      offline: false,
+      limits: {
+        attemptTimeoutMs: 3_000,
+        totalTimeoutMs: 10_000,
+        maxAttempts: 1,
+        backoffBaseMs: 1,
+        backoffMaxMs: 2,
+      },
+    }),
+    profiles: new Map(
+      all.value
+        .filter((profile) => gods.includes(profile.id))
+        .map((profile) => [id(profile.id), profile]),
+    ),
+  };
+}
+
+// --- The world under the runner ------------------------------------------------------------
+
+interface Lifecycles {
+  startupCatchUpComplete: boolean;
+  catchUpRunning: boolean;
+  paused: boolean;
+}
+
+interface World {
+  readonly dir: string;
+  readonly path: string;
+  store: Store;
+  reducers: ReturnType<typeof createWorldProjectionReducers>;
+  deps: TickDeps;
+  statusRef: ServiceStatusRef;
+  state: WorldState;
+  prng: PrngState;
+  readonly flags: Lifecycles;
+  readonly lifecycle: Lifecycle;
+  wallMs: number;
+}
+
+const worlds: World[] = [];
+
+/** The Greek world with Zeus placed at `zeusAt`. */
+function newWorld(zeusAt = "great-hall"): World {
+  const dir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-"));
+  const greek = loadGreekWorldState();
+  const zeus = getActor(greek, id("zeus"));
+  if (!zeus) throw new Error("no zeus");
+  const state = withActor(greek, { ...zeus, locationId: id(zeusAt) });
+  const reducers = createWorldProjectionReducers(state);
+  const path = join(dir, "world.sqlite");
+  const store = openStore(path, reducers);
+  ensureTraceSchema(store.db);
+  const flags: Lifecycles = {
+    startupCatchUpComplete: true,
+    catchUpRunning: false,
+    paused: false,
+  };
+  const world: World = {
+    dir,
+    path,
+    store,
+    reducers,
+    deps: { store, reducers, traceDb: store.db },
+    statusRef: createServiceStatusRef(state),
+    state,
+    prng: createPrng(1),
+    flags,
+    lifecycle: {
+      startupCatchUpComplete: () => flags.startupCatchUpComplete,
+      catchUpRunning: () => flags.catchUpRunning,
+      paused: () => flags.paused,
+    },
+    wallMs: 0,
+  };
+  worlds.push(world);
+  return world;
+}
+
+/** Stops the process and starts it again over the same file: what a kill and restart leave. */
+function restart(world: World): void {
+  closeStore(world.store);
+  const store = openStore(world.path, world.reducers);
+  ensureTraceSchema(store.db);
+  world.store = store;
+  world.deps = { store, reducers: world.reducers, traceDb: store.db };
+  world.statusRef = createServiceStatusRef(world.state);
+}
+
+afterEach(() => {
+  for (const world of worlds.splice(0)) {
+    try {
+      closeStore(world.store);
+    } catch {
+      // Already closed by a test that restarted it.
+    }
+    rmSync(world.dir, { recursive: true, force: true });
+  }
+});
+
+/** One live tick over the routines and whatever the journal holds, as the service's loop runs it. */
+function tick(world: World) {
+  world.wallMs += 1_000;
+  const step = applyLiveTick(
+    buildRoutineQueue(world.state),
+    world.state,
+    world.prng,
+    world.deps,
+    { cursorWallMs: world.wallMs, paused: false },
+  );
+  if (step.kind !== "committed")
+    throw new Error(`tick failed: ${step.message}`);
+  world.state = step.state;
+  world.prng = step.prng;
+  return step;
+}
+
+function runnerFor(
+  world: World,
+  provider: Provider,
+  gods: string[],
+  lifecycle: Lifecycle = world.lifecycle,
+): GodTurnRunner {
+  return createGodTurnRunner({
+    ...deps(provider, gods),
+    store: world.store,
+    getState: () => world.state,
+    lifecycle,
+    statusRef: world.statusRef,
+  });
+}
+
+const pendingModelProposals = (world: World) =>
+  listExternalProposals(world.store.db).filter(
+    (entry) => entry.consumedTick === undefined,
+  );
+
+const STRIKE_TAVERN = JSON.stringify({
+  action: "strike",
+  target: "the-tavern",
+  power: 2,
+});
+
+// --- Journaling ------------------------------------------------------------------------------
+
+describe("a god's turn", () => {
+  test("is journaled in-process as a model proposal, with its request in the trace; it runs on the next tick, and the chain shows observation, model request, proposal, validation, and events", async () => {
+    const world = newWorld("tavern");
+    const provider = startProvider(() => STRIKE_TAVERN);
+    const runner = runnerFor(world, provider, ["zeus"]);
+
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+
+    // Inference has happened; no tick has.
+    expect(provider.requests).toHaveLength(1);
+    expect(world.state.tick).toBe(0);
+    const [entry] = pendingModelProposals(world);
+    expect(entry).toBeDefined();
+    expect(entry?.proposal).toMatchObject({
+      kind: "strike",
+      actor: "zeus",
+      source: "model",
+    });
+    expect(entry?.observation).toMatchObject({
+      observer: "zeus",
+      source: "model",
+    });
+    const proposalId = entry?.proposalId as ProposalId;
+    expect(
+      getModelRequestByProposalId(world.store.db, proposalId),
+    ).toMatchObject({
+      role: "zeus",
+      outcome: "intent",
+    });
+
+    tick(world);
+    expect(
+      getProposalOutcomeByProposalId(world.store.db, proposalId),
+    ).toMatchObject({
+      outcome: "committed",
+    });
+    const chain = followProposal(
+      world.store.db,
+      createEventSource(world.store),
+      proposalId,
+    );
+    expect(chain.steps.map((step) => step.step).slice(0, 5)).toEqual([
+      "observation",
+      "model-request",
+      "proposal",
+      "validation",
+      "event",
+    ]);
+    expect(world.state.buildings.get(id("the-tavern"))?.status).toBe("damaged");
+  });
+
+  test("that chooses to wait journals nothing, but its request is in the trace", async () => {
+    const world = newWorld();
+    const provider = startProvider(() => '{"action":"wait"}');
+    const runner = runnerFor(world, provider, ["zeus"]);
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+
+    expect(listExternalProposals(world.store.db)).toEqual([]);
+    const row = world.store.db
+      .query("SELECT outcome, proposal_id FROM trace_model_requests")
+      .all() as { outcome: string; proposal_id: string | null }[];
+    expect(row).toEqual([{ outcome: "intent", proposal_id: null }]);
+  });
+
+  test("is revalidated at admission: the world moved while the model was thinking, so the proposal is rejected stale-target", async () => {
+    const world = newWorld("tavern");
+    const release = held();
+    const provider = startProvider(async () => {
+      await release.gate;
+      return STRIKE_TAVERN;
+    });
+    const runner = runnerFor(world, provider, ["zeus"]);
+    expect(runner.dispatch()).toBe(true);
+
+    // While the model thinks, someone else changes the tavern: a fixture strike ignites it.
+    const { insertExternalProposal } = await import("@panthea/persistence");
+    insertExternalProposal(world.store.db, {
+      proposalId: "fixture-ignite",
+      proposal: {
+        schemaVersion: 1,
+        kind: "strike",
+        actor: "hera",
+        target: "the-tavern",
+        power: 3,
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        observationId: "obs-fixture-ignite",
+      },
+      observation: {
+        schemaVersion: 1,
+        id: "obs-fixture-ignite",
+        observer: "hera",
+        stateRevision: 0,
+        factsRead: [],
+        source: "fixture",
+      },
+    });
+    tick(world);
+    release.release();
+    await runner.idle();
+
+    const [entry] = pendingModelProposals(world);
+    tick(world);
+    expect(
+      getProposalOutcomeByProposalId(
+        world.store.db,
+        entry?.proposalId as ProposalId,
+      ),
+    ).toMatchObject({ outcome: "rejected", reason: "stale-target" });
+  });
+});
+
+// --- One pending turn per god ------------------------------------------------------------------
+
+describe("scheduling", () => {
+  test("a god with a pending journal entry gets no new turn; the other god is served, and everyone is served again once the tick consumes them", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const runner = runnerFor(world, provider, ["zeus", "hera"]);
+
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    // Two gods, each with an entry pending: one turn each, no more.
+    expect(provider.requests.map((r) => r.god).sort()).toEqual([
+      "hera",
+      "zeus",
+    ]);
+    expect(pendingModelProposals(world)).toHaveLength(2);
+
+    expect(runner.dispatch()).toBe(false);
+    expect(provider.requests).toHaveLength(2);
+
+    tick(world);
+    expect(pendingModelProposals(world)).toEqual([]);
+    // Control: consumed, so the same runner takes turns again.
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(3);
+  });
+
+  test("at most one turn is in flight: a second dispatch while the model thinks starts nothing", async () => {
+    const world = newWorld();
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const runner = runnerFor(world, provider, ["zeus", "hera"]);
+    expect(runner.dispatch()).toBe(true);
+    expect(runner.dispatch()).toBe(false);
+    release.release();
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+    // Control: once it finishes, the next god's turn starts.
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("a turn held open does not stop the tick: routines keep committing while the model thinks", async () => {
+    const world = newWorld();
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const runner = runnerFor(world, provider, ["zeus"]);
+    runner.dispatch();
+    const before = world.state.tick;
+    for (let index = 0; index < 5; index += 1) {
+      tick(world);
+      await Bun.sleep(20);
+    }
+    expect(world.state.tick).toBe(before + 5);
+    expect(provider.requests).toHaveLength(1);
+    expect(runner.inFlight()).toBe(true);
+    release.release();
+    await runner.idle();
+  });
+
+  test("positive control for the check above: a design that waits for the model inside the tick stalls it", async () => {
+    const world = newWorld();
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const runner = runnerFor(world, provider, ["zeus"]);
+    runner.dispatch();
+    // The wrong design: every tick first waits for the turn to finish.
+    const blockingTicks = async () => {
+      for (let index = 0; index < 5; index += 1) {
+        await runner.idle();
+        tick(world);
+      }
+    };
+    const before = world.state.tick;
+    const outcome = await Promise.race([
+      blockingTicks().then(() => "finished" as const),
+      Bun.sleep(300).then(() => "stalled" as const),
+    ]);
+    expect(outcome).toBe("stalled");
+    expect(world.state.tick).toBe(before);
+    release.release();
+    await runner.idle();
+  });
+});
+
+// --- Restarts ---------------------------------------------------------------------------------------
+
+describe("a restart", () => {
+  test("after a kill that followed journaling: the proposal runs once, and the god gets no second turn while it is pending", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const first = runnerFor(world, provider, ["zeus"]);
+    first.dispatch();
+    await first.idle();
+    expect(pendingModelProposals(world)).toHaveLength(1);
+
+    // Killed here. A new process holds nothing of the first one's memory.
+    restart(world);
+    const second = runnerFor(world, provider, ["zeus"]);
+    expect(second.dispatch()).toBe(false);
+    expect(provider.requests).toHaveLength(1);
+
+    tick(world);
+    const journal = listExternalProposals(world.store.db);
+    expect(journal).toHaveLength(1);
+    expect(journal[0]?.outcome).toEqual({ status: "committed" });
+    // Control: consumed, so the god reasons again.
+    expect(second.dispatch()).toBe(true);
+    await second.idle();
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  test("after a kill during inference: the god reasons afresh and exactly one proposal commits", async () => {
+    const world = newWorld();
+    const release = held();
+    const provider = startProvider(async (god, n) => {
+      if (n === 0) await release.gate;
+      return LEGEND(god);
+    });
+    const first = runnerFor(world, provider, ["zeus"]);
+    first.dispatch();
+    await Bun.sleep(50);
+    expect(provider.requests).toHaveLength(1);
+
+    // Killed mid-inference: the turn died with the process, whatever the provider does next.
+    first.stop();
+    await first.idle();
+    // An abandoned turn is neither an outage nor a request the world remembers.
+    expect(world.statusRef.modelDegraded).toBeUndefined();
+    expect(
+      world.store.db
+        .query("SELECT COUNT(*) AS n FROM trace_model_requests")
+        .get(),
+    ).toEqual({ n: 0 });
+    restart(world);
+    release.release();
+    await Bun.sleep(50);
+    expect(listExternalProposals(world.store.db)).toEqual([]);
+
+    const second = runnerFor(world, provider, ["zeus"]);
+    expect(second.dispatch()).toBe(true);
+    await second.idle();
+    expect(provider.requests).toHaveLength(2);
+    tick(world);
+    const committed = listExternalProposals(world.store.db).filter(
+      (entry) => entry.outcome?.status === "committed",
+    );
+    expect(committed).toHaveLength(1);
+    expect(
+      listEvents(world.store.db).filter(
+        (event) => event.kind === "legend-recorded",
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+// --- The lifecycle seam ----------------------------------------------------------------------------------
+
+describe("the lifecycle seam", () => {
+  test("no turn starts before startup catch-up completes, while any catch-up runs, or while the world is paused; open, one does", async () => {
+    const closed: [string, (flags: Lifecycles) => void][] = [
+      [
+        "startup catch-up not complete",
+        (f) => (f.startupCatchUpComplete = false),
+      ],
+      ["a catch-up running", (f) => (f.catchUpRunning = true)],
+      ["paused", (f) => (f.paused = true)],
+    ];
+    for (const [name, close] of closed) {
+      const world = newWorld();
+      const provider = startProvider();
+      const runner = runnerFor(world, provider, ["zeus"]);
+      close(world.flags);
+      expect(runner.dispatch(), name).toBe(false);
+      await runner.idle();
+      expect(provider.requests, name).toHaveLength(0);
+    }
+
+    // Control: with everything open the same runner dispatches.
+    const world = newWorld();
+    const provider = startProvider();
+    const runner = runnerFor(world, provider, ["zeus"]);
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("control: a runner with no gate dispatches during a catch-up, so the check above would catch one", async () => {
+    const world = newWorld();
+    world.flags.catchUpRunning = true;
+    const provider = startProvider();
+    const ungated: Lifecycle = {
+      startupCatchUpComplete: () => true,
+      catchUpRunning: () => false,
+      paused: () => false,
+    };
+    const runner = runnerFor(world, provider, ["zeus"], ungated);
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  test("a turn in flight when the world pauses still journals, and its proposal waits for the world to resume", async () => {
+    const world = newWorld();
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const runner = runnerFor(world, provider, ["zeus"]);
+    expect(runner.dispatch()).toBe(true);
+    world.flags.paused = true;
+    release.release();
+    await runner.idle();
+
+    expect(pendingModelProposals(world)).toHaveLength(1);
+    // No new turn starts while paused, and the entry stays pending: no tick has run.
+    expect(runner.dispatch()).toBe(false);
+    expect(pendingModelProposals(world)).toHaveLength(1);
+
+    world.flags.paused = false;
+    tick(world);
+    expect(listExternalProposals(world.store.db)[0]?.outcome).toEqual({
+      status: "committed",
+    });
+  });
+});
+
+// --- Outage ---------------------------------------------------------------------------------------------------
+
+describe("an outage", () => {
+  test("idles the gods but never the world: nothing is journaled, routines keep committing, model-degraded is set and then cleared on recovery", async () => {
+    const world = newWorld();
+    const provider = startProvider(() => 500);
+    const runner = runnerFor(world, provider, ["zeus", "hera"]);
+
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(world.statusRef.modelDegraded).toBe(true);
+    expect(listExternalProposals(world.store.db)).toEqual([]);
+    const rows = world.store.db
+      .query("SELECT outcome, proposal_id FROM trace_model_requests")
+      .all() as { outcome: string; proposal_id: string | null }[];
+    expect(rows).toEqual([{ outcome: "exhausted", proposal_id: null }]);
+
+    // The world goes on: routines commit through the outage.
+    const before = world.state.lastSequence;
+    for (let index = 0; index < 5; index += 1) tick(world);
+    expect(world.state.tick).toBe(5);
+    expect(world.state.lastSequence).toBeGreaterThan(before);
+    expect(world.statusRef.status).toBe("running");
+
+    // Recovery: the next turn succeeds, journals, and clears the status.
+    provider.respond = (god) => LEGEND(god);
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(world.statusRef.modelDegraded).toBe(false);
+    expect(pendingModelProposals(world)).toHaveLength(1);
+  });
+});
+
+// --- The service, spawned ----------------------------------------------------------------------------------
+//
+// The real entry point with a model config: the wiring of the runner into the
+// tick loop, the pause endpoint, and startup catch-up. Each test spawns its
+// own service over a fresh app data directory.
+
+const INDEX_ENTRY = join(import.meta.dir, "index.ts");
+const TOKEN = "agents-service-token";
+
+interface Spawned {
+  readonly proc: ReturnType<typeof Bun.spawn>;
+  readonly port: number;
+  output(): string;
+}
+
+const spawned: Spawned[] = [];
+const appDirs: string[] = [];
+
+afterEach(() => {
+  for (const service of spawned.splice(0)) service.proc.kill();
+  for (const dir of appDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function spawnService(
+  provider: Provider,
+  appDataDir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-svc-")),
+): Promise<Spawned & { readonly appDataDir: string }> {
+  appDirs.push(appDataDir);
+  const configPath = join(appDataDir, "models.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      endpoints: [
+        { id: "local", baseUrl: provider.baseUrl, model: "scripted" },
+      ],
+      roles: { zeus: { endpoint: "local" }, hera: { endpoint: "local" } },
+    }),
+  );
+  const proc = Bun.spawn(["bun", "run", INDEX_ENTRY], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: {
+      ...process.env,
+      PANTHEA_APP_DATA_DIR: appDataDir,
+      PANTHEA_MODEL_CONFIG: configPath,
+    },
+  });
+  const writer = proc.stdin;
+  if (typeof writer === "number" || !writer) throw new Error("stdin");
+  writer.write(`${TOKEN}\n`);
+  await writer.flush();
+
+  let buffer = "";
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  const port = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("no PANTHEA_PORT")),
+      10_000,
+    );
+    void (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return reject(new Error("service exited early"));
+          buffer += decoder.decode(value, { stream: true });
+          const match = /PANTHEA_PORT=(\d+)/.exec(buffer);
+          if (match?.[1]) {
+            clearTimeout(timer);
+            resolve(Number.parseInt(match[1], 10));
+            break;
+          }
+        }
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) return;
+          buffer += decoder.decode(value, { stream: true });
+        }
+      } catch {
+        // Killed; nothing more to read.
+      }
+    })();
+  });
+  const service = { proc, port, output: () => buffer, appDataDir };
+  spawned.push(service);
+  return service;
+}
+
+const api =
+  (port: number) =>
+  (path: string, init: RequestInit = {}) =>
+    fetch(`http://127.0.0.1:${port}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+
+async function frameOf(port: number) {
+  const body = await (await api(port)("/frame")).json();
+  const parsed = parseSyncFrame(body);
+  if (!parsed.ok) throw new Error(parsed.message);
+  return parsed.value;
+}
+
+async function until<T>(
+  what: string,
+  probe: () => T | undefined | Promise<T | undefined>,
+  timeoutMs = 20_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await probe();
+    if (value !== undefined) return value;
+    await Bun.sleep(50);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** Reads the running service's store without disturbing it. */
+function readStore<T>(appDataDir: string, fn: (db: Database) => T): T {
+  const db = new Database(join(appDataDir, "active", "world.sqlite"), {
+    readonly: true,
+  });
+  try {
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+const journalOf = (appDataDir: string) =>
+  readStore(appDataDir, (db) => listExternalProposals(db));
+
+describe("the service with model routing configured", () => {
+  test("keeps ticking at cadence while a turn is held open for seconds, then commits the god's proposal", async () => {
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const service = await spawnService(provider);
+
+    await until("a model request", () =>
+      provider.requests.length > 0 ? true : undefined,
+    );
+    const start = (await frameOf(service.port)).sequence;
+    const tickAt = async () =>
+      readStore(service.appDataDir, (db) => readClock(db).tick);
+    const t0 = await tickAt();
+    await Bun.sleep(3_200);
+    // Three seconds of a turn in flight, and the world ticked through them.
+    expect((await tickAt()) - t0).toBeGreaterThanOrEqual(2);
+    expect(provider.requests).toHaveLength(1);
+    expect((await frameOf(service.port)).sequence).toBeGreaterThanOrEqual(
+      start,
+    );
+
+    release.release();
+    const consumed = await until("the god's proposal to run", () =>
+      journalOf(service.appDataDir).find(
+        (entry) => entry.outcome?.status === "committed",
+      ),
+    );
+    expect(consumed.proposal).toMatchObject({
+      source: "model",
+      kind: "legend",
+    });
+    expect(
+      readStore(service.appDataDir, (db) =>
+        listEvents(db).some((event) => event.kind === "legend-recorded"),
+      ),
+    ).toBe(true);
+  }, 40_000);
+
+  test("shows model-degraded through an outage while routines keep committing, and clears it when the provider recovers", async () => {
+    const provider = startProvider(() => 500);
+    const service = await spawnService(provider);
+
+    const degraded = await until("model-degraded", async () => {
+      const frame = await frameOf(service.port);
+      return frame.status === "degraded" &&
+        frame.degradedReason === "model-degraded"
+        ? frame
+        : undefined;
+    });
+    const tickAtDegraded = degraded.sequence;
+    await until("routines to keep committing", async () =>
+      (await frameOf(service.port)).sequence > tickAtDegraded
+        ? true
+        : undefined,
+    );
+    expect(journalOf(service.appDataDir)).toEqual([]);
+
+    provider.respond = (god) => LEGEND(god);
+    await until("recovery", async () => {
+      const frame = await frameOf(service.port);
+      return frame.status === "running" ? frame : undefined;
+    });
+    await until("a god's proposal to commit", () =>
+      journalOf(service.appDataDir).find(
+        (entry) => entry.outcome?.status === "committed",
+      ),
+    );
+  }, 60_000);
+
+  test("a pause freezes new turns; a turn in flight journals and waits, and runs after resume", async () => {
+    const release = held();
+    const provider = startProvider(async (god) => {
+      await release.gate;
+      return LEGEND(god);
+    });
+    const service = await spawnService(provider);
+    const call = api(service.port);
+
+    await until("a model request", () =>
+      provider.requests.length > 0 ? true : undefined,
+    );
+    expect((await call("/pause", { method: "POST" })).status).toBe(200);
+    release.release();
+
+    const pending = await until("the turn to journal", () =>
+      journalOf(service.appDataDir).find(
+        (entry) => entry.consumedTick === undefined,
+      ),
+    );
+    expect(pending.proposal).toMatchObject({ source: "model" });
+    // Paused: nothing runs it and nothing else is asked, however long we wait.
+    const requestsWhilePaused = provider.requests.length;
+    const tickWhilePaused = readStore(
+      service.appDataDir,
+      (db) => readClock(db).tick,
+    );
+    await Bun.sleep(2_500);
+    expect(provider.requests).toHaveLength(requestsWhilePaused);
+    expect(readStore(service.appDataDir, (db) => readClock(db).tick)).toBe(
+      tickWhilePaused,
+    );
+    expect(
+      journalOf(service.appDataDir).find(
+        (e) => e.proposalId === pending.proposalId,
+      )?.consumedTick,
+    ).toBeUndefined();
+
+    expect((await call("/resume", { method: "POST" })).status).toBe(200);
+    await until("the entry to run after resume", () =>
+      journalOf(service.appDataDir).find(
+        (entry) =>
+          entry.proposalId === pending.proposalId &&
+          entry.outcome?.status === "committed",
+      ),
+    );
+  }, 40_000);
+
+  test("takes no turn until startup catch-up has completed", async () => {
+    const provider = startProvider();
+    // A store three minutes behind: the restart's catch-up has work to do.
+    const appDataDir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-svc-"));
+    const first = await spawnService(
+      startProvider(() => '{"action":"wait"}'),
+      appDataDir,
+    );
+    first.proc.kill();
+    await first.proc.exited;
+    spawned.splice(spawned.indexOf(first), 1);
+    const db = new Database(join(appDataDir, "active", "world.sqlite"));
+    db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+      Date.now() - 3 * 60 * 1000,
+    ]);
+    db.close();
+
+    const second = await spawnService(provider, appDataDir);
+    await until("the first model request", () =>
+      provider.requests.length > 0 ? true : undefined,
+    );
+    expect(second.output()).toContain("startup catch-up complete");
+  }, 40_000);
+});

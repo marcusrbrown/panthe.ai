@@ -9,12 +9,22 @@
 // invalid-output and repairs it or falls back.
 
 import type { GodAbility, GodProfile } from "@panthea/content";
-import type { Brand, EntityId, EventId } from "@panthea/contracts";
 import {
+  type Brand,
+  type Consequence,
+  type EntityId,
+  type EventId,
+  MAX_REPORT_LENGTH,
+} from "@panthea/contracts";
+import {
+  getMemories,
   hasCapability,
+  type MemoryEntry,
   type PerceivedEvent,
   type PerceivedExit,
   type PerceptionSnapshot,
+  type RelationshipState,
+  type WorldState,
 } from "@panthea/world";
 import type { ParseResult } from "./config";
 import type { IntentSchema, RouteContext } from "./router";
@@ -25,6 +35,7 @@ export const GOD_INTENT_ACTIONS = [
   "realm-transition",
   "strike",
   "legend",
+  "report",
   "wait",
 ] as const;
 export type GodIntentAction = (typeof GOD_INTENT_ACTIONS)[number];
@@ -43,6 +54,18 @@ export type GodIntent =
       readonly assertion: string;
       readonly linkedEventId?: EventId;
     }
+  /**
+   * Tell someone here what the god says happened. `claim` is its assertion of
+   * who did what to whom and may be false; `linkedEventId` is an event the god
+   * witnessed, cited as provenance only.
+   */
+  | {
+      readonly action: "report";
+      readonly listener: EntityId;
+      readonly content: string;
+      readonly claim?: Consequence;
+      readonly linkedEventId?: EventId;
+    }
   /** Do nothing this turn. Always allowed; nothing is journaled. */
   | { readonly action: "wait" };
 
@@ -55,6 +78,38 @@ export type GodIntent =
 export type ParsedGodIntent = Brand<GodIntent, "ParsedGodIntent">;
 
 export const MAX_ASSERTION_LENGTH = 280;
+
+/** Most memories a prompt shows: the most salient, so the 4K context bound holds however much a god remembers. */
+export const MAX_REMEMBERED = 6;
+/** Most feelings a prompt shows: the strongest. */
+export const MAX_FEELINGS = 5;
+
+/** What a god carries into a turn from its own memory: bounded, and nothing but what it holds. */
+export interface Remembered {
+  /** Oldest first. */
+  readonly memories: readonly MemoryEntry[];
+  readonly relationships: readonly RelationshipState[];
+}
+
+/**
+ * The bounded slice of `actorId`'s memory and feelings a turn's prompt shows:
+ * its `MAX_REMEMBERED` most salient memories (the newest among equals),
+ * oldest first, and its `MAX_FEELINGS` strongest feelings.
+ */
+export function rememberedBy(state: WorldState, actorId: EntityId): Remembered {
+  const memories = [...getMemories(state, actorId)]
+    .sort((a, b) => b.salience - a.salience || b.recordedAt - a.recordedAt)
+    .slice(0, MAX_REMEMBERED)
+    .sort((a, b) => a.recordedAt - b.recordedAt);
+  const strength = (r: RelationshipState) => Math.abs(r.affinity) + r.grudge;
+  const relationships = [...state.relationships.values()]
+    .filter((r) => r.from === actorId)
+    .sort((a, b) => strength(b) - strength(a) || (a.toward < b.toward ? -1 : 1))
+    .slice(0, MAX_FEELINGS);
+  return { memories, relationships };
+}
+
+const NOTHING_REMEMBERED: Remembered = { memories: [], relationships: [] };
 
 function isGodIntentAction(action: string): action is GodIntentAction {
   return (GOD_INTENT_ACTIONS as readonly string[]).includes(action);
@@ -110,9 +165,21 @@ interface Offer {
   readonly strikeCap: number;
   readonly canLegend: boolean;
   readonly eventIds: readonly EventId[];
+  /** Who is here to hear a report; a report is offered only when someone is. */
+  readonly listeners: readonly EntityId[];
+  /** Ids a claim may name as its agent, and as its target: the god and what it perceives. */
+  readonly claimAgents: readonly EntityId[];
+  readonly claimTargets: readonly EntityId[];
+  /** Events the god remembers witnessing, the only ones a report may cite. */
+  readonly witnessedEventIds: readonly EventId[];
 }
 
-function offerFor(profile: GodProfile, snapshot: PerceptionSnapshot): Offer {
+function offerFor(
+  profile: GodProfile,
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered,
+): Offer {
+  const listeners = snapshot.actors.map((actor) => actor.id);
   const strikeCap = strikePowerCap(abilityFor(profile, "strike"), snapshot);
   const strikeTargets =
     strikeCap >= 1 ? snapshot.buildings.map((building) => building.id) : [];
@@ -123,6 +190,16 @@ function offerFor(profile: GodProfile, snapshot: PerceptionSnapshot): Offer {
     strikeCap: strikeTargets.length > 0 ? strikeCap : 0,
     canLegend: abilityFor(profile, "legend") !== undefined,
     eventIds: snapshot.events.map((event) => event.id),
+    listeners,
+    claimAgents: [snapshot.self.id, ...listeners],
+    claimTargets: [
+      snapshot.self.id,
+      ...listeners,
+      ...snapshot.buildings.map((building) => building.id),
+    ],
+    witnessedEventIds: remembered.memories.flatMap((memory) =>
+      memory.kind === "witnessed" ? [memory.sourceEventId] : [],
+    ),
   };
 }
 
@@ -132,6 +209,7 @@ function availableActions(offer: Offer): readonly GodIntentAction[] {
   if (offer.transitions.length > 0) actions.push("realm-transition");
   if (offer.strikeCap >= 1) actions.push("strike");
   if (offer.canLegend) actions.push("legend");
+  if (offer.listeners.length > 0) actions.push("report");
   actions.push("wait");
   return actions;
 }
@@ -146,11 +224,14 @@ export function godAvailableActions(
   profile: GodProfile,
   snapshot: PerceptionSnapshot,
 ): readonly GodIntentAction[] {
-  const offered = new Set(availableActions(offerFor(profile, snapshot)));
+  const offered = new Set(
+    availableActions(offerFor(profile, snapshot, NOTHING_REMEMBERED)),
+  );
   const order = [
     "move",
     "realm-transition",
     ...profile.abilities.map((ability) => ability.action),
+    "report",
     "wait",
   ];
   return [...new Set(order)].filter(
@@ -271,9 +352,106 @@ function parseIntent(
           }
         : linkedEventId;
     }
+    case "report":
+      return parseReport(offer, fields);
     case "wait":
       return { ok: true, value: { action: "wait" } };
   }
+}
+
+function parseReport(
+  offer: Offer,
+  fields: Record<string, unknown>,
+): ParseResult<GodIntent> {
+  const listener = parseMember(
+    fields.listener,
+    "listener",
+    offer.listeners,
+    "listener",
+  );
+  if (!listener.ok) return listener;
+  const content = fields.content;
+  if (
+    typeof content !== "string" ||
+    content.trim() === "" ||
+    content.length > MAX_REPORT_LENGTH
+  ) {
+    return invalid(
+      "content",
+      `content must be 1 to ${MAX_REPORT_LENGTH} characters`,
+    );
+  }
+  const claim = parseClaim(offer, fields.claim);
+  if (!claim.ok) return claim;
+  let linkedEventId: EventId | undefined;
+  if (fields.linkedEventId !== undefined && fields.linkedEventId !== null) {
+    const cited = parseMember(
+      fields.linkedEventId,
+      "linkedEventId",
+      offer.witnessedEventIds,
+      "linkedEventId",
+    );
+    if (!cited.ok) return cited;
+    linkedEventId = cited.value;
+  }
+  return {
+    ok: true,
+    value: {
+      action: "report",
+      listener: listener.value as EntityId,
+      content,
+      ...(claim.value === undefined ? {} : { claim: claim.value }),
+      ...(linkedEventId === undefined ? {} : { linkedEventId }),
+    },
+  };
+}
+
+const CLAIM_EFFECTS = ["harm", "kindness"] as const;
+
+function parseClaim(
+  offer: Offer,
+  raw: unknown,
+): ParseResult<Consequence | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return invalid("claim", "claim must be an object");
+  }
+  const claim = raw as Record<string, unknown>;
+  const effect = parseMember(
+    claim.effect,
+    "claim.effect",
+    CLAIM_EFFECTS,
+    "effect",
+  );
+  if (!effect.ok) return effect;
+  const agent = parseMember(
+    claim.agent,
+    "claim.agent",
+    offer.claimAgents,
+    "agent",
+  );
+  if (!agent.ok) return agent;
+  if (claim.target === undefined || claim.target === null) {
+    return {
+      ok: true,
+      value: { effect: effect.value, agent: agent.value as EntityId },
+    };
+  }
+  const target = parseMember(
+    claim.target,
+    "claim.target",
+    offer.claimTargets,
+    "target",
+  );
+  if (!target.ok) return target;
+  return {
+    ok: true,
+    value: {
+      effect: effect.value,
+      agent: agent.value as EntityId,
+      target: target.value as EntityId,
+    },
+  };
 }
 
 /**
@@ -284,8 +462,9 @@ function parseIntent(
 export function godIntentSchema(
   profile: GodProfile,
   snapshot: PerceptionSnapshot,
+  remembered: Remembered = NOTHING_REMEMBERED,
 ): IntentSchema<ParsedGodIntent> {
-  const offer = offerFor(profile, snapshot);
+  const offer = offerFor(profile, snapshot, remembered);
   const actions = godAvailableActions(profile, snapshot);
 
   const properties: Record<string, unknown> = {
@@ -307,9 +486,28 @@ export function godIntentSchema(
       minLength: 1,
       maxLength: MAX_ASSERTION_LENGTH,
     };
-    if (offer.eventIds.length > 0) {
-      properties.linkedEventId = { type: "string", enum: [...offer.eventIds] };
-    }
+  }
+  if (offer.listeners.length > 0) {
+    properties.listener = { type: "string", enum: [...offer.listeners] };
+    properties.content = {
+      type: "string",
+      minLength: 1,
+      maxLength: MAX_REPORT_LENGTH,
+    };
+    properties.claim = {
+      type: "object",
+      properties: {
+        effect: { type: "string", enum: [...CLAIM_EFFECTS] },
+        agent: { type: "string", enum: [...offer.claimAgents] },
+        target: { type: "string", enum: [...offer.claimTargets] },
+      },
+      required: ["effect", "agent"],
+      additionalProperties: false,
+    };
+  }
+  const citable = [...new Set([...offer.eventIds, ...offer.witnessedEventIds])];
+  if ((offer.canLegend || offer.listeners.length > 0) && citable.length > 0) {
+    properties.linkedEventId = { type: "string", enum: citable };
   }
 
   return {
@@ -338,6 +536,42 @@ function describeEvent(event: PerceivedEvent): string {
   return `- [${event.id}] ${event.kind} (${subjects})${detail}`;
 }
 
+const EFFECT_WORDS = {
+  harm: "harmed",
+  kindness: "was kind to",
+} as const;
+
+function describeConsequence(consequence: Consequence | undefined): string {
+  if (consequence === undefined) return "";
+  return `${consequence.agent} ${EFFECT_WORDS[consequence.effect]} ${consequence.target ?? "someone"}`;
+}
+
+function describeMemory(memory: MemoryEntry): string {
+  const what = describeConsequence(memory.consequence);
+  if (memory.kind === "witnessed") {
+    return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
+  }
+  return `- ${memory.teller} told you: "${memory.content}"${what === "" ? "" : ` (claiming ${what})`}`;
+}
+
+/** The memory and feelings sections of a prompt; empty when the god remembers nothing. */
+function describeRemembered(remembered: Remembered): string[] {
+  const lines: string[] = [];
+  if (remembered.memories.length > 0) {
+    lines.push("You remember:", ...remembered.memories.map(describeMemory));
+  }
+  if (remembered.relationships.length > 0) {
+    lines.push(
+      "How you feel now:",
+      ...remembered.relationships.map(
+        (r) =>
+          `- ${r.toward}: affinity ${r.affinity}${r.grudge > 0 ? `, grudge ${r.grudge}` : ""}${r.allied ? ", allied" : ""}`,
+      ),
+    );
+  }
+  return lines;
+}
+
 function describeAbility(
   ability: GodAbility,
   profile: GodProfile,
@@ -359,6 +593,7 @@ function describeAbility(
 export function buildGodContext(
   profile: GodProfile,
   snapshot: PerceptionSnapshot,
+  remembered: Remembered = NOTHING_REMEMBERED,
 ): RouteContext {
   const drives = Object.entries(profile.drives)
     .map(([drive, weight]) => `${drive} ${weight}`)
@@ -383,6 +618,11 @@ export function buildGodContext(
     "Your powers:",
     ...abilities,
     'You may also move to a neighboring place (action "move"), or cross to another realm where a passage leads (action "realm-transition").',
+    ...(snapshot.actors.length > 0
+      ? [
+          'You may also tell someone here something (action "report", naming the listener, your words, and optionally a claim of who harmed or did a kindness to whom, and an event you saw). It is your own account, told as you choose.',
+        ]
+      : []),
     'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");
@@ -413,6 +653,7 @@ export function buildGodContext(
     ...(snapshot.events.length === 0
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
+    ...describeRemembered(remembered),
     "Ways out:",
     ...(usableExits(snapshot).length === 0
       ? ["- none"]

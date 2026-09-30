@@ -12,6 +12,7 @@
     "scan:binary": "bash scripts/scan-binary.sh"
   },
   "dependencies": {
+    "@panthea/agents": "workspace:*",
     "@panthea/content": "workspace:*",
     "@panthea/contracts": "workspace:*",
     "@panthea/persistence": "workspace:*",

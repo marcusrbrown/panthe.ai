@@ -142,6 +142,31 @@ export function buildModelProposal(
       };
       break;
     }
+    case "report": {
+      const listener = snapshot.actors.find(
+        (actor) => actor.id === intent.listener,
+      );
+      if (!listener) {
+        return refuse(`${intent.listener} is not an actor in the snapshot`);
+      }
+      factsRead.push(`actor:${listener.id}.location`);
+      expectedRevisions.push({
+        entityId: listener.id,
+        revision: listener.revision,
+      });
+      proposal = {
+        ...base,
+        targets: [listener.id],
+        kind: "report",
+        listener: listener.id,
+        content: intent.content,
+        ...(intent.claim === undefined ? {} : { claim: intent.claim }),
+        ...(intent.linkedEventId === undefined
+          ? {}
+          : { linkedEventId: intent.linkedEventId }),
+      };
+      break;
+    }
     case "legend": {
       if (
         intent.linkedEventId !== undefined &&

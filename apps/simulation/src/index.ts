@@ -7,6 +7,9 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { createRouter } from "@panthea/agents";
+import type { GodProfile } from "@panthea/content";
+import type { EntityId } from "@panthea/contracts";
 import {
   closeStore,
   openStore,
@@ -17,9 +20,15 @@ import {
   type Store,
 } from "@panthea/persistence";
 import { ensureTraceSchema } from "@panthea/telemetry";
-import type { PrngState, WorldState } from "@panthea/world";
+import { type PrngState, toEntityId, type WorldState } from "@panthea/world";
+import { createGodTurnRunner } from "./agents";
 import { type CatchUpResult, runCatchUp } from "./catchup";
+import {
+  loadEmbeddedGreekGodProfiles,
+  loadEmbeddedGreekWorldPack,
+} from "./greek-world-pack";
 import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
+import { loadRoutingConfig } from "./model-config";
 import { startModelPayloadPruner } from "./prune";
 import {
   applyLiveTick,
@@ -140,12 +149,23 @@ export interface ServiceHandle {
   shutdown(reason: string): void;
 }
 
+/** The embedded gods' profiles by actor id: the gods that can take a turn. */
+function loadGodProfiles(): ReadonlyMap<EntityId, GodProfile> {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(`${pack.path}: ${pack.message}`);
+  const gods = loadEmbeddedGreekGodProfiles(pack.value);
+  if (!gods.ok) throw new Error(`${gods.path}: ${gods.message}`);
+  return new Map(gods.value.map((god) => [toEntityId(god.id), god]));
+}
+
 /** Starts the service's store, catch-up, tick loop, server, and lifecycle guards. Returns a handle for tests. */
 export function startService(options: StartOptions): ServiceHandle {
   const log = options.onLog ?? ((message: string) => console.log(message));
   const appDataDir = options.appDataDir ?? resolveAppDataDir();
   const parentPid = options.parentPid ?? process.ppid;
   const token = options.token;
+  // Read before anything is opened: a config that cannot be used stops startup.
+  const routing = loadRoutingConfig();
 
   ensureDirMode(appDataDir, 0o700);
   const lockPath = join(appDataDir, "lifecycle.lock");
@@ -220,6 +240,26 @@ export function startService(options: StartOptions): ServiceHandle {
 
   let queue: QueuedProposal[] = [];
 
+  // The gods take turns only when the operator has configured model routing.
+  // What may start a turn is stated here, once, and read by the runner; it is
+  // not inferred from where the runner is called.
+  let startupCatchUpComplete = false;
+  const turns = routing
+    ? createGodTurnRunner({
+        router: createRouter({ config: routing, offline: false }),
+        profiles: loadGodProfiles(),
+        store,
+        getState: () => state,
+        statusRef,
+        lifecycle: {
+          startupCatchUpComplete: () => startupCatchUpComplete,
+          catchUpRunning: () => catchUpInProgress,
+          paused: () => readClock(store.db).paused,
+        },
+        onLog: (message) => log(`panthea-simulation: ${message}`),
+      })
+    : undefined;
+
   const serverHandle: SimulationServerHandle = createSimulationServer({
     token,
     store,
@@ -291,6 +331,9 @@ export function startService(options: StartOptions): ServiceHandle {
     queue = [...step.nextQueue];
     updateServiceStatus(statusRef, state);
     serverHandle.broadcastFrame();
+    // A turn is asked for after the tick and never waited for: inference runs
+    // outside the tick, and its proposal is journaled for a later one.
+    turns?.dispatch();
   }
 
   tickTimer = setInterval(runOneLiveTick, TICK_INTERVAL_MS);
@@ -302,6 +345,7 @@ export function startService(options: StartOptions): ServiceHandle {
   // `/pause` and every other request are served while this chunks
   // through the backlog.
   void runCatchUpNow(Date.now()).then(() => {
+    startupCatchUpComplete = true;
     queue = [...buildRoutineQueue(state)];
     serverHandle.broadcastFrame();
     // Printed last on purpose: by this line the catch-up has run, the status
@@ -320,6 +364,7 @@ export function startService(options: StartOptions): ServiceHandle {
     if (tickTimer) {
       clearInterval(tickTimer);
     }
+    turns?.stop();
     payloadPruner.stop();
     parentGuard.stop();
     serverHandle.stop(true);

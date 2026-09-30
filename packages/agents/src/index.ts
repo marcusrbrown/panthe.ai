@@ -18,13 +18,21 @@ export {
   parseRoutingConfig,
   planRoute,
 } from "./config";
-export type { GodIntent, GodIntentAction, ParsedGodIntent } from "./context";
+export type {
+  GodIntent,
+  GodIntentAction,
+  ParsedGodIntent,
+  Remembered,
+} from "./context";
 export {
   buildGodContext,
   GOD_INTENT_ACTIONS,
   godAvailableActions,
   godIntentSchema,
   MAX_ASSERTION_LENGTH,
+  MAX_FEELINGS,
+  MAX_REMEMBERED,
+  rememberedBy,
 } from "./context";
 export type { ModelProposalResult } from "./observation";
 export { buildModelProposal, snapshotFacts } from "./observation";
@@ -43,3 +51,10 @@ export type {
   StepMetadata,
 } from "./router";
 export { createRouter, DEFAULT_ROUTE_LIMITS } from "./router";
+export type {
+  AnsweredRequest,
+  ExhaustedRequest,
+  GodTurnDeps,
+  GodTurnResult,
+} from "./turn";
+export { runGodTurn } from "./turn";

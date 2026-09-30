@@ -1,13 +1,25 @@
 import { expect, test } from "bun:test";
 import type { GodProfile } from "@panthea/content";
-import { type PerceptionSnapshot, perceive, toEntityId } from "@panthea/world";
+import type { WorldEvent } from "@panthea/contracts";
+import { MAX_REPORT_LENGTH } from "@panthea/contracts";
+import {
+  createPrng,
+  type PerceptionSnapshot,
+  perceive,
+  runTick,
+  submitProposal,
+  toEntityId,
+  type WorldState,
+} from "@panthea/world";
 import {
   buildGodContext,
   GOD_INTENT_ACTIONS,
   type GodIntent,
   godAvailableActions,
   godIntentSchema,
+  MAX_REMEMBERED,
   type ParsedGodIntent,
+  rememberedBy,
 } from "./context";
 import {
   actorAt,
@@ -514,4 +526,293 @@ test("the prompt does not list ways out the god cannot take", () => {
   expect(plain.prompt).not.toContain("olympus-gate");
   const divine = buildGodContext(zeus, snapshotOf("zeus", "mountain-path"));
   expect(divine.prompt).toContain("olympus-gate");
+});
+
+// --- report: telling someone here what one says happened ---------------------------
+
+/** Zeus and the farmer (who owns the tavern) at the tavern; Hera in the square. Real ticks. */
+function tavernWorld() {
+  const state = actorAt(
+    actorAt(actorAt(greekState(), "zeus", "tavern"), "farmer", "tavern"),
+    "hera",
+    "town-square",
+  );
+  return state;
+}
+
+function tick(state: WorldState, ...raws: Record<string, unknown>[]) {
+  const proposals = raws.map((raw, index) => {
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId: `obs-${state.tick}-${index}`,
+      ...raw,
+    });
+    if (!submitted.ok) throw new Error(submitted.rejection.message);
+    return submitted.proposal;
+  });
+  const result = runTick(state, createPrng(1), proposals);
+  expect(result.rejected).toEqual([]);
+  return result;
+}
+
+const strikeTavern = {
+  actor: "zeus",
+  kind: "strike",
+  target: "the-tavern",
+  power: 3,
+};
+
+function snapshotIn(state: WorldState, actor: string, events: WorldEvent[]) {
+  const snapshot = perceive(state, toEntityId(actor), events);
+  if (!snapshot) throw new Error(`${actor} perceives nothing`);
+  return snapshot;
+}
+
+test("report is offered only where someone is present to hear it; alone at the tavern it is not", () => {
+  const withCompany = snapshotIn(tavernWorld(), "zeus", []);
+  expect(properties(godIntentSchema(zeus, withCompany)).action?.enum).toContain(
+    "report",
+  );
+  expect(godAvailableActions(zeus, withCompany)).toContain("report");
+  expect(GOD_INTENT_ACTIONS).toContain("report");
+
+  const alone = atTavern();
+  expect(properties(godIntentSchema(zeus, alone)).action?.enum).not.toContain(
+    "report",
+  );
+  expect(
+    godIntentSchema(zeus, alone).parse({
+      action: "report",
+      listener: "farmer",
+      content: "hello",
+    }).ok,
+  ).toBe(false);
+});
+
+test("a report parses with its listener, its words, an optional claim, and an optional witnessed citation", () => {
+  const struck = tick(tavernWorld(), strikeTavern);
+  const remembered = rememberedBy(struck.state, toEntityId("zeus"));
+  const snapshot = snapshotIn(struck.state, "zeus", [...struck.events]);
+  const schema = godIntentSchema(zeus, snapshot, remembered);
+  const ignition = struck.events.find((e) => e.kind === "building-ignited");
+  if (!ignition) throw new Error("no ignition");
+
+  expect(
+    schema.parse({
+      action: "report",
+      listener: "farmer",
+      content: "Fine day.",
+    }) as unknown,
+  ).toEqual({
+    ok: true,
+    value: { action: "report", listener: "farmer", content: "Fine day." },
+  });
+  const full = {
+    action: "report",
+    listener: "farmer",
+    content: "Lightning found the tavern.",
+    claim: { effect: "harm", agent: "zeus", target: "the-tavern" },
+    linkedEventId: ignition.id,
+  };
+  expect(schema.parse(full) as unknown).toEqual({ ok: true, value: full });
+});
+
+test("a report naming a listener, a claim agent, or a claim target outside the snapshot is refused; the same names inside it parse", () => {
+  const snapshot = snapshotIn(tavernWorld(), "zeus", []);
+  const schema = godIntentSchema(zeus, snapshot);
+  const base = { action: "report", listener: "farmer", content: "x" };
+
+  // Hera is in the square, the oak beyond the tavern's walls.
+  const outside: [Record<string, unknown>, string][] = [
+    [{ ...base, listener: "hera" }, "listener"],
+    [{ ...base, claim: { effect: "harm", agent: "hera" } }, "claim.agent"],
+    [
+      { ...base, claim: { effect: "harm", agent: "zeus", target: "old-oak" } },
+      "claim.target",
+    ],
+  ];
+  for (const [candidate, path] of outside) {
+    const refused = schema.parse(candidate);
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.path).toBe(path);
+  }
+  // Control: the farmer, Zeus himself, and the tavern are all here.
+  expect(
+    schema.parse({
+      ...base,
+      claim: { effect: "harm", agent: "zeus", target: "the-tavern" },
+    }).ok,
+  ).toBe(true);
+  expect(
+    schema.parse({
+      ...base,
+      claim: { effect: "kindness", agent: "farmer", target: "zeus" },
+    }).ok,
+  ).toBe(true);
+});
+
+test("report text is bounded, and a malformed claim or an empty report is refused", () => {
+  const schema = godIntentSchema(zeus, snapshotIn(tavernWorld(), "zeus", []));
+  const ok = (candidate: Record<string, unknown>) => schema.parse(candidate).ok;
+  const base = { action: "report", listener: "farmer" };
+  expect(ok({ ...base, content: "x".repeat(MAX_REPORT_LENGTH) })).toBe(true);
+  expect(ok({ ...base, content: "x".repeat(MAX_REPORT_LENGTH + 1) })).toBe(
+    false,
+  );
+  expect(ok({ ...base, content: "   " })).toBe(false);
+  expect(ok({ ...base })).toBe(false);
+  expect(
+    ok({ ...base, content: "x", claim: { effect: "worship", agent: "zeus" } }),
+  ).toBe(false);
+  expect(ok({ ...base, content: "x", claim: "zeus harmed the farmer" })).toBe(
+    false,
+  );
+});
+
+test("a report may cite only an event the god witnessed: one it remembers seeing parses, one it did not is refused", () => {
+  const struck = tick(tavernWorld(), strikeTavern);
+  const ignition = struck.events.find((e) => e.kind === "building-ignited");
+  if (!ignition) throw new Error("no ignition");
+
+  // Zeus witnessed it, and remembers.
+  const zeusSchema = godIntentSchema(
+    zeus,
+    snapshotIn(struck.state, "zeus", []),
+    rememberedBy(struck.state, toEntityId("zeus")),
+  );
+  const cite = {
+    action: "report",
+    listener: "farmer",
+    content: "x",
+    linkedEventId: ignition.id,
+  };
+  expect(zeusSchema.parse(cite).ok).toBe(true);
+
+  // Hera was in the square: same schema shape, no such memory.
+  const heraState = actorAt(struck.state, "hera", "tavern");
+  const hera = godProfile("hera");
+  const heraSchema = godIntentSchema(
+    hera,
+    snapshotIn(heraState, "hera", []),
+    rememberedBy(heraState, toEntityId("hera")),
+  );
+  const refused = heraSchema.parse({ ...cite, listener: "zeus" });
+  expect(refused.ok).toBe(false);
+  if (!refused.ok) expect(refused.path).toBe("linkedEventId");
+});
+
+// --- What a god remembers, in its context ----------------------------------------------
+
+test("the god's context carries what it remembers and how it feels, from its own memory alone", () => {
+  const struck = tick(tavernWorld(), strikeTavern);
+  const zeusView = rememberedBy(struck.state, toEntityId("zeus"));
+  const farmerView = rememberedBy(struck.state, toEntityId("farmer"));
+  const ignition = struck.events.find((e) => e.kind === "building-ignited");
+
+  const zeusText = (() => {
+    const c = buildGodContext(
+      zeus,
+      snapshotIn(struck.state, "zeus", []),
+      zeusView,
+    );
+    return `${c.instructions}\n${c.prompt}`;
+  })();
+  expect(zeusText).toContain("You remember");
+  expect(zeusText).toContain(String(ignition?.id));
+  expect(zeusText).toContain("building-ignited");
+
+  // The farmer feels wronged: Zeus's own context has no such feeling toward himself.
+  expect(farmerView.relationships.map((r) => r.toward)).toContain(
+    toEntityId("zeus"),
+  );
+  expect(zeusView.relationships).toEqual([]);
+
+  // Positive control: Hera never saw it, so her context has no memory section at all.
+  const hera = godProfile("hera");
+  const heraView = rememberedBy(struck.state, toEntityId("hera"));
+  const heraContext = buildGodContext(
+    hera,
+    snapshotIn(struck.state, "hera", []),
+    heraView,
+  );
+  expect(`${heraContext.instructions}\n${heraContext.prompt}`).not.toContain(
+    "You remember",
+  );
+  expect(`${heraContext.instructions}\n${heraContext.prompt}`).not.toContain(
+    String(ignition?.id),
+  );
+});
+
+test("a listener's context shows a belief as told, attributed to its teller, with the feeling it left", () => {
+  // Zeus and Hera share the square; Zeus tells her the farmer wronged him.
+  const state = actorAt(
+    actorAt(greekState(), "zeus", "town-square"),
+    "hera",
+    "town-square",
+  );
+  const heard = tick(state, {
+    actor: "zeus",
+    kind: "report",
+    listener: "hera",
+    content: "The farmer cheated me.",
+    claim: { effect: "harm", agent: "farmer", target: "zeus" },
+  });
+  const view = rememberedBy(heard.state, toEntityId("hera"));
+  const hera = godProfile("hera");
+  const context = buildGodContext(
+    hera,
+    snapshotIn(heard.state, "hera", []),
+    view,
+  );
+  const text = `${context.instructions}\n${context.prompt}`;
+  expect(text).toContain('zeus told you: "The farmer cheated me."');
+  expect(text).toContain("farmer");
+  expect(view.relationships).toMatchObject([
+    { toward: "farmer", affinity: -1 },
+  ]);
+  expect(text).toMatch(/farmer[^\n]*affinity -1/);
+});
+
+test("what a god is shown of its memory is bounded, however much it remembers; with only a few memories, all are shown", () => {
+  // Zeus strikes the oak in the square thirty times, watching each: thirty memories, in a world with room for them.
+  const roomy = (state: WorldState): WorldState => ({
+    ...state,
+    rules: { ...state.rules, memoryBalance: { capacity: 40 } },
+  });
+  let state = roomy(
+    actorHolding(
+      actorAt(greekState(), "zeus", "town-square"),
+      "zeus",
+      "divinity",
+      100,
+    ),
+  );
+  for (let index = 0; index < 30; index += 1) {
+    state = tick(state, {
+      actor: "zeus",
+      kind: "strike",
+      target: "old-oak",
+      power: 1,
+    }).state;
+  }
+  expect(state.memories.get(toEntityId("zeus"))?.length).toBe(30);
+
+  const view = rememberedBy(state, toEntityId("zeus"));
+  expect(view.memories.length).toBe(MAX_REMEMBERED);
+  const context = buildGodContext(zeus, snapshotIn(state, "zeus", []), view);
+  const shown = context.prompt
+    .split("\n")
+    .filter((line) => line.startsWith("- You saw"));
+  expect(shown).toHaveLength(MAX_REMEMBERED);
+
+  // Control: after a single strike Zeus remembers little, and all of it is shown.
+  const few = rememberedBy(
+    tick(tavernWorld(), strikeTavern).state,
+    toEntityId("zeus"),
+  );
+  expect(few.memories.length).toBeGreaterThan(0);
+  expect(few.memories.length).toBeLessThan(MAX_REMEMBERED);
 });

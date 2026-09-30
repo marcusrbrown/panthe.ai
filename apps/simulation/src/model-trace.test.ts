@@ -12,6 +12,7 @@ import {
   type ObservationRecord,
 } from "@panthea/contracts";
 import {
+  CURRENT_SCHEMA_VERSION,
   closeStore,
   listEvents,
   openStore,
@@ -298,7 +299,7 @@ test("when the tick's transaction fails, no model-request row remains, and the w
   );
 });
 
-test("a store created at schema version 5 without the model-request table opens and gets the table from ensureTraceSchema, so adding it needed no version bump", () => {
+test("a store at the current schema version without the model-request table opens and gets the table from ensureTraceSchema, so adding it needed no version bump", () => {
   const dir = mkdtempSync(join(tmpdir(), "panthea-sim-model-table-"));
   try {
     const path = join(dir, "world.sqlite");
@@ -317,7 +318,7 @@ test("a store created at schema version 5 without the model-request table opens 
             user_version: number;
           }
         ).user_version,
-      ).toBe(5);
+      ).toBe(CURRENT_SCHEMA_VERSION);
       const hasTable = () =>
         reopened.db
           .query(

@@ -3,8 +3,8 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CatchUpSummary } from "@panthea/contracts";
 import {
-  clearCatchUpProgress,
   closeStore,
   exportArchive,
   getExternalProposal,
@@ -13,6 +13,7 @@ import {
   openStore,
   commitTick as persistCommitTick,
   readCatchUpProgress,
+  readCatchUpSummary,
   readClock,
   readLiveProjections,
   readPrngState,
@@ -21,8 +22,9 @@ import { ensureTraceSchema, recordObservation } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
 import { refreshStatusAfterCatchUp } from "./index";
-import { createServiceStatusRef } from "./server";
+import { applyLiveTick, createServiceStatusRef } from "./server";
 import type { TickDeps } from "./tick";
+import { buildRoutineQueue } from "./tick";
 import {
   createWorldProjectionReducers,
   deserializePrngState,
@@ -165,9 +167,9 @@ test("a capped catch-up run's discarded excess is never replayed by a later catc
     expect(firstRun.degraded).toBeUndefined();
     expect(firstRun.summary.appliedMs).toBe(60 * 60 * 1000);
     expect(firstRun.state.tick).toBe(3600);
-    // The service publishes the summary and closes the backlog before any
-    // later call; a second call that finds it open would report its totals.
-    clearCatchUpProgress(store.db);
+    // The run closed its own backlog in its final commit, so a later call
+    // starts from nothing.
+    expect(readCatchUpProgress(store.db)).toBeUndefined();
 
     // A live-loop-style second call, moments later: the cursor already
     // sits at (approximately) now, so this applies essentially nothing --
@@ -355,6 +357,31 @@ function throwsAtCommit(failOn: number) {
   };
 }
 
+/**
+ * A `commitTick` whose `failOn`-th call runs the real commit and then throws
+ * from inside its transaction, after every callback has written: the failure a
+ * full disk causes at COMMIT. Whatever the callbacks wrote must roll back.
+ */
+function failsInsideCommit(failOn: number) {
+  let attempt = 0;
+  return function commitTick<TProjections>(
+    ...args: Parameters<typeof persistCommitTick<TProjections>>
+  ): ReturnType<typeof persistCommitTick<TProjections>> {
+    attempt += 1;
+    if (attempt !== failOn) {
+      return persistCommitTick(...args);
+    }
+    const [store, reducers, input] = args;
+    return persistCommitTick(store, reducers, {
+      ...input,
+      onCommitted: (db) => {
+        input.onCommitted?.(db);
+        throw new Error("SQLITE_FULL: simulated failure at commit");
+      },
+    });
+  };
+}
+
 const HOUR_MS = 60 * 60 * 1000;
 
 interface Backlog {
@@ -366,7 +393,7 @@ interface Backlog {
     commitTick?: TickDeps["commitTick"],
     /** Called at each between-chunk yield, where a request could arrive; returning `true` pauses catch-up there, anything else lets it go on. */
     betweenChunks?: (db: Database) => boolean | undefined,
-    /** `crashBeforePublish` stops the run where the service would have died after the last commit and before publishing the summary. */
+    /** `crashBeforePublish` stops the run where the service would have died after the last commit and before publishing the summary: the summary is already persisted by then. */
     options?: { readonly crashBeforePublish?: boolean },
   ): Promise<Awaited<ReturnType<typeof runCatchUp>>>;
   /** Exports the store, as it stands on disk, to `archivePath`. */
@@ -375,6 +402,12 @@ interface Backlog {
   withDb<T>(fn: (db: Database) => T): T;
   clock(): ReturnType<typeof readClock>;
   progress(): ReturnType<typeof readCatchUpProgress>;
+  /** The summary persisted in the store, read fresh from disk. */
+  summary(): ReturnType<typeof readCatchUpSummary>;
+  /** The summary the last run's service status would put on a frame: hydrated from the store before the run, refreshed after it. */
+  published(): CatchUpSummary | undefined;
+  /** Runs `count` live ticks (routines plus the journal) on a store freshly opened from disk. */
+  tickLive(count: number): Promise<void>;
   dispose(): void;
 }
 
@@ -387,6 +420,7 @@ function openBacklog(prefix: string): Backlog {
 
 /** A backlog over the store at `storePath` (created if new), reopened from disk for every operation. */
 function backlogAt(storePath: string, dispose: () => void = () => {}): Backlog {
+  let lastPublished: CatchUpSummary | undefined;
   const first = openStore(
     storePath,
     createWorldProjectionReducers(loadGreekWorldState()),
@@ -430,6 +464,12 @@ function backlogAt(storePath: string, dispose: () => void = () => {}): Backlog {
           readLiveProjections(store, reducers),
           readClock(store.db),
         );
+        // A starting service hydrates its status from the store before it
+        // serves a frame.
+        const statusRef = createServiceStatusRef(
+          state,
+          readCatchUpSummary(store.db),
+        );
         const result = await runCatchUp(
           state,
           deserializePrngState(readPrngState(store.db)) ?? createPrng(1),
@@ -446,15 +486,12 @@ function backlogAt(storePath: string, dispose: () => void = () => {}): Backlog {
               : {}),
           },
         );
-        // What the service does with a result: publish it, then close the
-        // backlog. A run that "crashes" stops before that.
+        // What the service does with a result: publish what is persisted. A
+        // run that "crashes" stops before that.
         if (!options?.crashBeforePublish) {
-          refreshStatusAfterCatchUp(
-            createServiceStatusRef(result.state),
-            result,
-            store,
-          );
+          refreshStatusAfterCatchUp(statusRef, result, store);
         }
+        lastPublished = statusRef.catchUpSummary;
         return result;
       }),
     withDb: (fn) => {
@@ -490,6 +527,46 @@ function backlogAt(storePath: string, dispose: () => void = () => {}): Backlog {
         closeStore(store);
       }
     },
+    summary: () => {
+      const store = openStore(
+        storePath,
+        createWorldProjectionReducers(loadGreekWorldState()),
+      );
+      try {
+        return readCatchUpSummary(store.db);
+      } finally {
+        closeStore(store);
+      }
+    },
+    published: () => lastPublished,
+    tickLive: (count) =>
+      withStore((store) => {
+        const reducers = createWorldProjectionReducers(loadGreekWorldState());
+        ensureTraceSchema(store.db);
+        let state = restoreWorldTime(
+          readLiveProjections(store, reducers),
+          readClock(store.db),
+        );
+        let prng =
+          deserializePrngState(readPrngState(store.db)) ?? createPrng(1);
+        for (let i = 0; i < count; i += 1) {
+          const step = applyLiveTick(
+            buildRoutineQueue(state),
+            state,
+            prng,
+            { store, reducers, traceDb: store.db },
+            {
+              cursorWallMs: readClock(store.db).cursorWallMs + 1_000,
+              paused: false,
+            },
+          );
+          if (step.kind !== "committed") {
+            throw new Error(`live tick failed: ${step.message}`);
+          }
+          state = step.state;
+          prng = step.prng;
+        }
+      }),
     dispose,
   };
 }
@@ -536,10 +613,13 @@ test("the excess over the cap is discarded in its own commit before any chunk: a
       skippedMs: 4 * HOUR_MS,
       majorOutcomes: [],
     });
+    // The degraded run persisted its partial summary and bound the still-open
+    // backlog to it.
     expect(backlog.progress()).toEqual({
       appliedMs: 0,
       discardedMs: 4 * HOUR_MS,
       startSequence: 0,
+      summaryId: backlog.summary()?.id,
     });
   } finally {
     backlog.dispose();
@@ -603,11 +683,11 @@ test("the cap bounds the remaining backlog, not the total: after a chunks were a
   }
 }, 30_000);
 
-test("a backlog that fully applied before the final cursor commit failed is finished by the next start: the summary is published and the progress cleared", async () => {
+test("a backlog that fully applied before the completing commit failed is finished by the next start: the summary is persisted then, and the progress cleared with it", async () => {
   const backlog = openBacklog("panthea-sim-catchup-final-commit-");
   try {
     const nowWallMs = backlog.startCursor + 2 * 60 * 1000;
-    // Commits 1 and 2 are the chunks; commit 3, the final cursor commit, throws.
+    // Commits 1 and 2 are the chunks; commit 3, the completing commit, throws.
     const failed = await backlog.run(nowWallMs, throwsAtCommit(3));
     expect(failed.degraded).toBeDefined();
     expect(backlog.progress()).toEqual({
@@ -615,6 +695,7 @@ test("a backlog that fully applied before the final cursor commit failed is fini
       discardedMs: 0,
       startSequence: 0,
     });
+    expect(backlog.summary()).toBeUndefined();
 
     const restarted = await backlog.run(nowWallMs);
 
@@ -625,6 +706,7 @@ test("a backlog that fully applied before the final cursor commit failed is fini
       majorOutcomes: [],
     });
     expect(backlog.progress()).toBeUndefined();
+    expect(backlog.summary()).toMatchObject({ appliedMs: 120_000 });
   } finally {
     backlog.dispose();
   }
@@ -829,8 +911,7 @@ test("a backlog interrupted after a chunk that found outcomes reports them after
   }
 }, 30_000);
 
-test("the process dying after the last commit and before the summary is published: the next start publishes the same summary, then closes the backlog", async () => {
-  const yardstick = await uninterruptedSummary();
+test("the process dying after the last commit and before the summary is published loses nothing: the summary is already persisted, a restart hydrates the same one, and a second catch-up leaves it alone", async () => {
   const backlog = backlogWithStrike("panthea-sim-catchup-crash-window-", "w");
   try {
     const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
@@ -838,19 +919,30 @@ test("the process dying after the last commit and before the summary is publishe
     const finished = await backlog.run(nowWallMs, undefined, undefined, {
       crashBeforePublish: true,
     });
-    expect(finished.summary).toEqual(yardstick);
-    expect(backlog.progress()).toBeDefined();
+    const persisted = backlog.summary();
+    expect(persisted).toMatchObject({
+      appliedMs: THREE_MINUTES_MS,
+      majorOutcomes: finished.summary.majorOutcomes,
+    });
+    expect(backlog.progress()).toBeUndefined();
+    expect(backlog.published()).toBeUndefined();
 
+    // A restart: nothing new to apply, and the frame carries the same summary.
     const restarted = await backlog.run(nowWallMs);
 
-    expect(restarted.summary).toEqual(yardstick);
-    expect(backlog.progress()).toBeUndefined();
+    expect(restarted.summary).toEqual({
+      appliedMs: 0,
+      skippedMs: 0,
+      majorOutcomes: [],
+    });
+    expect(backlog.summary()).toEqual(persisted);
+    expect(backlog.published()).toEqual(persisted);
   } finally {
     backlog.dispose();
   }
 }, 30_000);
 
-test("a backlog ended by a mid-catch-up pause keeps its summary until published: a restart while paused reports it, then closes the backlog", async () => {
+test("a backlog ended by a mid-catch-up pause is persisted in the pause's own commit: a restart while paused shows the same summary, id included", async () => {
   const backlog = backlogWithStrike("panthea-sim-catchup-pause-", "p");
   try {
     const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
@@ -864,11 +956,17 @@ test("a backlog ended by a mid-catch-up pause keeps its summary until published:
     expect(paused.summary.majorOutcomes).toContain(
       "building-ignited:the-tavern",
     );
-
-    const restartedWhilePaused = await backlog.run(nowWallMs);
-
-    expect(restartedWhilePaused.summary).toEqual(paused.summary);
+    const persisted = backlog.summary();
+    expect(persisted).toMatchObject({
+      appliedMs: 60_000,
+      skippedMs: 2 * 60_000,
+    });
     expect(backlog.progress()).toBeUndefined();
+
+    await backlog.run(nowWallMs);
+
+    expect(backlog.summary()).toEqual(persisted);
+    expect(backlog.published()).toEqual(persisted);
   } finally {
     backlog.dispose();
   }
@@ -988,3 +1086,395 @@ test("a journaled proposal whose observation id is bound to different content is
     backlog.dispose();
   }
 });
+
+// --- The summary is persisted before it is exposed ------------------------------
+
+/** A legend proposal from zeus with no link: a notable event (`legend-recorded`) that needs no world setup. */
+function legendEntry(id: string) {
+  return {
+    proposalId: `proposal-legend-${id}`,
+    proposal: {
+      schemaVersion: 1,
+      kind: "legend",
+      actor: "zeus",
+      assertion: `A tale told after the catch-up, ${id}.`,
+      targets: [],
+      expectedRevisions: [],
+      source: "fixture",
+      observationId: `obs-legend-${id}`,
+    },
+    observation: {
+      schemaVersion: 1,
+      id: `obs-legend-${id}`,
+      observer: "zeus",
+      stateRevision: 0,
+      factsRead: [],
+      source: "fixture",
+    },
+  };
+}
+
+test("completion persists the summary and clears the progress: the row a frame shows is the row on disk", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-complete-", "c");
+  try {
+    const result = await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+
+    const persisted = backlog.summary();
+    expect(persisted).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      atSequence: backlog.withDb((db) => listEvents(db).at(-1)?.sequence ?? 0),
+      appliedMs: THREE_MINUTES_MS,
+      skippedMs: 0,
+      majorOutcomes: result.summary.majorOutcomes,
+    });
+    expect(persisted?.majorOutcomes).toContain("building-ignited:the-tavern");
+    expect(backlog.progress()).toBeUndefined();
+    expect(backlog.published()).toEqual(persisted);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("atomic rollback: a failed completion leaves the backlog open, no summary, and nothing published; a reopen reconstructs it and completes", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-rollback-", "r");
+  try {
+    // Three chunks, then the completing commit is the fourth.
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS + 500;
+
+    const failed = await backlog.run(nowWallMs, throwsAtCommit(4));
+
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.summary()).toBeUndefined();
+    expect(backlog.published()).toBeUndefined();
+    expect(backlog.progress()).toMatchObject({
+      appliedMs: THREE_MINUTES_MS,
+      discardedMs: 0,
+    });
+    // The cursor jump rides in the completing commit, so it rolled back too.
+    expect(backlog.clock().cursorWallMs).toBe(
+      backlog.startCursor + THREE_MINUTES_MS,
+    );
+
+    const reopened = await backlog.run(nowWallMs);
+
+    expect(reopened.degraded).toBeUndefined();
+    expect(backlog.progress()).toBeUndefined();
+    const persisted = backlog.summary();
+    expect(persisted).toMatchObject({ appliedMs: THREE_MINUTES_MS });
+    expect(persisted?.majorOutcomes).toContain("building-ignited:the-tavern");
+    expect(backlog.published()).toEqual(persisted);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("outcomes stay fixed while live ticks continue: a later notable event never joins a summary already persisted", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-frozen-", "f");
+  try {
+    await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+    const frozen = backlog.summary();
+    if (!frozen) throw new Error("expected a persisted summary");
+
+    // Live ticks go on: a legend is told after the catch-up ended.
+    backlog.withDb((db) => insertExternalProposal(db, legendEntry("after")));
+    await backlog.tickLive(3);
+
+    const afterLegend = backlog.withDb((db) =>
+      listEvents(db, { fromSequence: frozen.atSequence }).some(
+        (event) => event.kind === "legend-recorded",
+      ),
+    );
+    expect(afterLegend).toBe(true);
+    expect(backlog.summary()).toEqual(frozen);
+    // A later, empty catch-up does not re-derive it either.
+    await backlog.run(backlog.clock().cursorWallMs + 500);
+    expect(backlog.summary()).toEqual(frozen);
+    expect(backlog.published()).toEqual(frozen);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("an empty catch-up keeps the old summary, id included", async () => {
+  const backlog = openBacklog("panthea-sim-summary-empty-");
+  try {
+    await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+    const kept = backlog.summary();
+
+    // Nothing missed at all, then less than one tick missed.
+    await backlog.run(backlog.clock().cursorWallMs);
+    await backlog.run(backlog.clock().cursorWallMs + 999);
+
+    expect(backlog.summary()).toEqual(kept);
+    expect(backlog.published()).toEqual(kept);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a non-empty catch-up replaces the summary with a new id", async () => {
+  const backlog = openBacklog("panthea-sim-summary-replace-");
+  try {
+    await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+    const first = backlog.summary();
+
+    await backlog.run(backlog.clock().cursorWallMs + 2 * 60 * 1000);
+
+    const second = backlog.summary();
+    expect(second?.appliedMs).toBe(2 * 60 * 1000);
+    expect(second?.id).not.toBe(first?.id);
+    expect(backlog.published()).toEqual(second);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("an eventless replacement at the same sequence still gets a new id: a discard that no chunk followed", async () => {
+  const backlog = openBacklog("panthea-sim-summary-eventless-");
+  try {
+    await backlog.run(backlog.startCursor + 2 * 60 * 1000);
+    const first = backlog.summary();
+    const cursor = backlog.clock().cursorWallMs;
+
+    // Five hours away: the excess is discarded (no world event), and the
+    // first chunk's commit fails.
+    const degraded = await backlog.run(cursor + 5 * HOUR_MS, throwsAtCommit(2));
+
+    expect(degraded.degraded).toBeDefined();
+    const replaced = backlog.summary();
+    expect(replaced?.atSequence).toBe(first?.atSequence);
+    expect(replaced).toMatchObject({ appliedMs: 0, skippedMs: 4 * HOUR_MS });
+    expect(replaced?.id).not.toBe(first?.id);
+    expect(backlog.published()).toEqual(replaced);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a degraded partial catch-up persists its summary and keeps its backlog: a retry with no new committed progress reuses the id, and one that changes the summary mints a new one", async () => {
+  const backlog = openBacklog("panthea-sim-summary-partial-");
+  try {
+    const nowWallMs = backlog.startCursor + 4 * 60 * 1000; // four chunks
+
+    // Chunks 1 and 2 commit; chunk 3 fails.
+    const first = await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(first.degraded).toBeDefined();
+    const partial = backlog.summary();
+    expect(partial).toMatchObject({ appliedMs: 120_000 });
+    expect(backlog.progress()).toMatchObject({ appliedMs: 120_000 });
+    expect(backlog.published()).toEqual(partial);
+
+    // Chunk 3 fails again: nothing new committed.
+    const same = await backlog.run(nowWallMs, throwsAtCommit(1));
+    expect(same.degraded).toBeDefined();
+    expect(backlog.summary()?.id).toBe(partial?.id);
+
+    // Chunk 3 commits, chunk 4 fails: the summary changed.
+    const changed = await backlog.run(nowWallMs, throwsAtCommit(2));
+    expect(changed.degraded).toBeDefined();
+    const advanced = backlog.summary();
+    expect(advanced).toMatchObject({ appliedMs: 180_000 });
+    expect(advanced?.id).not.toBe(partial?.id);
+    expect(backlog.progress()).toMatchObject({ appliedMs: 180_000 });
+
+    // The retry finishes it: the whole backlog, a new id, the backlog closed.
+    const done = await backlog.run(nowWallMs);
+    expect(done.degraded).toBeUndefined();
+    const final = backlog.summary();
+    expect(final).toMatchObject({ appliedMs: 240_000 });
+    expect(final?.id).not.toBe(advanced?.id);
+    expect(backlog.progress()).toBeUndefined();
+    expect(backlog.published()).toEqual(final);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a summary that could not be persisted is never published: a degraded run whose partial write fails shows the previous summary, not a new one", async () => {
+  const backlog = openBacklog("panthea-sim-summary-unwritable-");
+  try {
+    await backlog.run(backlog.startCursor + 2 * 60 * 1000);
+    const previous = backlog.summary();
+    // The store refuses summary writes from here on.
+    backlog.withDb((db) => {
+      db.exec(
+        "CREATE TRIGGER refuse_summary BEFORE UPDATE ON catch_up_summary BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL: simulated'); END",
+      );
+    });
+
+    const degraded = await backlog.run(
+      backlog.clock().cursorWallMs + 4 * 60 * 1000,
+      throwsAtCommit(3),
+    );
+
+    expect(degraded.degraded).toBeDefined();
+    expect(backlog.summary()).toEqual(previous);
+    expect(backlog.published()).toEqual(previous);
+    expect(backlog.progress()).toMatchObject({ appliedMs: 120_000 });
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("an archive exported after a completed catch-up, imported, and reopened carries the same summary, id included", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-archive-", "z");
+  const slotsDir = tempDir("panthea-sim-summary-archive-slots-");
+  try {
+    await backlog.run(backlog.startCursor + THREE_MINUTES_MS);
+    const persisted = backlog.summary();
+    const archivePath = join(slotsDir, "after.sqlite");
+    backlog.exportTo(archivePath);
+
+    const slot = importWorldArchive(
+      archivePath,
+      join(slotsDir, "slots"),
+      createWorldProjectionReducers(loadGreekWorldState()).codec,
+    );
+    const restored = backlogAt(join(slot.slotPath, "world.sqlite"));
+
+    expect(restored.summary()).toEqual(persisted);
+    // A restored service hydrates it before its first frame.
+    await restored.run(restored.clock().cursorWallMs);
+    expect(restored.published()).toEqual(persisted);
+  } finally {
+    backlog.dispose();
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("atomic rollback inside the transaction: a completion that fails after it wrote the summary and cleared the progress rolls both back with the cursor jump", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-in-txn-", "i");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS + 500;
+
+    // Three chunks, then the completing commit fails after its callback ran.
+    const failed = await backlog.run(nowWallMs, failsInsideCommit(4));
+
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.summary()).toBeUndefined();
+    expect(backlog.published()).toBeUndefined();
+    expect(backlog.progress()).toMatchObject({ appliedMs: THREE_MINUTES_MS });
+    expect(backlog.clock().cursorWallMs).toBe(
+      backlog.startCursor + THREE_MINUTES_MS,
+    );
+
+    await backlog.run(nowWallMs);
+
+    expect(backlog.summary()).toMatchObject({ appliedMs: THREE_MINUTES_MS });
+    expect(backlog.progress()).toBeUndefined();
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a restart's closing commit is atomic too: if it fails inside the transaction, the backlog stays open and no summary appears", async () => {
+  const backlog = openBacklog("panthea-sim-summary-restart-close-");
+  try {
+    const nowWallMs = backlog.startCursor + 2 * 60 * 1000;
+    // Two chunks commit; the completing commit (3rd) throws before it runs.
+    await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(backlog.progress()).toBeDefined();
+
+    // The restart has nothing to apply; its only commit is the closing one.
+    const failed = await backlog.run(nowWallMs, failsInsideCommit(1));
+
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.summary()).toBeUndefined();
+    expect(backlog.progress()).toMatchObject({ appliedMs: 120_000 });
+
+    await backlog.run(nowWallMs);
+    expect(backlog.summary()).toMatchObject({ appliedMs: 120_000 });
+    expect(backlog.progress()).toBeUndefined();
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a pause that fails to commit leaves the world unpaused and its backlog open, with the chunks it did commit persisted as a partial summary", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-pause-fails-", "q");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+
+    // Chunk one commits; the pause commit (the 2nd) fails inside its transaction.
+    const failed = await backlog.run(
+      nowWallMs,
+      failsInsideCommit(2),
+      () => true,
+    );
+
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.clock().paused).toBe(false);
+    expect(backlog.progress()).toMatchObject({ appliedMs: 60_000 });
+    expect(backlog.summary()).toMatchObject({ appliedMs: 60_000 });
+    expect(backlog.published()).toEqual(backlog.summary());
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("the summary write and the progress clear are one step: if clearing the progress fails, no summary is left behind and nothing is published", async () => {
+  const backlog = backlogWithStrike("panthea-sim-summary-one-step-", "o1");
+  try {
+    const nowWallMs = backlog.startCursor + THREE_MINUTES_MS;
+    backlog.withDb((db) => {
+      db.exec(
+        "CREATE TRIGGER refuse_clear BEFORE DELETE ON catch_up_progress BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL: simulated'); END",
+      );
+    });
+
+    const failed = await backlog.run(nowWallMs);
+
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.summary()).toBeUndefined();
+    expect(backlog.published()).toBeUndefined();
+    expect(backlog.progress()).toMatchObject({ appliedMs: THREE_MINUTES_MS });
+
+    backlog.withDb((db) => db.exec("DROP TRIGGER refuse_clear"));
+    await backlog.run(nowWallMs);
+    expect(backlog.summary()).toMatchObject({ appliedMs: THREE_MINUTES_MS });
+    expect(backlog.progress()).toBeUndefined();
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);
+
+test("a restart that closes a backlog after a failed ending commit also moves the cursor to now: the sub-tick remainder is not left behind to add up to an extra tick later", async () => {
+  const backlog = openBacklog("panthea-sim-summary-remainder-");
+  try {
+    // Two whole chunks and half a tick over.
+    const nowWallMs = backlog.startCursor + 2 * 60 * 1000 + 500;
+
+    // The ending commit (the third) fails before it runs, so the cursor stays
+    // where the last chunk left it, half a tick behind now.
+    const failed = await backlog.run(nowWallMs, throwsAtCommit(3));
+    expect(failed.degraded).toBeDefined();
+    expect(backlog.clock().cursorWallMs).toBe(
+      backlog.startCursor + 2 * 60 * 1000,
+    );
+
+    // The restart has less than a tick to apply, so its only commit is the
+    // closing one. It ends the backlog exactly as the normal ending does,
+    // cursor included.
+    const closed = await backlog.run(nowWallMs);
+    expect(closed.degraded).toBeUndefined();
+    expect(backlog.progress()).toBeUndefined();
+    const summary = backlog.summary();
+    expect(summary).toMatchObject({ appliedMs: 120_000 });
+    expect(backlog.clock().cursorWallMs).toBe(nowWallMs);
+
+    // Less than a full tick later: nothing to apply. With the remainder left
+    // behind, the two halves would add up to a whole tick here.
+    const tickBefore = backlog.clock().tick;
+    const next = await backlog.run(nowWallMs + 999);
+
+    expect(next.summary).toEqual({
+      appliedMs: 0,
+      skippedMs: 0,
+      majorOutcomes: [],
+    });
+    expect(backlog.clock().tick).toBe(tickBefore);
+    expect(backlog.summary()).toEqual(summary);
+  } finally {
+    backlog.dispose();
+  }
+}, 30_000);

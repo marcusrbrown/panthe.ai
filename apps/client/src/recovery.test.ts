@@ -19,6 +19,7 @@ test("the view model after a device-loss rebuild equals the pre-loss view model"
       status: "degraded",
       degradedReason: "disk-full",
       catchUpSummary: {
+        id: "summary-9",
         appliedMs: 5000,
         skippedMs: 1000,
         majorOutcomes: ["tavern fire spread"],

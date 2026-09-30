@@ -15,7 +15,7 @@ import type { WorldId } from "@panthea/contracts";
 import { createWorldId, type WorldEvent } from "@panthea/contracts";
 import type { PersistedClockState } from "./clock";
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /** Creates every STRICT table the store owns and stamps `user_version`. */
 export function createSchema(db: Database): void {
@@ -97,17 +97,44 @@ export function createSchema(db: Database): void {
       ON external_proposals (input_order) WHERE consumed_tick IS NULL
     `);
     // At most one row, present from a catch-up backlog's first commit until
-    // the service has published its summary. Written in the same
+    // the backlog is closed (its summary persisted, in the same transaction). Written in the same
     // transaction as the discard or chunk it describes, so a restart
     // resumes from exactly what committed. `start_sequence` is the last
     // event sequence before the backlog began: the backlog's notable
-    // outcomes are the events committed after it.
+    // outcomes are the events committed after it. `summary_id` is the id of
+    // the summary this backlog has already persisted as a degraded partial,
+    // if any: it is what ties a persisted summary to the backlog that
+    // produced it, and it goes away with the row when the backlog closes.
     db.exec(`
       CREATE TABLE catch_up_progress (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         applied_ms INTEGER NOT NULL,
         discarded_ms INTEGER NOT NULL,
-        start_sequence INTEGER NOT NULL
+        start_sequence INTEGER NOT NULL,
+        summary_id TEXT CHECK (summary_id IS NULL OR summary_id <> '')
+      ) STRICT
+    `);
+    // The latest catch-up summary the service has delivered, kept apart from
+    // the progress on purpose: progress is the open backlog's working state,
+    // cleared when the backlog closes, while the summary is what a client is
+    // shown and must outlive that. It is written in the transaction that
+    // closes a backlog (or that records a degraded partial one), never
+    // before, so a summary that was exposed is always one that survives a
+    // kill. `summary_id` is the service-minted identity a client
+    // acknowledges; `at_sequence` freezes the outcomes at the backlog's
+    // committed ending sequence.
+    db.exec(`
+      CREATE TABLE catch_up_summary (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        summary_id TEXT NOT NULL CHECK (summary_id <> ''),
+        at_sequence INTEGER NOT NULL CHECK (at_sequence >= 0),
+        applied_ms INTEGER NOT NULL CHECK (applied_ms >= 0),
+        skipped_ms INTEGER NOT NULL CHECK (skipped_ms >= 0),
+        major_outcomes TEXT NOT NULL CHECK (
+          CASE WHEN json_valid(major_outcomes)
+            THEN json_type(major_outcomes) = 'array'
+            ELSE 0 END
+        )
       ) STRICT
     `);
     db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
@@ -330,32 +357,43 @@ export interface CatchUpProgress {
   readonly discardedMs: number;
   /** The last event sequence before the backlog began; the backlog's events are those after it. */
   readonly startSequence: number;
+  /**
+   * The id of the summary this backlog has already persisted as a degraded
+   * partial; absent until it has. Set by `bindCatchUpProgressSummary`, never
+   * by `writeCatchUpProgress`, so recording more progress keeps it.
+   */
+  readonly summaryId?: string;
 }
 
 /** The committed progress of a catch-up backlog whose summary has not been published yet, or `undefined` when none is open. */
 export function readCatchUpProgress(db: Database): CatchUpProgress | undefined {
   const row = db
     .query(
-      "SELECT applied_ms, discarded_ms, start_sequence FROM catch_up_progress WHERE id = 1",
+      "SELECT applied_ms, discarded_ms, start_sequence, summary_id FROM catch_up_progress WHERE id = 1",
     )
     .get() as {
     applied_ms: number;
     discarded_ms: number;
     start_sequence: number;
+    summary_id: string | null;
   } | null;
   return row
     ? {
         appliedMs: row.applied_ms,
         discardedMs: row.discarded_ms,
         startSequence: row.start_sequence,
+        ...(row.summary_id === null ? {} : { summaryId: row.summary_id }),
       }
     : undefined;
 }
 
-/** Records backlog progress. Call inside a tick's `onCommitted` so it commits or rolls back with that tick. */
+/**
+ * Records backlog progress. Call inside a tick's `onCommitted` so it commits or rolls back with that tick.
+ * The row's `summaryId` binding is left as it is.
+ */
 export function writeCatchUpProgress(
   db: Database,
-  progress: CatchUpProgress,
+  progress: Omit<CatchUpProgress, "summaryId">,
 ): void {
   db.run(
     `INSERT INTO catch_up_progress (id, applied_ms, discarded_ms, start_sequence) VALUES (1, ?, ?, ?)
@@ -364,9 +402,74 @@ export function writeCatchUpProgress(
   );
 }
 
+/** Ties the open backlog to the summary it has persisted as a partial. No-op when no backlog is open. */
+export function bindCatchUpProgressSummary(
+  db: Database,
+  summaryId: string,
+): void {
+  db.run("UPDATE catch_up_progress SET summary_id = ? WHERE id = 1", [
+    summaryId,
+  ]);
+}
+
 /** Closes the backlog: the next catch-up starts a new one. */
 export function clearCatchUpProgress(db: Database): void {
   db.run("DELETE FROM catch_up_progress WHERE id = 1");
+}
+
+/** The latest catch-up summary, as the service delivers it on a frame. */
+export interface CatchUpSummaryRecord {
+  /** Service-minted identity; a client acknowledges a summary by it. */
+  readonly id: string;
+  /** The committed sequence the backlog ended at; `majorOutcomes` are frozen at it. */
+  readonly atSequence: number;
+  readonly appliedMs: number;
+  readonly skippedMs: number;
+  readonly majorOutcomes: readonly string[];
+}
+
+/** The persisted catch-up summary, or `undefined` before any non-empty catch-up has completed. */
+export function readCatchUpSummary(
+  db: Database,
+): CatchUpSummaryRecord | undefined {
+  const row = db
+    .query(
+      "SELECT summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes FROM catch_up_summary WHERE id = 1",
+    )
+    .get() as {
+    summary_id: string;
+    at_sequence: number;
+    applied_ms: number;
+    skipped_ms: number;
+    major_outcomes: string;
+  } | null;
+  return row
+    ? {
+        id: row.summary_id,
+        atSequence: row.at_sequence,
+        appliedMs: row.applied_ms,
+        skippedMs: row.skipped_ms,
+        majorOutcomes: JSON.parse(row.major_outcomes) as string[],
+      }
+    : undefined;
+}
+
+/** Persists the summary, replacing any earlier one. Call inside the transaction that closes (or partially records) the backlog, so it commits or rolls back with it. */
+export function writeCatchUpSummary(
+  db: Database,
+  summary: CatchUpSummaryRecord,
+): void {
+  db.run(
+    `INSERT INTO catch_up_summary (id, summary_id, at_sequence, applied_ms, skipped_ms, major_outcomes) VALUES (1, ?, ?, ?, ?, ?)
+     ON CONFLICT (id) DO UPDATE SET summary_id = excluded.summary_id, at_sequence = excluded.at_sequence, applied_ms = excluded.applied_ms, skipped_ms = excluded.skipped_ms, major_outcomes = excluded.major_outcomes`,
+    [
+      summary.id,
+      summary.atSequence,
+      summary.appliedMs,
+      summary.skippedMs,
+      JSON.stringify(summary.majorOutcomes),
+    ],
+  );
 }
 
 export function readPrngState(db: Database): string {

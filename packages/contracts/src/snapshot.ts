@@ -37,10 +37,18 @@ export const DEGRADED_REASONS = [
 export type DegradedReason = (typeof DEGRADED_REASONS)[number];
 
 export interface CatchUpSummary {
+  /**
+   * The summary's own identity, minted by the service when it persists the
+   * summary and held until a different summary replaces it. A client
+   * acknowledges a summary by this id, so it stays acknowledged across every
+   * frame that repeats it and across a service restart, and a later
+   * catch-up (a new id, even at the same sequence) shows again.
+   */
+  readonly id: string;
   readonly appliedMs: number;
   readonly skippedMs: number;
   readonly majorOutcomes: readonly string[];
-  /** The committed sequence at which this catch-up finished; with the session id it identifies the summary across every later frame. */
+  /** The committed sequence at which this catch-up finished; its outcomes are frozen at it. */
   readonly atSequence: number;
 }
 
@@ -50,6 +58,11 @@ function parseCatchUpSummary(
 ): ParseResult<CatchUpSummary> {
   if (!isRecord(value)) {
     return fail(path, "expected a catch-up summary object");
+  }
+  const id = parseString(value.id, `${path}.id`);
+  if (!id.ok) return id;
+  if (id.value === "") {
+    return fail(`${path}.id`, "expected a non-empty summary id");
   }
   const appliedMs = parseNonNegativeInteger(
     value.appliedMs,
@@ -73,6 +86,7 @@ function parseCatchUpSummary(
   );
   if (!atSequence.ok) return atSequence;
   return ok({
+    id: id.value,
     appliedMs: appliedMs.value,
     skippedMs: skippedMs.value,
     majorOutcomes: majorOutcomes.value,

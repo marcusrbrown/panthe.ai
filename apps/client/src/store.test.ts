@@ -118,6 +118,7 @@ test("status, degraded reason, and catch-up summary are exposed in the view mode
     status: "degraded",
     degradedReason: "disk-full",
     catchUpSummary: {
+      id: "summary-9",
       appliedMs: 3_600_000,
       skippedMs: 120_000,
       majorOutcomes: ["tavern fire spread"],
@@ -130,6 +131,7 @@ test("status, degraded reason, and catch-up summary are exposed in the view mode
   expect(view.status).toBe("degraded");
   expect(view.degradedReason).toBe("disk-full");
   expect(view.catchUpSummary).toEqual({
+    id: "summary-9",
     appliedMs: 3_600_000,
     skippedMs: 120_000,
     majorOutcomes: ["tavern fire spread"],
@@ -168,6 +170,7 @@ test("a fresh frame on reconnect replaces prior state entirely", () => {
     sequence: 9,
     sessionId: "session-1",
     catchUpSummary: {
+      id: "summary-old",
       appliedMs: 1000,
       skippedMs: 0,
       majorOutcomes: ["old outcome"],

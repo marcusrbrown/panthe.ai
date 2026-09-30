@@ -183,6 +183,7 @@ test("a frame with a catch-up summary parses", () => {
   const result = parseSyncFrame(
     frame({
       catchUpSummary: {
+        id: "summary-7f3a",
         appliedMs: 3_600_000,
         skippedMs: 120_000,
         majorOutcomes: ["tavern fire spread"],
@@ -193,6 +194,7 @@ test("a frame with a catch-up summary parses", () => {
   expect(result.ok).toBe(true);
   if (result.ok) {
     expect(result.value.catchUpSummary).toEqual({
+      id: "summary-7f3a",
       appliedMs: 3_600_000,
       skippedMs: 120_000,
       majorOutcomes: ["tavern fire spread"],
@@ -201,10 +203,66 @@ test("a frame with a catch-up summary parses", () => {
   }
 });
 
+test("a catch-up summary without an id is rejected, naming the path", () => {
+  const result = parseSyncFrame(
+    frame({
+      catchUpSummary: {
+        appliedMs: 0,
+        skippedMs: 0,
+        majorOutcomes: [],
+        atSequence: 10,
+      },
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.path).toBe("catchUpSummary.id");
+  }
+});
+
+test("a catch-up summary id that is not a non-empty string is rejected", () => {
+  for (const id of ["", 7, null, {}]) {
+    const result = parseSyncFrame(
+      frame({
+        catchUpSummary: {
+          id,
+          appliedMs: 0,
+          skippedMs: 0,
+          majorOutcomes: [],
+          atSequence: 10,
+        },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.path).toBe("catchUpSummary.id");
+    }
+  }
+});
+
+test("the summary's schema version is still 1: a frame carrying an id parses under SyncFrame version 1", () => {
+  const result = parseSyncFrame(
+    frame({
+      catchUpSummary: {
+        id: "s",
+        appliedMs: 0,
+        skippedMs: 0,
+        majorOutcomes: [],
+        atSequence: 0,
+      },
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.schemaVersion).toBe(1);
+  }
+});
+
 test("a catch-up summary without atSequence is rejected", () => {
   const result = parseSyncFrame(
     frame({
       catchUpSummary: {
+        id: "summary-1",
         appliedMs: 3_600_000,
         skippedMs: 120_000,
         majorOutcomes: [],
@@ -222,6 +280,7 @@ test("a catch-up summary atSequence that is not a non-negative integer is reject
     const result = parseSyncFrame(
       frame({
         catchUpSummary: {
+          id: "summary-1",
           appliedMs: 0,
           skippedMs: 0,
           majorOutcomes: [],

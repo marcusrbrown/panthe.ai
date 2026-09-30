@@ -70,11 +70,10 @@ receipt. The packaged view gate passed on the release `.app`: observer switching
 realms, 143 presentation receipts over a 6.5-minute session, the catch-up panel, and pause/resume
 ([m1-packaged-shell](../../tools/scenarios/m1-packaged-shell/README.md#view-gate)).
 
-Known limits, each recorded in its [traceability.md](traceability.md) row: the W03 catch-up summary
-limit (the backlog closes when its summary is published, not when a client has fetched it, so a
-kill just before the next frame loses that summary); O01 archives carry
-world state and the proposal journal but no trace records, so a restored branch has no causal trace
-before the restore; O04 is partial, with model-request and relationship links left to M2.
+Known limits, each recorded in its [traceability.md](traceability.md) row: O01 archives carry
+world state, the proposal journal, and the catch-up summary but no trace records, so a restored branch
+has no causal trace before the restore; O04 is partial, with model-request and relationship links left
+to M2.
 
 Not covered: a real OS sleep/wake cycle, power loss, disk-full and store-error degradation, a crash
 during import staging, code signing and notarization, the release build's web console, and the

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseSyncFrame } from "@panthea/contracts";
 import {
   closeStore,
   type ExternalProposalEntry,
@@ -16,8 +17,10 @@ import {
   openStore,
   commitTick as persistCommitTick,
   readCatchUpProgress,
+  readCatchUpSummary,
   readClock,
   writeCatchUpProgress,
+  writeCatchUpSummary,
 } from "@panthea/persistence";
 import {
   createProposalId,
@@ -28,8 +31,12 @@ import {
 } from "@panthea/telemetry";
 import { createPrng } from "@panthea/world";
 import { runCatchUp } from "./catchup";
-import { refreshStatusAfterCatchUp, resolveAppDataDir } from "./index";
-import { createServiceStatusRef, updateServiceStatus } from "./server";
+import {
+  createHydratedStatusRef,
+  refreshStatusAfterCatchUp,
+  resolveAppDataDir,
+} from "./index";
+import { createServiceStatusRef } from "./server";
 import type { TickDeps } from "./tick";
 import {
   createWorldProjectionReducers,
@@ -115,7 +122,7 @@ describe("refreshStatusAfterCatchUp", () => {
     }
   });
 
-  test("a degraded catch-up result publishes what it committed, discard included", () => {
+  test("a degraded catch-up result publishes the partial summary the run persisted, discard included", () => {
     const dir = mkdtempSync(
       join(tmpdir(), "panthea-sim-index-degraded-summary-"),
     );
@@ -124,6 +131,15 @@ describe("refreshStatusAfterCatchUp", () => {
       const reducers = createWorldProjectionReducers(seeded);
       const store = openStore(join(dir, "world.sqlite"), reducers);
       const statusRef = createServiceStatusRef(seeded);
+      // What `runCatchUp` persists for a degraded partial run.
+      const partial = {
+        id: "partial-1",
+        atSequence: 0,
+        appliedMs: 120_000,
+        skippedMs: 4 * 60 * 60 * 1000,
+        majorOutcomes: [],
+      };
+      writeCatchUpSummary(store.db, partial);
 
       refreshStatusAfterCatchUp(
         statusRef,
@@ -141,10 +157,38 @@ describe("refreshStatusAfterCatchUp", () => {
       );
 
       expect(statusRef.status).toBe("degraded");
-      expect(statusRef.catchUpSummary).toMatchObject({
-        appliedMs: 120_000,
-        skippedMs: 4 * 60 * 60 * 1000,
-      });
+      expect(statusRef.catchUpSummary).toEqual(partial);
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a summary the result carries but the store does not hold is never published", () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-unpersisted-"));
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const statusRef = createServiceStatusRef(seeded);
+
+      refreshStatusAfterCatchUp(
+        statusRef,
+        {
+          summary: {
+            appliedMs: 3_600_000,
+            skippedMs: 60_000,
+            majorOutcomes: ["building-ignited:the-tavern"],
+          },
+          state: seeded,
+          prng: createPrng(1),
+          degraded: { reason: "disk-full", message: "no space left" },
+        },
+        store,
+      );
+
+      expect(statusRef.status).toBe("degraded");
+      expect(statusRef.catchUpSummary).toBeUndefined();
       closeStore(store);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -180,19 +224,21 @@ describe("refreshStatusAfterCatchUp", () => {
     }
   });
 
-  test("a catch-up that applied and skipped nothing leaves the earlier summary in place", async () => {
+  test("a catch-up that applied and skipped nothing leaves the earlier summary in place, id included", async () => {
     const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-empty-summary-"));
     try {
       const seeded = loadGreekWorldState();
       const reducers = createWorldProjectionReducers(seeded);
       const store = openStore(join(dir, "world.sqlite"), reducers);
-      const statusRef = createServiceStatusRef(seeded);
       const earlier = {
+        id: "earlier",
+        atSequence: 0,
         appliedMs: 3_600_000,
         skippedMs: 60_000,
         majorOutcomes: ["tavern fire spread"],
       };
-      updateServiceStatus(statusRef, seeded, { catchUpSummary: earlier });
+      writeCatchUpSummary(store.db, earlier);
+      const statusRef = createServiceStatusRef(seeded, earlier);
 
       refreshStatusAfterCatchUp(
         statusRef,
@@ -204,26 +250,36 @@ describe("refreshStatusAfterCatchUp", () => {
         store,
       );
 
-      expect(statusRef.catchUpSummary).toEqual({
-        ...earlier,
-        atSequence: seeded.lastSequence,
-      });
+      expect(statusRef.catchUpSummary).toEqual(earlier);
       closeStore(store);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test("a catch-up that applied or skipped time replaces the earlier summary", async () => {
+  test("a catch-up that applied or skipped time replaces the earlier summary with the one it persisted", async () => {
     const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-new-summary-"));
     try {
       const seeded = loadGreekWorldState();
       const reducers = createWorldProjectionReducers(seeded);
       const store = openStore(join(dir, "world.sqlite"), reducers);
-      const statusRef = createServiceStatusRef(seeded);
-      updateServiceStatus(statusRef, seeded, {
-        catchUpSummary: { appliedMs: 1000, skippedMs: 0, majorOutcomes: [] },
-      });
+      const earlier = {
+        id: "earlier",
+        atSequence: 0,
+        appliedMs: 1000,
+        skippedMs: 0,
+        majorOutcomes: [],
+      };
+      const statusRef = createServiceStatusRef(seeded, earlier);
+      // What `runCatchUp` persisted when it ended its backlog.
+      const replacement = {
+        id: "replacement",
+        atSequence: 0,
+        appliedMs: 0,
+        skippedMs: 90_000,
+        majorOutcomes: [],
+      };
+      writeCatchUpSummary(store.db, replacement);
 
       refreshStatusAfterCatchUp(
         statusRef,
@@ -235,7 +291,7 @@ describe("refreshStatusAfterCatchUp", () => {
         store,
       );
 
-      expect(statusRef.catchUpSummary?.skippedMs).toBe(90_000);
+      expect(statusRef.catchUpSummary).toEqual(replacement);
       closeStore(store);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -256,6 +312,8 @@ afterEach(() => {
 interface SpawnedService {
   readonly proc: ReturnType<typeof Bun.spawn>;
   readonly port: number;
+  /** Everything the service has written to stdout so far, the port line included. */
+  output(): string;
 }
 
 /** Spawns the service, writes `token` to stdin, and resolves once the port line is seen. */
@@ -305,9 +363,22 @@ async function spawnService(
       ),
     ),
   ]);
-  reader.releaseLock();
+  // Keep draining: a test waits on lines the service prints after its port
+  // (a line that arrived in the same chunk as the port line is already in
+  // `buffer`), and an undrained pipe would eventually block the service.
+  void (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // The process was killed; there is nothing more to read.
+    }
+  })();
 
-  return { proc, port };
+  return { proc, port, output: () => buffer };
 }
 
 /** Runs `fn` against the active store's file: read-only while a service holds it, read-write once none does (a cleanly stopped WAL store cannot be opened read-only). */
@@ -383,6 +454,221 @@ function strikeBody(proposalId: string, observationId: string) {
 }
 
 describe("service (bun run src/index.ts)", () => {
+  /** Starts a service on a fresh store and stops it cleanly, leaving a world whose persisted cursor the harness can then set. */
+  async function createStore(): Promise<void> {
+    const first = await spawnService("seed-token");
+    const stdin = first.proc.stdin;
+    if (typeof stdin === "number" || !stdin) throw new Error("stdin");
+    stdin.end();
+    expect(await first.proc.exited).toBe(0);
+  }
+
+  const setCursor = (cursorWallMs: number) =>
+    withActiveDb(
+      (db) =>
+        db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+          cursorWallMs,
+        ]),
+      { write: true },
+    );
+
+  async function fetchSummary(port: number, token: string) {
+    const response = await service(port, token)("/frame");
+    const parsed = parseSyncFrame(await response.json());
+    if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+    return parsed.value.catchUpSummary;
+  }
+
+  /**
+   * Seeds three minutes of downtime, starts a service, and waits until it has
+   * published the summary, without ever fetching /frame. The barrier is the
+   * service's own `startup catch-up complete` line, which it prints only after
+   * the catch-up ran, the status was refreshed from the store, and the frame
+   * was broadcast (in that order, in `startService`). Then the persisted row is
+   * read from the store. Returns the running service and the persisted summary.
+   */
+  async function serviceThatCaughtUp(token: string) {
+    await createStore();
+    setCursor(Date.now() - 3 * 60 * 1000);
+    const running = await spawnService(token);
+    await waitUntil("the service to have published its summary", () =>
+      running.output().includes("startup catch-up complete") ? true : undefined,
+    );
+    const persisted = withActiveDb((db) => readCatchUpSummary(db));
+    if (!persisted) {
+      throw new Error("the service published but no summary is persisted");
+    }
+    expect(persisted.appliedMs).toBe(3 * 60 * 1000);
+    // Persisted with the backlog closed, in the same commit.
+    expect(withActiveDb((db) => readCatchUpProgress(db))).toBeUndefined();
+    return { running, persisted };
+  }
+
+  /** Restarts with a cursor in the future, so the start applies no new catch-up (a negative gap applies zero). */
+  async function restartWithNoNewCatchUp(token: string) {
+    setCursor(Date.now() + 10 * 60 * 1000);
+    return spawnService(token);
+  }
+
+  test("a summary the service published but no client ever fetched survives a SIGKILL: the restarted frame carries the identical summary, id included", async () => {
+    const { running, persisted } = await serviceThatCaughtUp("summary-token-1");
+    running.proc.kill("SIGKILL");
+    await running.proc.exited;
+
+    const restarted = await restartWithNoNewCatchUp("summary-token-2");
+    try {
+      // The very first frame the restarted service serves.
+      const first = await fetchSummary(restarted.port, "summary-token-2");
+      expect(first).toEqual(persisted);
+      expect(first?.id).toBe(persisted.id);
+
+      // And it is still that summary after the service has ticked on.
+      await Bun.sleep(2_500);
+      expect(await fetchSummary(restarted.port, "summary-token-2")).toEqual(
+        persisted,
+      );
+      expect(withActiveDb((db) => readCatchUpSummary(db))).toEqual(persisted);
+    } finally {
+      restarted.proc.kill();
+    }
+  }, 60_000);
+
+  test("a summary a client fetched and then the service was SIGKILLed: the restarted frame carries the identical summary, id included", async () => {
+    const { running, persisted } = await serviceThatCaughtUp("summary-token-3");
+    expect(await fetchSummary(running.port, "summary-token-3")).toEqual(
+      persisted,
+    );
+    running.proc.kill("SIGKILL");
+    await running.proc.exited;
+
+    const restarted = await restartWithNoNewCatchUp("summary-token-4");
+    try {
+      expect(await fetchSummary(restarted.port, "summary-token-4")).toEqual(
+        persisted,
+      );
+    } finally {
+      restarted.proc.kill();
+    }
+  }, 60_000);
+
+  test("the service's own startup line is an honest publication barrier: when it appears, the first frame already carries the summary, and it is the persisted one", async () => {
+    await createStore();
+    setCursor(Date.now() - 3 * 60 * 1000);
+    const running = await spawnService("summary-barrier-token");
+    try {
+      await waitUntil("the service to have published its summary", () =>
+        running.output().includes("startup catch-up complete")
+          ? true
+          : undefined,
+      );
+
+      const persisted = withActiveDb((db) => readCatchUpSummary(db));
+      expect(persisted).toBeDefined();
+      // Fetched only now, after the barrier: had the line been printed before
+      // the status was refreshed and the frame broadcast, this would be empty.
+      expect(await fetchSummary(running.port, "summary-barrier-token")).toEqual(
+        persisted,
+      );
+    } finally {
+      running.proc.kill();
+    }
+  }, 60_000);
+
+  test("a degraded partial summary meets a restart with nothing new to apply: every frame carries that same summary, id and applied time, because the closing commit reuses the id", async () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(
+      join(appDataDir, "active", "world.sqlite"),
+      reducers,
+    );
+    ensureTraceSchema(store.db);
+    const nowWallMs = Date.now();
+    store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
+      nowWallMs - 5 * HOUR_MS,
+    ]);
+    let attempt = 0;
+    const interrupted = await runCatchUp(
+      seeded,
+      createPrng(1),
+      {
+        store,
+        reducers,
+        traceDb: store.db,
+        commitTick: (storeArg, reducersArg, input) => {
+          attempt += 1;
+          if (attempt === 2) throw new Error("simulated commit failure");
+          return persistCommitTick(storeArg, reducersArg, input);
+        },
+      },
+      { nowWallMs },
+    );
+    expect(interrupted.degraded).toBeDefined();
+    const partial = readCatchUpSummary(store.db);
+    expect(partial).toMatchObject({ appliedMs: 0, skippedMs: 4 * HOUR_MS });
+    expect(readCatchUpProgress(store.db)).toBeDefined();
+    closeStore(store);
+    // The restart has nothing new to apply, so the summary cannot be replaced
+    // by a completed backlog: it can only be kept.
+    setCursor(Date.now() + 10 * 60 * 1000);
+
+    const restarted = await spawnService("summary-partial-token");
+    try {
+      // Whether this frame is served before or after the restart's closing
+      // commit, it must be that one summary.
+      expect(
+        await fetchSummary(restarted.port, "summary-partial-token"),
+      ).toEqual(partial);
+
+      await waitUntil("the restart to close the backlog", () =>
+        restarted.output().includes("startup catch-up complete")
+          ? true
+          : undefined,
+      );
+      expect(withActiveDb((db) => readCatchUpProgress(db))).toBeUndefined();
+      expect(withActiveDb((db) => readCatchUpSummary(db))).toEqual(partial);
+      expect(
+        await fetchSummary(restarted.port, "summary-partial-token"),
+      ).toEqual(partial);
+    } finally {
+      restarted.proc.kill();
+    }
+  }, 60_000);
+
+  test("a clean restart keeps the summary too, and a later real catch-up replaces it with a new id", async () => {
+    const { running, persisted } = await serviceThatCaughtUp("summary-token-5");
+    const stdin = running.proc.stdin;
+    if (typeof stdin === "number" || !stdin) throw new Error("stdin");
+    stdin.end();
+    expect(await running.proc.exited).toBe(0);
+
+    const restarted = await restartWithNoNewCatchUp("summary-token-6");
+    try {
+      expect(await fetchSummary(restarted.port, "summary-token-6")).toEqual(
+        persisted,
+      );
+    } finally {
+      restarted.proc.kill();
+      await restarted.proc.exited;
+    }
+
+    // Two more minutes pass while the service is down: a new catch-up.
+    setCursor(Date.now() - 2 * 60 * 1000);
+    const later = await spawnService("summary-token-7");
+    try {
+      const replaced = await waitUntil("a new summary", () => {
+        const current = withActiveDb((db) => readCatchUpSummary(db));
+        return current && current.id !== persisted.id ? current : undefined;
+      });
+      expect(replaced.appliedMs).toBeGreaterThanOrEqual(2 * 60 * 1000);
+      expect(await fetchSummary(later.port, "summary-token-7")).toEqual(
+        replaced,
+      );
+    } finally {
+      later.proc.kill();
+    }
+  }, 90_000);
+
   test("a proposal accepted and then the process SIGKILLed before any tick runs is still pending on restart and runs on a catch-up tick", async () => {
     const first = await spawnService("kill-token-1");
     const body = strikeBody("proposal-kill-1", "obs-kill-1");
@@ -607,15 +893,16 @@ describe("service (bun run src/index.ts)", () => {
     expect(exitCode).toBe(0);
   });
 
-  test("a five hour gap whose first chunk never committed after the discard: the restarted service's /frame reports the whole backlog, discard included", async () => {
+  test("a five hour gap whose first chunk never committed after the discard: the restarted service completes the backlog and its /frame reports all of it, discard included, under a new id", async () => {
     const HOUR_MS = 60 * 60 * 1000;
     const seeded = loadGreekWorldState();
     const reducers = createWorldProjectionReducers(seeded);
     const storePath = join(appDataDir, "active", "world.sqlite");
     const store = openStore(storePath, reducers);
     ensureTraceSchema(store.db);
+    const nowWallMs = Date.now();
     store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
-      Date.now() - 5 * HOUR_MS,
+      nowWallMs - 5 * HOUR_MS,
     ]);
     let attempt = 0;
     const interrupted = await runCatchUp(
@@ -631,34 +918,41 @@ describe("service (bun run src/index.ts)", () => {
           return persistCommitTick(storeArg, reducersArg, input);
         },
       },
-      { nowWallMs: Date.now() },
+      { nowWallMs },
     );
     expect(interrupted.degraded).toBeDefined();
     expect(readClock(store.db).tick).toBe(0);
+    // The interrupted run persisted what it committed: the discard, nothing
+    // applied yet. That partial summary is what a restart shows first.
+    const partial = readCatchUpSummary(store.db);
+    expect(partial).toMatchObject({ appliedMs: 0, skippedMs: 4 * HOUR_MS });
     closeStore(store);
 
     const { proc, port } = await spawnService("test-token-frame");
     try {
-      const summary = await (async () => {
-        const deadline = Date.now() + 30_000;
-        while (Date.now() < deadline) {
-          const response = await fetch(`http://127.0.0.1:${port}/frame`, {
-            headers: { Authorization: "Bearer test-token-frame" },
-          });
-          const frame = (await response.json()) as {
-            catchUpSummary?: { appliedMs: number; skippedMs: number };
-          };
-          if (frame.catchUpSummary) return frame.catchUpSummary;
-          await Bun.sleep(50);
-        }
-        throw new Error("no catch-up summary appeared in /frame");
-      })();
+      const frameSummary = async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/frame`, {
+          headers: { Authorization: "Bearer test-token-frame" },
+        });
+        const parsed = parseSyncFrame(await response.json());
+        if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+        return parsed.value.catchUpSummary;
+      };
+      const summary = await waitUntil(
+        "the completed backlog's summary",
+        async () => {
+          const current = await frameSummary();
+          return current?.appliedMs === HOUR_MS ? current : undefined;
+        },
+      );
 
       // The cap is applied once; everything else in the five hours, and the
       // seconds the restart took, was discarded.
       expect(summary.appliedMs).toBe(HOUR_MS);
       expect(summary.skippedMs).toBeGreaterThanOrEqual(4 * HOUR_MS);
       expect(summary.skippedMs).toBeLessThan(4 * HOUR_MS + 60_000);
+      // The completed backlog is a different summary from the partial one.
+      expect(summary.id).not.toBe(partial?.id);
     } finally {
       proc.kill();
     }
@@ -707,6 +1001,50 @@ describe("service (bun run src/index.ts)", () => {
   });
 });
 
+describe("createHydratedStatusRef", () => {
+  test("a starting service's status already carries the persisted summary, so the first frame it serves shows it even while a long catch-up is still running", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-hydrate-"));
+    try {
+      const seeded = loadGreekWorldState();
+      const reducers = createWorldProjectionReducers(seeded);
+      const store = openStore(join(dir, "world.sqlite"), reducers);
+      const delivered = {
+        id: "delivered-before-the-restart",
+        atSequence: 0,
+        appliedMs: 3_600_000,
+        skippedMs: 60_000,
+        majorOutcomes: ["building-ignited:the-tavern"],
+      };
+      writeCatchUpSummary(store.db, delivered);
+
+      const statusRef = createHydratedStatusRef(seeded, store);
+
+      expect(statusRef.catchUpSummary).toEqual(delivered);
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("with no summary persisted, the status carries none", () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-hydrate-none-"));
+    try {
+      const seeded = loadGreekWorldState();
+      const store = openStore(
+        join(dir, "world.sqlite"),
+        createWorldProjectionReducers(seeded),
+      );
+
+      expect(
+        createHydratedStatusRef(seeded, store).catchUpSummary,
+      ).toBeUndefined();
+      closeStore(store);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("refreshStatusAfterCatchUp: closing the backlog", () => {
   function setup() {
     const dir = mkdtempSync(join(tmpdir(), "panthea-sim-index-close-"));
@@ -735,15 +1073,19 @@ describe("refreshStatusAfterCatchUp: closing the backlog", () => {
     prng: createPrng(1),
   });
 
-  test("a finished backlog's progress is closed only once its summary is published", () => {
+  test("refreshing the status neither opens nor closes a backlog: ending it is the run's own commit", () => {
     const world = setup();
     try {
       const statusRef = createServiceStatusRef(world.seeded);
 
       refreshStatusAfterCatchUp(statusRef, finished(world), world.store);
 
-      expect(statusRef.catchUpSummary?.appliedMs).toBe(120_000);
-      expect(readCatchUpProgress(world.store.db)).toBeUndefined();
+      expect(readCatchUpProgress(world.store.db)).toEqual({
+        appliedMs: 120_000,
+        discardedMs: 0,
+        startSequence: 0,
+      });
+      expect(statusRef.catchUpSummary).toBeUndefined();
     } finally {
       world.dispose();
     }
@@ -814,15 +1156,15 @@ describe("refreshStatusAfterCatchUp: nothing happened", () => {
   test("a catch-up that applied less than one tick and has no outcomes leaves the earlier summary in place", () => {
     const world = setup();
     try {
-      const statusRef = createServiceStatusRef(world.seeded);
       const earlier = {
+        id: "earlier",
+        atSequence: 0,
         appliedMs: 3_600_000,
         skippedMs: 60_000,
         majorOutcomes: ["tavern fire spread"],
       };
-      updateServiceStatus(statusRef, world.seeded, {
-        catchUpSummary: earlier,
-      });
+      writeCatchUpSummary(world.store.db, earlier);
+      const statusRef = createServiceStatusRef(world.seeded, earlier);
 
       refreshStatusAfterCatchUp(
         statusRef,
@@ -834,16 +1176,25 @@ describe("refreshStatusAfterCatchUp: nothing happened", () => {
         world.store,
       );
 
-      expect(statusRef.catchUpSummary?.appliedMs).toBe(3_600_000);
+      expect(statusRef.catchUpSummary).toEqual(earlier);
     } finally {
       world.dispose();
     }
   });
 
-  test("a catch-up that applied less than one tick but found an outcome still reports it", () => {
+  test("a catch-up that applied less than one tick but found an outcome persists and reports it", () => {
     const world = setup();
     try {
+      const outcome = {
+        id: "outcome-only",
+        atSequence: 0,
+        appliedMs: 0,
+        skippedMs: 0,
+        majorOutcomes: ["building-ignited:the-tavern"],
+      };
+      writeCatchUpSummary(world.store.db, outcome);
       const statusRef = createServiceStatusRef(world.seeded);
+
       refreshStatusAfterCatchUp(
         statusRef,
         {
@@ -857,9 +1208,8 @@ describe("refreshStatusAfterCatchUp: nothing happened", () => {
         },
         world.store,
       );
-      expect(statusRef.catchUpSummary?.majorOutcomes).toEqual([
-        "building-ignited:the-tavern",
-      ]);
+
+      expect(statusRef.catchUpSummary).toEqual(outcome);
     } finally {
       world.dispose();
     }

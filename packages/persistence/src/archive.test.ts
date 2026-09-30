@@ -30,6 +30,7 @@ import {
   markExternalProposalConsumed,
 } from "./journal";
 import {
+  bindCatchUpProgressSummary,
   CURRENT_SCHEMA_VERSION,
   closeStore,
   commitTick,
@@ -39,10 +40,12 @@ import {
   type ProjectionCodec,
   type ProjectionReducers,
   readCatchUpProgress,
+  readCatchUpSummary,
   readClock,
   readLiveProjections,
   type Store,
   writeCatchUpProgress,
+  writeCatchUpSummary,
 } from "./store";
 
 let dir: string;
@@ -492,6 +495,25 @@ describe("importArchive: version mismatch", () => {
     db.run("UPDATE manifest SET sqlite_schema_version = ?", [
       CURRENT_SCHEMA_VERSION + 1,
     ]);
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "incompatible-version",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("error path: a version 5 archive is rejected as incompatible-version, never imported; no slot is created", () => {
+    const dbPath = join(dir, "world.sqlite");
+    const store = buildPopulatedStore(dbPath);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const db = new Database(archivePath);
+    db.run("UPDATE manifest SET sqlite_schema_version = 5");
     db.close();
 
     const slotsDir = join(dir, "slots");
@@ -968,6 +990,9 @@ describe("computeContentHash", () => {
       db.exec(
         "CREATE TABLE catch_up_progress (id INTEGER PRIMARY KEY, applied_ms INTEGER NOT NULL, discarded_ms INTEGER NOT NULL, start_sequence INTEGER NOT NULL) STRICT",
       );
+      db.exec(
+        "CREATE TABLE catch_up_summary (id INTEGER PRIMARY KEY, summary_id TEXT NOT NULL, at_sequence INTEGER NOT NULL, applied_ms INTEGER NOT NULL, skipped_ms INTEGER NOT NULL, major_outcomes TEXT NOT NULL) STRICT",
+      );
       db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
       db.run(
         "INSERT INTO clock (id, cursor_wall_ms, paused, tick, sim_time_ms) VALUES (1, 0, 0, 0, 0)",
@@ -1035,6 +1060,9 @@ describe("computeContentHash", () => {
     );
     db.exec(
       "CREATE TABLE catch_up_progress (id INTEGER PRIMARY KEY, applied_ms INTEGER NOT NULL, discarded_ms INTEGER NOT NULL, start_sequence INTEGER NOT NULL) STRICT",
+    );
+    db.exec(
+      "CREATE TABLE catch_up_summary (id INTEGER PRIMARY KEY, summary_id TEXT NOT NULL, at_sequence INTEGER NOT NULL, applied_ms INTEGER NOT NULL, skipped_ms INTEGER NOT NULL, major_outcomes TEXT NOT NULL) STRICT",
     );
     db.run("INSERT INTO world (id, world_id) VALUES (1, 'w')");
     db.run(
@@ -1452,6 +1480,175 @@ describe("an unfinished catch-up backlog's progress in an archive", () => {
       exportArchive(store, archivePath);
       const db = new Database(archivePath);
       db.run(`UPDATE catch_up_progress SET ${set}`);
+      db.close();
+      rehash(archivePath);
+
+      const slotsDir = join(dir, "slots");
+      expectRejected(
+        () => importArchive(archivePath, slotsDir, projectionCodec),
+        "corrupt",
+        slotsDir,
+      );
+      closeStore(store);
+    },
+  );
+});
+
+describe("the catch-up summary in an archive", () => {
+  const summary = {
+    id: "3f2c9d64-1a5e-4c8b-9a53-2e6f0b7d1c11",
+    atSequence: 1,
+    appliedMs: 3_600_000,
+    skippedMs: 7_200_000,
+    majorOutcomes: ["building-ignited:the-tavern", "legend-recorded:zeus"],
+  };
+
+  function storeWithSummary(dbPath: string): Store {
+    const store = buildPopulatedStore(dbPath);
+    writeCatchUpSummary(store.db, summary);
+    return store;
+  }
+
+  test("an imported slot holds the same summary, id and outcomes included", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpSummary(imported.db)).toEqual(summary);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("the summary and an open backlog travel together, each in its own row", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 1,
+    });
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpSummary(imported.db)).toEqual(summary);
+    expect(readCatchUpProgress(imported.db)?.appliedMs).toBe(60_000);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a backlog bound to its partial summary keeps the binding across an import, so closing it there still keeps the summary's id", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 1,
+    });
+    bindCatchUpProgressSummary(store.db, summary.id);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpProgress(imported.db)?.summaryId).toBe(summary.id);
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("a rehashed archive whose open backlog is bound to a summary the archive does not carry is rejected as corrupt; no slot is created", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    writeCatchUpProgress(store.db, {
+      appliedMs: 60_000,
+      discardedMs: 0,
+      startSequence: 1,
+    });
+    bindCatchUpProgressSummary(store.db, summary.id);
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run("UPDATE catch_up_progress SET summary_id = 'someone-else'");
+    db.close();
+    rehash(archivePath);
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "corrupt",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test("an archive of a store with no summary imports with none", () => {
+    const store = buildPopulatedStore(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      projectionCodec,
+    );
+
+    const imported = openStore(join(slot.slotPath, "world.sqlite"), reducer);
+    expect(readCatchUpSummary(imported.db)).toBeUndefined();
+    closeStore(imported);
+    closeStore(store);
+  });
+
+  test("the content hash covers the summary: changing it without rehashing is rejected; no slot is created", () => {
+    const store = storeWithSummary(join(dir, "world.sqlite"));
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const db = new Database(archivePath);
+    db.run("UPDATE catch_up_summary SET summary_id = 'forged'");
+    db.close();
+
+    const slotsDir = join(dir, "slots");
+    expectRejected(
+      () => importArchive(archivePath, slotsDir, projectionCodec),
+      "inconsistent-manifest",
+      slotsDir,
+    );
+    closeStore(store);
+  });
+
+  test.each([
+    ["an empty id", "summary_id = ''"],
+    ["a sequence beyond the archive's event log", "at_sequence = 99"],
+    ["a negative sequence", "at_sequence = -1"],
+    ["a negative applied time", "applied_ms = -1"],
+    ["a negative skipped time", "skipped_ms = -1"],
+    ["outcomes that are not JSON", "major_outcomes = 'not json'"],
+    ["outcomes that are not a list", "major_outcomes = '{\"a\":1}'"],
+    ["outcomes with a non-string entry", "major_outcomes = '[\"ok\", 7]'"],
+  ])(
+    "a rehashed archive with %s is rejected as corrupt; no slot is created",
+    (_label, set) => {
+      const store = storeWithSummary(join(dir, "world.sqlite"));
+      const archivePath = join(dir, "archive.sqlite");
+      exportArchive(store, archivePath);
+      const db = new Database(archivePath);
+      // Past the schema's own CHECKs, as a hand-edited archive would be.
+      db.exec("PRAGMA ignore_check_constraints = ON");
+      db.run(`UPDATE catch_up_summary SET ${set}`);
       db.close();
       rehash(archivePath);
 

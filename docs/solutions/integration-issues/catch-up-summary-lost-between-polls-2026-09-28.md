@@ -74,6 +74,15 @@ if (options.catchUpSummary) {
   - `apps/client/src/summary.test.ts:51` and `:61` and `:69` cover dismissal holding across later frames, a later catch-up showing again, and a new session showing again at the same sequence.
   - `packages/contracts/src/snapshot.test.ts:183` and `:199` cover the required, non-negative-integer `atSequence`.
 
+## Update 2026-09-29: the summary is persisted, and dismissal is by id
+
+Two parts of the solution above were superseded when the summary was made crash-safe (W03).
+
+- **The sidecar no longer holds the summary only in memory.** It is stored as its own row when the backlog ends, in the same commit, and a starting service serves it from its first frame, so a kill between publication and the next poll no longer loses it ([the cap learning](../best-practices/catch-up-cap-per-backlog-not-per-run-2026-09-28.md)). The "hold it until it is superseded" rule above still holds, and now also holds across a restart.
+- **The identity is an `id`, not `session:atSequence`.** Each summary carries a service-minted id, and the client remembers the one latest dismissed id per world in localStorage (`panthea.catchUpDismissed:<worldId>`), written only on an explicit Dismiss (`apps/client/src/summary.ts`). A new catch-up gets a new id even at the same sequence, which the old key could not tell apart, and a dismissal now survives a reload. If storage fails the summary stays dismissed for the session only.
+
+The packaged view gate's "dismiss, confirm it stays gone" check (5a) predates this change and dismissed for one session; it has not been re-run against the persisted dismissal.
+
 ## Related Issues
 
 - [m1-packaged-shell scenario, View gate](../../../tools/scenarios/m1-packaged-shell/README.md#view-gate)

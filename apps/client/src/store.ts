@@ -69,6 +69,8 @@ export interface ViewLocation {
 }
 
 export interface WorldViewModel {
+  /** The world the frame describes; per-world client state (a dismissed catch-up summary) is keyed on it. */
+  readonly worldId: string;
   readonly sessionId: string;
   readonly sequence: number;
   readonly tick: number;
@@ -176,6 +178,7 @@ export function toViewModel(
   ) as unknown as Record<Realm, readonly ViewLocation[]>;
 
   return {
+    worldId: frame.worldId,
     sessionId: frame.sessionId,
     sequence: frame.sequence,
     tick: state.tick,

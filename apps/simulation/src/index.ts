@@ -8,20 +8,16 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  clearCatchUpProgress,
   closeStore,
   openStore,
+  readCatchUpSummary,
   readClock,
   readLiveProjections,
   readPrngState,
   type Store,
 } from "@panthea/persistence";
 import { ensureTraceSchema } from "@panthea/telemetry";
-import {
-  DEFAULT_TICK_ELAPSED_MS,
-  type PrngState,
-  type WorldState,
-} from "@panthea/world";
+import type { PrngState, WorldState } from "@panthea/world";
 import { type CatchUpResult, runCatchUp } from "./catchup";
 import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
 import { startModelPayloadPruner } from "./prune";
@@ -84,35 +80,26 @@ function ensureDirMode(path: string, mode: number): void {
  * progress rather than staying pinned to whatever state existed before
  * catch-up started.
  *
- * A catch-up that applied and skipped less than one tick and found no
- * outcomes (a resume with no missed time, a restart a few milliseconds
- * after the store was created) does not replace the summary of an earlier
- * one.
+ * The catch-up summary a frame carries is read back from the store, never
+ * taken from `result`: `runCatchUp` persists a summary in the transaction that
+ * ends its backlog (or, for a degraded run, in one of its own), so what is
+ * exposed here has already survived, and a summary whose write failed is
+ * simply not there to expose. A catch-up that applied and skipped less than
+ * one tick and found no outcomes persists nothing, so the earlier summary
+ * stays.
  *
  * Status comes from the persisted clock, not an assumption: a
  * successful run can still have stopped for a mid-catch-up pause, and
  * `/frame` must show `paused`, not `running`, for that outcome.
- *
- * A degraded result publishes its summary too: what committed before the
- * failure (chunks applied, excess discarded) is real and stays reported. Its
- * backlog stays open so a restart continues it; any other result closes the
- * backlog once its summary is published.
  */
 export function refreshStatusAfterCatchUp(
   statusRef: ServiceStatusRef,
   result: CatchUpResult,
   store: Pick<Store, "db">,
 ): void {
-  const { summary } = result;
-  // Less than one tick of time, with no outcomes, is nothing that happened:
-  // it must not open the summary panel or replace an earlier summary.
-  const somethingHappened =
-    summary.appliedMs >= DEFAULT_TICK_ELAPSED_MS ||
-    summary.skippedMs >= DEFAULT_TICK_ELAPSED_MS ||
-    summary.majorOutcomes.length > 0;
-  const catchUpSummary = somethingHappened ? { catchUpSummary: summary } : {};
+  const persisted = readCatchUpSummary(store.db);
+  const catchUpSummary = persisted ? { catchUpSummary: persisted } : {};
   if (result.degraded) {
-    // What committed before the failure is real, so it is published too.
     updateServiceStatus(statusRef, result.state, catchUpSummary);
     statusRef.status = "degraded";
     statusRef.degradedReason = result.degraded.reason;
@@ -122,10 +109,19 @@ export function refreshStatusAfterCatchUp(
     ...catchUpSummary,
     paused: readClock(store.db).paused,
   });
-  // The summary is published; the backlog it describes is closed. Until this
-  // point its progress stays committed, so a process that died first would
-  // have found the same summary waiting on its next start.
-  clearCatchUpProgress(store.db);
+}
+
+/**
+ * The status a starting service serves from its first frame. It already
+ * carries the summary this store last delivered: that summary is persisted, so
+ * a kill after it was shown, or before it was fetched, loses nothing, and a
+ * catch-up still running when the first request arrives does not hide it.
+ */
+export function createHydratedStatusRef(
+  state: WorldState,
+  store: Pick<Store, "db">,
+): ServiceStatusRef {
+  return createServiceStatusRef(state, readCatchUpSummary(store.db));
 }
 
 export interface StartOptions {
@@ -186,7 +182,7 @@ export function startService(options: StartOptions): ServiceHandle {
   };
 
   const tickDeps: TickDeps = { store, reducers, traceDb: store.db };
-  const statusRef: ServiceStatusRef = createServiceStatusRef(state);
+  const statusRef: ServiceStatusRef = createHydratedStatusRef(state, store);
 
   // Set synchronously at the start of every `runCatchUpNow` call, before
   // that call's first `await` -- so by the time any other code in this
@@ -306,9 +302,12 @@ export function startService(options: StartOptions): ServiceHandle {
   // `/pause` and every other request are served while this chunks
   // through the backlog.
   void runCatchUpNow(Date.now()).then(() => {
-    log("panthea-simulation: startup catch-up complete");
     queue = [...buildRoutineQueue(state)];
     serverHandle.broadcastFrame();
+    // Printed last on purpose: by this line the catch-up has run, the status
+    // was refreshed from the store (`runCatchUpNow`), and the frame was
+    // broadcast, so a reader of this line knows the summary was published.
+    log("panthea-simulation: startup catch-up complete");
   });
 
   let shuttingDown = false;

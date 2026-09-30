@@ -1,0 +1,289 @@
+// What the real-inference run measures and asserts, as pure functions over
+// what the run read back from the store: the trace's model requests, the
+// journaled god proposals, and the event log. Properties, not exact facts: a
+// real model varies, so each check says what must hold whatever it chose.
+
+import { p50, p95 } from "@panthea/tools-probes-shared";
+import { explainChain, type StoredEvent } from "./checks";
+
+export interface RealStep {
+  readonly mode?: string;
+  readonly reason?: string;
+  readonly detail?: string;
+}
+
+export interface RealRequest {
+  readonly proposalId: string | undefined;
+  readonly role: string;
+  readonly outcome: "intent" | "exhausted";
+  readonly elapsedMs: number;
+  /** What the model was shown (bounded to 16 K characters by the trace). */
+  readonly promptPayload: string | undefined;
+  readonly steps: readonly RealStep[];
+}
+
+export interface RealProposal {
+  readonly proposalId: string;
+  readonly actor: string;
+  readonly kind: string;
+  readonly observationId: string;
+  readonly proposal: Record<string, unknown>;
+  readonly outcome: "committed" | "rejected" | undefined;
+  readonly reason?: string;
+}
+
+export interface RealInput {
+  readonly requests: readonly RealRequest[];
+  readonly proposals: readonly RealProposal[];
+  readonly events: readonly StoredEvent[];
+  /** Once-every-few-seconds observations of whether the frame showed model-degraded. */
+  readonly polls: { readonly total: number; readonly degraded: number };
+}
+
+export interface Property {
+  readonly name: string;
+  readonly ok: boolean;
+  readonly detail: string;
+}
+
+export interface RealAnalysis {
+  readonly requests: {
+    readonly total: number;
+    readonly intent: number;
+    readonly exhausted: number;
+    readonly native: number;
+    readonly repaired: number;
+  };
+  readonly latencyMs: {
+    readonly p50: number | undefined;
+    readonly p95: number | undefined;
+  };
+  readonly promptChars: {
+    readonly p50: number | undefined;
+    readonly max: number;
+  };
+  readonly proposals: Readonly<Record<string, number>>;
+  readonly outcomes: Readonly<Record<string, number>>;
+  readonly exhaustion: readonly {
+    readonly reason: string;
+    readonly detail: string;
+    readonly count: number;
+  }[];
+  readonly degradedShare: number;
+  readonly properties: readonly Property[];
+}
+
+const GOD_ACTIONS: ReadonlySet<string> = new Set([
+  "move",
+  "realm-transition",
+  "strike",
+  "legend",
+  "report",
+]);
+
+/** Every entity or event id a god proposal names as a target of something, so it can be looked for in what the god was shown. */
+export function namedIds(proposal: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value === "string") ids.push(value);
+  };
+  add(proposal.target);
+  add(proposal.listener);
+  add(proposal.to);
+  add(proposal.linkedEventId);
+  const claim = proposal.claim;
+  if (typeof claim === "object" && claim !== null) {
+    add((claim as Record<string, unknown>).agent);
+    add((claim as Record<string, unknown>).target);
+  }
+  return ids;
+}
+
+const count = (values: readonly string[]): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
+  return counts;
+};
+
+function validActions(proposals: readonly RealProposal[]): Property {
+  const name = "valid actions";
+  if (proposals.length === 0) {
+    return { name, ok: false, detail: "no god proposal was journaled" };
+  }
+  const foreign = proposals.filter((p) => !GOD_ACTIONS.has(p.kind));
+  const malformed = proposals.filter((p) => p.reason === "malformed");
+  return {
+    name,
+    ok: foreign.length === 0 && malformed.length === 0,
+    detail:
+      foreign.length + malformed.length === 0
+        ? `${proposals.length} proposals, all god actions, none rejected as malformed`
+        : `${foreign.length} not god actions (${foreign.map((p) => p.kind).join(", ")}), ${malformed.length} rejected as malformed`,
+  };
+}
+
+function perceptionCompliance(
+  requests: readonly RealRequest[],
+  proposals: readonly RealProposal[],
+): Property {
+  const name = "perception compliance";
+  const byProposal = new Map(
+    requests.flatMap((r) => (r.proposalId ? [[r.proposalId, r] as const] : [])),
+  );
+  const missing: string[] = [];
+  let checked = 0;
+  for (const proposal of proposals) {
+    const prompt = byProposal.get(proposal.proposalId)?.promptPayload;
+    if (prompt === undefined) continue;
+    checked += 1;
+    for (const id of namedIds(proposal.proposal)) {
+      if (!prompt.includes(id)) {
+        missing.push(`${proposal.actor}'s ${proposal.kind} names ${id}`);
+      }
+    }
+  }
+  return {
+    name,
+    ok: checked > 0 && missing.length === 0,
+    detail:
+      checked === 0
+        ? "no proposal had its prompt to check against"
+        : missing.length === 0
+          ? `every id named by ${checked} proposals was in the prompt behind it`
+          : `not in the prompt: ${missing.join("; ")}`,
+  };
+}
+
+function relationshipProvenance(events: readonly StoredEvent[]): Property {
+  const name = "relationship change with provenance";
+  const changes = events.filter((e) => e.kind === "relationship-changed");
+  const explained = changes
+    .map((change) => explainChain(events, change.id))
+    .filter((chain) => chain.length >= 3 && chain.includes("memory-recorded"));
+  return {
+    name,
+    ok: explained.length > 0,
+    detail:
+      changes.length === 0
+        ? "no relationship changed"
+        : explained.length > 0
+          ? `${changes.length} changes, ${explained.length} explained from the log alone, e.g. ${explained[0]?.join(" > ")}`
+          : `${changes.length} changes, none explained by a memory in the log`,
+  };
+}
+
+/** A god's committed actions in order, each with the first event sequence it caused. */
+function actionsOf(
+  actor: string,
+  proposals: readonly RealProposal[],
+  events: readonly StoredEvent[],
+) {
+  return proposals
+    .filter((p) => p.actor === actor && p.outcome === "committed")
+    .flatMap((p) => {
+      const caused = events.filter((e) => e.correlationId === p.observationId);
+      const first = caused[0];
+      return first
+        ? [
+            {
+              key: `${p.kind}:${namedIds(p.proposal).join(",")}`,
+              kind: p.kind,
+              sequence: Number(first.sequence),
+            },
+          ]
+        : [];
+    })
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+function changedNextAction(
+  proposals: readonly RealProposal[],
+  events: readonly StoredEvent[],
+): Property {
+  const name = "changed next action";
+  const details: string[] = [];
+  let changed = false;
+  for (const actor of new Set(proposals.map((p) => p.actor))) {
+    const formed = events.find(
+      (e) =>
+        e.entityId === actor &&
+        ((e.kind === "memory-recorded" && e.memoryKind === "told") ||
+          e.kind === "relationship-changed"),
+    );
+    if (!formed) continue;
+    const at = Number(formed.sequence);
+    const actions = actionsOf(actor, proposals, events);
+    const before = actions.filter((a) => a.sequence < at).at(-1);
+    const after = actions.find((a) => a.sequence > at);
+    if (!before || !after) continue;
+    const differs = before.key !== after.key;
+    changed = changed || differs;
+    details.push(
+      `${actor}: ${before.key} before its first belief, ${after.key} after (${differs ? "changed" : "same"})`,
+    );
+  }
+  return {
+    name,
+    ok: changed,
+    detail:
+      details.length === 0
+        ? "no god both formed a belief or feeling and acted on either side of it"
+        : details.join("; "),
+  };
+}
+
+export function analyzeReal(input: RealInput): RealAnalysis {
+  const { requests, proposals, events } = input;
+  const intent = requests.filter((r) => r.outcome === "intent");
+  const exhausted = requests.filter((r) => r.outcome === "exhausted");
+  const answering = intent.flatMap((r) => r.steps.at(-1) ?? []);
+  const exhaustion = new Map<
+    string,
+    { reason: string; detail: string; count: number }
+  >();
+  for (const request of exhausted) {
+    for (const step of request.steps) {
+      if (step.reason === undefined) continue;
+      const detail = (step.detail ?? "").slice(0, 120);
+      const key = `${step.reason}|${detail}`;
+      const held = exhaustion.get(key);
+      exhaustion.set(key, {
+        reason: step.reason,
+        detail,
+        count: (held?.count ?? 0) + 1,
+      });
+    }
+  }
+  const prompts = requests.flatMap((r) =>
+    r.promptPayload ? [r.promptPayload.length] : [],
+  );
+  return {
+    requests: {
+      total: requests.length,
+      intent: intent.length,
+      exhausted: exhausted.length,
+      native: answering.filter((s) => s.mode === "native").length,
+      repaired: answering.filter((s) => s.mode === "repaired").length,
+    },
+    latencyMs: {
+      p50: p50(requests.map((r) => r.elapsedMs)),
+      p95: p95(requests.map((r) => r.elapsedMs)),
+    },
+    promptChars: { p50: p50(prompts), max: Math.max(0, ...prompts) },
+    proposals: count(proposals.map((p) => p.kind)),
+    outcomes: count(
+      proposals.map(
+        (p) => `${p.outcome ?? "pending"}${p.reason ? `:${p.reason}` : ""}`,
+      ),
+    ),
+    exhaustion: [...exhaustion.values()].sort((a, b) => b.count - a.count),
+    degradedShare:
+      input.polls.total === 0 ? 0 : input.polls.degraded / input.polls.total,
+    properties: [
+      validActions(proposals),
+      perceptionCompliance(requests, proposals),
+      relationshipProvenance(events),
+      changedNextAction(proposals, events),
+    ],
+  };
+}

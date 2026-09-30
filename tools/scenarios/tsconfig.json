@@ -1,4 +1,4 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "m1-living-world/src"]
+  "include": ["src", "m1-living-world/src", "m2-greek-cast/src"]
 }

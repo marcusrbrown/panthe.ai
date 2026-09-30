@@ -4,7 +4,9 @@ import {
   eventCause,
   eventSubjects,
   LATEST_EVENT_SCHEMA_VERSION,
+  MAX_REPORT_LENGTH,
   parseEvent,
+  WITNESSED_EVENT_KINDS,
   WORLD_EVENT_KINDS,
   type WorldEvent,
 } from "./event";
@@ -911,4 +913,73 @@ test("causalChain of a root event, or of one whose cause is not in the log, ends
     ),
   ).toEqual(["evt-2"]);
   expect(causalChain((id) => events.get(id), "evt-404" as never)).toEqual([]);
+});
+
+// --- Claims, text limits, and what can be witnessed ---------------------------
+
+test("a report-told event may carry the claim its teller asserted, shape-checked and never judged", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "report-told",
+      entityId: "farmer",
+      listenerId: "hera",
+      content: "Zeus wronged me",
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "report-told") {
+    expect(result.value.claim as unknown).toEqual({
+      effect: "harm",
+      agent: "zeus",
+      target: "farmer",
+    });
+  }
+  expect(
+    parseEvent(
+      envelope({
+        kind: "report-told",
+        entityId: "farmer",
+        listenerId: "hera",
+        content: "x",
+        claim: { effect: "harm" },
+      }),
+    ).ok,
+  ).toBe(false);
+});
+
+test("report text is bounded in the event and in the belief it becomes", () => {
+  const atLimit = "x".repeat(MAX_REPORT_LENGTH);
+  const over = `${atLimit}x`;
+  const told = (content: string) =>
+    parseEvent(
+      envelope({
+        kind: "report-told",
+        entityId: "farmer",
+        listenerId: "hera",
+        content,
+      }),
+    ).ok;
+  expect(told(atLimit)).toBe(true);
+  expect(told(over)).toBe(false);
+  const belief = (content: string) =>
+    parseEvent(envelope({ ...TOLD, content })).ok;
+  expect(belief(atLimit)).toBe(true);
+  expect(belief(over)).toBe(false);
+});
+
+test("only kinds someone can perceive are witnessable: a memory of a report, a memory, or a feeling is rejected", () => {
+  for (const eventKind of [
+    "report-told",
+    "memory-recorded",
+    "relationship-changed",
+  ]) {
+    expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(false);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(eventKind);
+  }
+  // Control: every other kind can be witnessed.
+  for (const eventKind of WITNESSED_EVENT_KINDS) {
+    expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
+  }
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 3);
 });

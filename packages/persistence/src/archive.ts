@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   ARCHIVE_FORMAT_VERSIONS,
   type ArchiveManifest,
+  canonicalJson,
   isRecord,
   LATEST_EVENT_SCHEMA_VERSION,
   parseArchiveManifest,
@@ -34,7 +35,8 @@ import {
 import {
   CURRENT_SCHEMA_VERSION,
   createSchema,
-  type ProjectionCodec,
+  type ProjectionReducers,
+  rebuildProjections,
   type Store,
 } from "./store";
 
@@ -486,17 +488,27 @@ function extractLastSequence(value: unknown): number | undefined {
 /**
  * Imports `archivePath` into a brand-new slot under `slotsDir`. The
  * archive is opened read-only and every row is validated -- decoded
- * through `projectionsCodec`, event payloads through contracts' event
+ * through the reducers' codec, event payloads through contracts' event
  * parser -- while being read into the values that get copied into a
  * fresh, app-created staging database. A missing or incompatible table,
  * a manifest that disagrees with the archive's own tables, or a content
  * hash mismatch is rejected before anything is staged.
+ *
+ * The archived projection is a claim, not a source: once the genesis row and
+ * the whole event log are staged, the projection is rebuilt from them with
+ * the injected reducers (`rebuildProjections`, the same replay a restart
+ * relies on) and must equal the archived one. State no event produced, such
+ * as a forged memory or fire cause, is rejected as corrupt, and nothing is
+ * published. The cost is one replay of the event log per import, in the
+ * staging transaction, so it grows with the length of the world's history.
+ * The genesis row is the seed the log replays from, and is trusted as such.
  */
 export function importArchive(
   archivePath: string,
   slotsDir: string,
-  projectionsCodec: ProjectionCodec<unknown>,
+  reducers: Pick<ProjectionReducers<unknown>, "applyEvent" | "codec">,
 ): ImportResult {
+  const projectionsCodec = reducers.codec;
   if (!existsSync(archivePath)) {
     throw new ImportError("io", `archive not found: ${archivePath}`);
   }
@@ -1027,6 +1039,21 @@ export function importArchive(
                   summary.skipped_ms,
                   JSON.stringify(outcomes),
                 ],
+              );
+            }
+            // Every row is staged. The projection the archive claims must be
+            // exactly what its genesis and event log make.
+            const rebuilt = rebuildProjections(
+              { db: stagingDb, path: stagingDbPath, worldId },
+              reducers,
+            );
+            if (
+              canonicalJson(projectionsCodec.encode(rebuilt)) !==
+              canonicalJson(projectionsCodec.encode(liveProjections))
+            ) {
+              throw new ImportError(
+                "corrupt",
+                "archive projections row is not what its genesis and event log produce",
               );
             }
           })

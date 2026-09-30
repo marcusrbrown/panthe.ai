@@ -53,6 +53,7 @@
       "kindnessAffinity": 1,
       "toldShare": 0.5,
       "affinityLimit": 10,
+      "grudgeLimit": 10,
       "allianceAffinity": 5
     }
   }

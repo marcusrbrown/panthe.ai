@@ -10,6 +10,7 @@ import {
   repairCostOf,
 } from "./repair";
 import {
+  buildingBase,
   createInitialWorldState,
   toEntityId,
   type WorldState,
@@ -61,7 +62,7 @@ function destroyedState(): WorldState {
   const state = createInitialWorldState(pack());
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  return withBuilding(state, { ...tavern, status: "destroyed" });
+  return withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
 }
 
 test("repairCostOf and repairAmountPerTickOf read the content-authored balance", () => {
@@ -117,7 +118,7 @@ test("applyBuildingRepaired restores operational status and clears repair progre
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
   const inProgress = withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "repairing",
     repairProgress: 2,
   });

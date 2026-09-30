@@ -536,8 +536,9 @@ function handleLegend(
 /**
  * A report commits when the teller could really say it: the listener is a
  * living actor at the teller's own place, and any event the teller cites is
- * one it witnessed. The content is never judged, since it may be wrong; a
- * citation is judged, since it is a claim to have been there. Only first-hand
+ * one it witnessed. The content and the claim are never judged, since they may
+ * be wrong (a claim's shape and that the ids it names exist are all that is
+ * checked); a citation is judged, since it is a claim to have been there. Only first-hand
  * memory backs one, so a rumor stops at one hop: someone who was only told may
  * retell the story, but not cite the event as their own evidence.
  */
@@ -578,12 +579,26 @@ function handleReport(
       `${proposal.actor} did not witness ${proposal.linkedEventId}, so cannot cite it`,
     );
   }
+  const claim = proposal.claim;
+  if (
+    claim !== undefined &&
+    (!getActor(state, claim.agent) ||
+      (claim.target !== undefined &&
+        !getActor(state, claim.target) &&
+        !getBuilding(state, claim.target)))
+  ) {
+    return reject(
+      "malformed",
+      "a claim must name an actor as its agent and an actor or building as its target",
+    );
+  }
   return commit([
     {
       kind: "report-told",
       entityId: proposal.actor,
       listenerId: proposal.listener,
       content: proposal.content,
+      ...(claim === undefined ? {} : { claim }),
       ...(proposal.linkedEventId === undefined
         ? {}
         : { linkedEventId: proposal.linkedEventId }),

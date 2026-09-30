@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ContentPack } from "@panthea/contracts";
 import { decideRoutineProposal } from "./routines";
 import {
+  buildingBase,
   createInitialWorldState,
   toEntityId,
   withActor,
@@ -308,7 +309,7 @@ test("an owner holding enough materials proposes to repair its destroyed buildin
   );
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
-  state = withBuilding(state, { ...tavern, status: "destroyed" });
+  state = withBuilding(state, { ...buildingBase(tavern), status: "destroyed" });
   state = withActor(state, {
     id: toEntityId("farmer"),
     locationId: toEntityId("square"),

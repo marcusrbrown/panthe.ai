@@ -30,23 +30,28 @@ import {
   parseEnum,
   parseEventId,
   parseLegendId,
+  parseMemoryBalance,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalBoolean,
   parseOptionalString,
   parseRecipes,
+  parseReportContent,
   parseSalience,
   parseString,
   REALMS,
   type RejectionReasonCode,
   TRANSPORT_KINDS,
-  WORLD_EVENT_KINDS,
+  WITNESSED_EVENT_KINDS,
 } from "@panthea/contracts";
+import { memoryBalanceOf } from "./memory";
 import {
   type ActorState,
   BUILDING_STATUSES,
+  type BuildingBase,
   type BuildingIgnition,
   type BuildingState,
+  type BuildingStatus,
   type FavorState,
   type LegendRecord,
   type LocationState,
@@ -402,32 +407,9 @@ function parseBuildingState(
   }
   const status = parseEnum(value.status, `${path}.status`, BUILDING_STATUSES);
   if (!status.ok) return status;
-  const fireIntensity = parseOptionalNonNegativeNumber(
-    value.fireIntensity,
-    `${path}.fireIntensity`,
-  );
-  if (!fireIntensity.ok) return fireIntensity;
-  const ticksBurning = parseOptionalNonNegativeInteger(
-    value.ticksBurning,
-    `${path}.ticksBurning`,
-  );
-  if (!ticksBurning.ok) return ticksBurning;
-  const repairProgress = parseOptionalNonNegativeNumber(
-    value.repairProgress,
-    `${path}.repairProgress`,
-  );
-  if (!repairProgress.ok) return repairProgress;
-  const ignition = parseIgnition(value.ignition, `${path}.ignition`);
-  if (!ignition.ok) return ignition;
-  if ((status.value === "burning") !== (ignition.value !== undefined)) {
-    return fail(
-      `${path}.ignition`,
-      "a building has a recorded ignition exactly while it is burning",
-    );
-  }
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
-  return ok({
+  const base: BuildingBase = {
     id: id.value,
     locationId: locationId.value,
     name: name.value,
@@ -438,48 +420,78 @@ function parseBuildingState(
     ...(ownerRaw.value === undefined
       ? {}
       : { owner: ownerRaw.value as EntityId }),
-    status: status.value,
-    ...(fireIntensity.value === undefined
-      ? {}
-      : { fireIntensity: fireIntensity.value }),
-    ...(ticksBurning.value === undefined
-      ? {}
-      : { ticksBurning: ticksBurning.value }),
-    ...(repairProgress.value === undefined
-      ? {}
-      : { repairProgress: repairProgress.value }),
-    ...(ignition.value === undefined ? {} : { ignition: ignition.value }),
     revision: revision.value,
-  });
+  };
+
+  // The fields of a status exist exactly in that status.
+  const only = (field: string, allowed: BuildingStatus): ParseResult<null> =>
+    value[field] !== undefined && status.value !== allowed
+      ? fail(
+          `${path}.${field}`,
+          `only a ${allowed} building has ${field}, not a ${status.value} one`,
+        )
+      : ok(null);
+  for (const [field, allowed] of [
+    ["fireIntensity", "burning"],
+    ["ticksBurning", "burning"],
+    ["ignition", "burning"],
+    ["repairProgress", "repairing"],
+  ] as const) {
+    const checked = only(field, allowed);
+    if (!checked.ok) return checked;
+  }
+
+  switch (status.value) {
+    case "burning": {
+      const fireIntensity = parseNonNegativeNumber(
+        value.fireIntensity,
+        `${path}.fireIntensity`,
+      );
+      if (!fireIntensity.ok) return fireIntensity;
+      const ticksBurning = parseNonNegativeInteger(
+        value.ticksBurning,
+        `${path}.ticksBurning`,
+      );
+      if (!ticksBurning.ok) return ticksBurning;
+      const ignition = parseIgnition(value.ignition, `${path}.ignition`);
+      if (!ignition.ok) return ignition;
+      return ok({
+        ...base,
+        status: "burning",
+        fireIntensity: fireIntensity.value,
+        ticksBurning: ticksBurning.value,
+        ignition: ignition.value,
+      });
+    }
+    case "repairing": {
+      const repairProgress = parseNonNegativeNumber(
+        value.repairProgress,
+        `${path}.repairProgress`,
+      );
+      if (!repairProgress.ok) return repairProgress;
+      return ok({
+        ...base,
+        status: "repairing",
+        repairProgress: repairProgress.value,
+      });
+    }
+    case "operational":
+    case "damaged":
+    case "destroyed":
+      return ok({ ...base, status: status.value });
+  }
 }
 
 function parseIgnition(
   value: unknown,
   path: string,
-): ParseResult<BuildingIgnition | undefined> {
-  if (value === undefined) return ok(undefined);
+): ParseResult<BuildingIgnition> {
   if (!isRecord(value)) return fail(path, "expected an ignition object");
   const eventId = parseEventId(value.eventId, `${path}.eventId`);
   if (!eventId.ok) return eventId;
   const actor = parseEntityId(value.actor, `${path}.actor`);
   if (!actor.ok) return actor;
   return ok({ eventId: eventId.value, actor: actor.value });
-}
-
-function parseOptionalNonNegativeNumber(
-  value: unknown,
-  path: string,
-): ParseResult<number | undefined> {
-  if (value === undefined) return ok(undefined);
-  return parseNonNegativeNumber(value, path);
-}
-
-function parseOptionalNonNegativeInteger(
-  value: unknown,
-  path: string,
-): ParseResult<number | undefined> {
-  if (value === undefined) return ok(undefined);
-  return parseNonNegativeInteger(value, path);
 }
 
 function parseBuildingEntry(
@@ -561,7 +573,7 @@ function parseWorldRules(
   const memoryBalance =
     value.memoryBalance === undefined
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
-      : parseNumberRecord(value.memoryBalance, `${path}.memoryBalance`);
+      : parseMemoryBalance(value.memoryBalance, `${path}.memoryBalance`);
   if (!memoryBalance.ok) return memoryBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
@@ -668,7 +680,7 @@ function parseMemoryEntry(
       const eventKind = parseEnum(
         value.eventKind,
         `${path}.eventKind`,
-        WORLD_EVENT_KINDS,
+        WITNESSED_EVENT_KINDS,
       );
       if (!eventKind.ok) return eventKind;
       return ok({ ...base, kind: "witnessed", eventKind: eventKind.value });
@@ -676,7 +688,7 @@ function parseMemoryEntry(
     case "told": {
       const teller = parseEntityId(value.teller, `${path}.teller`);
       if (!teller.ok) return teller;
-      const content = parseString(value.content, `${path}.content`);
+      const content = parseReportContent(value.content, `${path}.content`);
       if (!content.ok) return content;
       const linkedEventIdRaw = parseOptionalString(
         value.linkedEventId,
@@ -881,6 +893,35 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
 
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
+
+  // Only events forget and only events feel, so a stored world holds what its
+  // own rules allow: no actor remembers more than the capacity, and no
+  // relationship is beyond its limits.
+  const capacity = memoryBalanceOf(rules.value, "capacity");
+  for (const [owner, list] of memories) {
+    if (list.length > capacity) {
+      return fail(
+        "memories",
+        `${owner} holds ${list.length} memories, over the world's capacity of ${capacity}`,
+      );
+    }
+  }
+  const affinityLimit = memoryBalanceOf(rules.value, "affinityLimit");
+  const grudgeLimit = memoryBalanceOf(rules.value, "grudgeLimit");
+  for (const [key, relationship] of relationships) {
+    if (Math.abs(relationship.affinity) > affinityLimit) {
+      return fail(
+        "relationships",
+        `${key} has affinity ${relationship.affinity}, beyond the world's limit of ${affinityLimit}`,
+      );
+    }
+    if (relationship.grudge > grudgeLimit) {
+      return fail(
+        "relationships",
+        `${key} has grudge ${relationship.grudge}, beyond the world's limit of ${grudgeLimit}`,
+      );
+    }
+  }
 
   const recipes = parseRecipes(value.recipes, "recipes");
   if (!recipes.ok) return recipes;

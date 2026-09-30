@@ -25,6 +25,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  WitnessedEventKind,
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
@@ -100,8 +101,8 @@ export interface BuildingIgnition {
   readonly actor: EntityId;
 }
 
-/** A building's live state: the authored structure plus its current inventory, ownership, and fire/repair lifecycle. */
-export interface BuildingState {
+/** What every building has, whatever its status. */
+export interface BuildingBase {
   readonly id: EntityId;
   readonly locationId: EntityId;
   readonly name: string;
@@ -111,17 +112,60 @@ export interface BuildingState {
   readonly services: readonly string[];
   readonly inventory: ReadonlyMap<string, number>;
   readonly owner?: EntityId;
-  /** operational -> damaged/burning -> destroyed -> repairing -> operational. Services and income are exposed only while operational. */
-  readonly status: BuildingStatus;
-  /** Severity while burning; grows each tick and drives destruction once it crosses the content-authored threshold. Absent outside "burning". */
-  readonly fireIntensity?: number;
-  /** Ticks spent burning so far, for observation. Absent outside "burning". */
-  readonly ticksBurning?: number;
-  /** Materials committed toward repair so far. Absent outside "repairing". */
-  readonly repairProgress?: number;
-  /** What started the fire. Present exactly while "burning"; burn ticks, destruction, and spread all cite it. */
-  readonly ignition?: BuildingIgnition;
   readonly revision: number;
+}
+
+type NoFire = {
+  readonly fireIntensity?: never;
+  readonly ticksBurning?: never;
+  readonly ignition?: never;
+};
+type NoRepair = { readonly repairProgress?: never };
+
+/**
+ * A building's live state: the authored structure plus its current
+ * inventory, ownership, and fire/repair lifecycle: operational ->
+ * damaged/burning -> destroyed -> repairing -> operational. Services and
+ * income are exposed only while operational.
+ *
+ * A union on `status`, so the fields of a phase exist exactly in that phase. A
+ * burning building has its fire's severity (`fireIntensity`, growing each tick
+ * until it crosses the content-authored threshold and destroys the building),
+ * `ticksBurning`, and the `ignition` that started the fire (burn ticks,
+ * destruction, and spread all cite it). A repairing building has the
+ * materials committed toward repair so far. No other status has either.
+ */
+export type BuildingState = BuildingBase &
+  (
+    | ({
+        readonly status: "operational" | "damaged" | "destroyed";
+      } & NoFire &
+        NoRepair)
+    | ({
+        readonly status: "burning";
+        readonly fireIntensity: number;
+        readonly ticksBurning: number;
+        readonly ignition: BuildingIgnition;
+      } & NoRepair)
+    | ({
+        readonly status: "repairing";
+        readonly repairProgress: number;
+      } & NoFire)
+  );
+
+/** A building without its status or the fields of a status: what a transition starts from. */
+export function buildingBase(building: BuildingState): BuildingBase {
+  return {
+    id: building.id,
+    locationId: building.locationId,
+    name: building.name,
+    material: building.material,
+    combustible: building.combustible,
+    services: building.services,
+    inventory: building.inventory,
+    ...(building.owner === undefined ? {} : { owner: building.owner }),
+    revision: building.revision,
+  };
 }
 
 /**
@@ -163,7 +207,7 @@ export type MemoryEntry = {
   readonly subjects: readonly EntityId[];
   readonly consequence?: Consequence;
 } & (
-  | { readonly kind: "witnessed"; readonly eventKind: WorldEvent["kind"] }
+  | { readonly kind: "witnessed"; readonly eventKind: WitnessedEventKind }
   | {
       readonly kind: "told";
       readonly teller: EntityId;

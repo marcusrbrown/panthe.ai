@@ -170,19 +170,8 @@ export interface LegendRecordedEvent extends EventEnvelope {
   readonly linkedEventId?: EventId;
 }
 
-/**
- * One actor told another something, at the same place. The content is the
- * teller's own account: possibly wrong, never certified, and never rewritten
- * by the world. `linkedEventId`, when present, is an event the teller
- * witnessed and cites as evidence.
- */
-export interface ReportToldEvent extends EventEnvelope {
-  readonly kind: "report-told";
-  readonly entityId: EntityId;
-  readonly listenerId: EntityId;
-  readonly content: string;
-  readonly linkedEventId?: EventId;
-}
+/** Most characters of report text a proposal, an event, or a stored belief may hold. A D23 tunable (docs/product/defaults.md); a prompt-sized account, not a document. */
+export const MAX_REPORT_LENGTH = 280;
 
 /** What a happening did to someone, as a witness or a listener understands it. `target` is who or what suffered or was served, when someone was. */
 export interface Consequence {
@@ -190,6 +179,36 @@ export interface Consequence {
   readonly agent: EntityId;
   readonly target?: EntityId;
 }
+
+/**
+ * One actor told another something, at the same place. The content is the
+ * teller's own account: possibly wrong, never certified, and never rewritten
+ * by the world. `claim` is what the teller asserts happened, in structure: it
+ * may be false, and it is the only thing that gives the listener a consequence.
+ * `linkedEventId`, when present, is an event the teller witnessed and cites as
+ * provenance; it teaches the listener nothing by itself.
+ */
+export interface ReportToldEvent extends EventEnvelope {
+  readonly kind: "report-told";
+  readonly entityId: EntityId;
+  readonly listenerId: EntityId;
+  readonly content: string;
+  readonly claim?: Consequence;
+  readonly linkedEventId?: EventId;
+}
+
+/** Kinds that happen at no place: a report is heard only by its listener, a memory and a feeling are inside someone's head. Nobody perceives them, so nobody witnesses them. */
+export const UNPLACED_EVENT_KINDS = [
+  "report-told",
+  "memory-recorded",
+  "relationship-changed",
+] as const;
+
+/** The kinds an actor can witness. */
+export type WitnessedEventKind = Exclude<
+  WorldEvent["kind"],
+  (typeof UNPLACED_EVENT_KINDS)[number]
+>;
 
 export interface MemoryRecordedBase extends EventEnvelope {
   readonly kind: "memory-recorded";
@@ -206,7 +225,7 @@ export interface MemoryRecordedBase extends EventEnvelope {
 /** The actor was there when the event happened. */
 export interface WitnessedMemoryRecordedEvent extends MemoryRecordedBase {
   readonly memoryKind: "witnessed";
-  readonly eventKind: WorldEvent["kind"];
+  readonly eventKind: WitnessedEventKind;
 }
 
 /** The actor was told, and holds the teller's account as a belief: attributed, possibly false, never resolved to the truth. */
@@ -282,6 +301,12 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
 export const WORLD_EVENT_KINDS = Object.keys(
   EVENT_KIND_SET,
 ) as readonly WorldEvent["kind"][];
+
+/** Every kind an actor can witness: all of them but the unplaced ones. */
+export const WITNESSED_EVENT_KINDS = WORLD_EVENT_KINDS.filter(
+  (kind): kind is WitnessedEventKind =>
+    !(UNPLACED_EVENT_KINDS as readonly string[]).includes(kind),
+);
 
 /**
  * The actor, building, location, and deity ids an event touches, in the
@@ -429,6 +454,19 @@ export function parseConsequence(
   });
 }
 
+/** Report text: non-empty and at most `MAX_REPORT_LENGTH` characters. */
+export function parseReportContent(
+  value: unknown,
+  path: string,
+): ParseResult<string> {
+  const content = parseString(value, path);
+  if (!content.ok) return content;
+  if (content.value.length > MAX_REPORT_LENGTH) {
+    return fail(path, `expected at most ${MAX_REPORT_LENGTH} characters`);
+  }
+  return content;
+}
+
 /** A memory's salience: a positive whole number. */
 export function parseSalience(
   value: unknown,
@@ -471,7 +509,7 @@ function parseMemoryRecorded(
       const eventKind = parseEnum(
         input.eventKind,
         "eventKind",
-        WORLD_EVENT_KINDS,
+        WITNESSED_EVENT_KINDS,
       );
       if (!eventKind.ok) return eventKind;
       return ok({
@@ -483,7 +521,7 @@ function parseMemoryRecorded(
     case "told": {
       const teller = parseEntityId(input.teller, "teller");
       if (!teller.ok) return teller;
-      const content = parseString(input.content, "content");
+      const content = parseReportContent(input.content, "content");
       if (!content.ok) return content;
       const linkedEventId = parseOptionalEventId(
         input.linkedEventId,
@@ -803,8 +841,10 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       if (!entityId.ok) return entityId;
       const listenerId = parseEntityId(input.listenerId, "listenerId");
       if (!listenerId.ok) return listenerId;
-      const content = parseString(input.content, "content");
+      const content = parseReportContent(input.content, "content");
       if (!content.ok) return content;
+      const claim = parseConsequence(input.claim, "claim");
+      if (!claim.ok) return claim;
       const linkedEventId = parseOptionalEventId(
         input.linkedEventId,
         "linkedEventId",
@@ -816,6 +856,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         entityId: entityId.value,
         listenerId: listenerId.value,
         content: content.value,
+        ...(claim.value === undefined ? {} : { claim: claim.value }),
         ...(linkedEventId.value === undefined
           ? {}
           : { linkedEventId: linkedEventId.value }),

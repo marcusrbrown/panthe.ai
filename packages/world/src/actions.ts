@@ -356,7 +356,10 @@ function planMemories(
   let running = before;
   for (const event of primary) {
     drafts.push(...witnessMemories(running, event));
-    if (event.kind === "report-told") drafts.push(toldMemory(after, event));
+    if (event.kind === "report-told") {
+      const belief = toldMemory(after, event);
+      if (belief) drafts.push(belief);
+    }
     running = applyEvent(running, event);
   }
   return drafts;

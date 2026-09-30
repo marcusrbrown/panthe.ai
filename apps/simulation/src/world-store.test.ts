@@ -5,7 +5,13 @@
 
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,7 +32,6 @@ import {
   importArchive,
   listEvents,
   openStore,
-  type ProjectionCodec,
   readClock,
   readLiveProjections,
   readPrngState,
@@ -61,7 +66,7 @@ import {
   loadGreekWorldState,
   restoreWorldTime,
   serializePrngState,
-  worldProjectionCodec,
+  worldImportReducers,
 } from "./world-store";
 
 function tempDir(prefix: string): string {
@@ -209,14 +214,10 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     const manifest = exportArchive(store, exportPath);
     expect(manifest.eventSequence).toBe(9);
 
-    const importValidationCodec: ProjectionCodec<unknown> = {
-      encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value),
-    };
     const importResult = importArchive(
       exportPath,
       slotsDir,
-      importValidationCodec,
+      worldImportReducers,
     );
 
     const importedStore = openStore(
@@ -339,14 +340,10 @@ test("rebuild restores the seeded actor even from a freshly constructed composit
     // export -> import -> rebuild, still with the fresh (actor-less) reducers
     const exportPath = join(exportDir, "archive.sqlite");
     exportArchive(store, exportPath);
-    const importValidationCodec: ProjectionCodec<unknown> = {
-      encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value),
-    };
     const importResult = importArchive(
       exportPath,
       slotsDir,
-      importValidationCodec,
+      worldImportReducers,
     );
     const importedStore = openStore(
       join(importResult.slotPath, "world.sqlite"),
@@ -427,13 +424,9 @@ test("an archive whose genesis row contains a malformed actor entry is rejected 
     archiveDb.run("UPDATE manifest SET content_hash = ?", [newHash]);
     archiveDb.close();
 
-    const importValidationCodec: ProjectionCodec<unknown> = {
-      encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value),
-    };
     let caught: unknown;
     try {
-      importArchive(exportPath, slotsDir, importValidationCodec);
+      importArchive(exportPath, slotsDir, worldImportReducers);
     } catch (error) {
       caught = error;
     }
@@ -824,14 +817,10 @@ test("a strike ignites the tavern; it burns, stops services and income, and a mo
     //     fire outcome.
     const exportPath = join(exportDir, "archive.sqlite");
     exportArchive(store, exportPath);
-    const importValidationCodec: ProjectionCodec<unknown> = {
-      encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value),
-    };
     const importResult = importArchive(
       exportPath,
       slotsDir,
-      importValidationCodec,
+      worldImportReducers,
     );
     const importedStore = openStore(
       join(importResult.slotPath, "world.sqlite"),
@@ -1221,6 +1210,7 @@ test("a witnessed strike, a report, and a relationship change survive reopen, re
       listener: "hera",
       content: told,
       linkedEventId: ignition.id,
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
     });
     world.run(report);
     const state = world.state;
@@ -1285,11 +1275,7 @@ test("a witnessed strike, a report, and a relationship change survive reopen, re
     // Export, import into a new slot: the branch holds the same memories and relationships.
     const exportPath = join(exportDir, "archive.sqlite");
     exportArchive(reopened, exportPath);
-    const validating: ProjectionCodec<unknown> = {
-      encode: (value) => value,
-      decode: (value) => worldProjectionCodec.decode(value),
-    };
-    const imported = importArchive(exportPath, slotsDir, validating);
+    const imported = importArchive(exportPath, slotsDir, worldImportReducers);
     const branch = openStore(
       join(imported.slotPath, "world.sqlite"),
       freshReducers,
@@ -1486,5 +1472,200 @@ test("a tick's memories and relationship changes commit with the events they cit
     closeStore(store);
   } finally {
     rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
+// --- An archive's projection must be what its event log makes ----------------------------
+
+/** Rewrites one archive row and re-hashes, so only the projection-versus-log check can object. */
+function rehashArchive(archivePath: string, edit: (db: Database) => void) {
+  const db = new Database(archivePath);
+  edit(db);
+  const manifest = db.query("SELECT * FROM manifest WHERE id = 1").get() as {
+    format_version: number;
+    sqlite_schema_version: number;
+    payload_schema_version: number;
+    world_id: string;
+    event_sequence: number;
+  };
+  db.run("UPDATE manifest SET content_hash = ?", [
+    computeContentHash(db, {
+      formatVersion: manifest.format_version,
+      sqliteSchemaVersion: manifest.sqlite_schema_version,
+      payloadSchemaVersion: manifest.payload_schema_version,
+      worldId: manifest.world_id as never,
+      eventSequence: manifest.event_sequence,
+    }),
+  ]);
+  db.close();
+}
+
+interface EncodedProjection {
+  memories: [string, unknown[]][];
+  relationships: unknown[];
+  buildings: [string, Record<string, unknown>][];
+  rules: Record<string, unknown>;
+}
+
+function editProjection(
+  db: Database,
+  edit: (encoded: EncodedProjection) => void,
+) {
+  const row = db.query("SELECT data FROM projections WHERE id = 1").get() as {
+    data: string;
+  };
+  const encoded = JSON.parse(row.data) as EncodedProjection;
+  edit(encoded);
+  db.run("UPDATE projections SET data = ? WHERE id = 1", [
+    JSON.stringify(encoded),
+  ]);
+}
+
+test("import rebuilds the projection from the archive's genesis and log: forged memories, relationships, and fire causes are refused; the honest archive imports with the same state", () => {
+  const dir = tempDir("panthea-sim-forged-");
+  try {
+    const seed = socialSeed();
+    const world = liveWorld(join(dir, "world.sqlite"), seed);
+    world.run(
+      queuedProposal("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 3,
+      }),
+    );
+    world.run(queuedProposal("bard", { kind: "move", to: "town-square" }));
+    const honest = join(dir, "honest.sqlite");
+    exportArchive(world.store, honest);
+
+    // Control: untouched, it imports, and the imported world is the live one.
+    const control = importArchive(
+      honest,
+      join(dir, "slots-ok"),
+      worldImportReducers,
+    );
+    const controlStore = openStore(
+      join(control.slotPath, "world.sqlite"),
+      createWorldProjectionReducers(socialSeed()),
+    );
+    expect(
+      restoreWorldTime(
+        readLiveProjections(controlStore, world.reducers),
+        readClock(controlStore.db),
+      ),
+    ).toEqual(world.state);
+    closeStore(controlStore);
+
+    type Forge = (encoded: EncodedProjection) => void;
+    const forgeries: Record<string, Forge> = {
+      "a memory nobody formed": (encoded) => {
+        const { memories } = encoded;
+        const at = memories.find(([owner]) => owner === "hera");
+        const entry = {
+          id: "evt-9-9",
+          kind: "witnessed",
+          sourceEventId: "evt-1-1",
+          eventKind: "building-destroyed",
+          salience: 9,
+          recordedAt: 999,
+          subjects: ["zeus"],
+          consequence: { effect: "harm", agent: "zeus" },
+        };
+        if (at) at[1].push(entry);
+        else memories.push(["hera", [entry]]);
+      },
+      "a relationship no event changed": (encoded) => {
+        encoded.relationships.push([
+          "hera>zeus",
+          {
+            from: "hera",
+            toward: "zeus",
+            affinity: -10,
+            grudge: 5,
+            allied: false,
+          },
+        ]);
+      },
+      "a fire cause no strike started": (encoded) => {
+        const buildings = encoded.buildings as [
+          string,
+          Record<string, unknown>,
+        ][];
+        for (const [buildingId, building] of buildings) {
+          if (buildingId === "the-tavern") {
+            building.ignition = { eventId: "evt-1-1", actor: "hera" };
+          }
+        }
+      },
+    };
+    for (const [name, forge] of Object.entries(forgeries)) {
+      const forged = join(dir, `forged-${name.replaceAll(" ", "-")}.sqlite`);
+      copyFileSync(honest, forged);
+      rehashArchive(forged, (db) => editProjection(db, forge));
+      const slots = join(dir, `slots-${name.replaceAll(" ", "-")}`);
+      let caught: unknown;
+      try {
+        importArchive(forged, slots, worldImportReducers);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, name).toBeInstanceOf(ImportError);
+      expect((caught as ImportError).kind, name).toBe("corrupt");
+      expect(existsSync(slots) ? readdirSync(slots) : [], name).toEqual([]);
+    }
+    closeStore(world.store);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a rehashed archive that carries hostile memory tunables, or more memories than its capacity allows, is refused before any slot is made", () => {
+  const dir = tempDir("panthea-sim-hostile-");
+  try {
+    const world = liveWorld(join(dir, "world.sqlite"), socialSeed());
+    world.run(
+      queuedProposal("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 3,
+      }),
+    );
+    const honest = join(dir, "honest.sqlite");
+    exportArchive(world.store, honest);
+
+    const attacks: Record<string, (encoded: EncodedProjection) => void> = {
+      "negative capacity": (encoded) => {
+        encoded.rules.memoryBalance = {
+          capacity: -1,
+        };
+      },
+      "unknown tunable": (encoded) => {
+        encoded.rules.memoryBalance = {
+          capcity: 1,
+        };
+      },
+      "more memories than capacity": (encoded) => {
+        encoded.rules.memoryBalance = {
+          capacity: 0,
+        };
+      },
+    };
+    for (const [name, attack] of Object.entries(attacks)) {
+      const hostile = join(dir, `hostile-${name.replaceAll(" ", "-")}.sqlite`);
+      copyFileSync(honest, hostile);
+      rehashArchive(hostile, (db) => editProjection(db, attack));
+      const slots = join(dir, `slots-${name.replaceAll(" ", "-")}`);
+      let caught: unknown;
+      try {
+        importArchive(hostile, slots, worldImportReducers);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, name).toBeInstanceOf(ImportError);
+      expect((caught as ImportError).kind, name).toBe("corrupt");
+      expect(existsSync(slots) ? readdirSync(slots) : [], name).toEqual([]);
+    }
+    closeStore(world.store);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

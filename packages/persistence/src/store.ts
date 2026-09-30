@@ -567,15 +567,31 @@ export function listEvents(
   options: {
     readonly fromSequence?: number;
     readonly toSequence?: number;
+    /** Leave out events of these kinds. */
+    readonly excludeKinds?: readonly string[];
+    /** Only the newest this many of what remains (still returned oldest first). */
+    readonly newest?: number;
   } = {},
 ): readonly WorldEvent[] {
   const from = options.fromSequence ?? 0;
   const to = options.toSequence ?? Number.MAX_SAFE_INTEGER;
+  const excluded = options.excludeKinds ?? [];
+  const notIn =
+    excluded.length === 0
+      ? ""
+      : ` AND kind NOT IN (${excluded.map(() => "?").join(", ")})`;
+  const newest = options.newest;
+  const order =
+    newest === undefined ? "ORDER BY sequence ASC" : "ORDER BY sequence DESC";
+  const limit = newest === undefined ? "" : " LIMIT ?";
   const rows = db
     .query(
-      "SELECT payload FROM events WHERE sequence > ? AND sequence <= ? ORDER BY sequence ASC",
+      `SELECT payload FROM events WHERE sequence > ? AND sequence <= ?${notIn} ${order}${limit}`,
     )
-    .all(from, to) as { payload: string }[];
+    .all(from, to, ...excluded, ...(newest === undefined ? [] : [newest])) as {
+    payload: string;
+  }[];
+  if (newest !== undefined) rows.reverse();
   return rows.map((row) => JSON.parse(row.payload) as WorldEvent);
 }
 
@@ -660,14 +676,25 @@ export function commitTick<TProjections>(
   return run.immediate();
 }
 
-/** Replays the entire event log from the store's persisted genesis row, ignoring whatever is currently stored in `projections` -- used to prove rebuild-equals-live. */
+/**
+ * Replays the entire event log from the store's persisted genesis row, ignoring
+ * whatever is currently stored in `projections` -- used to prove
+ * rebuild-equals-live, and to check an imported archive's projection against
+ * its own log. It streams the log, so memory stays flat however long it is.
+ */
 export function rebuildProjections<TProjections>(
   store: Store,
-  reducers: ProjectionReducers<TProjections>,
+  reducers: Pick<ProjectionReducers<TProjections>, "applyEvent" | "codec">,
 ): TProjections {
   let projections = readGenesisProjection(store.db, reducers);
-  for (const event of listEvents(store.db)) {
-    projections = reducers.applyEvent(projections, event);
+  const rows = store.db
+    .query("SELECT payload FROM events ORDER BY sequence ASC")
+    .iterate() as IterableIterator<{ payload: string }>;
+  for (const row of rows) {
+    projections = reducers.applyEvent(
+      projections,
+      JSON.parse(row.payload) as WorldEvent,
+    );
   }
   return projections;
 }

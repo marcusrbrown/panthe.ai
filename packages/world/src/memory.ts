@@ -10,9 +10,14 @@
 //
 // Derived events never trigger derivation: a memory is never formed of a
 // memory, a relationship change, or a report's content (reports are private:
-// only the listener learns of one, as a belief). That is not a list kept here
-// but a consequence of perception: those kinds happen at no place
-// (`eventLocation`), so nobody perceives them, whatever salience a pack gives.
+// only the listener learns of one, as a belief). Those kinds are `UNPLACED_
+// EVENT_KINDS`: they happen at no place, so nobody perceives them, and the
+// types keep them out of a witnessed memory.
+//
+// A report's claim, not the event it cites, is what a listener learns: the
+// teller says who did what to whom, the world stores that as told and never
+// checks it. A listener takes a claim from a given teller once (see
+// `toldMemory`), so repeating a report cannot farm a relationship.
 //
 // Every number here is a D23 tunable (docs/product/defaults.md). It is read
 // from `rules.memoryBalance`, falling back to `DEFAULT_MEMORY_BALANCE`, so a
@@ -24,9 +29,11 @@ import type {
   EventId,
   MemoryRecordedEvent,
   ReportToldEvent,
+  WitnessedEventKind,
   WorldEvent,
+  WorldRules,
 } from "@panthea/contracts";
-import { eventSubjects } from "@panthea/contracts";
+import { eventSubjects, UNPLACED_EVENT_KINDS } from "@panthea/contracts";
 import { perceivesEvent } from "./perception";
 import {
   type MemoryEntry,
@@ -56,12 +63,19 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   toldShare: 0.5,
   /** Affinity never goes beyond plus or minus this. */
   affinityLimit: 10,
+  /** A grudge never goes beyond this. */
+  grudgeLimit: 10,
   /** Affinity at which two actors count as allied. */
   allianceAffinity: 5,
 };
 
+/** A memory tunable from `rules`, or its default. */
+export function memoryBalanceOf(rules: WorldRules, key: string): number {
+  return rules.memoryBalance?.[key] ?? DEFAULT_MEMORY_BALANCE[key] ?? 0;
+}
+
 function balanceOf(state: WorldState, key: string): number {
-  return state.rules.memoryBalance?.[key] ?? DEFAULT_MEMORY_BALANCE[key] ?? 0;
+  return memoryBalanceOf(state.rules, key);
 }
 
 /** Most memories one actor holds. */
@@ -124,7 +138,9 @@ function evict(
   capacity: number,
 ): readonly MemoryEntry[] {
   const kept = [...entries];
-  while (kept.length > capacity) {
+  // Content parsing keeps capacity a whole number of at least 0; the floor
+  // keeps a rules value that skipped it from looping on an empty list.
+  while (kept.length > Math.max(0, capacity)) {
     let victim = 0;
     for (const [index, entry] of kept.entries()) {
       const current = kept[victim];
@@ -161,6 +177,10 @@ function clampAffinity(state: WorldState, affinity: number): number {
   return Math.max(-limit, Math.min(limit, affinity));
 }
 
+function clampGrudge(state: WorldState, grudge: number): number {
+  return Math.min(balanceOf(state, "grudgeLimit"), grudge);
+}
+
 const freshRelationship = (
   from: EntityId,
   toward: EntityId,
@@ -183,7 +203,7 @@ export function applyRelationshipChanged(
   relationships.set(relationshipKey(event.entityId, event.toward), {
     ...held,
     affinity: clampAffinity(state, held.affinity + event.affinityDelta),
-    grudge: held.grudge + event.grudgeDelta,
+    grudge: clampGrudge(state, held.grudge + event.grudgeDelta),
     allied: event.allied ?? held.allied,
   });
   return { ...state, relationships };
@@ -195,6 +215,12 @@ export function applyRelationshipChanged(
 export interface DerivedDraft {
   readonly draft: WorldEventDraft;
   readonly cause: WorldEvent;
+}
+
+function isWitnessable(
+  event: WorldEvent,
+): event is Extract<WorldEvent, { kind: WitnessedEventKind }> {
+  return !(UNPLACED_EVENT_KINDS as readonly string[]).includes(event.kind);
 }
 
 function unique(ids: readonly EntityId[]): readonly EntityId[] {
@@ -252,6 +278,7 @@ export function witnessMemories(
   before: WorldState,
   event: WorldEvent,
 ): readonly DerivedDraft[] {
+  if (!isWitnessable(event)) return [];
   const salience = balanceOf(before, `salience_${event.kind}`);
   if (salience < 1) return [];
 
@@ -283,26 +310,42 @@ export function witnessMemories(
   }));
 }
 
+function sameClaim(a: Consequence | undefined, b: Consequence | undefined) {
+  return (
+    a?.effect === b?.effect && a?.agent === b?.agent && a?.target === b?.target
+  );
+}
+
 /**
  * The belief a report gives its listener: the teller's account, verbatim and
- * attributed, never checked against what happened. When the teller cited an
- * event it witnessed, the belief carries what the teller took that event to
- * have done, so a listener can feel about the people in it. That comes from
- * the teller's own memory in `after`, which the tick's primary events do not
- * change.
+ * attributed to the teller, never checked against what happened. What the
+ * listener comes to believe about who did what to whom is the report's `claim`
+ * and nothing else: the event the teller cited is provenance, and teaches the
+ * listener nothing, so a report can neither smuggle in the truth behind its
+ * citation nor be made to say something it did not. No claim means a story
+ * with no consequence.
+ *
+ * A listener takes a given account from a given teller once. If it already
+ * holds a told memory from this teller with the same claim (or, for a story
+ * with no claim, the same words), the repeat forms no memory and no feeling,
+ * so telling it again cannot farm a relationship or crowd out other memories.
+ * The check reads the listener's memory, so it is deterministic from committed
+ * state; a belief the listener has since forgotten can be told again.
  */
 export function toldMemory(
   after: WorldState,
   report: ReportToldEvent,
-): DerivedDraft {
-  const cited =
-    report.linkedEventId === undefined
-      ? undefined
-      : getMemories(after, report.entityId).find(
-          (memory) =>
-            memory.kind === "witnessed" &&
-            memory.sourceEventId === report.linkedEventId,
-        );
+): DerivedDraft | undefined {
+  const claim = report.claim;
+  const heard = getMemories(after, report.listenerId).some(
+    (memory) =>
+      memory.kind === "told" &&
+      memory.teller === report.entityId &&
+      (claim === undefined
+        ? memory.consequence === undefined && memory.content === report.content
+        : sameClaim(memory.consequence, claim)),
+  );
+  if (heard) return undefined;
   return {
     cause: report,
     draft: {
@@ -315,11 +358,17 @@ export function toldMemory(
       ...(report.linkedEventId === undefined
         ? {}
         : { linkedEventId: report.linkedEventId }),
-      subjects: unique([report.entityId, ...(cited?.subjects ?? [])]),
+      subjects: unique([
+        report.entityId,
+        ...(claim === undefined
+          ? []
+          : [
+              claim.agent,
+              ...(claim.target === undefined ? [] : [claim.target]),
+            ]),
+      ]),
       salience: balanceOf(after, "salience_told"),
-      ...(cited?.consequence === undefined
-        ? {}
-        : { consequence: cited.consequence }),
+      ...(claim === undefined ? {} : { consequence: claim }),
     },
   };
 }
@@ -368,7 +417,7 @@ export function planRelationships(
     running.set(key, {
       ...held,
       affinity,
-      grudge: held.grudge + grudgeDelta,
+      grudge: clampGrudge(state, held.grudge + grudgeDelta),
       allied,
     });
     drafts.push({

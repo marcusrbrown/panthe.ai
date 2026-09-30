@@ -3,6 +3,7 @@ import {
   type ContentPack,
   causalChain,
   type EventId,
+  MAX_REPORT_LENGTH,
   type Proposal,
   type WorldEvent,
 } from "@panthea/contracts";
@@ -120,11 +121,20 @@ const strike = (actor: string, target: string, power = 3) =>
   propose({ actor, kind: "strike", target, power });
 const move = (actor: string, to: string) =>
   propose({ actor, kind: "move", to });
+interface Claim {
+  readonly effect: "harm" | "kindness";
+  readonly agent: string;
+  readonly target?: string;
+}
+
+const HARM_BY_ZEUS: Claim = { effect: "harm", agent: "zeus", target: "farmer" };
+
 const report = (
   actor: string,
   listener: string,
   content: string,
   linkedEventId?: string,
+  claim?: Claim,
 ) =>
   propose({
     actor,
@@ -132,6 +142,7 @@ const report = (
     listener,
     content,
     ...(linkedEventId === undefined ? {} : { linkedEventId }),
+    ...(claim === undefined ? {} : { claim }),
   });
 const worship = (actor: string, deity: string) =>
   propose({ actor, kind: "worship", deity });
@@ -389,13 +400,23 @@ test("burn ticks are not remembered, but the destruction is, by whoever is prese
 // --- Reports and beliefs -----------------------------------------------------------
 
 /** The farmer saw the strike, walks to the square, and tells Hera. */
-function reportedToHera(content: string, cite: boolean) {
+function reportedToHera(
+  content: string,
+  cite: boolean,
+  claim: Claim | null = cite ? HARM_BY_ZEUS : null,
+) {
   const world = new World();
   const struck = world.tick(strike("zeus", "the-tavern"));
   const ignition = ignitionOf(struck.events, "the-tavern");
   world.tick(move("farmer", "square"));
   const told = world.tick(
-    report("farmer", "hera", content, cite ? ignition.id : undefined),
+    report(
+      "farmer",
+      "hera",
+      content,
+      cite ? ignition.id : undefined,
+      claim ?? undefined,
+    ),
   );
   return { world, ignition, told };
 }
@@ -485,6 +506,220 @@ test("a report to someone elsewhere, to oneself, or to no one is refused; the sa
   world.tick(report("farmer", "bard", "hello"));
   expect(world.lastRejected).toEqual([]);
   expect(world.memories("bard")).toHaveLength(1);
+});
+
+// The claim, not the citation, is what a listener learns.
+
+test("a linked report with no claim teaches the listener nothing from the link: no subjects beyond the teller, no consequence, no feeling", () => {
+  const { world, ignition, told } = reportedToHera("nice weather", true, null);
+  const belief = world.memories("hera").find((m) => m.kind === "told");
+  expect(belief).toMatchObject({
+    kind: "told",
+    teller: "farmer",
+    content: "nice weather",
+    linkedEventId: ignition.id,
+  });
+  expect(belief?.consequence).toBeUndefined();
+  expect(belief?.subjects).toEqual([id("farmer")]);
+  expect(
+    ofKind(told.events, "relationship-changed").filter(
+      (event) => event.entityId === id("hera"),
+    ),
+  ).toEqual([]);
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toBeUndefined();
+});
+
+test("a claim that contradicts the event it cites is believed as claimed, attributed to the teller, and moves nothing toward the one the event names", () => {
+  // The farmer cites Zeus's strike but claims the bard did the harm.
+  const { world, told } = reportedToHera("The bard did it", true, {
+    effect: "harm",
+    agent: "bard",
+    target: "farmer",
+  });
+  const belief = world.memories("hera").find((m) => m.kind === "told");
+  expect(belief).toMatchObject({
+    teller: "farmer",
+    consequence: { effect: "harm", agent: "bard", target: "farmer" },
+  });
+  expect(belief?.subjects).toEqual(
+    [id("farmer"), id("bard"), id("farmer")].filter(
+      (v, i, all) => all.indexOf(v) === i,
+    ),
+  );
+  const change = ofKind(told.events, "relationship-changed").find(
+    (event) => event.entityId === id("hera"),
+  );
+  expect(change).toMatchObject({ toward: "bard", affinityDelta: -1 });
+  expect(getRelationship(world.state, id("hera"), id("bard"))?.affinity).toBe(
+    -1,
+  );
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toBeUndefined();
+});
+
+test("a false claim still moves the relationship: nothing checks it against what happened, and it is attributed to the teller", () => {
+  // No strike at all: the farmer simply says Zeus wronged Hera.
+  const world = new World();
+  world.tick(move("farmer", "square"));
+  const told = world.tick(
+    report("farmer", "hera", "Zeus stole from you", undefined, {
+      effect: "harm",
+      agent: "zeus",
+      target: "hera",
+    }),
+  );
+  expect(world.lastRejected).toEqual([]);
+  const change = ofKind(told.events, "relationship-changed")[0];
+  const belief = ofKind(told.events, "memory-recorded")[0];
+  expect(change).toMatchObject({
+    entityId: "hera",
+    toward: "zeus",
+    affinityDelta: -1,
+    grudgeDelta: 1,
+    memoryEventId: belief.id,
+  });
+  expect(belief).toMatchObject({ memoryKind: "told", teller: "farmer" });
+  // Nothing happened to Hera in the log: the claim is the only source.
+  expect(
+    ofKind(world.log, "memory-recorded").filter(
+      (e) => e.memoryKind === "witnessed",
+    ),
+  ).toEqual([]);
+});
+
+test("a claim naming someone who does not exist is refused; the same claim naming a real actor commits", () => {
+  const world = new World();
+  world.tick(move("farmer", "square"));
+  world.tick(
+    report("farmer", "hera", "x", undefined, {
+      effect: "harm",
+      agent: "nobody",
+    }),
+  );
+  expect(world.lastRejected.map((r) => r.reason)).toEqual(["malformed"]);
+  world.tick(
+    report("farmer", "hera", "x", undefined, {
+      effect: "harm",
+      agent: "zeus",
+      target: "nowhere-at-all",
+    }),
+  );
+  expect(world.lastRejected.map((r) => r.reason)).toEqual(["malformed"]);
+  expect(world.memories("hera")).toEqual([]);
+
+  // A building is a fine target; so is an actor.
+  world.tick(
+    report("farmer", "hera", "x", undefined, {
+      effect: "harm",
+      agent: "zeus",
+      target: "the-tavern",
+    }),
+  );
+  expect(world.lastRejected).toEqual([]);
+  expect(world.memories("hera")).toHaveLength(1);
+});
+
+// A listener takes a given claim from a given teller once.
+
+test("repeating the same report across ticks moves the relationship once; the repeat forms no memory", () => {
+  const world = new World();
+  world.tick(move("farmer", "square"));
+  const tell = () =>
+    world.tick(
+      report("farmer", "hera", "Zeus wronged me", undefined, HARM_BY_ZEUS),
+    );
+  const first = tell();
+  expect(ofKind(first.events, "relationship-changed")).toHaveLength(1);
+  const affinity = getRelationship(
+    world.state,
+    id("hera"),
+    id("zeus"),
+  )?.affinity;
+
+  for (let index = 0; index < 4; index += 1) {
+    const again = tell();
+    expect(world.lastRejected).toEqual([]);
+    // The report itself happened; nothing more came of it.
+    expect(ofKind(again.events, "report-told")).toHaveLength(1);
+    expect(ofKind(again.events, "memory-recorded")).toEqual([]);
+    expect(ofKind(again.events, "relationship-changed")).toEqual([]);
+  }
+  expect(getRelationship(world.state, id("hera"), id("zeus"))?.affinity).toBe(
+    affinity,
+  );
+  expect(world.memories("hera")).toHaveLength(1);
+  // Rewording the same claim is the same claim.
+  const reworded = world.tick(
+    report(
+      "farmer",
+      "hera",
+      "Believe me, Zeus wronged me",
+      undefined,
+      HARM_BY_ZEUS,
+    ),
+  );
+  expect(ofKind(reworded.events, "relationship-changed")).toEqual([]);
+});
+
+test("positive control: a different claim, or the same claim from a different teller, still moves it", () => {
+  const world = new World();
+  world.tick(move("farmer", "square"));
+  world.tick(move("bard", "square"));
+  world.tick(
+    report("farmer", "hera", "Zeus wronged me", undefined, HARM_BY_ZEUS),
+  );
+  const start = getRelationship(world.state, id("hera"), id("zeus"))?.affinity;
+
+  // A different claim about Zeus: he wronged the bard.
+  world.tick(
+    report("farmer", "hera", "Zeus wronged the bard", undefined, {
+      effect: "harm",
+      agent: "zeus",
+      target: "bard",
+    }),
+  );
+  expect(getRelationship(world.state, id("hera"), id("zeus"))?.affinity).toBe(
+    (start ?? 0) - 1,
+  );
+  // The same claim, from someone else: a second voice.
+  world.tick(
+    report("bard", "hera", "Zeus wronged the farmer", undefined, HARM_BY_ZEUS),
+  );
+  expect(getRelationship(world.state, id("hera"), id("zeus"))?.affinity).toBe(
+    (start ?? 0) - 2,
+  );
+  // A story with no claim is deduplicated on its words.
+  world.tick(report("farmer", "hera", "a story"));
+  const held = world.memories("hera").length;
+  world.tick(report("farmer", "hera", "a story"));
+  expect(world.memories("hera")).toHaveLength(held);
+  world.tick(report("farmer", "hera", "another story"));
+  expect(world.memories("hera")).toHaveLength(held + 1);
+});
+
+// --- Tunables the rules read ---------------------------------------------------------------
+
+test("a world that keeps no memories keeps none, and a nonsensical capacity cannot hang eviction", () => {
+  for (const capacity of [0, -1]) {
+    const world = new World({ capacity });
+    world.tick(strike("zeus", "the-tavern"));
+    world.tick();
+    expect(world.state.memories.get(id("zeus")) ?? []).toEqual([]);
+  }
+  // Control: the same strike with room to remember is remembered.
+  const remembering = new World({ capacity: 1 });
+  remembering.tick(strike("zeus", "the-tavern"));
+  expect(remembering.memories("zeus")).toHaveLength(1);
+});
+
+test("a grudge is bounded by the world's limit", () => {
+  const burnDown = (world: World) => {
+    world.tick(strike("zeus", "the-tavern"));
+    for (let guard = 0; guard < 10; guard += 1) world.tick();
+    return getRelationship(world.state, id("farmer"), id("zeus"));
+  };
+  // The farmer owns the tavern: a grudge for the ignition and another for its destruction.
+  expect(burnDown(new World())?.grudge).toBe(2);
+  expect(burnDown(new World({ grudgeLimit: 1 }))?.grudge).toBe(1);
 });
 
 // --- Relationships -------------------------------------------------------------------
@@ -834,4 +1069,140 @@ test("decode refuses a memory or relationship that names nobody", () => {
 
   // Control: the untouched encoding decodes.
   expect(() => decode(encoded)).not.toThrow();
+});
+
+// --- Decode holds a stored world to the rules it carries ----------------------------------------
+
+function encodedAfterStrike(memoryBalance?: Record<string, number>) {
+  const world = new World(memoryBalance);
+  world.tick(strike("zeus", "the-tavern"));
+  world.tick(report("bard", "zeus", "a word", undefined, HARM_BY_ZEUS));
+  return JSON.parse(JSON.stringify(encode(world.state)));
+}
+
+test("decode refuses an actor holding more memories than the world's capacity, and a memoryBalance that is not a valid tunable set", () => {
+  const encoded = encodedAfterStrike({ capacity: 2 });
+  expect(() => decode(encoded)).not.toThrow();
+
+  const [owner, entries] = encoded.memories.find(
+    ([, list]: [string, unknown[]]) => list.length > 0,
+  );
+  const padded = {
+    ...encoded,
+    memories: [[owner, [...entries, ...entries, ...entries]]],
+  };
+  expect(() => decode(padded)).toThrow(/capacity/);
+
+  for (const memoryBalance of [
+    { capacity: -1 },
+    { capacity: 1.5 },
+    { toldShare: -1 },
+    { capcity: 3 },
+    { "salience_report-told": 3 },
+  ]) {
+    expect(() =>
+      decode({ ...encoded, rules: { ...encoded.rules, memoryBalance } }),
+    ).toThrow();
+  }
+});
+
+test("decode refuses a relationship beyond its affinity or grudge limit; at the limit it decodes", () => {
+  const encoded = encodedAfterStrike({ affinityLimit: 3, grudgeLimit: 2 });
+  const [key, relationship] = encoded.relationships[0];
+  const withRelationship = (overrides: Record<string, unknown>) => ({
+    ...encoded,
+    relationships: [[key, { ...relationship, ...overrides }]],
+  });
+  expect(() =>
+    decode(withRelationship({ affinity: 3, grudge: 2 })),
+  ).not.toThrow();
+  expect(() => decode(withRelationship({ affinity: -3 }))).not.toThrow();
+  expect(() => decode(withRelationship({ affinity: 4 }))).toThrow(/affinity/);
+  expect(() => decode(withRelationship({ affinity: -4 }))).toThrow(/affinity/);
+  expect(() => decode(withRelationship({ grudge: 3 }))).toThrow(/grudge/);
+});
+
+test("decode refuses belief text over the report limit and a witnessed kind nobody can witness", () => {
+  const encoded = encodedAfterStrike();
+  const withMemory = (overrides: Record<string, unknown>, kind: string) => {
+    const memories = encoded.memories.map(
+      ([owner, list]: [string, Record<string, unknown>[]]) => [
+        owner,
+        list.map((entry) =>
+          entry.kind === kind ? { ...entry, ...overrides } : entry,
+        ),
+      ],
+    );
+    return { ...encoded, memories };
+  };
+  const told = encoded.memories
+    .flatMap(([, list]: [string, Record<string, unknown>[]]) => list)
+    .find((entry: Record<string, unknown>) => entry.kind === "told");
+  expect(told).toBeDefined();
+  expect(() =>
+    decode(withMemory({ content: "x".repeat(MAX_REPORT_LENGTH) }, "told")),
+  ).not.toThrow();
+  expect(() =>
+    decode(withMemory({ content: "x".repeat(MAX_REPORT_LENGTH + 1) }, "told")),
+  ).toThrow();
+  for (const eventKind of [
+    "report-told",
+    "memory-recorded",
+    "relationship-changed",
+  ]) {
+    expect(() => decode(withMemory({ eventKind }, "witnessed"))).toThrow();
+  }
+  expect(() =>
+    decode(withMemory({ eventKind: "building-destroyed" }, "witnessed")),
+  ).not.toThrow();
+});
+
+test("a building's fields belong to its status: decode refuses fire fields outside a burning building, and a burning or repairing one missing its own", () => {
+  const encoded = encodedAfterStrike();
+  const tavern = encoded.buildings.find(
+    ([buildingId]: [string]) => buildingId === "the-tavern",
+  );
+  const [, building] = tavern as [string, Record<string, unknown>];
+  const swap = (replacement: Record<string, unknown>) => ({
+    ...encoded,
+    buildings: encoded.buildings.map(
+      ([buildingId, b]: [string, Record<string, unknown>]) =>
+        buildingId === "the-tavern"
+          ? [buildingId, replacement]
+          : [buildingId, b],
+    ),
+  });
+  // The strike left it burning: the honest encoding decodes.
+  expect(building.status).toBe("burning");
+  expect(() => decode(encoded)).not.toThrow();
+
+  const { fireIntensity, ticksBurning, ignition, ...plain } = building;
+  void fireIntensity;
+  void ticksBurning;
+  void ignition;
+  expect(() => decode(swap({ ...plain, status: "operational" }))).not.toThrow();
+  expect(() => decode(swap({ ...plain, status: "damaged" }))).not.toThrow();
+  expect(() => decode(swap({ ...plain, status: "destroyed" }))).not.toThrow();
+  expect(() =>
+    decode(swap({ ...plain, status: "repairing", repairProgress: 1 })),
+  ).not.toThrow();
+
+  // Fire fields on a building that is not burning.
+  for (const status of ["operational", "damaged", "destroyed"]) {
+    expect(() => decode(swap({ ...building, status }))).toThrow(/burning/);
+  }
+  expect(() =>
+    decode(swap({ ...building, status: "repairing", repairProgress: 1 })),
+  ).toThrow(/burning/);
+  // A repair counter outside repairing.
+  expect(() => decode(swap({ ...building, repairProgress: 1 }))).toThrow(
+    /repairing/,
+  );
+  expect(() =>
+    decode(swap({ ...plain, status: "damaged", repairProgress: 1 })),
+  ).toThrow(/repairing/);
+  // Burning and repairing must carry their own.
+  expect(() => decode(swap({ ...plain, status: "burning" }))).toThrow();
+  expect(() => decode(swap({ ...building, ignition: undefined }))).toThrow();
+  expect(() => decode(swap({ ...plain, status: "repairing" }))).toThrow();
 });

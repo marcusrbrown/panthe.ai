@@ -9,6 +9,7 @@ import { debitActorInventory, getResourceAmount } from "./economy";
 import {
   type ActorState,
   type BuildingState,
+  buildingBase,
   getActor,
   getBuilding,
   type WorldState,
@@ -56,7 +57,7 @@ export function applyRepairProgressed(
   const debited = debitActorInventory(state, actorId, resource, amount);
   const buildings = new Map(debited.buildings);
   buildings.set(structureId, {
-    ...building,
+    ...buildingBase(building),
     status: "repairing",
     repairProgress: (building.repairProgress ?? 0) + amount,
     revision: building.revision + 1,

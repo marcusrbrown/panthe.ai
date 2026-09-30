@@ -23,7 +23,7 @@ import {
   loadGreekWorldState,
   restoreWorldTime,
   serializePrngState,
-  worldProjectionCodec,
+  worldImportReducers,
 } from "./world-store";
 import { importWorldArchive, listWorldSlots } from "./worlds";
 
@@ -97,7 +97,7 @@ test("importing an archive while the active world is running creates exactly one
     const result = importWorldArchive(
       exportPath,
       slotsDir,
-      worldProjectionCodec,
+      worldImportReducers,
     );
 
     const slots = listWorldSlots(slotsDir);
@@ -182,7 +182,7 @@ test("a simulated disk-full during import leaves the active world unchanged and 
     const slotsDir = join(slotsParent, "slots");
     try {
       expect(() =>
-        importWorldArchive(exportPath, slotsDir, worldProjectionCodec),
+        importWorldArchive(exportPath, slotsDir, worldImportReducers),
       ).toThrow();
 
       // Nothing was created: not the slots directory itself, and no
@@ -224,7 +224,7 @@ test("importArchive wraps a staging failure as a thrown error, and never as an I
     const slotsDir = join(slotsParent, "slots");
     let caught: unknown;
     try {
-      importWorldArchive(exportPath, slotsDir, worldProjectionCodec);
+      importWorldArchive(exportPath, slotsDir, worldImportReducers);
     } catch (error) {
       caught = error;
     } finally {

@@ -14,6 +14,7 @@ import { decideRoutineProposal } from "./routines";
 import {
   BUILDING_STATUSES,
   type BuildingStatus,
+  buildingBase,
   createInitialWorldState,
   createPrng,
   type PrngState,
@@ -102,7 +103,7 @@ function burning(state: WorldState): WorldState {
   const tavern = state.buildings.get(toEntityId("the-tavern"));
   if (!tavern) throw new Error("expected the tavern fixture building");
   return withBuilding(state, {
-    ...tavern,
+    ...buildingBase(tavern),
     status: "burning",
     fireIntensity: 0,
     ticksBurning: 0,
@@ -279,20 +280,26 @@ function buildingInStatus(status: BuildingStatus): WorldState {
     case "operational":
       return state;
     case "damaged":
-      return withBuilding(state, { ...tavern, status: "damaged" });
+      return withBuilding(state, {
+        ...buildingBase(tavern),
+        status: "damaged",
+      });
     case "burning":
       return withBuilding(state, {
-        ...tavern,
+        ...buildingBase(tavern),
         status: "burning",
         fireIntensity: 0,
         ticksBurning: 0,
         ignition: IGNITION,
       });
     case "destroyed":
-      return withBuilding(state, { ...tavern, status: "destroyed" });
+      return withBuilding(state, {
+        ...buildingBase(tavern),
+        status: "destroyed",
+      });
     case "repairing":
       return withBuilding(state, {
-        ...tavern,
+        ...buildingBase(tavern),
         status: "repairing",
         repairProgress: 1,
       });
@@ -519,19 +526,6 @@ test("a spread ignition names the source building's ignition and who started the
     entityId: "old-oak",
     cause: { kind: "spread", from: "evt-ignite", actor: "zeus" },
   });
-});
-
-test("a burning building with no recorded ignition is a broken world, not a fire without a cause", () => {
-  const state = createInitialWorldState(townPack());
-  const tavern = state.buildings.get(toEntityId("the-tavern"));
-  if (!tavern) throw new Error("expected the tavern fixture building");
-  const broken = withBuilding(state, {
-    ...tavern,
-    status: "burning",
-    fireIntensity: 0,
-    ticksBurning: 0,
-  });
-  expect(() => planFireStep(broken, createPrng(1))).toThrow(/ignition/);
 });
 
 function spreadPack(): ContentPack {

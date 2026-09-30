@@ -9,7 +9,7 @@ import { join } from "node:path";
 import {
   type ImportResult,
   importArchive,
-  type ProjectionCodec,
+  type ProjectionReducers,
 } from "@panthea/persistence";
 
 const STAGING_PREFIX = ".staging-";
@@ -49,7 +49,7 @@ export function listWorldSlots(slotsDir: string): readonly WorldSlot[] {
 export function importWorldArchive(
   archivePath: string,
   slotsDir: string,
-  codec: ProjectionCodec<unknown>,
+  reducers: Pick<ProjectionReducers<unknown>, "applyEvent" | "codec">,
 ): ImportResult {
-  return importArchive(archivePath, slotsDir, codec);
+  return importArchive(archivePath, slotsDir, reducers);
 }

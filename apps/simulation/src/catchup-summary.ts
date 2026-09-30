@@ -140,10 +140,18 @@ function persistAccount(
     skippedMs: account.skippedMs,
     majorOutcomes: [...account.majorOutcomes],
   };
-  writeCatchUpSummary(db, record);
-  if (bind) {
-    bindCatchUpProgressSummary(db, record.id);
-  }
+  // The summary and the binding are one unit: a summary published under a
+  // new id while the progress still names the old one would make the id
+  // unrecognisable to a retry and the state unimportable. `db.transaction`
+  // is a savepoint when the caller is already inside a commit's transaction
+  // (`closeCatchUpBacklog`), and a transaction of its own otherwise
+  // (`recordPartialSummary` from a degraded run).
+  db.transaction(() => {
+    writeCatchUpSummary(db, record);
+    if (bind) {
+      bindCatchUpProgressSummary(db, record.id);
+    }
+  })();
   return record;
 }
 
@@ -152,7 +160,8 @@ function persistAccount(
  * backlog open: a degraded catch-up shows what it committed, and a retry
  * continues from the same progress. Returns the persisted summary, or
  * `undefined` when there is no open backlog or it amounts to nothing (the
- * previous summary is kept). One upsert, atomic on its own.
+ * previous summary is kept). The summary and its binding to the backlog
+ * commit or roll back together, on their own or inside the caller's transaction.
  */
 export function recordPartialSummary(
   db: Database,

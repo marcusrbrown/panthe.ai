@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   closeStore,
+  exportArchive,
+  importArchive,
   openStore,
   readCatchUpProgress,
   readCatchUpSummary,
@@ -233,6 +235,70 @@ describe("recordPartialSummary: a degraded catch-up keeps its backlog open", () 
 
     expect(closed?.delivered?.id).not.toBe(partial?.id);
     expect(closed?.delivered?.appliedMs).toBe(180 * TICK);
+  });
+
+  test("a partial summary and its binding commit or roll back together: a failing binding update leaves both as they were, and the retry, an unchanged retry after it, and an archive round trip all hold up", () => {
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 60 * TICK }));
+    const first = recordPartialSummary(store.db);
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 120 * TICK }));
+    // The store refuses the binding update, after the summary upsert has run.
+    store.db.exec(
+      "CREATE TRIGGER refuse_binding BEFORE UPDATE OF summary_id ON catch_up_progress BEGIN SELECT RAISE(ABORT, 'SQLITE_FULL: simulated'); END",
+    );
+
+    expect(() => recordPartialSummary(store.db)).toThrow();
+
+    // Neither half committed: the summary is still the first, and the
+    // progress still points at it.
+    expect(readCatchUpSummary(store.db)).toEqual(first);
+    expect(readCatchUpProgress(store.db)).toMatchObject({
+      appliedMs: 120 * TICK,
+      summaryId: first?.id,
+    });
+
+    store.db.exec("DROP TRIGGER refuse_binding");
+    const retried = recordPartialSummary(store.db);
+    expect(retried?.appliedMs).toBe(120 * TICK);
+    expect(retried?.id).not.toBe(first?.id);
+    expect(readCatchUpProgress(store.db)?.summaryId).toBe(retried?.id);
+
+    // Nothing changed since: the published id is kept.
+    expect(recordPartialSummary(store.db)?.id).toBe(retried?.id);
+
+    // The state is exportable and importable: the binding check accepts it.
+    const archivePath = join(dir, "archive.sqlite");
+    exportArchive(store, archivePath);
+    const slot = importArchive(
+      archivePath,
+      join(dir, "slots"),
+      createWorldProjectionReducers(loadGreekWorldState()).codec,
+    );
+    const imported = openStore(
+      join(slot.slotPath, "world.sqlite"),
+      createWorldProjectionReducers(loadGreekWorldState()),
+    );
+    try {
+      expect(readCatchUpSummary(imported.db)).toEqual(retried);
+      expect(readCatchUpProgress(imported.db)?.summaryId).toBe(retried?.id);
+    } finally {
+      closeStore(imported);
+    }
+  });
+
+  test("inside a caller's transaction the summary and binding nest as a savepoint and roll back with it", () => {
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 60 * TICK }));
+    const first = recordPartialSummary(store.db);
+    writeCatchUpProgress(store.db, backlog({ appliedMs: 120 * TICK }));
+
+    expect(() =>
+      store.db.transaction(() => {
+        recordPartialSummary(store.db);
+        throw new Error("the outer commit fails");
+      })(),
+    ).toThrow("the outer commit fails");
+
+    expect(readCatchUpSummary(store.db)).toEqual(first);
+    expect(readCatchUpProgress(store.db)?.summaryId).toBe(first?.id);
   });
 
   test("with no open backlog it persists nothing", () => {

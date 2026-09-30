@@ -17,6 +17,7 @@ import {
   type GodIntent,
   godAvailableActions,
   godIntentSchema,
+  MAX_ASSERTION_LENGTH,
   MAX_REMEMBERED,
   type ParsedGodIntent,
   rememberedBy,
@@ -815,4 +816,26 @@ test("what a god is shown of its memory is bounded, however much it remembers; w
   );
   expect(few.memories.length).toBeGreaterThan(0);
   expect(few.memories.length).toBeLessThan(MAX_REMEMBERED);
+});
+
+// --- The text limits, stated where the model reads them --------------------------------
+
+test("the instructions state the legend and report text limits, from the constants the parser enforces", () => {
+  const withCompany = buildGodContext(
+    zeus,
+    snapshotIn(tavernWorld(), "zeus", []),
+  );
+  expect(withCompany.instructions).toContain(
+    `assertion (at most ${MAX_ASSERTION_LENGTH} characters)`,
+  );
+  expect(withCompany.instructions).toContain(
+    `report content (at most ${MAX_REPORT_LENGTH} characters)`,
+  );
+  expect(withCompany.instructions).toContain("one or two short sentences");
+  // The limit is one line, not a paragraph.
+  const line = (withCompany.instructions ?? "")
+    .split("\n")
+    .filter((l) => l.includes("one or two short sentences"));
+  expect(line).toHaveLength(1);
+  expect(line[0]?.length).toBeLessThan(200);
 });

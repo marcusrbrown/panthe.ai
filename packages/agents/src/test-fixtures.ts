@@ -83,16 +83,13 @@ export function committedEvent(
   } as unknown as WorldEvent;
 }
 
-/** `state` with `actorId` holding `capability`, which the authored pack grants no deity. */
-export function actorCapable(
+/** `state` with `actorId` holding exactly `capabilities`; a test uses it for a capability-less deity, which the authored pack no longer has. */
+export function actorWithCapabilities(
   state: WorldState,
   actorId: string,
-  capability: string,
+  capabilities: readonly string[],
 ): WorldState {
   const actor = getActor(state, toEntityId(actorId));
   if (!actor) throw new Error(`the Greek pack has no actor ${actorId}`);
-  return withActor(state, {
-    ...actor,
-    capabilities: [...actor.capabilities, capability],
-  });
+  return withActor(state, { ...actor, capabilities });
 }

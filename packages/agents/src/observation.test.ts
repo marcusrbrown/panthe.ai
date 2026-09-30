@@ -20,7 +20,6 @@ import {
 } from "./observation";
 import {
   actorAt,
-  actorCapable,
   committedEvent,
   godProfile,
   greekState,
@@ -34,13 +33,8 @@ function snapshotAt(state: WorldState, actor = "zeus"): PerceptionSnapshot {
   return snapshot;
 }
 
-/** Zeus on the mountain path with `divine`, which the authored pack grants no deity: what is under test is the builder, not the pack's capability content. */
-const divineAtMountain = () =>
-  actorCapable(
-    actorAt(greekState(), "zeus", "mountain-path"),
-    "zeus",
-    "divine",
-  );
+/** Zeus on the mountain path; the authored pack gives him `divine`, so olympus-gate is open to him. */
+const zeusAtMountain = () => actorAt(greekState(), "zeus", "mountain-path");
 
 /** Zeus at the tavern, where the-tavern stands. */
 const tavernState = () => actorAt(greekState(), "zeus", "tavern");
@@ -131,7 +125,7 @@ test("a move and a legend name only the actor and its location; a realm transiti
   });
   expect(revisionsOf(legend.proposal)).toEqual(["tavern@0", "zeus@0"]);
 
-  const atMountain = snapshotAt(divineAtMountain());
+  const atMountain = snapshotAt(zeusAtMountain());
   const transition = build(atMountain, {
     action: "realm-transition",
     to: "olympus-gate",
@@ -198,7 +192,7 @@ test("an intent parsed against another snapshot is refused when its target is no
     expect(result.ok).toBe(false);
   }
 
-  const mountain = snapshotAt(divineAtMountain());
+  const mountain = snapshotAt(zeusAtMountain());
   const transition = buildModelProposal(
     id("zeus"),
     tavern,
@@ -390,8 +384,27 @@ test("a building's revision bump alone makes the proposal stale", () => {
   );
 });
 
-test("a model-built realm transition commits through the real tick; positive control for moving between realms", () => {
-  const state = divineAtMountain();
+test("a mortal is still refused restricted-realm for the same transition; positive control for the deity's commit below", () => {
+  const state = actorAt(greekState(), "farmer", "mountain-path");
+  const attempt = submitProposal({
+    schemaVersion: 1,
+    kind: "realm-transition",
+    actor: "farmer",
+    to: "olympus-gate",
+    via: "mountain-path",
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-mortal",
+  });
+  if (!attempt.ok) throw new Error(attempt.rejection.message);
+  const tick = runProposal(state, attempt.proposal);
+  expect(tick.committed).toEqual([]);
+  expect(tick.rejected[0]?.reason).toBe("restricted-realm");
+});
+
+test("a model-built realm transition commits through the real tick from the authored pack alone; positive control for moving between realms", () => {
+  const state = zeusAtMountain();
   const { proposal } = build(snapshotAt(state), {
     action: "realm-transition",
     to: "olympus-gate",

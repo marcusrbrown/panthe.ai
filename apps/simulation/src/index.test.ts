@@ -583,8 +583,9 @@ describe("service (bun run src/index.ts)", () => {
       reducers,
     );
     ensureTraceSchema(store.db);
+    const nowWallMs = Date.now();
     store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
-      Date.now() - 5 * HOUR_MS,
+      nowWallMs - 5 * HOUR_MS,
     ]);
     let attempt = 0;
     const interrupted = await runCatchUp(
@@ -600,7 +601,7 @@ describe("service (bun run src/index.ts)", () => {
           return persistCommitTick(storeArg, reducersArg, input);
         },
       },
-      { nowWallMs: Date.now() },
+      { nowWallMs },
     );
     expect(interrupted.degraded).toBeDefined();
     const partial = readCatchUpSummary(store.db);
@@ -899,8 +900,9 @@ describe("service (bun run src/index.ts)", () => {
     const storePath = join(appDataDir, "active", "world.sqlite");
     const store = openStore(storePath, reducers);
     ensureTraceSchema(store.db);
+    const nowWallMs = Date.now();
     store.db.run("UPDATE clock SET cursor_wall_ms = ? WHERE id = 1", [
-      Date.now() - 5 * HOUR_MS,
+      nowWallMs - 5 * HOUR_MS,
     ]);
     let attempt = 0;
     const interrupted = await runCatchUp(
@@ -916,7 +918,7 @@ describe("service (bun run src/index.ts)", () => {
           return persistCommitTick(storeArg, reducersArg, input);
         },
       },
-      { nowWallMs: Date.now() },
+      { nowWallMs },
     );
     expect(interrupted.degraded).toBeDefined();
     expect(readClock(store.db).tick).toBe(0);

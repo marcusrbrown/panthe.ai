@@ -401,6 +401,7 @@ test("petition tunables are strict: each a positive whole number, unknown keys r
     blessDivinityCost: 2,
     blessPlanks: 3,
     blessResourceAmount: 2,
+    blessResourceCap: 4,
     directorQuietTicks: 120,
     goalLockTicks: 40,
   };

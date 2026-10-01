@@ -8,6 +8,7 @@ import {
   openPetitionsFor,
   petitionBalanceOf,
   prayableCauses,
+  requestFor,
 } from "./petitions";
 import { decideRoutineProposal } from "./routines";
 import {
@@ -188,61 +189,112 @@ const ofKind = <K extends WorldEvent["kind"]>(
 
 // --- Praying -------------------------------------------------------------------------------
 
-test("the farmer's tavern burns: the farmer walks to the altar, prays about the burning to a god, and walks home", () => {
+/** `mortal` holds a witnessed memory of `event`, naming `offender`: what it would hold had it seen it happen. */
+function remembers(
+  world: World,
+  mortal: string,
+  event: WorldEvent,
+  offender: string,
+  eventKind: string,
+) {
+  return world.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: mortal,
+    sourceEventId: event.id,
+    eventKind,
+    subjects: [offender, mortal],
+    salience: 6,
+    consequence: { effect: "harm", agent: offender, target: mortal },
+  });
+}
+
+test("an offscreen strike on the farmer's tavern is not something the farmer knows: it prays about nothing and names no striker; once it stands at the damaged tavern it prays for help, then walks home", () => {
   const world = new World();
   world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
   const ignition = ofKind(world.log, "building-ignited")[0];
   expect(ignition).toBeDefined();
 
-  world.until(
-    () =>
-      world.petitions().length > 0 &&
-      getActor(world.state, id("farmer"))?.locationId === id("square"),
+  // The farmer is in the square, the tavern is somewhere else: nothing reaches it.
+  expect(getActor(world.state, id("farmer"))?.locationId).toBe(id("square"));
+  expect(prayableCauses(world.state, id("farmer"))).toEqual([]);
+  for (let n = 0; n < 30; n += 1) world.tick();
+  expect(world.petitions()).toEqual([]);
+  expect(ofKind(world.log, "petition-opened")).toEqual([]);
+  expect(JSON.stringify(world.log)).not.toContain("punish");
+
+  // It walks there (a fixture: nothing in its routine takes it) and sees the damage.
+  place(world, "farmer", "tavern");
+  const cause = prayableCauses(world.state, id("farmer")).find(
+    (c) => c.eventId === ignition?.id,
   );
-  const [petition] = world.petitions();
-  expect(petition).toMatchObject({
-    petitioner: "farmer",
-    status: "open",
-    cause: ignition?.id,
-    // Zeus owns nothing, so the request is for help with the building, not punishment.
-    request: {
-      kind: "help",
-      need: { kind: "building", building: "the-tavern" },
-    },
+  expect(cause).toMatchObject({ eventId: ignition?.id, kind: "fire" });
+  // What it saw is the loss; the striker is not something it saw.
+  expect(cause?.offender).toBeUndefined();
+  // Seeing is what it can do from here: it holds the cause, names no striker, and the request it
+  // would make is for help with the building.
+  const [seen] = prayableCauses(world.state, id("farmer")).filter(
+    (c) => c.eventId === ignition?.id,
+  );
+  expect(requestFor(world.state, seen as NonNullable<typeof seen>)).toEqual({
+    kind: "help",
+    need: { kind: "building", building: id("the-tavern") },
   });
-  expect(["hera", "zeus"]).toContain(String(petition?.god));
-  // To the altar, a prayer made there, and back.
-  const opened = ofKind(world.log, "petition-opened")[0];
-  expect(opened).toMatchObject({ entityId: "farmer", cause: ignition?.id });
-  const farmerMoves = world.log.filter(
-    (e) => e.kind === "entity-moved" && e.entityId === id("farmer"),
-  );
-  expect(farmerMoves.map((e) => (e as { to: string }).to)).toEqual([
-    "altar",
-    "square",
-  ]);
-  const prayedAt = world.log.indexOf(opened as WorldEvent);
-  expect(world.log.indexOf(farmerMoves[0] as WorldEvent)).toBeLessThan(
-    prayedAt,
-  );
-  expect(world.log.indexOf(farmerMoves[1] as WorldEvent)).toBeGreaterThan(
-    prayedAt,
-  );
 });
 
-test("a theft by someone who owns a building asks for punishment, naming the building; by someone who owns none, for help", () => {
-  const punished = new World();
-  const stolen = punished.apply({
-    kind: "theft",
-    entityId: "woodcutter",
-    victim: "farmer",
-    resource: "food",
-    amount: 1,
-    cause: "director",
+test("the tavern is seen only by its owner standing at it, and only while it is damaged or burned: another mortal there sees nothing of the farmer's loss, and a tavern that is whole is no cause", () => {
+  const world = new World();
+  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
+  place(world, "drifter", "tavern");
+  expect(prayableCauses(world.state, id("drifter"))).toEqual([]);
+  // The owner there, with the building whole again, has nothing to pray about.
+  place(world, "farmer", "tavern");
+  expect(prayableCauses(world.state, id("farmer"))).toHaveLength(1);
+  const tavern = world.state.buildings.get(id("the-tavern"));
+  if (!tavern) throw new Error("tavern");
+  world.state = {
+    ...world.state,
+    buildings: new Map(world.state.buildings).set(id("the-tavern"), {
+      ...tavern,
+      status: "operational",
+      fireIntensity: undefined,
+      ticksBurning: undefined,
+      ignition: undefined,
+    } as never),
+  };
+  expect(prayableCauses(world.state, id("farmer"))).toEqual([]);
+});
+
+test("a theft is prayed about as lost stock, always known to its victim, with no offender; only a memory of the theft naming the offender, who owns a building, makes it a punish petition", () => {
+  const theft = (world: World, offender: string) =>
+    world.apply({
+      kind: "theft",
+      entityId: offender,
+      victim: "farmer",
+      resource: "food",
+      amount: 3,
+      cause: "director",
+    });
+
+  // Not seen, not told: the victim knows what it lost, not who took it. Help, with the amount.
+  const blind = new World();
+  const unseen = theft(blind, "woodcutter");
+  blind.until(() => blind.petitions().length > 0);
+  expect(blind.petitions()[0]).toMatchObject({
+    cause: unseen.id,
+    request: {
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: 3 },
+    },
   });
-  punished.until(() => punished.petitions().length > 0);
-  expect(punished.petitions()[0]).toMatchObject({
-    cause: stolen.id,
+
+  // It saw it happen: a witnessed memory naming the woodcutter, who owns the woodshed.
+  const saw = new World();
+  const seen = theft(saw, "woodcutter");
+  remembers(saw, "farmer", seen, "woodcutter", "theft");
+  saw.until(() => saw.petitions().length > 0);
+  expect(saw.petitions()[0]).toMatchObject({
+    cause: seen.id,
     request: {
       kind: "punish",
       offender: "woodcutter",
@@ -250,20 +302,89 @@ test("a theft by someone who owns a building asks for punishment, naming the bui
     },
   });
 
-  const helped = new World();
-  const robbed = helped.apply({
-    kind: "theft",
-    entityId: "drifter",
-    victim: "farmer",
+  // Told of it: a belief citing the theft and naming the thief also does.
+  const told = new World();
+  const heard = theft(told, "woodcutter");
+  told.apply({
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: "evt-0-report",
+    teller: "drifter",
+    content: "I saw the woodcutter take it.",
+    linkedEventId: heard.id,
+    subjects: ["drifter", "woodcutter", "farmer"],
+    salience: 4,
+    consequence: { effect: "harm", agent: "woodcutter", target: "farmer" },
+  });
+  told.until(() => told.petitions().length > 0);
+  expect(told.petitions()[0]?.request).toMatchObject({
+    kind: "punish",
+    offender: "woodcutter",
+  });
+
+  // A memory that does not count: of another event, or that does not name the thief.
+  const other = new World();
+  const real = theft(other, "woodcutter");
+  const decoy = other.apply({
+    kind: "stock-spoiled",
+    entityId: "farmer",
     resource: "food",
     amount: 1,
     cause: "director",
   });
-  helped.until(() => helped.petitions().length > 0);
-  expect(helped.petitions()[0]).toMatchObject({
-    cause: robbed.id,
-    request: { kind: "help", need: { kind: "resource", resource: "food" } },
+  remembers(other, "farmer", decoy, "woodcutter", "stock-spoiled");
+  other.until(() => other.petitions().some((p) => p.cause === real.id));
+  expect(other.petitions().find((p) => p.cause === real.id)?.request.kind).toBe(
+    "help",
+  );
+  const nameless = new World();
+  const nameless_ = theft(nameless, "woodcutter");
+  nameless.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: "farmer",
+    sourceEventId: nameless_.id,
+    eventKind: "theft",
+    subjects: ["farmer"],
+    salience: 6,
+    consequence: { effect: "harm", agent: "drifter", target: "farmer" },
   });
+  nameless.until(() => nameless.petitions().length > 0);
+  expect(nameless.petitions()[0]?.request.kind).toBe("help");
+
+  // A thief who owns no building cannot be punished, however well known: help.
+  const homeless = new World();
+  const stolen = theft(homeless, "drifter");
+  remembers(homeless, "farmer", stolen, "drifter", "theft");
+  homeless.until(() => homeless.petitions().length > 0);
+  expect(homeless.petitions()[0]?.request.kind).toBe("help");
+});
+
+test("a grudge yields only a punish petition, and none when the offender owns no building", () => {
+  const grudge = (toward: string) => {
+    const world = new World();
+    world.apply({
+      kind: "relationship-changed",
+      entityId: "farmer",
+      toward,
+      affinityDelta: -2,
+      grudgeDelta: 1,
+      memoryEventId: "evt-0-m",
+    });
+    return world;
+  };
+  const owner = grudge("woodcutter");
+  owner.until(() => owner.petitions().length > 0);
+  expect(owner.petitions()[0]?.request).toMatchObject({
+    kind: "punish",
+    offender: "woodcutter",
+    buildings: ["woodshed"],
+  });
+  const none = grudge("drifter");
+  expect(prayableCauses(none.state, id("farmer"))).toEqual([]);
+  for (let n = 0; n < 50; n += 1) none.tick();
+  expect(none.petitions()).toEqual([]);
 });
 
 test("an unmet need is prayed about, citing the need event; spoiled stock too", () => {
@@ -278,7 +399,7 @@ test("an unmet need is prayed about, citing the need event; spoiled stock too", 
   needy.until(() => needy.petitions().length > 0);
   expect(needy.petitions()[0]?.request).toEqual({
     kind: "help",
-    need: { kind: "resource", resource: "food" },
+    need: { kind: "resource", resource: "food", amount: 1 },
   });
 
   // The woodcutter's food runs out: the scan records the need, and the woodcutter prays about it.
@@ -428,6 +549,30 @@ test("a mortal with work to do prefers it to prayer: production and repair outra
   expect(
     decideRoutineProposal(world.state, id("woodcutter"))?.proposal,
   ).toMatchObject({ kind: "move", to: "altar" });
+});
+
+test("a mortal that did not just pray stays where it was put: only the walk back from a prayer takes it home", () => {
+  const world = new World();
+  // Standing in the tavern with nothing to pray about and no prayer behind it: no pull toward home.
+  place(world, "farmer", "tavern");
+  expect(
+    decideRoutineProposal(world.state, id("farmer"))?.proposal.kind,
+  ).not.toBe("move");
+  for (let n = 0; n < 5; n += 1) world.tick();
+  expect(getActor(world.state, id("farmer"))?.locationId).toBe(id("tavern"));
+  // Control: right after praying, the same mortal at the altar walks home.
+  const prayed = new World();
+  prayer(prayed, "farmer");
+  expect(getActor(prayed.state, id("farmer"))?.locationId).toBe(id("altar"));
+  expect(
+    decideRoutineProposal(prayed.state, id("farmer"))?.proposal,
+  ).toMatchObject({ kind: "move", to: "square" });
+  // And a long time after the prayer it is not pulled any more.
+  const cooldown = petitionBalanceOf(prayed.state.rules, "prayerCooldownTicks");
+  prayed.state = { ...prayed.state, tick: prayed.state.tick + cooldown + 1 };
+  expect(
+    decideRoutineProposal(prayed.state, id("farmer"))?.proposal.kind,
+  ).not.toBe("move");
 });
 
 // --- Routing --------------------------------------------------------------------------------
@@ -630,6 +775,13 @@ function petition(
   cause: Record<string, unknown>,
 ) {
   const event = world.apply(cause);
+  // A mortal who stood there when it happened saw who did it: that memory is what lets it name the
+  // offender, and what lets it pray about a building it is not standing at.
+  if (cause.kind === "theft") {
+    remembers(world, mortal, event, String(cause.entityId), "theft");
+  } else if (cause.kind === "building-damaged") {
+    remembers(world, mortal, event, String(cause.actor), "building-damaged");
+  }
   relate(world, mortal, god, 5);
   place(world, mortal, "altar");
   const submitted = submitProposal({
@@ -1154,10 +1306,8 @@ test("with two open help petitions from one mortal, a bless names one: it answer
   expect(world.state.petitions.get(hunger.id)?.status).toBe("answered");
   expect(world.state.petitions.get(burn.id)?.status).toBe("open");
   const grant = ofKind(ran.events, "blessing-granted")[0];
-  expect(grant).toMatchObject({
-    resource: "food",
-    amount: petitionBalanceOf(world.state.rules, "blessResourceAmount"),
-  });
+  // The lost stock (one unit) is returned, not the standing amount.
+  expect(grant).toMatchObject({ resource: "food", amount: 1 });
   expect(grant?.building).toBeUndefined();
   expect(
     getActor(world.state, id("farmer"))?.inventory.get("planks"),
@@ -1269,4 +1419,72 @@ test("petitions, answers, lapses, signs, blessings, and affinity are reproduced 
   const restored = decode(JSON.parse(JSON.stringify(encode(world.state))));
   expect([...restored.repairGrants]).toEqual([...world.state.repairGrants]);
   expect([...restored.memories]).toEqual([...world.state.memories]);
+});
+
+test("a bless for lost stock grants what was lost, up to the cap: a large loss is capped, a small one returned whole, and an unmet need gets the standing amount", () => {
+  const cap = (w: World) =>
+    petitionBalanceOf(w.state.rules, "blessResourceCap");
+  const standing = (w: World) =>
+    petitionBalanceOf(w.state.rules, "blessResourceAmount");
+  const blessed = (lost: number) => {
+    const world = new World();
+    const opened = petition(world, "farmer", "hera", {
+      kind: "stock-spoiled",
+      entityId: "farmer",
+      resource: "food",
+      amount: lost,
+      cause: "director",
+    });
+    expect(world.state.petitions.get(opened.id)?.request).toEqual({
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: lost },
+    });
+    place(world, "hera", "square");
+    const before =
+      getActor(world.state, id("farmer"))?.inventory.get("food") ?? 0;
+    const ran = godActs(world, {
+      actor: "hera",
+      kind: "bless",
+      petition: opened.id,
+      targets: ["farmer"],
+    });
+    expect(ran.rejected).toEqual([]);
+    return {
+      granted:
+        (getActor(world.state, id("farmer"))?.inventory.get("food") ?? 0) -
+        before,
+      cap: cap(world),
+    };
+  };
+  const big = blessed(cap(new World()) + 7);
+  expect(big.granted).toBe(big.cap);
+  const small = blessed(1);
+  expect(small.granted).toBe(1);
+
+  // An unmet need names no amount: the standing blessing.
+  const needy = new World();
+  const farmer = getActor(needy.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  // The farmer wants planks and no one sells them: the scan records a real unmet need.
+  needy.state = withActor(needy.state, { ...farmer, wants: "planks" });
+  needy.until(() =>
+    needy.petitions().some((p) => p.petitioner === id("farmer")),
+  );
+  const asked = needy.petitions().find((p) => p.petitioner === id("farmer"));
+  expect(asked?.request).toEqual({
+    kind: "help",
+    need: { kind: "resource", resource: "planks" },
+  });
+  place(needy, "hera", "square");
+  place(needy, "farmer", "square");
+  const ran = godActs(needy, {
+    actor: "hera",
+    kind: "bless",
+    petition: asked?.id as string,
+    targets: ["farmer"],
+  });
+  expect(ran.rejected).toEqual([]);
+  expect(getActor(needy.state, id("farmer"))?.inventory.get("planks")).toBe(
+    standing(needy),
+  );
 });

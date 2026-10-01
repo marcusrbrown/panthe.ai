@@ -87,6 +87,17 @@ class Run {
       amount: 1,
       cause: "director",
     });
+    // The mortal was there when it happened: it remembers who did it.
+    this.apply({
+      kind: "memory-recorded",
+      memoryKind: "witnessed",
+      entityId: mortal,
+      sourceEventId: cause.id,
+      eventKind: "theft",
+      subjects: [offender, mortal],
+      salience: 6,
+      consequence: { effect: "harm", agent: offender, target: mortal },
+    });
     const placed = getActor(this.state, id(mortal));
     if (!placed) throw new Error(mortal);
     const home = placed.locationId;
@@ -211,6 +222,16 @@ test("bless is offered only for a petitioner who is present, naming one of its o
     amount: 1,
     actor: "zeus",
   });
+  run.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: "farmer",
+    sourceEventId: cause.id,
+    eventKind: "building-damaged",
+    subjects: ["zeus", "the-tavern", "farmer"],
+    salience: 5,
+    consequence: { effect: "harm", agent: "zeus", target: "farmer" },
+  });
   const farmer = getActor(run.state, id("farmer"));
   if (!farmer) throw new Error("farmer");
   run.state = withActor(run.state, { ...farmer, locationId: id("altar") });
@@ -254,6 +275,16 @@ test("a bless intent parses against the offered petitions only, and builds a pro
     entityId: "the-tavern",
     amount: 1,
     actor: "zeus",
+  });
+  run.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: "farmer",
+    sourceEventId: cause.id,
+    eventKind: "building-damaged",
+    subjects: ["zeus", "the-tavern", "farmer"],
+    salience: 5,
+    consequence: { effect: "harm", agent: "zeus", target: "farmer" },
   });
   const farmer = getActor(run.state, id("farmer"));
   if (!farmer) throw new Error("farmer");

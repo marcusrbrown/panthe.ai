@@ -55,6 +55,8 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   "salience_worship-performed": 4,
   /** A belief formed from a report. */
   salience_told: 4,
+  /** A theft someone was there to see. */
+  salience_theft: 6,
   /** A mortal's memory of a god's answer or silence. */
   salience_sign: 6,
   /** Affinity lost toward whoever did harm one witnessed. */
@@ -288,6 +290,8 @@ function consequenceOf(
       );
     case "worship-performed":
       return { effect: "kindness", agent: event.entityId, target: event.deity };
+    case "theft":
+      return { effect: "harm", agent: event.entityId, target: event.victim };
     default:
       return undefined;
   }

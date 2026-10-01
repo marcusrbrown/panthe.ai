@@ -359,6 +359,7 @@ export const PETITION_BALANCE_KEYS = [
   "blessDivinityCost",
   "blessPlanks",
   "blessResourceAmount",
+  "blessResourceCap",
   "directorQuietTicks",
   "goalLockTicks",
 ] as const;

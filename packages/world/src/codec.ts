@@ -872,6 +872,11 @@ function parseCauseEntry(
     if (!building.ok) return building;
     const resource = parseOptionalString(item.resource, `${at}.resource`);
     if (!resource.ok) return resource;
+    const amount =
+      item.amount === undefined
+        ? ok<number | undefined>(undefined)
+        : parseNonNegativeInteger(item.amount, `${at}.amount`);
+    if (!amount.ok) return amount;
     return ok({
       eventId: eventId.value,
       tick: tick.value,
@@ -879,6 +884,7 @@ function parseCauseEntry(
       ...(offender.value === undefined ? {} : { offender: offender.value }),
       ...(building.value === undefined ? {} : { building: building.value }),
       ...(resource.value === undefined ? {} : { resource: resource.value }),
+      ...(amount.value === undefined ? {} : { amount: amount.value }),
     });
   });
   if (!causes.ok) return causes;

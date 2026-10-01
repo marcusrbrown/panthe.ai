@@ -268,7 +268,12 @@ export type PetitionRequest =
       readonly kind: "help";
       readonly need:
         | { readonly kind: "building"; readonly building: EntityId }
-        | { readonly kind: "resource"; readonly resource: string };
+        | {
+            readonly kind: "resource";
+            readonly resource: string;
+            /** What was lost, for spoiled stock or a theft; absent for an unmet need. A blessing grants it back up to a cap. */
+            readonly amount?: number;
+          };
     }
   | {
       readonly kind: "punish";
@@ -761,9 +766,18 @@ export function parsePetitionRequest(
         `${path}.need.resource`,
       );
       if (!resource.ok) return resource;
+      const amount =
+        value.need.amount === undefined
+          ? ok<number | undefined>(undefined)
+          : parsePositiveInteger(value.need.amount, `${path}.need.amount`);
+      if (!amount.ok) return amount;
       return ok({
         kind: "help",
-        need: { kind: "resource", resource: resource.value },
+        need: {
+          kind: "resource",
+          resource: resource.value,
+          ...(amount.value === undefined ? {} : { amount: amount.value }),
+        },
       });
     }
     return fail(`${path}.need.kind`, "expected a building or a resource");

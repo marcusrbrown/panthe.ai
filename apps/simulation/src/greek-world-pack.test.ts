@@ -86,6 +86,7 @@ test("the Greek pack gives the woodcutter a woodshed at the square, so a theft b
       "blessDivinityCost",
       "blessPlanks",
       "blessResourceAmount",
+      "blessResourceCap",
       "causePrayableTicks",
       "directorQuietTicks",
       "goalLockTicks",

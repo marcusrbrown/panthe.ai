@@ -1539,3 +1539,21 @@ test("a sign memory records which god answered or let lapse which petition, with
     expect(parseEvent(envelope({ ...sign, ...bad })).ok).toBe(false);
   }
 });
+
+test("a help request for a resource may carry the amount lost, a whole positive number, so a blessing can grant it back", () => {
+  const ask = (need: unknown) =>
+    parseEvent(envelope({ ...OPENED, request: { kind: "help", need } }));
+  const withAmount = ask({ kind: "resource", resource: "food", amount: 3 });
+  expect(withAmount.ok).toBe(true);
+  if (withAmount.ok && withAmount.value.kind === "petition-opened") {
+    expect(withAmount.value.request as unknown).toEqual({
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: 3 },
+    });
+  }
+  // Without one (an unmet need) it is as before.
+  expect(ask({ kind: "resource", resource: "food" }).ok).toBe(true);
+  for (const amount of [0, -1, 1.5, "3"]) {
+    expect(ask({ kind: "resource", resource: "food", amount }).ok).toBe(false);
+  }
+});

@@ -281,6 +281,8 @@ export interface PetitionCause {
   readonly offender?: EntityId;
   readonly building?: EntityId;
   readonly resource?: string;
+  /** How much was lost, for a theft or spoiled stock. */
+  readonly amount?: number;
 }
 
 /** A petition: who asked which god, for what, about which cause, and how it stands. Rebuilt from the log. */

@@ -23,7 +23,7 @@ import type {
 } from "@panthea/contracts";
 import { creditActorInventory } from "./economy";
 import { ALTAR, nextHop } from "./geography";
-import { getRelationship } from "./memory";
+import { getMemories, getRelationship } from "./memory";
 import {
   type ActorState,
   getActor,
@@ -52,6 +52,8 @@ export const DEFAULT_PETITION_BALANCE: Readonly<Record<string, number>> = {
   blessPlanks: 3,
   /** Units of a resource a bless grants for an unmet need. */
   blessResourceAmount: 2,
+  /** Most a bless returns of stock a mortal lost to theft or spoilage. */
+  blessResourceCap: 4,
   /** Ticks without a consequential event before the director causes trouble. */
   directorQuietTicks: 120,
   /** Ticks a goal stays unreplaceable without a reason. */
@@ -68,7 +70,55 @@ export const MAX_CAUSES = 8;
 
 // --- Causes ------------------------------------------------------------------
 
-/** What a mortal could pray about now, newest first: the causes it remembers and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
+/**
+ * The cause as the mortal knows it, or `undefined` when it does not know of it.
+ * A mortal knows a cause only through one of these, never through the world's
+ * log:
+ *
+ * - a memory of the cause event, witnessed or told (a told one cites it), whose
+ *   subjects name the offender: it knows who did it;
+ * - its own unmet need;
+ * - a loss it perceives where it stands now: spoiled or stolen stock of its own,
+ *   always (it holds the stock), or its own building damaged or burned, only
+ *   while it stands at the building. A loss known only this way has no known
+ *   offender.
+ *
+ * A grudge is its own feeling and names who it is against.
+ */
+export function knownCause(
+  state: WorldState,
+  actorId: EntityId,
+  cause: PetitionCause,
+): PetitionCause | undefined {
+  const { offender: _unknown, ...withoutOffender } = cause;
+  if (cause.kind === "need" || cause.kind === "grudge") return cause;
+  const remembered = getMemories(state, actorId).some(
+    (memory) =>
+      cause.offender !== undefined &&
+      (memory.kind === "witnessed"
+        ? memory.sourceEventId === cause.eventId
+        : memory.kind === "told" && memory.linkedEventId === cause.eventId) &&
+      memory.subjects.includes(cause.offender),
+  );
+  if (remembered) return cause;
+  if (cause.kind === "theft" || cause.kind === "spoilage") {
+    return withoutOffender;
+  }
+  const actor = getActor(state, actorId);
+  const building =
+    cause.building === undefined
+      ? undefined
+      : state.buildings.get(cause.building);
+  const seesIt =
+    building !== undefined &&
+    actor !== undefined &&
+    building.owner === actorId &&
+    building.locationId === actor.locationId &&
+    building.status !== "operational";
+  return seesIt ? withoutOffender : undefined;
+}
+
+/** What a mortal could pray about now, newest first: the causes it knows (`knownCause`) and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
 export function prayableCauses(
   state: WorldState,
   actorId: EntityId,
@@ -87,6 +137,10 @@ export function prayableCauses(
       resource: need.resource,
     }));
   return [...(state.causes.get(actorId) ?? []), ...needs]
+    .flatMap((cause) => {
+      const known = knownCause(state, actorId, cause);
+      return known === undefined ? [] : [known];
+    })
     .filter(
       (cause) =>
         state.tick - cause.tick <= window &&
@@ -146,6 +200,16 @@ export function requestFor(
           };
     case "theft":
     case "spoilage":
+      return cause.resource === undefined
+        ? undefined
+        : {
+            kind: "help",
+            need: {
+              kind: "resource",
+              resource: cause.resource,
+              ...(cause.amount === undefined ? {} : { amount: cause.amount }),
+            },
+          };
     case "need":
       return cause.resource === undefined
         ? undefined
@@ -254,7 +318,14 @@ export function prayerStep(
       ? undefined
       : { kind: "walk", to: hop, purpose: "altar" };
   }
-  if (actor.home !== undefined && actor.locationId !== actor.home) {
+  // The walk home belongs to the prayer trip: a mortal still within its prayer
+  // cooldown of its last prayer is on its way back. One placed elsewhere any
+  // other time stays put.
+  if (
+    actor.home !== undefined &&
+    actor.locationId !== actor.home &&
+    inCooldown(state, actorId)
+  ) {
     const hop = nextHop(
       state,
       actor.locationId,
@@ -317,6 +388,7 @@ export function recordCauses(state: WorldState, event: WorldEvent): WorldState {
         kind: "theft",
         offender: event.entityId,
         resource: event.resource,
+        amount: event.amount,
       });
     case "stock-spoiled":
       return recordCause(state, event.entityId, {
@@ -324,6 +396,7 @@ export function recordCauses(state: WorldState, event: WorldEvent): WorldState {
         tick: event.tick,
         kind: "spoilage",
         resource: event.resource,
+        amount: event.amount,
       });
     case "relationship-changed":
       return event.grudgeDelta > 0
@@ -418,16 +491,24 @@ export function blessingFor(
   request: PetitionRequest,
 ): { resource: string; amount: number; building?: EntityId } | undefined {
   if (request.kind !== "help") return undefined;
-  return request.need.kind === "building"
-    ? {
-        resource: "planks",
-        amount: petitionBalanceOf(state.rules, "blessPlanks"),
-        building: request.need.building,
-      }
-    : {
-        resource: request.need.resource,
-        amount: petitionBalanceOf(state.rules, "blessResourceAmount"),
-      };
+  if (request.need.kind === "building") {
+    return {
+      resource: "planks",
+      amount: petitionBalanceOf(state.rules, "blessPlanks"),
+      building: request.need.building,
+    };
+  }
+  // Lost stock is returned up to the cap; an unmet need gets the standing amount.
+  return {
+    resource: request.need.resource,
+    amount:
+      request.need.amount === undefined
+        ? petitionBalanceOf(state.rules, "blessResourceAmount")
+        : Math.min(
+            request.need.amount,
+            petitionBalanceOf(state.rules, "blessResourceCap"),
+          ),
+  };
 }
 
 /** A judged answer: the petition it answers and the event that answered it. */

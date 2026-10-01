@@ -233,6 +233,16 @@ describe("parseRoutingConfig", () => {
       { endpoints: [{ ...go, keyRef: 5 }] },
       "endpoints[0].keyRef",
     ],
+    [
+      "a reasoning effort that is not none",
+      { endpoints: [{ ...ollama, reasoningEffort: "high" }] },
+      "endpoints[0].reasoningEffort",
+    ],
+    [
+      "a non-string reasoning effort",
+      { endpoints: [{ ...ollama, reasoningEffort: false }] },
+      "endpoints[0].reasoningEffort",
+    ],
     ["no endpoints", { endpoints: [] }, "endpoints"],
     [
       "a duplicate id in a fallback list",
@@ -245,6 +255,23 @@ describe("parseRoutingConfig", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.path).toBe(path);
+    }
+  });
+
+  test("an endpoint may set its reasoning effort to none; without it the field is absent", () => {
+    const set = parseRoutingConfig(
+      config({ endpoints: [{ ...ollama, reasoningEffort: "none" }, go] }),
+    );
+    expect(set.ok).toBe(true);
+    if (set.ok) {
+      expect(set.value.endpoints.get("ollama")?.reasoningEffort).toBe("none");
+    }
+    const unset = parseRoutingConfig(config());
+    expect(unset.ok).toBe(true);
+    if (unset.ok) {
+      expect(unset.value.endpoints.get("ollama")).not.toHaveProperty(
+        "reasoningEffort",
+      );
     }
   });
 

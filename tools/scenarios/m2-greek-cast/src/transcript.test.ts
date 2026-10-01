@@ -555,3 +555,56 @@ test("the summary does not say everything held when a real-run property failed, 
   expect(held).toContain("All automated checks and real-run properties held.");
   expect(held).not.toContain("Automated checks failed");
 });
+
+// --- Settings name the model and the reasoning mode; the repetition list is complete ------
+
+test("the settings name the model and say whether reasoning was off", () => {
+  const base = story();
+  const off = renderTranscript({
+    ...base,
+    settings: {
+      ...base.settings,
+      model: "gemma4-e4b-4k",
+      reasoningEffort: "none",
+    },
+  });
+  expect(off).toContain("Model: gemma4-e4b-4k");
+  expect(off).toContain("reasoning off (reasoning_effort none)");
+  // Control: unset says the model's own default, not off.
+  const on = renderTranscript(base);
+  expect(on).toContain("reasoning at the model's default");
+  expect(on).not.toContain("reasoning off");
+
+  const summarySettings = {
+    seconds: 60,
+    model: "gemma4-e4b-4k",
+    files: ["episode-1.md"],
+  };
+  expect(
+    renderSummary([base], { ...summarySettings, reasoningEffort: "none" }),
+  ).toContain("reasoning off (reasoning_effort none)");
+  expect(renderSummary([base], summarySettings)).toContain(
+    "reasoning at the model's default",
+  );
+});
+
+test("the repetition summary lists every distinct choice a god made, not the top five", () => {
+  const targets = ["a", "b", "c", "d", "e", "f", "g", "h"];
+  const acts = [
+    ...targets.map((to, i) => move("zeus", to, i + 1)),
+    // Weight the first choices, so a top-five cut would drop the last ones.
+    move("zeus", "a", 20),
+    move("zeus", "b", 21),
+  ];
+  const text = renderTranscript(record(acts));
+  const zeus = text
+    .slice(text.indexOf("## Repetition"), text.indexOf("## Automated checks"))
+    .split("\n")
+    .find((line) => line.startsWith("- Zeus:"));
+  for (const to of targets) expect(zeus).toContain(`move:${to}`);
+  expect(zeus).toContain("move:a ×2");
+  expect(zeus).toContain("move:h ×1");
+  // Control: a god with one choice lists one.
+  const hera = text.split("\n").find((line) => line.startsWith("- Hera:"));
+  expect(hera).toContain("Choices: none");
+});

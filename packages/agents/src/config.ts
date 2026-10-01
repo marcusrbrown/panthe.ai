@@ -19,6 +19,14 @@ export interface Endpoint {
   readonly model: string;
   /** Names a key in platform credential storage; the value is supplied by the caller, never read here. */
   readonly keyRef?: string;
+  /**
+   * Asks the endpoint not to reason before answering (`reasoning_effort:
+   * "none"`). For a model that thinks by default over the OpenAI-compatible
+   * path, such as gemma4 on Ollama, where it cuts a turn from seconds to
+   * well under one. Absent, the request carries no such field. Only "none" is
+   * accepted: it is the one value measured against a real endpoint.
+   */
+  readonly reasoningEffort?: "none";
 }
 
 export interface RoleAssignment {
@@ -239,7 +247,11 @@ function parseEndpoint(value: unknown, path: string): ParseResult<Endpoint> {
   if (!isRecord(value)) {
     return fail(path, "expected an object");
   }
-  const bad = unknownKey(value, ["id", "baseUrl", "model", "keyRef"], path);
+  const bad = unknownKey(
+    value,
+    ["id", "baseUrl", "model", "keyRef", "reasoningEffort"],
+    path,
+  );
   if (bad) {
     return bad;
   }
@@ -281,6 +293,13 @@ function parseEndpoint(value: unknown, path: string): ParseResult<Endpoint> {
     if (!parsedRef.ok) return parsedRef;
     keyRef = parsedRef.value;
   }
+  let reasoningEffort: "none" | undefined;
+  if (value.reasoningEffort !== undefined) {
+    if (value.reasoningEffort !== "none") {
+      return fail(`${path}.reasoningEffort`, 'expected "none" when set');
+    }
+    reasoningEffort = "none";
+  }
   return {
     ok: true,
     value: {
@@ -288,6 +307,7 @@ function parseEndpoint(value: unknown, path: string): ParseResult<Endpoint> {
       baseUrl: url.href.replace(/\/+$/, ""),
       model: model.value,
       ...(keyRef === undefined ? {} : { keyRef }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     },
   };
 }

@@ -134,7 +134,12 @@ const SAY = '{"kind":"say","text":"hail"}';
 const HAIL: Say = { kind: "say", text: "hail" };
 
 function configFor(
-  endpoints: readonly { id: string; baseUrl: string; keyRef?: string }[],
+  endpoints: readonly {
+    id: string;
+    baseUrl: string;
+    keyRef?: string;
+    reasoningEffort?: string;
+  }[],
   extra: Record<string, unknown> = {},
 ): RoutingConfig {
   const result = parseRoutingConfig({
@@ -274,6 +279,74 @@ describe("route: repair", () => {
       expect(result.step.attempts).toBe(1);
     }
     expect(stub.seen).toHaveLength(1);
+  });
+
+  test("an endpoint set to reasoning effort none sends reasoning_effort on the structured request and on the plain-text fallback", async () => {
+    const stub = startStub(
+      sequence(
+        { status: 400, body: "response_format is not supported" },
+        { content: `Sure! ${SAY}` },
+      ),
+    );
+    const router = routerFor(
+      configFor(
+        [{ id: "ollama", baseUrl: stub.baseUrl, reasoningEffort: "none" }],
+        { roles: { zeus: { endpoint: "ollama" } } },
+      ),
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    // The structured request, then the fallback: both ask for no reasoning.
+    expect(stub.seen).toHaveLength(2);
+    expect(stub.seen[0]?.body.reasoning_effort).toBe("none");
+    expect(stub.seen[1]?.body.reasoning_effort).toBe("none");
+  });
+
+  test("an endpoint with no reasoning effort set sends none: its requests are unchanged", async () => {
+    const stub = startStub(
+      sequence(
+        { status: 400, body: "response_format is not supported" },
+        { content: `Sure! ${SAY}` },
+      ),
+    );
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    );
+
+    await router.route("zeus", context, sayIntent);
+
+    expect(stub.seen).toHaveLength(2);
+    for (const request of stub.seen) {
+      expect(request.body).not.toHaveProperty("reasoning_effort");
+    }
+  });
+
+  test("the setting belongs to its endpoint: a fallback endpoint without it sends none", async () => {
+    const primary = startStub(always({ status: 500 }));
+    const fallback = startStub(always({ content: SAY }));
+    const router = routerFor(
+      configFor(
+        [
+          { id: "primary", baseUrl: primary.baseUrl, reasoningEffort: "none" },
+          { id: "fallback", baseUrl: fallback.baseUrl },
+        ],
+        {
+          roles: { zeus: { endpoint: "primary" } },
+          fallback: ["fallback"],
+        },
+      ),
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    expect(primary.seen[0]?.body.reasoning_effort).toBe("none");
+    expect(fallback.seen).toHaveLength(1);
+    expect(fallback.seen[0]?.body).not.toHaveProperty("reasoning_effort");
   });
 
   test.each([[400], [422]])(

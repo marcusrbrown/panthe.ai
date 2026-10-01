@@ -49,6 +49,7 @@ import {
   legendTellings,
   planRelationships,
   reportTelling,
+  signMemory,
   toldMemory,
   witnessMemories,
 } from "./memory";
@@ -58,7 +59,16 @@ import {
   applyUnmetNeed,
   planNeedStep,
 } from "./needs";
-import { applyPetitionOpened, recordCauses } from "./petitions";
+import {
+  answeredDraft,
+  applyBlessingGranted,
+  applyPetitionAnswered,
+  applyPetitionLapsed,
+  applyPetitionOpened,
+  judgeAnswers,
+  lapsingPetitions,
+  recordCauses,
+} from "./petitions";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -68,7 +78,7 @@ import {
   withLegend,
 } from "./state";
 import { validateProposal } from "./validate";
-import { applyWorshipPerformed } from "./worship";
+import { answeredWorshipDraft, applyWorshipPerformed } from "./worship";
 
 /** Moves an actor to `to`, bumping the actor's and both locations' revisions. */
 function moveActor(
@@ -247,8 +257,15 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "petition-opened":
       next = applyPetitionOpened(state, event);
       break;
+    case "blessing-granted":
+      next = applyBlessingGranted(state, event);
+      break;
     case "petition-answered":
+      next = applyPetitionAnswered(state, event);
+      break;
     case "petition-lapsed":
+      next = applyPetitionLapsed(state, event);
+      break;
     case "goal-change-refused":
       // Their world state arrives with the units that produce them.
       next = state;
@@ -607,9 +624,53 @@ export function runTick(
         approximate,
       });
     });
-  const memoryEvents = derive(
-    planMemories(state, [...proposalEvents, ...environmentEvents], working),
+  // Answers first, then lapses: an answer on a petition's last tick wins over
+  // its lapse. A dead petitioner's petition is closed and nothing follows it.
+  const primaryEvents = [...proposalEvents, ...environmentEvents];
+  const answerEvents = derive(
+    judgeAnswers(state, primaryEvents, working, applyEvent).map((answer) => ({
+      draft: answeredDraft(answer),
+      cause: answer.answeredBy,
+    })),
   );
+  working = applyEvents(working, answerEvents);
+  const lapseEvents = derive(
+    lapsingPetitions(working).map((petition) => ({
+      cause: { id: petition.id },
+      draft: {
+        kind: "petition-lapsed" as const,
+        entityId: petition.petitioner,
+        god: petition.god,
+        petitionId: petition.id,
+      },
+    })),
+  );
+  working = applyEvents(working, lapseEvents);
+  // A living petitioner whose petition was answered worships the god, crediting
+  // its divinity and earning the favor; the answer is its cause.
+  const worshipEvents = derive(
+    answerEvents.flatMap((answer) =>
+      answer.kind === "petition-answered" &&
+      working.actors.get(answer.entityId)?.alive
+        ? [
+            {
+              cause: answer,
+              draft: answeredWorshipDraft(working, answer.entityId, answer.god),
+            },
+          ]
+        : [],
+    ),
+  );
+  working = applyEvents(working, worshipEvents);
+  const signs = [...answerEvents, ...lapseEvents].flatMap((event) =>
+    event.kind === "petition-answered" || event.kind === "petition-lapsed"
+      ? (signMemory(working, event) ?? [])
+      : [],
+  );
+  const memoryEvents = derive([
+    ...planMemories(state, primaryEvents, working),
+    ...signs,
+  ]);
   working = applyEvents(working, memoryEvents);
   const relationshipEvents = derive(
     planRelationships(
@@ -618,7 +679,13 @@ export function runTick(
     ),
   );
   working = applyEvents(working, relationshipEvents);
-  const derivedEvents = [...memoryEvents, ...relationshipEvents];
+  const derivedEvents = [
+    ...answerEvents,
+    ...lapseEvents,
+    ...worshipEvents,
+    ...memoryEvents,
+    ...relationshipEvents,
+  ];
   return {
     state: working,
     prng: fireStep.prng,

@@ -292,6 +292,22 @@ export interface PetitionOpenedEvent extends EventEnvelope {
 }
 
 /**
+ * `entityId` (a god) blessed `recipient` at the god's own place, granting what
+ * the petition `petitionId` needs: planks for a damaged `building`, or an amount
+ * of a resource. The cost in divinity is a separate consumption event. The
+ * mortal rebuilds through its own routine; the damage stays on record.
+ */
+export interface BlessingGrantedEvent extends EventEnvelope {
+  readonly kind: "blessing-granted";
+  readonly entityId: EntityId;
+  readonly recipient: EntityId;
+  readonly petitionId: EventId;
+  readonly resource: string;
+  readonly amount: number;
+  readonly building?: EntityId;
+}
+
+/**
  * The world judged that `god` answered the petition `petitionId`, and sends
  * `entityId` a sign: a recorded, private divine act. It carries no knowledge
  * of where or how the god answered. `answeredBy` is the event of the answering
@@ -393,9 +409,23 @@ export interface ToldMemoryRecordedEvent extends MemoryRecordedBase {
   readonly linkedEventId?: EventId;
 }
 
+/**
+ * A mortal remembers a god's answer, or its silence: the sign of an answered
+ * petition (a kindness by the god) or a lapse (harm by its neglect). The
+ * consequence is what moves the mortal's affinity toward the god.
+ */
+export interface SignMemoryRecordedEvent extends MemoryRecordedBase {
+  readonly memoryKind: "sign";
+  readonly god: EntityId;
+  readonly outcome: "answered" | "lapsed";
+  readonly petitionId: EventId;
+  readonly consequence: Consequence;
+}
+
 export type MemoryRecordedEvent =
   | WitnessedMemoryRecordedEvent
-  | ToldMemoryRecordedEvent;
+  | ToldMemoryRecordedEvent
+  | SignMemoryRecordedEvent;
 
 /**
  * A relationship changed because of one memory: `entityId` now feels
@@ -439,6 +469,7 @@ export type WorldEvent =
   | TheftEvent
   | StockSpoiledEvent
   | PetitionOpenedEvent
+  | BlessingGrantedEvent
   | PetitionAnsweredEvent
   | PetitionLapsedEvent
   | GoalChangeRefusedEvent;
@@ -469,6 +500,7 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   theft: true,
   "stock-spoiled": true,
   "petition-opened": true,
+  "blessing-granted": true,
   "petition-answered": true,
   "petition-lapsed": true,
   "goal-change-refused": true,
@@ -513,6 +545,12 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
         return [event.entityId, event.target];
       case "theft":
         return [event.entityId, event.victim];
+      case "blessing-granted":
+        return [
+          event.entityId,
+          event.recipient,
+          ...(event.building === undefined ? [] : [event.building]),
+        ];
       case "petition-opened":
         return [
           event.entityId,
@@ -576,6 +614,7 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.needEventId;
     case "petition-answered":
     case "petition-lapsed":
+    case "blessing-granted":
       return event.petitionId;
     default:
       return undefined;
@@ -836,6 +875,28 @@ function parseMemoryRecorded(
         ...(linkedEventId.value === undefined
           ? {}
           : { linkedEventId: linkedEventId.value }),
+      });
+    }
+    case "sign": {
+      const god = parseEntityId(input.god, "god");
+      if (!god.ok) return god;
+      const outcome = parseEnum(input.outcome, "outcome", [
+        "answered",
+        "lapsed",
+      ] as const);
+      if (!outcome.ok) return outcome;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      if (consequence.value === undefined) {
+        return fail("consequence", "a sign leaves a kindness or a harm");
+      }
+      return ok({
+        ...base,
+        memoryKind: "sign",
+        god: god.value,
+        outcome: outcome.value,
+        petitionId: petitionId.value,
+        consequence: consequence.value,
       });
     }
     default:
@@ -1284,6 +1345,33 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         resource: resource.value,
         amount: amount.value,
         cause: "director",
+      });
+    }
+    case "blessing-granted": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const recipient = parseEntityId(input.recipient, "recipient");
+      if (!recipient.ok) return recipient;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parsePositiveInteger(input.amount, "amount");
+      if (!amount.ok) return amount;
+      const building =
+        input.building === undefined
+          ? ok<EntityId | undefined>(undefined)
+          : parseEntityId(input.building, "building");
+      if (!building.ok) return building;
+      return ok({
+        ...envelope,
+        kind: "blessing-granted",
+        entityId: entityId.value,
+        recipient: recipient.value,
+        petitionId: petitionId.value,
+        resource: resource.value,
+        amount: amount.value,
+        ...(building.value === undefined ? {} : { building: building.value }),
       });
     }
     case "petition-opened": {

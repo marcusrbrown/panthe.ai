@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(28);
+  expect(WORLD_EVENT_KINDS).toHaveLength(29);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -1465,5 +1465,77 @@ test("a need-met event closes the unmet need it names: the mortal, the resource,
     { resource: "planks", needEventId: "evt-3" },
   ]) {
     expect(parseEvent(envelope({ kind: "need-met", ...bad })).ok).toBe(false);
+  }
+});
+
+// --- Blessings and signs ------------------------------------------------------------------
+
+test("a blessing-granted event names the god, the one it blessed, the petition it answers, and what it granted: planks for a building, or a resource", () => {
+  const planks = {
+    kind: "blessing-granted",
+    entityId: "hera",
+    recipient: "farmer",
+    petitionId: "evt-4",
+    resource: "planks",
+    amount: 3,
+    building: "the-tavern",
+  };
+  const result = parseEvent(envelope(planks));
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "blessing-granted") {
+    expect(String(result.value.recipient)).toBe("farmer");
+    expect(String(result.value.building)).toBe("the-tavern");
+    expect(String(eventCause(result.value))).toBe("evt-4");
+    expect(subjectsOf(result.value)).toEqual(["hera", "farmer", "the-tavern"]);
+  }
+  // A resource grant names no building.
+  const food = { ...planks, resource: "food", amount: 2, building: undefined };
+  expect(parseEvent(envelope(food)).ok).toBe(true);
+  for (const bad of [
+    { recipient: undefined },
+    { petitionId: undefined },
+    { resource: "" },
+    { amount: 0 },
+    { amount: 1.5 },
+  ]) {
+    expect(parseEvent(envelope({ ...planks, ...bad })).ok).toBe(false);
+  }
+  // A blessing happens where the god stands, so it is witnessable.
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).toContain(
+    "blessing-granted",
+  );
+});
+
+test("a sign memory records which god answered or let lapse which petition, with the kindness or harm it left", () => {
+  const sign = {
+    kind: "memory-recorded",
+    memoryKind: "sign",
+    entityId: "farmer",
+    sourceEventId: "evt-9",
+    god: "zeus",
+    outcome: "answered",
+    petitionId: "evt-4",
+    subjects: ["zeus"],
+    salience: 6,
+    consequence: { effect: "kindness", agent: "zeus", target: "farmer" },
+  };
+  const result = parseEvent(envelope(sign));
+  expect(result.ok).toBe(true);
+  expect(
+    parseEvent(
+      envelope({
+        ...sign,
+        outcome: "lapsed",
+        consequence: { effect: "harm", agent: "zeus", target: "farmer" },
+      }),
+    ).ok,
+  ).toBe(true);
+  for (const bad of [
+    { god: undefined },
+    { outcome: "ignored" },
+    { petitionId: undefined },
+    { consequence: undefined },
+  ]) {
+    expect(parseEvent(envelope({ ...sign, ...bad })).ok).toBe(false);
   }
 });

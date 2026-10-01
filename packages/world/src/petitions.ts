@@ -11,13 +11,17 @@
 // Favor is the mortal's affinity toward the god. There is no separate score.
 
 import type {
+  BlessingGrantedEvent,
   EntityId,
   EventId,
+  PetitionAnsweredEvent,
+  PetitionLapsedEvent,
   PetitionOpenedEvent,
   PetitionRequest,
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
+import { creditActorInventory } from "./economy";
 import { ALTAR, nextHop } from "./geography";
 import { getRelationship } from "./memory";
 import {
@@ -25,6 +29,7 @@ import {
   getActor,
   type Petition,
   type PetitionCause,
+  type WorldEventDraft,
   type WorldState,
 } from "./state";
 
@@ -349,4 +354,165 @@ export function applyPetitionOpened(
     status: "open",
   });
   return { ...state, petitions };
+}
+
+export function applyBlessingGranted(
+  state: WorldState,
+  event: BlessingGrantedEvent,
+): WorldState {
+  const granted = creditActorInventory(
+    state,
+    event.recipient,
+    event.resource,
+    event.amount,
+  );
+  if (event.building === undefined) return granted;
+  const repairGrants = new Map(granted.repairGrants);
+  repairGrants.set(event.recipient, event.building);
+  return { ...granted, repairGrants };
+}
+
+function closePetition(
+  state: WorldState,
+  petitionId: EventId,
+  status: "answered" | "lapsed",
+): WorldState {
+  const petition = state.petitions.get(petitionId);
+  if (petition === undefined || petition.status !== "open") return state;
+  const petitions = new Map(state.petitions);
+  petitions.set(petitionId, { ...petition, status });
+  return { ...state, petitions };
+}
+
+export function applyPetitionAnswered(
+  state: WorldState,
+  event: PetitionAnsweredEvent,
+): WorldState {
+  return closePetition(state, event.petitionId, "answered");
+}
+
+export function applyPetitionLapsed(
+  state: WorldState,
+  event: PetitionLapsedEvent,
+): WorldState {
+  return closePetition(state, event.petitionId, "lapsed");
+}
+
+// --- Judging ----------------------------------------------------------------------------
+
+/** Whether `tick` is still inside `petition`'s answer window: inclusive, so the last tick of the window answers. */
+export function inAnswerWindow(
+  state: WorldState,
+  petition: Petition,
+  tick: number,
+): boolean {
+  return (
+    tick - petition.tick <= petitionBalanceOf(state.rules, "answerWindowTicks")
+  );
+}
+
+/** What a request asks of a bless: planks for a building, or an amount of a resource. */
+export function blessingFor(
+  state: WorldState,
+  request: PetitionRequest,
+): { resource: string; amount: number; building?: EntityId } | undefined {
+  if (request.kind !== "help") return undefined;
+  return request.need.kind === "building"
+    ? {
+        resource: "planks",
+        amount: petitionBalanceOf(state.rules, "blessPlanks"),
+        building: request.need.building,
+      }
+    : {
+        resource: request.need.resource,
+        amount: petitionBalanceOf(state.rules, "blessResourceAmount"),
+      };
+}
+
+/** A judged answer: the petition it answers and the event that answered it. */
+export interface Answer {
+  readonly petition: Petition;
+  readonly answeredBy: WorldEvent;
+}
+
+/**
+ * The petitions this tick's primary events answer, in event order. `before` is
+ * the world at the start of the tick and each event is judged against it with
+ * the events before it applied (`applyEvent`), so a strike is judged on the
+ * building as it stood. `petitions` is the world the petitions live in now.
+ *
+ * A strike by the named god on an operational building the offender owns
+ * answers every open punish petition against that offender that lists it. A
+ * blessing answers the one petition it names. An answer inside the window
+ * counts; the lapse check runs afterwards, so an answer on a petition's last
+ * tick wins over its lapse.
+ */
+export function judgeAnswers(
+  before: WorldState,
+  primary: readonly WorldEvent[],
+  petitions: WorldState,
+  apply: (state: WorldState, event: WorldEvent) => WorldState,
+): readonly Answer[] {
+  const answers: Answer[] = [];
+  const answered = new Set<EventId>();
+  let running = before;
+  for (const event of primary) {
+    const open = (petition: Petition) =>
+      !answered.has(petition.id) &&
+      petitions.petitions.get(petition.id)?.status === "open" &&
+      inAnswerWindow(petitions, petition, event.tick);
+    const answer = (petition: Petition) => {
+      answered.add(petition.id);
+      answers.push({ petition, answeredBy: event });
+    };
+    if (event.kind === "blessing-granted") {
+      const petition = petitions.petitions.get(event.petitionId);
+      if (petition && open(petition)) answer(petition);
+    } else if (
+      event.kind === "building-damaged" ||
+      event.kind === "building-ignited"
+    ) {
+      const striker =
+        event.kind === "building-damaged"
+          ? event.actor
+          : event.cause.kind === "strike"
+            ? event.cause.actor
+            : undefined;
+      const building = running.buildings.get(event.entityId);
+      if (striker !== undefined && building?.status === "operational") {
+        for (const petition of petitions.petitions.values()) {
+          if (
+            petition.god === striker &&
+            petition.request.kind === "punish" &&
+            petition.request.buildings.includes(event.entityId) &&
+            open(petition)
+          ) {
+            answer(petition);
+          }
+        }
+      }
+    }
+    running = apply(running, event);
+  }
+  return answers;
+}
+
+/** The open petitions whose window ends at or before `state.tick`: the lapse check, run after answers. */
+export function lapsingPetitions(state: WorldState): readonly Petition[] {
+  const window = petitionBalanceOf(state.rules, "answerWindowTicks");
+  return [...state.petitions.values()].filter(
+    (petition) =>
+      petition.status === "open" && state.tick - petition.tick >= window,
+  );
+}
+
+/** The draft of a `petition-answered` event. */
+export function answeredDraft(answer: Answer): WorldEventDraft {
+  return {
+    kind: "petition-answered",
+    entityId: answer.petition.petitioner,
+    god: answer.petition.god,
+    petitionId: answer.petition.id,
+    answeredBy: answer.answeredBy.id,
+  };
 }

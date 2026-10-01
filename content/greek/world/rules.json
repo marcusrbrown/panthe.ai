@@ -48,6 +48,7 @@
       "salience_building-repaired": 4,
       "salience_worship-performed": 4,
       "salience_told": 4,
+      "salience_sign": 6,
       "harmAffinity": 2,
       "kindnessAffinity": 1,
       "toldShare": 0.5,

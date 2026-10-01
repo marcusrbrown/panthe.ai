@@ -135,6 +135,7 @@ function worldOf(
     needs: new Map(),
     causes: new Map(),
     petitions: new Map(),
+    repairGrants: new Map(),
     rules: RULES,
     recipes: {},
   };

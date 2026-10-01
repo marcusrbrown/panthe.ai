@@ -601,3 +601,672 @@ test("the petition tunables default to the numbers the authored content states, 
 });
 
 void ({} as EventId);
+
+// --- Answers, signs, blessings, and lapses (Unit 4) -------------------------------------------
+
+function relate(world: World, from: string, toward: string, affinity: number) {
+  const relationships = new Map(world.state.relationships);
+  relationships.set(relationshipKey(id(from), id(toward)), {
+    from: id(from),
+    toward: id(toward),
+    affinity,
+    grudge: 0,
+    allied: false,
+  });
+  world.state = { ...world.state, relationships };
+}
+
+function place(world: World, actor: string, where: string) {
+  const held = getActor(world.state, id(actor));
+  if (!held) throw new Error(actor);
+  world.state = withActor(world.state, { ...held, locationId: id(where) });
+}
+
+/** Opens a petition by `mortal` to `god` about `cause`, by praying at the altar, then sends the mortal back to the square. */
+function petition(
+  world: World,
+  mortal: string,
+  god: string,
+  cause: Record<string, unknown>,
+) {
+  const event = world.apply(cause);
+  relate(world, mortal, god, 5);
+  place(world, mortal, "altar");
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: mortal,
+    kind: "pray",
+    cause: event.id,
+    targets: [],
+    expectedRevisions: [],
+    source: "routine",
+    observationId: `obs-open-${world.log.length}`,
+  });
+  if (!submitted.ok) throw new Error("fixture");
+  const ran = runTick(world.state, world.prng, [submitted.proposal]);
+  expect(ran.rejected).toEqual([]);
+  world.state = ran.state;
+  world.prng = ran.prng;
+  world.log.push(...ran.events);
+  relationships_reset(world, mortal, god);
+  place(world, mortal, "square");
+  const opened = ofKind(ran.events, "petition-opened")[0] as Extract<
+    WorldEvent,
+    { kind: "petition-opened" }
+  >;
+  expect(String(opened.god)).toBe(god);
+  return opened;
+}
+
+/** Zeroes the fondness a fixture used to route a prayer, so what follows is the sign's doing alone. */
+function relationships_reset(world: World, mortal: string, god: string) {
+  const relationships = new Map(world.state.relationships);
+  relationships.delete(relationshipKey(id(mortal), id(god)));
+  world.state = { ...world.state, relationships };
+}
+
+/** A god acts for one tick: its proposal alone, so routines do not interfere. */
+function godActs(world: World, raw: Record<string, unknown>) {
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    targets: [],
+    expectedRevisions: [],
+    source: "model",
+    observationId: `obs-god-${world.log.length}`,
+    ...raw,
+  });
+  if (!submitted.ok) throw new Error(submitted.rejection.message);
+  const ran = runTick(world.state, world.prng, [submitted.proposal]);
+  world.state = ran.state;
+  world.prng = ran.prng;
+  world.log.push(...ran.events);
+  return ran;
+}
+
+const theftBy = (offender: string, victim = "farmer") => ({
+  kind: "theft",
+  entityId: offender,
+  victim,
+  resource: "food",
+  amount: 1,
+  cause: "director",
+});
+
+const affinityOf = (world: World, mortal: string, god: string) =>
+  world.state.relationships.get(relationshipKey(id(mortal), id(god)))
+    ?.affinity ?? 0;
+
+test("Zeus strikes the woodshed within the window: the petition is answered, the farmer gets a sign that raises its affinity toward Zeus, and it worships him", () => {
+  const world = new World();
+  const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  expect(world.state.petitions.get(opened.id)?.request).toMatchObject({
+    kind: "punish",
+    offender: "woodcutter",
+  });
+  const divinityBefore =
+    getActor(world.state, id("zeus"))?.inventory.get("divinity") ?? 0;
+
+  const ran = godActs(world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(ran.rejected).toEqual([]);
+  const answered = ofKind(ran.events, "petition-answered");
+  expect(answered).toHaveLength(1);
+  expect(answered[0]).toMatchObject({
+    entityId: "farmer",
+    god: "zeus",
+    petitionId: opened.id,
+  });
+  expect(world.state.petitions.get(opened.id)?.status).toBe("answered");
+  // The strike's own event is what answered it.
+  const strike = ofKind(ran.events, "building-damaged")[0];
+  expect(answered[0]?.answeredBy).toBe(strike?.id);
+
+  // The sign: a kindness by Zeus toward the farmer, remembered, raising its affinity; and the farmer worships.
+  const sign = ofKind(ran.events, "memory-recorded").find(
+    (m) => m.entityId === id("farmer") && m.memoryKind === "sign",
+  );
+  expect(sign).toMatchObject({
+    outcome: "answered",
+    god: "zeus",
+    petitionId: opened.id,
+    consequence: { effect: "kindness", agent: "zeus", target: "farmer" },
+  });
+  // The sign's own effect on the farmer's feeling: one kind act by Zeus. (The farmer also
+  // saw the strike land on the square's woodshed, which is its own memory and its own change.)
+  const fromSign = ofKind(ran.events, "relationship-changed").find(
+    (e) => e.memoryEventId === sign?.id,
+  );
+  expect(fromSign).toMatchObject({
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: 1,
+  });
+  const worship = ofKind(ran.events, "worship-performed");
+  expect(worship).toHaveLength(1);
+  expect(worship[0]).toMatchObject({ entityId: "farmer", deity: "zeus" });
+  // His divinity: spent one on the strike, credited the worship's gain.
+  const gain = world.state.rules.economyBalance.worshipCapacityGain ?? 1;
+  expect(getActor(world.state, id("zeus"))?.inventory.get("divinity")).toBe(
+    divinityBefore - 1 + gain,
+  );
+
+  // The whole story explains itself from the log: theft, prayer, answer, sign, feeling.
+  const change = fromSign;
+  expect(change).toBeDefined();
+  const byId = new Map(world.log.map((e) => [e.id, e]));
+  const chain: string[] = [];
+  let cursor: WorldEvent | undefined = change;
+  while (cursor !== undefined) {
+    chain.unshift(cursor.kind);
+    const next: string | undefined =
+      cursor.kind === "relationship-changed"
+        ? cursor.memoryEventId
+        : cursor.kind === "memory-recorded"
+          ? cursor.sourceEventId
+          : cursor.kind === "petition-answered"
+            ? cursor.petitionId
+            : cursor.kind === "petition-opened"
+              ? cursor.cause
+              : undefined;
+    cursor = next === undefined ? undefined : byId.get(next as EventId);
+  }
+  expect(chain).toEqual([
+    "theft",
+    "petition-opened",
+    "petition-answered",
+    "memory-recorded",
+    "relationship-changed",
+  ]);
+});
+
+test("a strike that does not answer: the other god's, one on a building the offender does not own, and one on a building that is not operational", () => {
+  const build = () => {
+    const world = new World();
+    const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+    return { world, opened };
+  };
+  // The other god.
+  const other = build();
+  godActs(other.world, {
+    actor: "hera",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(other.world.state.petitions.get(other.opened.id)?.status).toBe("open");
+  // A building the offender does not own.
+  const wrong = build();
+  godActs(wrong.world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "the-tavern",
+    power: 1,
+  });
+  expect(wrong.world.state.petitions.get(wrong.opened.id)?.status).toBe("open");
+  // A building already damaged is not operational: a second strike on the woodshed does not answer.
+  const spent = build();
+  godActs(spent.world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(spent.world.state.petitions.get(spent.opened.id)?.status).toBe(
+    "answered",
+  );
+  const again = build();
+  const woodshed = again.world.state.buildings.get(id("woodshed"));
+  if (!woodshed) throw new Error("woodshed");
+  again.world.state = {
+    ...again.world.state,
+    buildings: new Map(again.world.state.buildings).set(id("woodshed"), {
+      ...woodshed,
+      status: "damaged",
+    } as typeof woodshed),
+  };
+  godActs(again.world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(again.world.state.petitions.get(again.opened.id)?.status).toBe("open");
+});
+
+test("a strike answers every open punish petition against that offender's building, and only those", () => {
+  const world = new World();
+  const a = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  world.state = { ...world.state, tick: world.state.tick + 25 };
+  const b = petition(
+    world,
+    "drifter",
+    "zeus",
+    theftBy("woodcutter", "drifter"),
+  );
+  const c = petition(world, "farmer", "hera", {
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "food",
+    amount: 1,
+    cause: "director",
+  });
+  const ran = godActs(world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(
+    ofKind(ran.events, "petition-answered")
+      .map((e) => e.petitionId)
+      .sort(),
+  ).toEqual([a.id, b.id].sort());
+  expect(world.state.petitions.get(c.id)?.status).toBe("open");
+});
+
+test("the window is inclusive: an action on its last tick answers, and one on the next tick does not and the petition lapses then", () => {
+  const window = (w: World) =>
+    petitionBalanceOf(w.state.rules, "answerWindowTicks");
+  const last = new World();
+  const first = petition(last, "farmer", "zeus", theftBy("woodcutter"));
+  const openedAt = last.state.petitions.get(first.id)?.tick ?? 0;
+  last.state = { ...last.state, tick: openedAt + window(last) - 1 };
+  const answered = godActs(last, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(last.state.tick).toBe(openedAt + window(last));
+  expect(ofKind(answered.events, "petition-answered")).toHaveLength(1);
+  expect(ofKind(answered.events, "petition-lapsed")).toEqual([]);
+  expect(last.state.petitions.get(first.id)?.status).toBe("answered");
+
+  const late = new World();
+  const second = petition(late, "farmer", "zeus", theftBy("woodcutter"));
+  late.state = { ...late.state, tick: openedAt + window(late) };
+  const missed = godActs(late, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(late.state.tick).toBe(openedAt + window(late) + 1);
+  expect(ofKind(missed.events, "petition-answered")).toEqual([]);
+  expect(ofKind(missed.events, "petition-lapsed")).toHaveLength(1);
+  expect(late.state.petitions.get(second.id)?.status).toBe("lapsed");
+});
+
+test("a window that closes unanswered lapses the petition, and the petitioner's affinity toward that god falls, with a grudge", () => {
+  const world = new World();
+  const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  const openedAt = world.state.petitions.get(opened.id)?.tick ?? 0;
+  const window = petitionBalanceOf(world.state.rules, "answerWindowTicks");
+  // Nothing happens before the window's last tick; on it, the lapse check runs.
+  world.state = { ...world.state, tick: openedAt + window - 2 };
+  expect(ofKind(world.tick(), "petition-lapsed")).toEqual([]);
+  expect(world.state.tick).toBe(openedAt + window - 1);
+  const lapse = world.tick();
+  expect(world.state.tick).toBe(openedAt + window);
+  const lapsed = ofKind(lapse, "petition-lapsed");
+  expect(lapsed).toHaveLength(1);
+  expect(lapsed[0]).toMatchObject({
+    entityId: "farmer",
+    god: "zeus",
+    petitionId: opened.id,
+  });
+  const sign = ofKind(lapse, "memory-recorded").find(
+    (m) => m.memoryKind === "sign",
+  );
+  expect(sign).toMatchObject({
+    outcome: "lapsed",
+    god: "zeus",
+    consequence: { effect: "harm", agent: "zeus", target: "farmer" },
+  });
+  expect(affinityOf(world, "farmer", "zeus")).toBe(-2);
+  expect(
+    world.state.relationships.get(relationshipKey(id("farmer"), id("zeus")))
+      ?.grudge,
+  ).toBe(1);
+  // It lapses once.
+  expect(ofKind(world.tick(), "petition-lapsed")).toEqual([]);
+  // The god may still act on it afterwards: nothing answers a lapsed petition.
+  const late = godActs(world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(ofKind(late.events, "petition-answered")).toEqual([]);
+});
+
+test("a dead petitioner's petition is marked answered and no sign is sent: no memory, no worship, no feeling", () => {
+  const world = new World();
+  const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  const farmer = getActor(world.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  world.state = withActor(world.state, { ...farmer, alive: false });
+  const ran = godActs(world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(world.state.petitions.get(opened.id)?.status).toBe("answered");
+  expect(ofKind(ran.events, "petition-answered")).toHaveLength(1);
+  expect(ofKind(ran.events, "worship-performed")).toEqual([]);
+  expect(
+    ofKind(ran.events, "memory-recorded").filter(
+      (m) => m.entityId === id("farmer"),
+    ),
+  ).toEqual([]);
+  expect(affinityOf(world, "farmer", "zeus")).toBe(0);
+});
+
+test("the sign carries no knowledge of where or how the god answered", () => {
+  const world = new World();
+  petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  const ran = godActs(world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  const sign = ofKind(ran.events, "memory-recorded").find(
+    (m) => m.memoryKind === "sign",
+  );
+  const signEntry = world.state.memories
+    .get(id("farmer"))
+    ?.find((m) => m.kind === "sign");
+  const text = JSON.stringify(signEntry);
+  expect(sign).toBeDefined();
+  expect(signEntry).toBeDefined();
+  for (const secret of [
+    "woodshed",
+    "building-damaged",
+    "strike",
+    "square",
+    "woodcutter",
+  ]) {
+    expect(text).not.toContain(secret);
+  }
+  // Control: the god's own memory of the strike does name it.
+  expect(
+    JSON.stringify(ran.events.filter((e) => e.kind === "building-damaged")),
+  ).toContain("woodshed");
+});
+
+// --- Bless ------------------------------------------------------------------------------------
+
+/** A world where the farmer owns a storehouse and the tavern, both damaged, and Hera stands with the farmer. */
+function damagedFarm() {
+  const base = pack();
+  const state = createInitialWorldState({
+    ...base,
+    buildings: [
+      ...base.buildings,
+      {
+        id: "storehouse",
+        locationId: "square",
+        name: "Storehouse",
+        material: "wood",
+        combustible: true,
+        services: [],
+        inventory: [],
+        owner: "farmer",
+      },
+    ],
+  });
+  const world = new World(state);
+  for (const [name] of [["the-tavern"], ["storehouse"]]) {
+    const b = world.state.buildings.get(id(name as string));
+    if (!b) throw new Error(name);
+    world.state = {
+      ...world.state,
+      buildings: new Map(world.state.buildings).set(id(name as string), {
+        ...b,
+        status: "damaged",
+      } as typeof b),
+    };
+  }
+  return world;
+}
+
+test("Hera blesses the farmer for its storehouse: the farmer gets planks, Hera pays divinity, the petition is answered, and the storehouse stays damaged until the farmer repairs it", () => {
+  const world = damagedFarm();
+  const cause = {
+    kind: "building-damaged",
+    entityId: "storehouse",
+    amount: 1,
+    actor: "zeus",
+  };
+  const opened = petition(world, "farmer", "hera", cause);
+  expect(world.state.petitions.get(opened.id)?.request).toEqual({
+    kind: "help",
+    need: { kind: "building", building: id("storehouse") },
+  });
+  place(world, "hera", "square");
+  const divinity =
+    getActor(world.state, id("hera"))?.inventory.get("divinity") ?? 0;
+
+  const ran = godActs(world, {
+    actor: "hera",
+    kind: "bless",
+    petition: opened.id,
+    targets: ["farmer"],
+  });
+  expect(ran.rejected).toEqual([]);
+  const cost = petitionBalanceOf(world.state.rules, "blessDivinityCost");
+  const planks = petitionBalanceOf(world.state.rules, "blessPlanks");
+  // The cost is paid; the farmer's worship in answer credits one back.
+  const gain = world.state.rules.economyBalance.worshipCapacityGain ?? 1;
+  expect(getActor(world.state, id("hera"))?.inventory.get("divinity")).toBe(
+    divinity - cost + gain,
+  );
+  expect(getActor(world.state, id("farmer"))?.inventory.get("planks")).toBe(
+    planks,
+  );
+  expect(ofKind(ran.events, "blessing-granted")[0]).toMatchObject({
+    entityId: "hera",
+    recipient: "farmer",
+    petitionId: opened.id,
+    resource: "planks",
+    amount: planks,
+    building: "storehouse",
+  });
+  expect(world.state.petitions.get(opened.id)?.status).toBe("answered");
+  expect(world.state.buildings.get(id("storehouse"))?.status).toBe("damaged");
+  expect(affinityOf(world, "farmer", "hera")).toBe(1);
+  // The damage stays on record.
+  expect(
+    world.log.some(
+      (e) => e.kind === "building-damaged" && e.entityId === id("storehouse"),
+    ),
+  ).toBe(true);
+});
+
+test("the farmer's repair routine spends blessed planks on the building the bless cited before any other it owns", () => {
+  const world = damagedFarm();
+  const opened = petition(world, "farmer", "hera", {
+    kind: "building-damaged",
+    entityId: "storehouse",
+    amount: 1,
+    actor: "zeus",
+  });
+  place(world, "hera", "square");
+  godActs(world, {
+    actor: "hera",
+    kind: "bless",
+    petition: opened.id,
+    targets: ["farmer"],
+  });
+  // Both buildings are damaged and the tavern comes first in the owner's list; the storehouse was blessed.
+  const decision = decideRoutineProposal(world.state, id("farmer"));
+  expect(decision?.proposal).toMatchObject({
+    kind: "repair",
+    structure: "storehouse",
+  });
+  // Control: with no bless, the first damaged building is repaired first.
+  const plain = damagedFarm();
+  const farmer = getActor(plain.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  plain.state = withActor(plain.state, {
+    ...farmer,
+    inventory: new Map([
+      ["planks", 3],
+      ["food", 60],
+    ]),
+  });
+  expect(
+    decideRoutineProposal(plain.state, id("farmer"))?.proposal,
+  ).toMatchObject({ kind: "repair", structure: "the-tavern" });
+});
+
+test("with two open help petitions from one mortal, a bless names one: it answers only that one and grants only its need", () => {
+  const world = damagedFarm();
+  const burn = petition(world, "farmer", "hera", {
+    kind: "building-damaged",
+    entityId: "storehouse",
+    amount: 1,
+    actor: "zeus",
+  });
+  world.state = { ...world.state, tick: world.state.tick + 25 };
+  const hunger = petition(world, "farmer", "hera", {
+    kind: "stock-spoiled",
+    entityId: "farmer",
+    resource: "food",
+    amount: 1,
+    cause: "director",
+  });
+  place(world, "hera", "square");
+  const ran = godActs(world, {
+    actor: "hera",
+    kind: "bless",
+    petition: hunger.id,
+    targets: ["farmer"],
+  });
+  expect(ran.rejected).toEqual([]);
+  expect(world.state.petitions.get(hunger.id)?.status).toBe("answered");
+  expect(world.state.petitions.get(burn.id)?.status).toBe("open");
+  const grant = ofKind(ran.events, "blessing-granted")[0];
+  expect(grant).toMatchObject({
+    resource: "food",
+    amount: petitionBalanceOf(world.state.rules, "blessResourceAmount"),
+  });
+  expect(grant?.building).toBeUndefined();
+  expect(
+    getActor(world.state, id("farmer"))?.inventory.get("planks"),
+  ).toBeUndefined();
+});
+
+test("a bless is refused when the god is not with the mortal, lacks the divinity, names a punish petition, another god's petition, or a dead petitioner's; with all in order it commits", () => {
+  const world = damagedFarm();
+  const opened = petition(world, "farmer", "hera", {
+    kind: "building-damaged",
+    entityId: "storehouse",
+    amount: 1,
+    actor: "zeus",
+  });
+  const reasons = (raw: Record<string, unknown>, from = world.state) => {
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      targets: [],
+      expectedRevisions: [],
+      source: "model",
+      observationId: `obs-r-${Math.random()}`,
+      ...raw,
+    });
+    if (!submitted.ok) throw new Error("fixture");
+    return runTick(from, world.prng, [submitted.proposal]).rejected.map(
+      (r) => r.reason,
+    );
+  };
+  const bless = { actor: "hera", kind: "bless", petition: opened.id };
+  // Hera is in the hall, the farmer in the square.
+  expect(reasons(bless)).toEqual(["not-adjacent"]);
+  place(world, "hera", "square");
+  expect(reasons(bless)).toEqual([]);
+  // Too little divinity.
+  const hera = getActor(world.state, id("hera"));
+  if (!hera) throw new Error("hera");
+  expect(
+    reasons(
+      bless,
+      withActor(world.state, {
+        ...hera,
+        inventory: new Map([["divinity", 1]]),
+      }),
+    ),
+  ).toEqual(["insufficient-power"]);
+  // Another god's petition.
+  place(world, "zeus", "square");
+  expect(reasons({ ...bless, actor: "zeus" })).toEqual(["malformed"]);
+  // A punish petition is answered by a strike, not a bless.
+  const punish = petition(
+    world,
+    "drifter",
+    "hera",
+    theftBy("woodcutter", "drifter"),
+  );
+  place(world, "drifter", "square");
+  expect(reasons({ ...bless, petition: punish.id })).toEqual(["malformed"]);
+  // A petition that does not exist, and one the god answered already.
+  expect(reasons({ ...bless, petition: "evt-404" })).toEqual(["malformed"]);
+  // A dead petitioner.
+  const farmer = getActor(world.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  expect(
+    reasons(bless, withActor(world.state, { ...farmer, alive: false })),
+  ).toEqual(["dead-actor"]);
+  // Only a god may bless.
+  expect(reasons({ ...bless, actor: "farmer" })).toEqual([
+    "unauthorized-claim",
+  ]);
+});
+
+test("petitions, answers, lapses, signs, blessings, and affinity are reproduced by replaying the log from the start", () => {
+  const world = damagedFarm();
+  const burn = petition(world, "farmer", "hera", {
+    kind: "building-damaged",
+    entityId: "storehouse",
+    amount: 1,
+    actor: "zeus",
+  });
+  place(world, "hera", "square");
+  godActs(world, {
+    actor: "hera",
+    kind: "bless",
+    petition: burn.id,
+    targets: ["farmer"],
+  });
+  petition(world, "drifter", "zeus", theftBy("woodcutter", "drifter"));
+  const openedAt =
+    [...world.state.petitions.values()].find(
+      (p) => p.petitioner === id("drifter"),
+    )?.tick ?? 0;
+  world.state = {
+    ...world.state,
+    tick: openedAt + petitionBalanceOf(world.state.rules, "answerWindowTicks"),
+  };
+  world.tick();
+  expect(
+    [...world.state.petitions.values()].map((p) => p.status).sort(),
+  ).toEqual(["answered", "lapsed"]);
+
+  const replayed = applyEvents(
+    world.initial,
+    world.log.map((e, i) => ({ ...e, sequence: i + 1 })) as WorldEvent[],
+  );
+  expect([...replayed.petitions]).toEqual([...world.state.petitions]);
+  expect([...replayed.memories]).toEqual([...world.state.memories]);
+  expect([...replayed.relationships]).toEqual([...world.state.relationships]);
+  expect([...replayed.repairGrants]).toEqual([...world.state.repairGrants]);
+  const restored = decode(JSON.parse(JSON.stringify(encode(world.state))));
+  expect([...restored.repairGrants]).toEqual([...world.state.repairGrants]);
+  expect([...restored.memories]).toEqual([...world.state.memories]);
+});

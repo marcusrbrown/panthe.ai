@@ -10,7 +10,7 @@ import {
 } from "@panthea/contracts";
 import { applyEvent, applyEvents, runTick, submitProposal } from "./actions";
 import { decode, encode } from "./codec";
-import { getMemories, getRelationship } from "./memory";
+import { DEFAULT_MEMORY_BALANCE, getMemories, getRelationship } from "./memory";
 import { perceive } from "./perception";
 import {
   createInitialWorldState,
@@ -1472,4 +1472,11 @@ test("a building's fields belong to its status: decode refuses fire fields outsi
   expect(() => decode(swap({ ...plain, status: "burning" }))).toThrow();
   expect(() => decode(swap({ ...building, ignition: undefined }))).toThrow();
   expect(() => decode(swap({ ...plain, status: "repairing" }))).toThrow();
+});
+
+// --- Signs -------------------------------------------------------------------------------------
+
+test("a sign memory's salience is a tunable like the others, and with none the mortal remembers no sign and feels nothing", () => {
+  // The default is the number the authored content states; 0 turns signs off without breaking decode.
+  expect(DEFAULT_MEMORY_BALANCE.salience_sign).toBe(6);
 });

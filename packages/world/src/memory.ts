@@ -55,6 +55,8 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   "salience_worship-performed": 4,
   /** A belief formed from a report. */
   salience_told: 4,
+  /** A mortal's memory of a god's answer or silence. */
+  salience_sign: 6,
   /** Affinity lost toward whoever did harm one witnessed. */
   harmAffinity: 2,
   /** Affinity gained toward whoever did one a kindness. */
@@ -114,9 +116,19 @@ function memoryEntryOf(event: MemoryRecordedEvent): MemoryEntry {
       ? {}
       : { consequence: event.consequence }),
   };
-  return event.memoryKind === "witnessed"
-    ? { ...base, kind: "witnessed", eventKind: event.eventKind }
-    : {
+  switch (event.memoryKind) {
+    case "witnessed":
+      return { ...base, kind: "witnessed", eventKind: event.eventKind };
+    case "sign":
+      return {
+        ...base,
+        kind: "sign",
+        god: event.god,
+        outcome: event.outcome,
+        petitionId: event.petitionId,
+      };
+    case "told":
+      return {
         ...base,
         kind: "told",
         teller: event.teller,
@@ -125,6 +137,7 @@ function memoryEntryOf(event: MemoryRecordedEvent): MemoryEntry {
           ? {}
           : { linkedEventId: event.linkedEventId }),
       };
+  }
 }
 
 /**
@@ -214,7 +227,8 @@ export function applyRelationshipChanged(
 /** A derived event before it has an id, with the committed event it follows from. */
 export interface DerivedDraft {
   readonly draft: WorldEventDraft;
-  readonly cause: WorldEvent;
+  /** The committed event it follows from: its id becomes the derived event's causation. */
+  readonly cause: { readonly id: EventId };
 }
 
 /**
@@ -424,6 +438,41 @@ export function toldMemory(
       ]),
       salience,
       ...(claim === undefined ? {} : { consequence: claim }),
+    },
+  };
+}
+
+/**
+ * The sign a mortal remembers of a god's answer or silence: a kindness by the
+ * god toward it, or a harm by its neglect. It records which god and which
+ * petition and nothing of where or how the god answered. A dead petitioner
+ * remembers nothing.
+ */
+export function signMemory(
+  after: WorldState,
+  event: Extract<WorldEvent, { kind: "petition-answered" | "petition-lapsed" }>,
+): DerivedDraft | undefined {
+  if (!after.actors.get(event.entityId)?.alive) return undefined;
+  const salience = balanceOf(after, "salience_sign");
+  if (salience < 1) return undefined;
+  const answered = event.kind === "petition-answered";
+  return {
+    cause: event,
+    draft: {
+      kind: "memory-recorded",
+      memoryKind: "sign",
+      entityId: event.entityId,
+      sourceEventId: event.id,
+      god: event.god,
+      outcome: answered ? "answered" : "lapsed",
+      petitionId: event.petitionId,
+      subjects: [event.god],
+      salience,
+      consequence: {
+        effect: answered ? "kindness" : "harm",
+        agent: event.god,
+        target: event.entityId,
+      },
     },
   };
 }

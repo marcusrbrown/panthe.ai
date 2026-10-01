@@ -837,6 +837,10 @@ function describeMemory(memory: MemoryEntry): string {
   if (memory.kind === "witnessed") {
     return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
   }
+  if (memory.kind === "sign") {
+    // A god's own memory is never a sign (signs go to mortals), but the type allows it.
+    return `- ${memory.god} ${memory.outcome === "answered" ? "answered" : "did not answer"} a petition`;
+  }
   return `- ${memory.teller} told you: "${memory.content}"${what === "" ? "" : ` (claiming ${what})`}`;
 }
 

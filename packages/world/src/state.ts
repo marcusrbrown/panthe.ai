@@ -219,6 +219,13 @@ export type MemoryEntry = {
       readonly content: string;
       readonly linkedEventId?: EventId;
     }
+  | {
+      /** A god's answer, or its silence, to a petition: favor is the affinity it leaves. */
+      readonly kind: "sign";
+      readonly god: EntityId;
+      readonly outcome: "answered" | "lapsed";
+      readonly petitionId: EventId;
+    }
 );
 
 /** How one actor feels toward another. Changed only by `relationship-changed` events, each citing the memory that caused it. */
@@ -338,6 +345,8 @@ export interface WorldState {
   readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
   /** Every petition ever opened, by its event id. */
   readonly petitions: ReadonlyMap<EventId, Petition>;
+  /** The building a mortal was last blessed planks for: its repair routine mends that one first. */
+  readonly repairGrants: ReadonlyMap<EntityId, EntityId>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -466,6 +475,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     needs: new Map(),
     causes: new Map(),
     petitions: new Map(),
+    repairGrants: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };

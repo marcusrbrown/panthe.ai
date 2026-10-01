@@ -11,6 +11,7 @@
 // gets them for free.
 
 import type {
+  BlessProposal,
   ClaimProposal,
   Consequence,
   ConsumeProposal,
@@ -39,7 +40,13 @@ import {
 import { igniteThresholdOf } from "./fire";
 import { ALTAR, crossesRealm, findEdge, isAdjacent } from "./geography";
 import { getMemories } from "./memory";
-import { canPray, petitionFor } from "./petitions";
+import {
+  blessingFor,
+  canPray,
+  inAnswerWindow,
+  petitionBalanceOf,
+  petitionFor,
+} from "./petitions";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -602,6 +609,68 @@ function handlePray(state: WorldState, proposal: PrayProposal): RuleOutcome {
   ]);
 }
 
+/**
+ * A god blesses the mortal behind one petition addressed to it: it must be a
+ * living deity standing with a living petitioner, hold the divinity the bless
+ * costs, and name an open help petition inside its window. The grant is what
+ * that petition asks for and nothing more.
+ */
+function handleBless(state: WorldState, proposal: BlessProposal): RuleOutcome {
+  const god = getActor(state, proposal.actor);
+  if (!god?.isDeity) {
+    return reject("unauthorized-claim", "only a deity may bless");
+  }
+  const petition = state.petitions.get(proposal.petition);
+  if (
+    petition === undefined ||
+    petition.god !== proposal.actor ||
+    petition.status !== "open" ||
+    !inAnswerWindow(state, petition, state.tick)
+  ) {
+    return reject(
+      "malformed",
+      `${proposal.petition} is not an open petition addressed to this god`,
+    );
+  }
+  const blessing = blessingFor(state, petition.request);
+  if (blessing === undefined) {
+    return reject("malformed", "a punish petition is answered by a strike");
+  }
+  const petitioner = getActor(state, petition.petitioner);
+  if (!petitioner?.alive) {
+    return reject("dead-actor", "the petitioner is no longer living");
+  }
+  if (petitioner.locationId !== god.locationId) {
+    return reject("not-adjacent", "a god blesses only a mortal it stands with");
+  }
+  const cost = petitionBalanceOf(state.rules, "blessDivinityCost");
+  if (getResourceAmount(god.inventory, DIVINE_CAPACITY_RESOURCE) < cost) {
+    return reject(
+      "insufficient-power",
+      `actor lacks ${cost} divinity to bless`,
+    );
+  }
+  return commit([
+    {
+      kind: "resource-consumed",
+      entityId: proposal.actor,
+      resource: DIVINE_CAPACITY_RESOURCE,
+      amount: cost,
+    },
+    {
+      kind: "blessing-granted",
+      entityId: proposal.actor,
+      recipient: petition.petitioner,
+      petitionId: petition.id,
+      resource: blessing.resource,
+      amount: blessing.amount,
+      ...(blessing.building === undefined
+        ? {}
+        : { building: blessing.building }),
+    },
+  ]);
+}
+
 function handleReport(
   state: WorldState,
   proposal: ReportProposal,
@@ -714,11 +783,7 @@ export function validateProposal(
     case "pray":
       return handlePray(state, proposal);
     case "bless":
-      // Its rules arrive with the unit that produces it.
-      return reject(
-        "malformed",
-        `no rule yet for proposal kind: ${proposal.kind}`,
-      );
+      return handleBless(state, proposal);
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

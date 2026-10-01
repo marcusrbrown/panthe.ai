@@ -89,6 +89,7 @@ export interface EncodedWorldState {
   readonly needs: readonly (readonly [string, OpenNeed])[];
   readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
   readonly petitions: readonly (readonly [EventId, Petition])[];
+  readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -137,6 +138,7 @@ export function encode(state: WorldState): EncodedWorldState {
     needs: [...state.needs.entries()],
     causes: [...state.causes.entries()],
     petitions: [...state.petitions.entries()],
+    repairGrants: [...state.repairGrants.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -742,8 +744,26 @@ function parseMemoryEntry(
           : { linkedEventId: linkedEventIdRaw.value as EventId }),
       });
     }
+    case "sign": {
+      const god = parseEntityId(value.god, `${path}.god`);
+      if (!god.ok) return god;
+      const outcome = parseEnum(value.outcome, `${path}.outcome`, [
+        "answered",
+        "lapsed",
+      ] as const);
+      if (!outcome.ok) return outcome;
+      const petitionId = parseEventId(value.petitionId, `${path}.petitionId`);
+      if (!petitionId.ok) return petitionId;
+      return ok({
+        ...base,
+        kind: "sign",
+        god: god.value,
+        outcome: outcome.value,
+        petitionId: petitionId.value,
+      });
+    }
     default:
-      return fail(`${path}.kind`, "expected a witnessed or told memory");
+      return fail(`${path}.kind`, "expected a witnessed, told, or sign memory");
   }
 }
 
@@ -1164,6 +1184,32 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const petitions = new Map(petitionEntries.value);
 
+  const grantEntries = parseArray(
+    value.repairGrants,
+    "repairGrants",
+    (item, path) => {
+      if (!Array.isArray(item) || item.length !== 2) {
+        return fail(path, "expected a [recipient, building] entry");
+      }
+      const recipient = parseEntityId(item[0], `${path}[0]`);
+      if (!recipient.ok) return recipient;
+      if (!knownActorIds.has(recipient.value)) {
+        return fail(`${path}[0]`, `grant to unknown actor: ${recipient.value}`);
+      }
+      const building = parseEntityId(item[1], `${path}[1]`);
+      if (!building.ok) return building;
+      if (!buildings.has(building.value)) {
+        return fail(
+          `${path}[1]`,
+          `grant names unknown building: ${building.value}`,
+        );
+      }
+      return ok([recipient.value, building.value] as const);
+    },
+  );
+  if (!grantEntries.ok) return grantEntries;
+  const repairGrants = new Map(grantEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -1213,6 +1259,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     needs,
     causes,
     petitions,
+    repairGrants,
     rules: rules.value,
     recipes: recipes.value,
   });

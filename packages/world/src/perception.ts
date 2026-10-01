@@ -199,6 +199,8 @@ function eventLocation(
     case "report-told":
     case "memory-recorded":
     case "relationship-changed":
+    case "goal-set":
+    case "goal-ended":
       return undefined;
   }
 }

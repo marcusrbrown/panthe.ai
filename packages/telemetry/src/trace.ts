@@ -233,7 +233,7 @@ export interface ProposalOutcomeRow {
   readonly causationId: CausationId;
   readonly outcome: ProposalOutcomeKind;
   readonly reason: RejectionReasonCode | undefined;
-  /** Every event the proposal committed, in commit order; empty for a rejection. */
+  /** Every event the proposal produced, in commit order; a rejection lists only the goal events its goal change still committed. */
   readonly eventIds: readonly EventId[];
   readonly proposal: Proposal;
 }

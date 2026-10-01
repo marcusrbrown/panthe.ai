@@ -41,6 +41,7 @@ import {
   applyBuildingIgnited,
   planFireStep,
 } from "./fire";
+import { applyGoalEnded, applyGoalSet, planGoalEvents } from "./goals";
 import {
   applyMemoryRecorded,
   applyRelationshipChanged,
@@ -208,9 +209,10 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       next = applyRelationshipChanged(state, event);
       break;
     case "goal-set":
+      next = applyGoalSet(state, event);
+      break;
     case "goal-ended":
-      // The active-goal projection arrives with the tick that records them (Unit 2).
-      next = state;
+      next = applyGoalEnded(state, event);
       break;
     default: {
       const exhaustiveCheck: never = event;
@@ -269,6 +271,8 @@ export interface RejectedRecord {
   readonly proposal: Proposal;
   readonly reason: RejectionReasonCode;
   readonly message: string;
+  /** The goal events the rejected proposal's goal change still committed: the action was refused, the declaration was not. */
+  readonly goalEvents: readonly WorldEvent[];
 }
 
 export interface CommittedRecord {
@@ -449,15 +453,37 @@ export function runTick(
     });
   };
 
+  /**
+   * The goal events of `proposal`'s goal change, committed whatever becomes of
+   * its action: the world records a goal and never judges it, so a target that
+   * moved during inference cannot erase a god's intent. They belong to no
+   * action slot.
+   */
+  const commitGoalEvents = (proposal: Proposal): WorldEvent[] => {
+    if (proposal.goal === undefined) return [];
+    const events = planGoalEvents(working, proposal.actor, proposal.goal).map(
+      (draft) => {
+        const completed = completePrimary(
+          draft,
+          String(proposal.observationId),
+        );
+        working = applyEvent(working, completed);
+        return completed;
+      },
+    );
+    return events;
+  };
+
   for (const proposal of queue) {
-    if (
-      proposal.kind !== "claim" &&
-      committedActorsThisTick.has(proposal.actor)
-    ) {
+    // A claim never commits and a goal-only proposal has no action: neither
+    // holds the actor's one action slot.
+    const takesSlot = proposal.kind !== "claim" && proposal.kind !== "goal";
+    if (takesSlot && committedActorsThisTick.has(proposal.actor)) {
       rejected.push({
         proposal,
         reason: "busy-actor",
         message: `${proposal.actor} already committed an action this tick`,
+        goalEvents: commitGoalEvents(proposal),
       });
       continue;
     }
@@ -468,17 +494,18 @@ export function runTick(
         proposal,
         reason: outcome.reason,
         message: outcome.message,
+        goalEvents: commitGoalEvents(proposal),
       });
       continue;
     }
 
-    const events = outcome.events.map((draft) =>
+    const actionEvents = outcome.events.map((draft) =>
       completePrimary(draft, String(proposal.observationId)),
     );
-
-    working = applyEvents(working, events);
+    working = applyEvents(working, actionEvents);
+    const events = [...actionEvents, ...commitGoalEvents(proposal)];
     committed.push({ proposal, events });
-    if (proposal.kind !== "claim") {
+    if (takesSlot) {
       committedActorsThisTick.add(proposal.actor);
     }
   }
@@ -496,7 +523,12 @@ export function runTick(
   );
   working = applyEvents(working, fireEvents);
 
-  const proposalEvents = committed.flatMap((record) => record.events);
+  // Rejected proposals' goal events were committed in queue order with the
+  // rest; `events` lists them with the primary events, in sequence order.
+  const proposalEvents = [
+    ...committed.flatMap((record) => record.events),
+    ...rejected.flatMap((record) => record.goalEvents),
+  ].sort((a, b) => a.sequence - b.sequence);
   const environmentEvents = [...incomeEvents, ...fireEvents];
 
   // Derivation phase: with the primary events numbered and applied, memories

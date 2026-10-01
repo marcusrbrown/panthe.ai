@@ -131,6 +131,7 @@ function worldOf(
     legends: new Map(),
     memories: new Map(),
     relationships: new Map(),
+    goals: new Map(),
     rules: RULES,
     recipes: {},
   };

@@ -549,3 +549,26 @@ test("reports, memories, and feelings are private: no snapshot carries them, eve
   expect(snapshot?.events.map((e) => e.kind)).toEqual(["building-ignited"]);
   expect(JSON.stringify(snapshot)).not.toContain("a private word");
 });
+
+test("a god's goal is its own: no snapshot carries a goal-set or goal-ended event, even one taken at the god's own place", () => {
+  const events = [
+    ignited("the-tavern"),
+    event({
+      kind: "goal-set",
+      entityId: "zeus",
+      text: "Win the farmer's devotion.",
+      target: "farmer",
+    }),
+    event({
+      kind: "goal-ended",
+      entityId: "zeus",
+      outcome: "abandoned",
+      goalEventId: "evt-2",
+    }),
+  ];
+  for (const observer of ["zeus", "farmer"]) {
+    const snapshot = perceive(fixtureState(), id(observer), events);
+    expect(snapshot?.events.map((e) => e.kind)).toEqual(["building-ignited"]);
+    expect(JSON.stringify(snapshot)).not.toContain("devotion");
+  }
+});

@@ -715,6 +715,18 @@ test("mergeTickQueue puts every external proposal first in arrival order, then t
   expect(merged).toContain(farmer);
 });
 
+test("mergeTickQueue: a goal-only proposal has no action, so it does not displace the actor's routine; an action does", () => {
+  const routine = manualProposal("zeus", { kind: "move", to: "tavern" });
+  const goalOnly = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Win the farmer.", target: "farmer" } },
+  });
+  expect(mergeTickQueue([routine], [goalOnly])).toEqual([goalOnly, routine]);
+  // Control: an action for the same actor takes its slot, as before.
+  const action = manualProposal("zeus", { kind: "move", to: "town-square" });
+  expect(mergeTickQueue([routine], [action])).toEqual([action]);
+});
+
 test("mergeTickQueue depends only on its two queues: the same inputs always give the same order", () => {
   const routine = buildRoutineQueue(loadGreekWorldState());
   const external = [

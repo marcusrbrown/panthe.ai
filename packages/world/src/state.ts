@@ -232,6 +232,13 @@ export function relationshipKey(from: EntityId, toward: EntityId): string {
   return `${from}>${toward}`;
 }
 
+/** A god's one active goal: its own words, the one target it named, and the `goal-set` event that recorded it. Changed only by goal events. */
+export interface ActiveGoal {
+  readonly text: string;
+  readonly target: EntityId;
+  readonly eventId: EventId;
+}
+
 export interface WorldState {
   /** Monotonic tick counter; advances by exactly one per committed tick. */
   readonly tick: number;
@@ -259,6 +266,12 @@ export interface WorldState {
   readonly memories: ReadonlyMap<EntityId, readonly MemoryEntry[]>;
   /** How actors feel toward one another, keyed by `relationshipKey`. */
   readonly relationships: ReadonlyMap<string, RelationshipState>;
+  /**
+   * Each god's active goal, at most one apiece. Private: nothing in the world
+   * perceives it. Outside `ActorState`, like memories, so declaring a goal
+   * never bumps an actor's revision and never stales a delayed proposal.
+   */
+  readonly goals: ReadonlyMap<EntityId, ActiveGoal>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -380,6 +393,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     legends: new Map(),
     memories: new Map(),
     relationships: new Map(),
+    goals: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };

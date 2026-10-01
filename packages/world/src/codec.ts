@@ -29,6 +29,7 @@ import {
   parseEntityId,
   parseEnum,
   parseEventId,
+  parseGoalText,
   parseLegendId,
   parseMemoryBalance,
   parseNonNegativeInteger,
@@ -46,6 +47,7 @@ import {
 } from "@panthea/contracts";
 import { memoryBalanceOf } from "./memory";
 import {
+  type ActiveGoal,
   type ActorState,
   BUILDING_STATUSES,
   type BuildingBase,
@@ -76,6 +78,7 @@ export interface EncodedWorldState {
   readonly legends: readonly (readonly [LegendId, LegendRecord])[];
   readonly memories: readonly (readonly [EntityId, readonly MemoryEntry[]])[];
   readonly relationships: readonly (readonly [string, RelationshipState])[];
+  readonly goals: readonly (readonly [EntityId, ActiveGoal])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -120,6 +123,7 @@ export function encode(state: WorldState): EncodedWorldState {
     legends: [...state.legends.entries()],
     memories: [...state.memories.entries()],
     relationships: [...state.relationships.entries()],
+    goals: [...state.goals.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -731,6 +735,33 @@ function parseMemoryEntries(
   return ok([owner.value, entries.value] as const);
 }
 
+function parseGoalEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EntityId, ActiveGoal]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [actor, goal] entry");
+  }
+  const owner = parseEntityId(value[0], `${path}[0]`);
+  if (!owner.ok) return owner;
+  if (!knownActorIds.has(owner.value)) {
+    return fail(`${path}[0]`, `goal belongs to unknown actor: ${owner.value}`);
+  }
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a goal");
+  const text = parseGoalText(record.text, `${path}[1].text`);
+  if (!text.ok) return text;
+  const target = parseEntityId(record.target, `${path}[1].target`);
+  if (!target.ok) return target;
+  const eventId = parseEventId(record.eventId, `${path}[1].eventId`);
+  if (!eventId.ok) return eventId;
+  return ok([
+    owner.value,
+    { text: text.value, target: target.value, eventId: eventId.value },
+  ] as const);
+}
+
 function parseRelationshipEntry(
   value: unknown,
   path: string,
@@ -891,6 +922,16 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const relationships = new Map(relationshipEntries.value);
 
+  const goalEntries = parseArray(value.goals, "goals", (item, path) =>
+    parseGoalEntry(item, path, knownActorIds),
+  );
+  if (!goalEntries.ok) return goalEntries;
+  const duplicateGoalOwner = findDuplicateKey(goalEntries.value);
+  if (duplicateGoalOwner !== undefined) {
+    return fail("goals", `duplicate goal owner: ${duplicateGoalOwner}`);
+  }
+  const goals = new Map(goalEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -936,6 +977,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     legends,
     memories,
     relationships,
+    goals,
     rules: rules.value,
     recipes: recipes.value,
   });

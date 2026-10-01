@@ -155,8 +155,8 @@ export function readPendingExternalQueue(
  * actor takes that actor's slot and the actor's routine proposal yields:
  * it is dropped before the tick, never submitted, so nothing about it is
  * recorded (no observation, no rejection). This holds whether or not the
- * external proposal then commits. A claim never commits, so it does not
- * displace a routine.
+ * external proposal then commits. A claim never commits and a goal-only
+ * proposal has no action, so neither displaces a routine.
  *
  * The result is a pure function of the two queues, and nothing here reads a
  * clock. External proposals come from the durable journal in `input_order`,
@@ -169,7 +169,10 @@ export function mergeTickQueue(
 ): QueuedProposal[] {
   const claimed = new Set<EntityId>(
     external
-      .filter((queued) => queued.proposal.kind !== "claim")
+      .filter(
+        (queued) =>
+          queued.proposal.kind !== "claim" && queued.proposal.kind !== "goal",
+      )
       .map((queued) => queued.proposal.actor),
   );
   return [
@@ -452,6 +455,9 @@ export function traceWorldTick(
       proposal: record.proposal,
       outcome: "rejected",
       reason: record.reason,
+      // The action was refused; a goal change it carried was not, and the
+      // trace row names the events that recorded it.
+      eventIds: record.goalEvents.map((event) => event.id),
     });
     terminal.set(queued.id, { status: "rejected", reason: record.reason });
   }

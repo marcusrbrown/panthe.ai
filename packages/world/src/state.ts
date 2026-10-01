@@ -237,6 +237,8 @@ export interface ActiveGoal {
   readonly text: string;
   readonly target: EntityId;
   readonly eventId: EventId;
+  /** The `goal-set` event's sequence: what happened "since the goal was set" is measured from it. */
+  readonly sequence: number;
 }
 
 export interface WorldState {

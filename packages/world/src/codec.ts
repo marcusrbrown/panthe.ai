@@ -756,9 +756,19 @@ function parseGoalEntry(
   if (!target.ok) return target;
   const eventId = parseEventId(record.eventId, `${path}[1].eventId`);
   if (!eventId.ok) return eventId;
+  const sequence = parseNonNegativeInteger(
+    record.sequence,
+    `${path}[1].sequence`,
+  );
+  if (!sequence.ok) return sequence;
   return ok([
     owner.value,
-    { text: text.value, target: target.value, eventId: eventId.value },
+    {
+      text: text.value,
+      target: target.value,
+      eventId: eventId.value,
+      sequence: sequence.value,
+    },
   ] as const);
 }
 

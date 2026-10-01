@@ -9,8 +9,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  authoredAction,
   createRouter,
   type GodTurnDeps,
+  OWN_EVENT_WINDOW,
   parseRoutingConfig,
 } from "@panthea/agents";
 import { parseSyncFrame } from "@panthea/contracts";
@@ -41,6 +43,7 @@ import {
   createGodTurnRunner,
   type GodTurnRunner,
   type Lifecycle,
+  readOwnEvents,
 } from "./agents";
 import { runCatchUp } from "./catchup";
 import {
@@ -815,6 +818,143 @@ describe("a store fault", () => {
     await runner.idle();
     expect(provider.requests).toHaveLength(1);
     expect(unhandled).toEqual([]);
+  });
+});
+
+// --- What a god is shown of its own actions ------------------------------------------------------------------
+
+/** Runs `world` forward one journaled turn at a time: the god's scripted reply is journaled, then a tick commits it. */
+async function actOut(
+  world: World,
+  provider: Provider,
+  replies: string[],
+  god = "zeus",
+): Promise<void> {
+  const runner = runnerFor(world, provider, [god]);
+  let next = 0;
+  provider.respond = () => replies[next++] ?? '{"action":"wait"}';
+  for (let i = 0; i < replies.length; i += 1) {
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    tick(world);
+  }
+}
+
+describe("a god's own recent actions", () => {
+  test("the bounded read returns exactly the events its own actions committed, newest first window, and the same ones the pure rule names", async () => {
+    // Zeus at the tavern: a legend, a strike, then a move; every kind of own action the read covers.
+    const tavern = newWorld("tavern");
+    const provider = startProvider();
+    await actOut(tavern, provider, [
+      '{"action":"legend","assertion":"The tavern will burn."}',
+      '{"action":"strike","target":"the-tavern","power":3}',
+      '{"action":"move","to":"town-square"}',
+    ]);
+    // And a report, in the great hall where Hera stands.
+    const hall = newWorld("great-hall");
+    await actOut(hall, startProvider(), [
+      '{"action":"report","listener":"hera","content":"Mind your tongue.","claim":{"effect":"harm","agent":"hera","target":"zeus"}}',
+    ]);
+
+    for (const world of [tavern, hall]) {
+      const all = listEvents(world.store.db);
+      const mine = all.filter((event) => authoredAction(event, id("zeus")));
+      expect(mine.length).toBeGreaterThan(0);
+      const read = readOwnEvents(
+        world.store.db,
+        id("zeus"),
+        world.state.lastSequence,
+      );
+      expect(read.map((e) => e.id)).toEqual(mine.map((e) => e.id));
+      // Other kinds exist in the log (costs, beliefs, goals) and are left out.
+      expect(all.length).toBeGreaterThan(mine.length);
+      // Control: a god that acted nowhere has nothing, and the read is bounded in sequence.
+      expect(
+        readOwnEvents(world.store.db, id("hera"), world.state.lastSequence),
+      ).toEqual([]);
+      expect(readOwnEvents(world.store.db, id("zeus"), 0)).toEqual([]);
+    }
+    expect(OWN_EVENT_WINDOW).toBeGreaterThan(0);
+  });
+
+  test("the read is capped at the window, keeping the newest", async () => {
+    const world = newWorld("great-hall");
+    const provider = startProvider();
+    const moves = Array.from({ length: OWN_EVENT_WINDOW + 3 }, (_, i) =>
+      JSON.stringify({
+        action: "move",
+        to: i % 2 === 0 ? "olympus-gate" : "great-hall",
+      }),
+    );
+    await actOut(world, provider, moves);
+    const read = readOwnEvents(
+      world.store.db,
+      id("zeus"),
+      world.state.lastSequence,
+    );
+    const all = listEvents(world.store.db).filter((e) =>
+      authoredAction(e, id("zeus")),
+    );
+    expect(read).toHaveLength(OWN_EVENT_WINDOW);
+    expect(read.map((e) => e.id)).toEqual(
+      all.slice(-OWN_EVENT_WINDOW).map((e) => e.id),
+    );
+  });
+
+  test("a turn's prompt shows the god's own committed report with its words and claim, and its goal", async () => {
+    const world = newWorld("great-hall");
+    const provider = startProvider();
+    await actOut(world, provider, [
+      '{"action":"report","listener":"hera","content":"Mind your tongue.","claim":{"effect":"harm","agent":"hera","target":"zeus"},"goal":{"set":{"text":"Make Hera respect me.","target":"hera"}}}',
+    ]);
+    const runner = runnerFor(world, provider, ["zeus"]);
+    provider.respond = () => '{"action":"wait"}';
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    const prompt = provider.requests.at(-1)?.body ?? "";
+    expect(prompt).toContain("What you did recently");
+    expect(prompt).toContain("you told hera: ");
+    expect(prompt).toContain("Mind your tongue.");
+    expect(prompt).toContain("claiming hera harmed zeus");
+    expect(prompt).toContain("Make Hera respect me.");
+    // Hera's belief and feeling are hers: nothing of them is in Zeus's prompt.
+    expect(prompt).not.toContain("How you feel now");
+    expect(prompt).not.toContain("told you:");
+  });
+
+  test("a store fault in the read of its own actions is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = newWorld();
+      const provider = startProvider();
+      // Only the own-actions read fails: the recent-events read still works.
+      const failing = { on: true, match: "json_extract" };
+      const logs: string[] = [];
+      const runner = createGodTurnRunner({
+        ...deps(provider, ["zeus"]),
+        store: faultyStore(world.store, failing),
+        getState: () => world.state,
+        lifecycle: world.lifecycle,
+        statusRef: world.statusRef,
+        onLog: (message) => logs.push(message),
+      });
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      expect(runner.inFlight()).toBe(false);
+      expect(logs.join("\n")).toContain("injected read failure: json_extract");
+      expect(provider.requests).toHaveLength(0);
+
+      failing.on = false;
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      expect(provider.requests).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });
 

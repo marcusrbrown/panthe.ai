@@ -31,6 +31,7 @@ export function applyGoalSet(
     text: event.text,
     target: event.target,
     eventId: event.id,
+    sequence: event.sequence,
   });
   return { ...state, goals };
 }

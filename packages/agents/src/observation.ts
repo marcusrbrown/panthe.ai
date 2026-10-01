@@ -17,7 +17,12 @@ import {
   type ProposalSource,
 } from "@panthea/contracts";
 import type { PerceptionSnapshot } from "@panthea/world";
-import type { ParsedGodIntent } from "./context";
+import {
+  NOTHING_REMEMBERED,
+  type ParsedGodIntent,
+  type Remembered,
+  shownIds,
+} from "./context";
 
 /**
  * What a parsed intent becomes. Discriminated on `kind`, so a caller must
@@ -46,7 +51,10 @@ const refuse = (message: string): ModelProposalResult => ({
  * Every fact a snapshot holds, named the way an observation's `factsRead`
  * names them. An observation may cite only these.
  */
-export function snapshotFacts(snapshot: PerceptionSnapshot): Set<string> {
+export function snapshotFacts(
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered = NOTHING_REMEMBERED,
+): Set<string> {
   const facts = new Set<string>([
     `actor:${snapshot.self.id}.inventory`,
     `actor:${snapshot.self.id}.location`,
@@ -58,7 +66,40 @@ export function snapshotFacts(snapshot: PerceptionSnapshot): Set<string> {
     facts.add(`building:${building.id}.status`);
   }
   for (const event of snapshot.events) facts.add(`event:${event.id}`);
+  for (const memory of remembered.memories) facts.add(`memory:${memory.id}`);
+  for (const feeling of remembered.relationships) {
+    facts.add(`feeling:${feeling.toward}`);
+  }
   return facts;
+}
+
+/** The fact an observation cites for a goal's target: the scene fact when it is here, or the remembered account or feeling that named it. */
+function goalTargetFact(
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered,
+  target: EntityId,
+): string {
+  if (snapshot.actors.some((actor) => actor.id === target)) {
+    return `actor:${target}.location`;
+  }
+  if (snapshot.buildings.some((building) => building.id === target)) {
+    return `building:${target}.status`;
+  }
+  if (
+    snapshot.location.id === target ||
+    snapshot.exits.some((e) => e.to === target)
+  ) {
+    return `location:${target}`;
+  }
+  const memory = remembered.memories.find(
+    (m) =>
+      m.subjects.includes(target) ||
+      m.consequence?.agent === target ||
+      m.consequence?.target === target ||
+      (m.kind === "told" && m.teller === target),
+  );
+  if (memory !== undefined) return `memory:${memory.id}`;
+  return `feeling:${target}`;
 }
 
 /**
@@ -73,6 +114,7 @@ export function buildModelProposal(
   actorId: EntityId,
   snapshot: PerceptionSnapshot,
   intent: ParsedGodIntent,
+  remembered: Remembered = NOTHING_REMEMBERED,
 ): ModelProposalResult {
   if (snapshot.observer !== actorId) {
     return refuse(
@@ -80,10 +122,25 @@ export function buildModelProposal(
     );
   }
 
-  // A wait changes nothing and claims nothing: no observation, no proposal.
-  if (intent.action === "wait") return { ok: true, kind: "wait" };
+  // A goal's target is checked against the ids the god was shown, the same set
+  // the parser used: the scene plus what its prompt remembered.
+  const goalTarget = intent.goal?.set?.target;
+  if (
+    goalTarget !== undefined &&
+    !shownIds(snapshot, remembered).includes(goalTarget)
+  ) {
+    return refuse(`${goalTarget} is not an id the god was shown`);
+  }
+
+  // A wait with nothing to change claims nothing: no observation, no proposal.
+  if (intent.action === "wait" && intent.goal === undefined) {
+    return { ok: true, kind: "wait" };
+  }
 
   const factsRead = [`actor:${actorId}.inventory`, `actor:${actorId}.location`];
+  if (goalTarget !== undefined) {
+    factsRead.push(goalTargetFact(snapshot, remembered, goalTarget));
+  }
   const expectedRevisions: EntityRevision[] = [
     { entityId: actorId, revision: snapshot.self.revision },
     { entityId: snapshot.location.id, revision: snapshot.location.revision },
@@ -95,10 +152,24 @@ export function buildModelProposal(
     expectedRevisions,
     source: MODEL_SOURCE,
     observationId,
+    ...(intent.goal === undefined ? {} : { goal: intent.goal }),
   };
 
   let proposal: Proposal;
   switch (intent.action) {
+    case "wait": {
+      // A goal-only turn has no action to protect, so it pins no revisions: a
+      // world that moved while the god thought must not refuse its declaration.
+      if (intent.goal === undefined) return refuse("a wait carries no goal");
+      proposal = {
+        ...base,
+        expectedRevisions: [],
+        targets: [],
+        kind: "goal",
+        goal: intent.goal,
+      };
+      break;
+    }
     case "move": {
       if (!snapshot.exits.some((exit) => exit.to === intent.to)) {
         return refuse(`${intent.to} is not an exit in the snapshot`);
@@ -184,6 +255,7 @@ export function buildModelProposal(
         targets: [],
         kind: "legend",
         assertion: intent.assertion,
+        ...(intent.claim === undefined ? {} : { claim: intent.claim }),
         ...(intent.linkedEventId === undefined
           ? {}
           : { linkedEventId: intent.linkedEventId }),

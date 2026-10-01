@@ -1100,7 +1100,12 @@ describe("a goal change on a journaled proposal", () => {
     const encoded = JSON.parse(row.data);
     encoded.goals.push([
       "zeus",
-      { text: "Calm the sky.", target: "hera", eventId: "evt-1-1" },
+      {
+        text: "Calm the sky.",
+        target: "hera",
+        eventId: "evt-1-1",
+        sequence: 1,
+      },
     ]);
     db.run("UPDATE projections SET data = ? WHERE id = 1", [
       JSON.stringify(encoded),

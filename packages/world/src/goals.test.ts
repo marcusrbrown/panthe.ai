@@ -115,6 +115,7 @@ test("a goal set on a move proposal records goal-set and the active goal shows i
     text: "Win the farmer's devotion.",
     target: "farmer",
     eventId: set?.id,
+    sequence: set?.sequence,
   });
   // The action itself still happened, and the goal came with its proposal's observation.
   expect(kinds(result.events)).toContain("entity-moved");

@@ -194,19 +194,20 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
   return {
     dispatch() {
       const { lifecycle } = deps;
-      if (
-        running !== undefined ||
-        !lifecycle.startupCatchUpComplete() ||
-        lifecycle.catchUpRunning() ||
-        lifecycle.paused()
-      ) {
-        return false;
-      }
-      // Called from the tick loop's timer: reading state or the journal must
-      // never throw into it. A failed read is logged and no turn starts.
+      if (running !== undefined) return false;
+      // Called from the tick loop's timer: reading the lifecycle (paused reads
+      // the store), state, or the journal must never throw into it. A failed
+      // read is logged and no turn starts.
       let state: WorldState;
       let god: EntityId | undefined;
       try {
+        if (
+          !lifecycle.startupCatchUpComplete() ||
+          lifecycle.catchUpRunning() ||
+          lifecycle.paused()
+        ) {
+          return false;
+        }
         state = deps.getState();
         god = nextGod(state);
       } catch (error) {

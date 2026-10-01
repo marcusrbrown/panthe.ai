@@ -23,6 +23,7 @@ import {
 
 export interface EpisodeSettings {
   readonly model: string;
+  readonly reasoningEffort?: "none";
   readonly seconds: number;
   readonly ranAt: string;
   readonly ticks: number;
@@ -61,6 +62,12 @@ const tickOf = (eventId: string): number =>
 
 const signed = (value: unknown): string =>
   `${Number(value) > 0 ? "+" : ""}${String(value)}`;
+
+/** Whether the model was asked not to reason, in words for the owner. */
+const reasoningText = (effort: "none" | undefined): string =>
+  effort === "none"
+    ? "reasoning off (reasoning_effort none)"
+    : "reasoning at the model's default";
 
 function describeChange(
   event: Extract<WorldEvent, { kind: "relationship-changed" }>,
@@ -226,7 +233,6 @@ function renderRepetition(record: EpisodeRecord): string {
       }
       const top = [...counts.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
         .map(([key, n]) => `${key} ×${n}`)
         .join(", ");
       return `- ${nameOf(record, g.god)}: longest run ${g.longestRun ? `${g.longestRun.length} of ${g.longestRun.key}` : "none"} (cap ${REPETITION_CAP}). Choices: ${top || "none"}`;
@@ -280,7 +286,7 @@ export function renderTranscript(record: EpisodeRecord): string {
     "## Settings",
     "",
     `- Recorded: ${settings.ranAt}`,
-    `- Model: ${settings.model} through local Ollama, 4K context`,
+    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
     `- Length: ${settings.seconds} s (${settings.ticks} ticks)`,
     "- World: a fresh world from the initial authored Greek state; no fixtures, no seeds",
     `- Machine: ${settings.hardware}`,
@@ -323,6 +329,7 @@ export function renderTranscript(record: EpisodeRecord): string {
 export interface SummarySettings {
   readonly seconds: number;
   readonly model: string;
+  readonly reasoningEffort?: "none";
   /** Transcript file names, in episode order. */
   readonly files: readonly string[];
 }
@@ -358,7 +365,7 @@ export function renderSummary(
   return [
     "# M2 experience gate",
     "",
-    `- Model: ${settings.model} through local Ollama, 4K context`,
+    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
     `- ${records.length} episodes of ${settings.seconds} s, each a fresh world from the initial authored Greek state; no fixtures, no seeds`,
     "",
     "## Automated checks",

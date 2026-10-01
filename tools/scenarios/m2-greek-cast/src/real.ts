@@ -25,15 +25,35 @@ export interface RealOptions {
   readonly durationMs: number;
   readonly ollama: string;
   readonly model: string;
+  /** Asks the model not to reason before answering. */
+  readonly reasoningEffort?: "none";
 }
 
 export interface RealRecord {
   readonly ranAt: string;
   readonly model: string;
+  readonly reasoningEffort?: "none";
   readonly durationMs: number;
   readonly ticks: number;
   readonly analysis: RealAnalysis;
   readonly hardware: string;
+}
+
+/** The model config the sidecar reads: both gods on one local Ollama endpoint. */
+export function routingConfigFor(options: RealOptions): object {
+  return {
+    endpoints: [
+      {
+        id: "ollama",
+        baseUrl: `${options.ollama}/v1`,
+        model: options.model,
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: options.reasoningEffort }),
+      },
+    ],
+    roles: { zeus: { endpoint: "ollama" }, hera: { endpoint: "ollama" } },
+  };
 }
 
 export class OllamaUnreachable extends Error {}
@@ -98,15 +118,7 @@ export async function collectRun(
   const root = mkdtempSync(join(tmpdir(), "panthea-m2-real-"));
   const dataDir = join(root, "app-data");
   const configPath = join(root, "models.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      endpoints: [
-        { id: "ollama", baseUrl: `${options.ollama}/v1`, model: options.model },
-      ],
-      roles: { zeus: { endpoint: "ollama" }, hera: { endpoint: "ollama" } },
-    }),
-  );
+  writeFileSync(configPath, JSON.stringify(routingConfigFor(options)));
   try {
     const sidecar = await startSidecar(options.binary, dataDir, {
       env: { PANTHEA_MODEL_CONFIG: configPath },
@@ -145,6 +157,9 @@ export async function collectRun(
       record: {
         ranAt: new Date().toISOString(),
         model: options.model,
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: options.reasoningEffort }),
         durationMs: options.durationMs,
         ticks,
         analysis: analyzeReal(input),

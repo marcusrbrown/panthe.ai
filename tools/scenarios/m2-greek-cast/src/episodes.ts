@@ -76,6 +76,9 @@ export async function runEpisodes(
         total: options.episodes,
         settings: {
           model: options.model,
+          ...(options.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: options.reasoningEffort }),
           seconds: options.durationMs / 1000,
           ranAt: run.record.ranAt,
           ticks: run.record.ticks,
@@ -101,6 +104,9 @@ export async function runEpisodes(
     renderSummary(records, {
       seconds: options.durationMs / 1000,
       model: options.model,
+      ...(options.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: options.reasoningEffort }),
       files: records.map((r) => `episode-${r.index}.md`),
     }),
   );

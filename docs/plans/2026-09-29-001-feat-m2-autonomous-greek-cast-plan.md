@@ -485,6 +485,8 @@ Gate parameters and checks (owner, 2026-09-30):
 - The rubric is novelty, causality, recognizable identity, pacing, and inspectability (acceptance.md), each scored 0, 1, or 2 by the owner: 0 is replan pressure, 1 needs tuning, 2 is good enough to continue. The owner scores and decides; the tool never scores.
 - Automated checks, per god per episode, on top of the real-run properties: (a) profile trace: every committed model proposal has a model request for its actor, and its kind is one of the actor's profile abilities (ability-backed: strike, legend) or a context action (context-backed: move, realm-transition, report), reported as a split, and anything else fails; (b) repetition: ordered by the first event each proposal caused, the longest run of the same (kind, primary target) is at most 3, so a fourth identical choice in a row fails; (c) minimum activity: at least 5 committed model actions; (d) influence: at least one told belief or relationship change traced through the causal chain to that god's committed proposals.
 
+Gate result (owner, 2026-09-30): replan. The owner rated all three llama3.2 3B episodes replan. The automated checks failed only on repetition, in 5 of 6 god-episodes, each a report run between Zeus and Hera of 4 to 10; profile trace, minimum activity, influence, and the four real-run properties held. The transcripts are in `tools/scenarios/m2-greek-cast/episodes/2026-09-30T15-22-36/`. Before the replan the owner wants Gemma 4 compared on the same gate (`--model=gemma4-e4b-4k --reasoning-effort=none`).
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**

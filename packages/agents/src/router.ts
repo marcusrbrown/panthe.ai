@@ -269,10 +269,17 @@ export function createRouter(options: RouterOptions): Router {
     schema: IntentSchema<T>,
     chain: AbortSignal,
     caller: AbortSignal | undefined,
+    reasoningEffort: "none" | undefined,
   ): Promise<Attempt<T>> {
     const startedAt = performance.now();
     const request = (timeoutMs: number) => ({
       model,
+      // The key the adapter reads for `reasoning_effort`
+      // (@ai-sdk/openai-compatible, chat model options). Set on both the
+      // structured request and the plain-text fallback, or neither.
+      ...(reasoningEffort === undefined
+        ? {}
+        : { providerOptions: { openaiCompatible: { reasoningEffort } } }),
       ...(context.instructions === undefined
         ? {}
         : { instructions: context.instructions }),
@@ -391,6 +398,7 @@ export function createRouter(options: RouterOptions): Router {
         schema,
         chain,
         caller,
+        step.endpoint.reasoningEffort,
       );
       if (outcome.ok) {
         return {

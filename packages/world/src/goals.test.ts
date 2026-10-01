@@ -581,6 +581,12 @@ test("something since the set unlocks it: a memory whose subjects include the ta
       petitioner: id("farmer"),
       god: id(god),
       cause: "evt-7-7" as never,
+      about: {
+        eventId: "evt-7-7" as never,
+        tick: state.tick,
+        kind: "need" as const,
+        resource: "food",
+      },
       request: {
         kind: "help" as const,
         need: { kind: "resource" as const, resource: "food" },

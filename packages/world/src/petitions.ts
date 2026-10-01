@@ -184,35 +184,45 @@ function subjectOfCause(cause: PetitionCause): string | undefined {
   return undefined;
 }
 
+/** The unmet needs `actorId` has, as causes: what it lacks, with no offender. */
+function needCauses(state: WorldState, actorId: EntityId): PetitionCause[] {
+  return [...state.needs.values()]
+    .filter((need) => need.actor === actorId)
+    .map((need) => ({
+      eventId: need.eventId,
+      tick: need.tick,
+      kind: "need" as const,
+      resource: need.resource,
+    }));
+}
+
 /**
- * What an open petition is about: the subject of the cause it cites, found among
- * the petitioner's recorded causes and open needs, or, if the cause has since
- * been forgotten, the thing its request asks help with.
+ * What a petition was about, as the petitioner knew it when it prayed: the
+ * cause it cited through `knownCause`, so an offender it never learned stays
+ * unknown. A cause no longer on record (a fixture's, say) is read from the
+ * request instead.
  */
-function subjectOfPetition(
+function aboutPetition(
   state: WorldState,
-  petition: Petition,
-): string | undefined {
-  const cause =
-    (state.causes.get(petition.petitioner) ?? []).find(
-      (c) => c.eventId === petition.cause,
-    ) ??
-    [...state.needs.values()]
-      .filter((n) => n.eventId === petition.cause)
-      .map(
-        (n): PetitionCause => ({
-          eventId: n.eventId,
-          tick: n.tick,
-          kind: "need",
-          resource: n.resource,
-        }),
-      )[0];
-  if (cause !== undefined) return subjectOfCause(cause);
-  const request = petition.request;
-  if (request.kind !== "help") return undefined;
+  event: PetitionOpenedEvent,
+): PetitionCause {
+  const recorded = [
+    ...(state.causes.get(event.entityId) ?? []),
+    ...needCauses(state, event.entityId),
+  ].find((cause) => cause.eventId === event.cause);
+  const known =
+    recorded === undefined
+      ? undefined
+      : knownCause(state, event.entityId, recorded);
+  if (known !== undefined) return known;
+  const base = { eventId: event.cause, tick: event.tick };
+  const { request } = event;
+  if (request.kind === "punish") {
+    return { ...base, kind: "grudge", offender: request.offender };
+  }
   return request.need.kind === "building"
-    ? `building:${request.need.building}`
-    : `resource:${request.need.resource}`;
+    ? { ...base, kind: "damage", building: request.need.building }
+    : { ...base, kind: "need", resource: request.need.resource };
 }
 
 /** What a mortal could pray about now, newest first: the causes it knows (`knownCause`) and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
@@ -235,17 +245,9 @@ export function prayableCauses(
         (petition) =>
           petition.petitioner === actorId && petition.status === "open",
       )
-      .flatMap((petition) => subjectOfPetition(state, petition) ?? []),
+      .flatMap((petition) => subjectOfCause(petition.about) ?? []),
   );
-  const needs: PetitionCause[] = [...state.needs.values()]
-    .filter((need) => need.actor === actorId)
-    .map((need) => ({
-      eventId: need.eventId,
-      tick: need.tick,
-      kind: "need" as const,
-      resource: need.resource,
-    }));
-  return [...(state.causes.get(actorId) ?? []), ...needs]
+  return [...(state.causes.get(actorId) ?? []), ...needCauses(state, actorId)]
     .flatMap((cause) => {
       const known = knownCause(state, actorId, cause);
       return known === undefined ? [] : [known];
@@ -532,6 +534,7 @@ export function applyPetitionOpened(
     petitioner: event.entityId,
     god: event.god,
     cause: event.cause,
+    about: aboutPetition(state, event),
     request: event.request,
     tick: event.tick,
     sequence: event.sequence,

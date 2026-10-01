@@ -851,6 +851,42 @@ const CAUSE_KINDS = [
   "grudge",
 ] as const;
 
+function parseCause(item: unknown, at: string): ParseResult<PetitionCause> {
+  if (!isRecord(item)) return fail(at, "expected a cause");
+  const eventId = parseEventId(item.eventId, `${at}.eventId`);
+  if (!eventId.ok) return eventId;
+  const tick = parseNonNegativeInteger(item.tick, `${at}.tick`);
+  if (!tick.ok) return tick;
+  const kind = parseEnum(item.kind, `${at}.kind`, CAUSE_KINDS);
+  if (!kind.ok) return kind;
+  const offender =
+    item.offender === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(item.offender, `${at}.offender`);
+  if (!offender.ok) return offender;
+  const building =
+    item.building === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(item.building, `${at}.building`);
+  if (!building.ok) return building;
+  const resource = parseOptionalString(item.resource, `${at}.resource`);
+  if (!resource.ok) return resource;
+  const amount =
+    item.amount === undefined
+      ? ok<number | undefined>(undefined)
+      : parseNonNegativeInteger(item.amount, `${at}.amount`);
+  if (!amount.ok) return amount;
+  return ok({
+    eventId: eventId.value,
+    tick: tick.value,
+    kind: kind.value,
+    ...(offender.value === undefined ? {} : { offender: offender.value }),
+    ...(building.value === undefined ? {} : { building: building.value }),
+    ...(resource.value === undefined ? {} : { resource: resource.value }),
+    ...(amount.value === undefined ? {} : { amount: amount.value }),
+  });
+}
+
 function parseCauseEntry(
   value: unknown,
   path: string,
@@ -864,41 +900,7 @@ function parseCauseEntry(
   if (!knownActorIds.has(owner.value)) {
     return fail(`${path}[0]`, `causes belong to unknown actor: ${owner.value}`);
   }
-  const causes = parseArray(value[1], `${path}[1]`, (item, at) => {
-    if (!isRecord(item)) return fail(at, "expected a cause");
-    const eventId = parseEventId(item.eventId, `${at}.eventId`);
-    if (!eventId.ok) return eventId;
-    const tick = parseNonNegativeInteger(item.tick, `${at}.tick`);
-    if (!tick.ok) return tick;
-    const kind = parseEnum(item.kind, `${at}.kind`, CAUSE_KINDS);
-    if (!kind.ok) return kind;
-    const offender =
-      item.offender === undefined
-        ? ok<EntityId | undefined>(undefined)
-        : parseEntityId(item.offender, `${at}.offender`);
-    if (!offender.ok) return offender;
-    const building =
-      item.building === undefined
-        ? ok<EntityId | undefined>(undefined)
-        : parseEntityId(item.building, `${at}.building`);
-    if (!building.ok) return building;
-    const resource = parseOptionalString(item.resource, `${at}.resource`);
-    if (!resource.ok) return resource;
-    const amount =
-      item.amount === undefined
-        ? ok<number | undefined>(undefined)
-        : parseNonNegativeInteger(item.amount, `${at}.amount`);
-    if (!amount.ok) return amount;
-    return ok({
-      eventId: eventId.value,
-      tick: tick.value,
-      kind: kind.value,
-      ...(offender.value === undefined ? {} : { offender: offender.value }),
-      ...(building.value === undefined ? {} : { building: building.value }),
-      ...(resource.value === undefined ? {} : { resource: resource.value }),
-      ...(amount.value === undefined ? {} : { amount: amount.value }),
-    });
-  });
+  const causes = parseArray(value[1], `${path}[1]`, parseCause);
   if (!causes.ok) return causes;
   return ok([owner.value, causes.value] as const);
 }
@@ -934,6 +936,8 @@ function parsePetitionEntry(
   }
   const cause = parseEventId(record.cause, `${path}[1].cause`);
   if (!cause.ok) return cause;
+  const about = parseCause(record.about, `${path}[1].about`);
+  if (!about.ok) return about;
   const request = parsePetitionRequest(record.request, `${path}[1].request`);
   if (!request.ok) return request;
   const tick = parseNonNegativeInteger(record.tick, `${path}[1].tick`);
@@ -956,6 +960,7 @@ function parsePetitionEntry(
       petitioner: petitioner.value,
       god: god.value,
       cause: cause.value,
+      about: about.value,
       request: request.value,
       tick: tick.value,
       sequence: sequence.value,

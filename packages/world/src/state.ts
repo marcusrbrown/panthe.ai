@@ -310,6 +310,8 @@ export interface Petition {
   readonly petitioner: EntityId;
   readonly god: EntityId;
   readonly cause: EventId;
+  /** The cause as the petitioner knew it when it prayed: an offender it never learned is absent. What the god is told, and what the one-open-petition rule holds, outlive the petitioner's bounded memory of causes. */
+  readonly about: PetitionCause;
   readonly request: PetitionRequest;
   readonly tick: number;
   /** The `petition-opened` event's sequence: "since a goal was set" is measured in events. */

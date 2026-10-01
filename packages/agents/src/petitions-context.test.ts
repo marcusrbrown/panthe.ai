@@ -497,3 +497,99 @@ test("every open petition addressed to the god is listed, however many there are
     `PROMPT_GROWTH_SEVEN_PETITIONS ${text.length - bare.length} total ${text.length}`,
   );
 });
+
+/** `mortal` at the altar prays about `cause`; returns the opened petition. */
+function prayAbout(run: Run, mortal: string, cause: EventId) {
+  const placed = getActor(run.state, id(mortal));
+  if (!placed) throw new Error(mortal);
+  run.state = withActor(run.state, { ...placed, locationId: id("altar") });
+  const ran = run.tick({
+    actor: mortal,
+    kind: "pray",
+    cause,
+    source: "routine",
+  });
+  expect(ran.rejected).toEqual([]);
+  const opened = ran.events.find((e) => e.kind === "petition-opened");
+  if (opened?.kind !== "petition-opened") throw new Error("no petition");
+  return opened;
+}
+
+test("a help prayer about an unwitnessed theft tells its god no offender: the farmer never knew who stole its currency", () => {
+  const run = greek();
+  const theft = run.apply({
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 1,
+    cause: "director",
+  });
+  const opened = prayAbout(run, "farmer", theft.id);
+  expect(opened.request).toMatchObject({ kind: "help" });
+  const prayers = section(
+    run.prompt(String(opened.god)),
+    "Prayers to you",
+    "Ways out",
+  );
+  expect(prayers).toContain(opened.id);
+  expect(prayers).toContain("currency");
+  expect(prayers).not.toContain("woodcutter");
+});
+
+test("a help prayer about unwitnessed damage tells its god no offender: the farmer only noticed the damage", () => {
+  const run = greek();
+  const damage = run.apply({
+    kind: "building-damaged",
+    entityId: "the-tavern",
+    amount: 1,
+    actor: "zeus",
+  });
+  run.apply({
+    kind: "memory-recorded",
+    memoryKind: "noticed",
+    entityId: "farmer",
+    sourceEventId: damage.id,
+    causeEventId: damage.id,
+    subjects: ["farmer", "the-tavern"],
+    salience: 5,
+  });
+  const opened = prayAbout(run, "farmer", damage.id);
+  expect(opened.request).toMatchObject({ kind: "help" });
+  const prayers = section(
+    run.prompt(String(opened.god)),
+    "Prayers to you",
+    "Ways out",
+  );
+  expect(prayers).toContain("the-tavern");
+  expect(prayers).not.toContain("zeus");
+});
+
+test("control: a witnessed damage keeps its attribution in a help prayer", () => {
+  const run = greek();
+  // Make the damager one who owns no building, so the request is help, not punish.
+  const damage = run.apply({
+    kind: "building-damaged",
+    entityId: "the-tavern",
+    amount: 1,
+    actor: "zeus",
+  });
+  run.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: "farmer",
+    sourceEventId: damage.id,
+    eventKind: "building-damaged",
+    subjects: ["zeus", "the-tavern", "farmer"],
+    salience: 5,
+    consequence: { effect: "harm", agent: "zeus", target: "farmer" },
+  });
+  const opened = prayAbout(run, "farmer", damage.id);
+  expect(opened.request).toMatchObject({ kind: "help" });
+  const prayers = section(
+    run.prompt(String(opened.god)),
+    "Prayers to you",
+    "Ways out",
+  );
+  expect(prayers).toContain("zeus");
+});

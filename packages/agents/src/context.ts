@@ -262,32 +262,25 @@ function prayerInstructions(remembered: Remembered): string[] {
   ];
 }
 
-function describeCause(state: WorldState, petition: Petition): string {
-  const cause = (state.causes.get(petition.petitioner) ?? []).find(
-    (c) => c.eventId === petition.cause,
-  );
-  if (cause !== undefined) {
-    switch (cause.kind) {
-      case "damage":
-        return `${cause.building} was damaged${cause.offender === undefined ? "" : ` by ${cause.offender}`}`;
-      case "fire":
-        return `${cause.building} burned`;
-      case "theft":
-        return `${cause.offender} stole ${cause.resource}`;
-      case "spoilage":
-        return `its ${cause.resource} spoiled`;
-      case "need":
-        return `it lacked ${cause.resource}`;
-      case "grudge":
-        return `it holds a grudge against ${cause.offender}`;
-    }
+function describeCause(petition: Petition): string {
+  // What the petitioner knew when it prayed, not what the world recorded: an offender it never learned stays unknown.
+  const cause = petition.about;
+  switch (cause.kind) {
+    case "damage":
+      return `${cause.building} was damaged${cause.offender === undefined ? "" : ` by ${cause.offender}`}`;
+    case "fire":
+      return `${cause.building} burned`;
+    case "theft":
+      return cause.offender === undefined
+        ? `its ${cause.resource} was stolen`
+        : `${cause.offender} stole ${cause.resource}`;
+    case "spoilage":
+      return `its ${cause.resource} spoiled`;
+    case "need":
+      return `it lacked ${cause.resource}`;
+    case "grudge":
+      return `it holds a grudge against ${cause.offender}`;
   }
-  const need = [...state.needs.values()].find(
-    (n) => n.eventId === petition.cause,
-  );
-  return need === undefined
-    ? `[${petition.cause}]`
-    : `it lacked ${need.resource}`;
 }
 
 /** A place as the god sees it: its name, whether the god is there, and the exit to take first. */
@@ -345,7 +338,7 @@ function petitionView(
     id: petition.id,
     petitioner: petition.petitioner,
     request,
-    cause: describeCause(state, petition),
+    cause: describeCause(petition),
     whereabouts,
     petitionerHere:
       getActor(state, petition.petitioner)?.locationId === god.locationId,

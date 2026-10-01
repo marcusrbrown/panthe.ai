@@ -1931,3 +1931,51 @@ test("another mortal's open petition about food does not block the farmer's", ()
     ),
   ).toBe(true);
 });
+
+test("a forgotten cause still blocks a second petition about the same loss: the open punish petition holds its subject after eight newer causes push its own out of memory", () => {
+  const world = new World();
+  const first = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+  expect(world.state.petitions.get(first.id)?.request.kind).toBe("punish");
+  // Eight grudge causes push the theft out of the farmer's bounded cause history.
+  for (let n = 0; n < 8; n += 1) {
+    world.apply({
+      kind: "relationship-changed",
+      entityId: "farmer",
+      toward: "drifter",
+      affinityDelta: -1,
+      grudgeDelta: 1,
+      memoryEventId: `evt-0-m${n}`,
+    });
+  }
+  expect(
+    (world.state.causes.get(id("farmer")) ?? []).some(
+      (c) => c.eventId === first.cause,
+    ),
+  ).toBe(false);
+  // The prayer cooldown passes; a second loss of the same resource follows.
+  world.state = {
+    ...world.state,
+    tick:
+      (world.state.petitions.get(first.id)?.tick ?? 0) +
+      petitionBalanceOf(world.state.rules, "prayerCooldownTicks") +
+      1,
+  };
+  const second = world.apply(theftBy("drifter"));
+  const prayable = () =>
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === second.id,
+    );
+  expect(world.state.petitions.get(first.id)?.status).toBe("open");
+  expect(prayable()).toBe(false);
+  // Control: once the first petition closes, the same loss can be prayed about.
+  const open = world.state.petitions.get(first.id);
+  if (!open) throw new Error("petition");
+  world.state = {
+    ...world.state,
+    petitions: new Map(world.state.petitions).set(first.id, {
+      ...open,
+      status: "answered",
+    }),
+  };
+  expect(prayable()).toBe(true);
+});

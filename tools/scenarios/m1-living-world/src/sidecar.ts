@@ -94,8 +94,8 @@ const START_TIMEOUT_MS = 15_000;
 export interface StartOptions {
   /** How long to wait for the port line. Defaults to 15 s. */
   readonly startTimeoutMs?: number;
-  /** Called with the child's pid as soon as it is spawned (for tests). */
-  readonly onSpawn?: (pid: number) => void;
+  /** Called with the child's pid as soon as it is spawned, and awaited before the token is written (for tests). */
+  readonly onSpawn?: (pid: number) => void | Promise<void>;
   /** Extra environment for the child, on top of this process's and `PANTHEA_APP_DATA_DIR`. */
   readonly env?: Readonly<Record<string, string>>;
 }
@@ -120,7 +120,7 @@ export async function startSidecar(
     env: { ...process.env, ...options.env, PANTHEA_APP_DATA_DIR: dataDir },
   });
   live.add(child);
-  options.onSpawn?.(child.pid);
+  await options.onSpawn?.(child.pid);
 
   let output = "";
   const lines: { at: number; text: string }[] = [];
@@ -150,8 +150,21 @@ export async function startSidecar(
 
   let port: number;
   try {
-    child.stdin.write(`${token}\n`);
-    await child.stdin.flush();
+    try {
+      child.stdin.write(`${token}\n`);
+      await child.stdin.flush();
+    } catch (error) {
+      // A child that closed its stdin or exited before reading the token breaks the pipe:
+      // report its exit, and rethrow the write error only if it is still running.
+      const code = await Promise.race([
+        exited,
+        Bun.sleep(1000).then(() => undefined),
+      ]);
+      if (code === undefined) throw error;
+      throw new Error(
+        `sidecar exited (${code}) before printing its port:\n${output}`,
+      );
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       port = await Promise.race([

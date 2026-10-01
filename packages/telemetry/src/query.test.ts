@@ -75,6 +75,7 @@ function seedCommittedChain(): {
     simTime: 42,
     correlationId: createCorrelationId(),
     causationId: createCausationId(),
+    tick: 1,
     approximate: false,
     kind: "entity-moved",
     entityId: createEntityId(),
@@ -202,6 +203,7 @@ function seedStrike(): {
     simTime: 1000,
     correlationId: createCorrelationId(),
     causationId: createCausationId(),
+    tick: 1,
     approximate: false,
   };
   const spend: WorldEvent = {
@@ -327,6 +329,7 @@ describe("events no proposal committed", () => {
       simTime: 2000,
       correlationId: createCorrelationId(),
       causationId: createCausationId(),
+      tick: 1,
       approximate: false,
       ...overrides,
     } as WorldEvent;

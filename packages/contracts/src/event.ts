@@ -34,6 +34,8 @@ export interface EventEnvelope {
   readonly id: EventId;
   readonly sequence: number;
   readonly simTime: number;
+  /** The world tick it happened in. Windows, cooldowns, and locks count these, never wall time, so a replay reproduces them. */
+  readonly tick: number;
   readonly correlationId: CorrelationId;
   readonly causationId: CausationId;
   readonly approximate: boolean;
@@ -231,6 +233,15 @@ export interface UnmetNeedEvent extends EventEnvelope {
   readonly reason: UnmetNeedReason;
 }
 
+/** A mortal's unmet need was met: the scan found the routine can now get what it needed, and the open need is closed. Private to the mortal. */
+export interface NeedMetEvent extends EventEnvelope {
+  readonly kind: "need-met";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  /** The `unmet-need` event this closes. */
+  readonly needEventId: EventId;
+}
+
 /** The quiet-world director made `entityId` take `amount` of `resource` from `victim`. Never undone. A prayer can cite it. */
 export interface TheftEvent extends EventEnvelope {
   readonly kind: "theft";
@@ -344,6 +355,7 @@ export const UNPLACED_EVENT_KINDS = [
   "goal-set",
   "goal-ended",
   "unmet-need",
+  "need-met",
   "petition-answered",
   "petition-lapsed",
   "goal-change-refused",
@@ -423,6 +435,7 @@ export type WorldEvent =
   | GoalSetEvent
   | GoalEndedEvent
   | UnmetNeedEvent
+  | NeedMetEvent
   | TheftEvent
   | StockSpoiledEvent
   | PetitionOpenedEvent
@@ -452,6 +465,7 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "goal-set": true,
   "goal-ended": true,
   "unmet-need": true,
+  "need-met": true,
   theft: true,
   "stock-spoiled": true,
   "petition-opened": true,
@@ -513,6 +527,7 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
       case "petition-lapsed":
         return [event.entityId, event.god];
       case "unmet-need":
+      case "need-met":
       case "stock-spoiled":
       case "goal-change-refused":
       case "goal-ended":
@@ -557,6 +572,8 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.goalEventId;
     case "petition-opened":
       return event.cause;
+    case "need-met":
+      return event.needEventId;
     case "petition-answered":
     case "petition-lapsed":
       return event.petitionId;
@@ -846,6 +863,8 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
   if (!sequence.ok) return sequence;
   const simTime = parseFiniteNumber(input.simTime, "simTime");
   if (!simTime.ok) return simTime;
+  const tick = parseNonNegativeInteger(input.tick, "tick");
+  if (!tick.ok) return tick;
   const correlationId = parseCorrelationId(
     input.correlationId,
     "correlationId",
@@ -861,6 +880,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     id: id.value,
     sequence: sequence.value,
     simTime: simTime.value,
+    tick: tick.value,
     correlationId: correlationId.value,
     causationId: causationId.value,
     approximate: approximate.value,
@@ -1208,6 +1228,21 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         entityId: entityId.value,
         resource: resource.value,
         reason: reason.value,
+      });
+    }
+    case "need-met": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const needEventId = parseEventId(input.needEventId, "needEventId");
+      if (!needEventId.ok) return needEventId;
+      return ok({
+        ...envelope,
+        kind: "need-met",
+        entityId: entityId.value,
+        resource: resource.value,
+        needEventId: needEventId.value,
       });
     }
     case "theft": {

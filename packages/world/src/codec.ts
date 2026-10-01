@@ -44,6 +44,7 @@ import {
   REALMS,
   type RejectionReasonCode,
   TRANSPORT_KINDS,
+  UNMET_NEED_REASONS,
   WITNESSED_EVENT_KINDS,
 } from "@panthea/contracts";
 import { memoryBalanceOf } from "./memory";
@@ -59,6 +60,8 @@ import {
   type LegendRecord,
   type LocationState,
   type MemoryEntry,
+  needKey,
+  type OpenNeed,
   type RelationshipState,
   relationshipKey,
   type WorldState,
@@ -80,6 +83,7 @@ export interface EncodedWorldState {
   readonly memories: readonly (readonly [EntityId, readonly MemoryEntry[]])[];
   readonly relationships: readonly (readonly [string, RelationshipState])[];
   readonly goals: readonly (readonly [EntityId, ActiveGoal])[];
+  readonly needs: readonly (readonly [string, OpenNeed])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -125,6 +129,7 @@ export function encode(state: WorldState): EncodedWorldState {
     memories: [...state.memories.entries()],
     relationships: [...state.relationships.entries()],
     goals: [...state.goals.entries()],
+    needs: [...state.needs.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -787,6 +792,53 @@ function parseGoalEntry(
   ] as const);
 }
 
+function parseNeedEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [string, OpenNeed]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected a [key, need] entry");
+  }
+  const key = parseString(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a need");
+  const actor = parseEntityId(record.actor, `${path}[1].actor`);
+  if (!actor.ok) return actor;
+  if (!knownActorIds.has(actor.value)) {
+    return fail(`${path}[1]`, `need belongs to unknown actor: ${actor.value}`);
+  }
+  const resource = parseString(record.resource, `${path}[1].resource`);
+  if (!resource.ok) return resource;
+  if (key.value !== needKey(actor.value, resource.value)) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${key.value}" does not match its own need`,
+    );
+  }
+  const reason = parseEnum(
+    record.reason,
+    `${path}[1].reason`,
+    UNMET_NEED_REASONS,
+  );
+  if (!reason.ok) return reason;
+  const eventId = parseEventId(record.eventId, `${path}[1].eventId`);
+  if (!eventId.ok) return eventId;
+  const tick = parseNonNegativeInteger(record.tick, `${path}[1].tick`);
+  if (!tick.ok) return tick;
+  return ok([
+    key.value,
+    {
+      actor: actor.value,
+      resource: resource.value,
+      reason: reason.value,
+      eventId: eventId.value,
+      tick: tick.value,
+    },
+  ] as const);
+}
+
 function parseRelationshipEntry(
   value: unknown,
   path: string,
@@ -957,6 +1009,16 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const goals = new Map(goalEntries.value);
 
+  const needEntries = parseArray(value.needs, "needs", (item, path) =>
+    parseNeedEntry(item, path, knownActorIds),
+  );
+  if (!needEntries.ok) return needEntries;
+  const duplicateNeed = findDuplicateKey(needEntries.value);
+  if (duplicateNeed !== undefined) {
+    return fail("needs", `duplicate need: ${duplicateNeed}`);
+  }
+  const needs = new Map(needEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -1003,6 +1065,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     memories,
     relationships,
     goals,
+    needs,
     rules: rules.value,
     recipes: recipes.value,
   });

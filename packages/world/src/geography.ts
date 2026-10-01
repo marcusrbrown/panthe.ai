@@ -10,6 +10,7 @@
 import type { EntityId, LocationEdge, Realm } from "@panthea/contracts";
 import {
   getLocation,
+  hasCapability,
   type LocationState,
   toEntityId,
   type WorldState,
@@ -60,6 +61,60 @@ export function isAdjacent(
   toId: EntityId,
 ): boolean {
   return findEdge(state, fromId, toId) !== undefined;
+}
+
+/**
+ * The first location to step to on a shortest route from `from` to `to` for a
+ * traveler with `capabilities`, or `undefined` when it is already there, there
+ * is no such route, or either place is unknown. A route may use any edge in
+ * either direction, but not enter a place whose required capability the
+ * traveler lacks. Map knowledge only: it says nothing of who or what is on the
+ * way.
+ */
+export function nextHop(
+  state: WorldState,
+  from: EntityId,
+  to: EntityId,
+  capabilities: readonly string[],
+): EntityId | undefined {
+  if (from === to || !getLocation(state, from) || !getLocation(state, to)) {
+    return undefined;
+  }
+  const first = new Map<EntityId, EntityId>();
+  const queue: EntityId[] = [from];
+  const seen = new Set<EntityId>([from]);
+  for (let head = 0; head < queue.length; head += 1) {
+    const here = queue[head] as EntityId;
+    for (const edge of outgoingEdges(state, here)) {
+      const next = toEntityId(edge.to);
+      const there = getLocation(state, next);
+      if (!there || seen.has(next)) continue;
+      if (!hasCapability(capabilities, there.requiredCapability)) continue;
+      seen.add(next);
+      first.set(next, here === from ? next : (first.get(here) as EntityId));
+      if (next === to) return first.get(next);
+      queue.push(next);
+    }
+  }
+  return undefined;
+}
+
+/** How many moves the same route takes: 0 when already there, `undefined` when there is none. */
+export function routeLength(
+  state: WorldState,
+  from: EntityId,
+  to: EntityId,
+  capabilities: readonly string[],
+): number | undefined {
+  let length = 0;
+  let here = from;
+  while (here !== to) {
+    const hop = nextHop(state, here, to, capabilities);
+    if (hop === undefined) return undefined;
+    here = hop;
+    length += 1;
+  }
+  return length;
 }
 
 export function crossesRealm(

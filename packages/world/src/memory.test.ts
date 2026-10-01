@@ -1185,6 +1185,7 @@ function memoryEvent(
     simTime: sequence * 1000,
     correlationId: `tick-${sequence}`,
     causationId: `evt-${sequence - 1}`,
+    tick: 1,
     approximate: false,
     kind: "memory-recorded",
     memoryKind: "witnessed",

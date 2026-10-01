@@ -447,3 +447,48 @@ test("a legend's identity comes from the event that recorded it, so replaying th
     String(told.events[0]?.id),
   );
 });
+
+test("every event a tick commits records that tick: primary, environmental, and derived alike", () => {
+  const state = economyWalkState();
+  let current = state;
+  let prng = createPrng(1);
+  for (let tickNumber = 1; tickNumber <= 3; tickNumber += 1) {
+    const result = runTick(current, prng, []);
+    current = result.state;
+    prng = result.prng;
+    expect(result.state.tick).toBe(tickNumber);
+    for (const event of result.events) expect(event.tick).toBe(tickNumber);
+  }
+});
+
+test("only a building that offers a service earns its owner income: a woodshed that sells nothing earns nothing, a shop does", () => {
+  const base = economyWalkPack();
+  const stocked = (id: string, services: string[]) => ({
+    id,
+    locationId: "square",
+    name: id,
+    material: "wood",
+    combustible: false,
+    services,
+    inventory: [],
+    owner: "woodcutter",
+  });
+  const state = createInitialWorldState({
+    ...base,
+    buildings: [stocked("shop", ["trade"]), stocked("woodshed", [])],
+    inhabitants: [
+      { id: "woodcutter", name: "Woodcutter", locationId: "square" },
+    ],
+    rules: {
+      ...base.rules,
+      economyBalance: { ...base.rules.economyBalance, incomePerTick: 1 },
+    },
+  });
+  const result = runTick(state, createPrng(1), []);
+  const earned = result.events.filter((e) => e.kind === "income-earned");
+  expect(earned).toHaveLength(1);
+  expect(earned[0]).toMatchObject({
+    entityId: "woodcutter",
+    buildingId: "shop",
+  });
+});

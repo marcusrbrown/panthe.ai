@@ -25,6 +25,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  UnmetNeedReason,
   WitnessedEventKind,
   WorldEvent,
   WorldRules,
@@ -242,6 +243,28 @@ export interface ActiveGoal {
   readonly sequence: number;
 }
 
+/** A mortal's routine needs `resource` and cannot get it, as recorded by the event `eventId` on `tick`. Open until a `need-met` event closes it. */
+export interface OpenNeed {
+  readonly actor: EntityId;
+  readonly resource: string;
+  readonly reason: UnmetNeedReason;
+  readonly eventId: EventId;
+  readonly tick: number;
+}
+
+/** Whether `capabilities` satisfy a location's `requiredCapability`; the one rule move, realm-transition validation, and route search apply, exported so a caller can offer only what the rules would allow. */
+export function hasCapability(
+  capabilities: readonly string[],
+  required: string | undefined,
+): boolean {
+  return required === undefined || capabilities.includes(required);
+}
+
+/** The key an open need is held under: one per mortal per resource. */
+export function needKey(actor: EntityId, resource: string): string {
+  return `${actor}|${resource}`;
+}
+
 export interface WorldState {
   /** Monotonic tick counter; advances by exactly one per committed tick. */
   readonly tick: number;
@@ -275,6 +298,8 @@ export interface WorldState {
    * never bumps an actor's revision and never stales a delayed proposal.
    */
   readonly goals: ReadonlyMap<EntityId, ActiveGoal>;
+  /** Each mortal's open unmet needs, keyed by `needKey`. */
+  readonly needs: ReadonlyMap<string, OpenNeed>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -397,6 +422,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     memories: new Map(),
     relationships: new Map(),
     goals: new Map(),
+    needs: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };

@@ -21,6 +21,7 @@ function envelope(
     id: "evt-1",
     sequence: 0,
     simTime: 0,
+    tick: 3,
     correlationId: "corr-1",
     causationId: "cause-1",
     approximate: false,
@@ -554,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(27);
+  expect(WORLD_EVENT_KINDS).toHaveLength(28);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -986,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 9);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 10);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -1426,4 +1427,43 @@ test("eventCause and subjects follow the new events: an answer and a lapse follo
     "woodshed",
   ]);
   expect(subjectsOf(get(3))).toEqual(["farmer", "hera"]);
+});
+
+test("every event records the tick it happened in, and one without a whole non-negative tick is rejected", () => {
+  const moved = {
+    kind: "entity-moved",
+    entityId: "farmer",
+    from: "a",
+    to: "b",
+  };
+  const parsed = parseEvent(envelope(moved));
+  expect(parsed.ok && parsed.value.tick).toBe(3);
+  for (const tick of [undefined, -1, 1.5, "3"]) {
+    expect(parseEvent(envelope({ ...moved, tick })).ok).toBe(false);
+  }
+  // Control: tick 0 is a tick.
+  expect(parseEvent(envelope({ ...moved, tick: 0 })).ok).toBe(true);
+});
+
+test("a need-met event closes the unmet need it names: the mortal, the resource, and the unmet-need event; it follows that event", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "need-met",
+      entityId: "farmer",
+      resource: "planks",
+      needEventId: "evt-3",
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(String(eventCause(result.value))).toBe("evt-3");
+    expect(subjectsOf(result.value)).toEqual(["farmer"]);
+  }
+  for (const bad of [
+    { entityId: "farmer", resource: "planks" },
+    { entityId: "farmer", needEventId: "evt-3" },
+    { resource: "planks", needEventId: "evt-3" },
+  ]) {
+    expect(parseEvent(envelope({ kind: "need-met", ...bad })).ok).toBe(false);
+  }
 });

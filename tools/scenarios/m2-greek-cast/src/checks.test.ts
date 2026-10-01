@@ -104,6 +104,7 @@ const event = (
   simTime: 0,
   correlationId: "c",
   causationId: "c",
+  tick: 1,
   approximate: false,
   kind,
   ...extra,

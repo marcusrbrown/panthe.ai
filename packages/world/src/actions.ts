@@ -52,6 +52,12 @@ import {
   toldMemory,
   witnessMemories,
 } from "./memory";
+import {
+  applyNeedMet,
+  applyTheft,
+  applyUnmetNeed,
+  planNeedStep,
+} from "./needs";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -221,8 +227,22 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       next = applyGoalEnded(state, event);
       break;
     case "unmet-need":
+      next = applyUnmetNeed(state, event);
+      break;
+    case "need-met":
+      next = applyNeedMet(state, event);
+      break;
     case "theft":
+      next = applyTheft(state, event);
+      break;
     case "stock-spoiled":
+      next = debitActorInventory(
+        state,
+        event.entityId,
+        event.resource,
+        event.amount,
+      );
+      break;
     case "petition-opened":
     case "petition-answered":
     case "petition-lapsed":
@@ -359,6 +379,7 @@ function completeEvent(
     id: toEventId(`evt-${meta.tick}-${meta.sequence}`),
     sequence: meta.sequence,
     simTime: meta.simTime,
+    tick: meta.tick,
     correlationId: toCorrelationId(meta.correlationId),
     causationId: toCausationId(meta.causationId),
     approximate: meta.approximate,
@@ -402,13 +423,17 @@ function incomePerTickOf(state: WorldState): number {
   return state.rules.economyBalance.incomePerTick ?? 0;
 }
 
-/** Every operational, owned building earns its owner one income-earned draft this tick -- a declared currency source, distinct from a trade. */
+/** Every operational, owned building that offers a service earns its owner one income-earned draft this tick -- a declared currency source, distinct from a trade. Revenue is for services: a woodshed that sells nothing earns nothing. */
 function planIncomeStep(state: WorldState): readonly WorldEventDraft[] {
   const amount = incomePerTickOf(state);
   if (amount <= 0) return [];
   const drafts: WorldEventDraft[] = [];
   for (const building of state.buildings.values()) {
-    if (building.status !== "operational" || building.owner === undefined) {
+    if (
+      building.status !== "operational" ||
+      building.owner === undefined ||
+      building.services.length === 0
+    ) {
       continue;
     }
     drafts.push({
@@ -546,13 +571,20 @@ export function runTick(
   );
   working = applyEvents(working, fireEvents);
 
+  // The need scan: what mortals' routines want and cannot get. It proposes
+  // nothing and takes no action slot, so routines keep their one proposal.
+  const needEvents = planNeedStep(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, needEvents);
+
   // Rejected proposals' goal events were committed in queue order with the
   // rest; `events` lists them with the primary events, in sequence order.
   const proposalEvents = [
     ...committed.flatMap((record) => record.events),
     ...rejected.flatMap((record) => record.goalEvents),
   ].sort((a, b) => a.sequence - b.sequence);
-  const environmentEvents = [...incomeEvents, ...fireEvents];
+  const environmentEvents = [...incomeEvents, ...fireEvents, ...needEvents];
 
   // Derivation phase: with the primary events numbered and applied, memories
   // and then the relationship changes they cause are derived and committed in

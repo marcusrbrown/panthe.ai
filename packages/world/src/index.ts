@@ -15,6 +15,7 @@ export * from "./fire";
 export * from "./geography";
 export * from "./goals";
 export * from "./memory";
+export * from "./needs";
 export * from "./perception";
 export * from "./repair";
 export * from "./routines";

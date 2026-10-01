@@ -132,6 +132,7 @@ function worldOf(
     memories: new Map(),
     relationships: new Map(),
     goals: new Map(),
+    needs: new Map(),
     rules: RULES,
     recipes: {},
   };

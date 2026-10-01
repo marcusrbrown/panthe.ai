@@ -14,6 +14,8 @@ import {
   type ObservationRecord,
   type Proposal,
   type ProposalBase,
+  type ResourceAmount,
+  type UnmetNeedReason,
 } from "@panthea/contracts";
 import {
   consumeAmountOf,
@@ -32,7 +34,7 @@ export interface RoutineResult {
 }
 
 /** The first other living actor at `actorId`'s location satisfying `predicate`, in `state.actors`' deterministic iteration order. */
-function findCounterparty(
+export function findCounterparty(
   state: WorldState,
   actorId: EntityId,
   actor: ActorState,
@@ -59,6 +61,127 @@ function firstSatisfiedRecipe(
     if (satisfied) return output;
   }
   return undefined;
+}
+
+/** A trade a routine could make now. */
+export interface Deal {
+  readonly counterparty: EntityId;
+  readonly give: readonly ResourceAmount[];
+  readonly receive: readonly ResourceAmount[];
+}
+
+/**
+ * Something a mortal's routine wants and what came of looking for it: a deal
+ * it can make now, or why it cannot. The routine turns a deal into a
+ * candidate; the need scan (needs.ts) turns a shortfall into an unmet-need
+ * event. Both read it from here, so they never disagree about what a mortal
+ * needs.
+ */
+export type Want =
+  | { readonly resource: string; readonly deal: Deal }
+  | { readonly resource: string; readonly unmet: UnmetNeedReason };
+
+/** The food the mortal needs to eat: absent when it already holds enough. */
+export function foodWant(
+  state: WorldState,
+  actorId: EntityId,
+  actor: ActorState,
+): Want | undefined {
+  const consumeAmount = consumeAmountOf(state.rules);
+  if (getResourceAmount(actor.inventory, "food") >= consumeAmount) {
+    return undefined;
+  }
+  const askPrice = consumeAmount * resourceValue(state.rules, "food");
+  if (getResourceAmount(actor.inventory, "currency") < askPrice) {
+    return { resource: "food", unmet: "no-funds" };
+  }
+  const give = [{ resource: "currency", amount: askPrice }];
+  const receive = [{ resource: "food", amount: consumeAmount }];
+  const seller = findCounterparty(
+    state,
+    actorId,
+    actor,
+    (candidate) =>
+      getResourceAmount(candidate.inventory, "food") >= consumeAmount &&
+      evaluateTradeAcceptance(
+        state.rules,
+        candidate.drives ?? NEUTRAL_DRIVES,
+        give,
+        receive,
+      ),
+  );
+  return seller === undefined
+    ? { resource: "food", unmet: "no-seller" }
+    : { resource: "food", deal: { counterparty: seller, give, receive } };
+}
+
+/** The one resource the mortal cannot produce or gather itself, when it holds none. */
+export function wantedWant(
+  state: WorldState,
+  actorId: EntityId,
+  actor: ActorState,
+): Want | undefined {
+  const wanted = actor.wants;
+  if (!wanted || getResourceAmount(actor.inventory, wanted) >= 1) {
+    return undefined;
+  }
+  const askPrice = resourceValue(state.rules, wanted);
+  if (getResourceAmount(actor.inventory, "currency") < askPrice) {
+    return { resource: wanted, unmet: "no-funds" };
+  }
+  const give = [{ resource: "currency", amount: askPrice }];
+  const receive = [{ resource: wanted, amount: 1 }];
+  const seller = findCounterparty(
+    state,
+    actorId,
+    actor,
+    (candidate) =>
+      getResourceAmount(candidate.inventory, wanted) >= 1 &&
+      evaluateTradeAcceptance(
+        state.rules,
+        candidate.drives ?? NEUTRAL_DRIVES,
+        give,
+        receive,
+      ),
+  );
+  return seller === undefined
+    ? { resource: wanted, unmet: "no-seller" }
+    : { resource: wanted, deal: { counterparty: seller, give, receive } };
+}
+
+/** A gatherer's surplus it would sell: absent when it holds less than a batch. */
+export function surplusWant(
+  state: WorldState,
+  actorId: EntityId,
+  actor: ActorState,
+): Want | undefined {
+  const gatherAmount = gatherAmountOf(state.rules);
+  const resource = actor.gathers;
+  if (
+    !resource ||
+    getResourceAmount(actor.inventory, resource) < gatherAmount
+  ) {
+    return undefined;
+  }
+  const askPrice = gatherAmount * resourceValue(state.rules, resource);
+  const give = [{ resource, amount: gatherAmount }];
+  const receive = [{ resource: "currency", amount: askPrice }];
+  const buyer = findCounterparty(
+    state,
+    actorId,
+    actor,
+    (candidate) =>
+      getResourceAmount(candidate.inventory, "currency") >= askPrice &&
+      evaluateTradeAcceptance(
+        state.rules,
+        candidate.drives ?? NEUTRAL_DRIVES,
+        give,
+        receive,
+      ),
+  );
+  return buyer === undefined
+    ? { resource, unmet: "no-buyer" }
+    : { resource, deal: { counterparty: buyer, give, receive } };
 }
 
 /** `Omit<T, K>`, applied separately to each member of a union `T`. */
@@ -122,71 +245,24 @@ export function decideRoutineProposal(
     });
   }
 
-  if (heldFood < consumeAmount) {
-    const askPrice = consumeAmount * resourceValue(state.rules, "food");
-    const heldCurrency = getResourceAmount(actor.inventory, "currency");
-    if (heldCurrency >= askPrice) {
-      const give = [{ resource: "currency", amount: askPrice }];
-      const receive = [{ resource: "food", amount: consumeAmount }];
-      const seller = findCounterparty(
-        state,
-        actorId,
-        actor,
-        (candidate) =>
-          getResourceAmount(candidate.inventory, "food") >= consumeAmount &&
-          evaluateTradeAcceptance(
-            state.rules,
-            candidate.drives ?? NEUTRAL_DRIVES,
-            give,
-            receive,
-          ),
-      );
-      if (seller) {
-        candidates.push({
-          utility: drives.appetite,
-          factsRead: [
-            `actor:${actorId}.inventory`,
-            `actor:${seller}.inventory`,
-          ],
-          build: () => ({
-            kind: "trade",
-            counterparty: seller,
-            give,
-            receive,
-          }),
-        });
-      }
-    }
+  const food = foodWant(state, actorId, actor);
+  if (food && "deal" in food) {
+    const { counterparty: seller, give, receive } = food.deal;
+    candidates.push({
+      utility: drives.appetite,
+      factsRead: [`actor:${actorId}.inventory`, `actor:${seller}.inventory`],
+      build: () => ({ kind: "trade", counterparty: seller, give, receive }),
+    });
   }
 
-  if (
-    actor.gathers &&
-    getResourceAmount(actor.inventory, actor.gathers) >= gatherAmount
-  ) {
-    const resource = actor.gathers;
-    const askPrice = gatherAmount * resourceValue(state.rules, resource);
-    const give = [{ resource, amount: gatherAmount }];
-    const receive = [{ resource: "currency", amount: askPrice }];
-    const buyer = findCounterparty(
-      state,
-      actorId,
-      actor,
-      (candidate) =>
-        getResourceAmount(candidate.inventory, "currency") >= askPrice &&
-        evaluateTradeAcceptance(
-          state.rules,
-          candidate.drives ?? NEUTRAL_DRIVES,
-          give,
-          receive,
-        ),
-    );
-    if (buyer) {
-      candidates.push({
-        utility: drives.greed * 0.6 + drives.thrift * 0.4,
-        factsRead: [`actor:${actorId}.inventory`, `actor:${buyer}.inventory`],
-        build: () => ({ kind: "trade", counterparty: buyer, give, receive }),
-      });
-    }
+  const surplus = surplusWant(state, actorId, actor);
+  if (surplus && "deal" in surplus) {
+    const { counterparty: buyer, give, receive } = surplus.deal;
+    candidates.push({
+      utility: drives.greed * 0.6 + drives.thrift * 0.4,
+      factsRead: [`actor:${actorId}.inventory`, `actor:${buyer}.inventory`],
+      build: () => ({ kind: "trade", counterparty: buyer, give, receive }),
+    });
   }
 
   // Sell surplus of a recipe's output (currently the only produced good is
@@ -223,36 +299,14 @@ export function decideRoutineProposal(
   }
 
   // Buy a wanted resource this actor cannot produce or gather itself.
-  if (actor.wants && getResourceAmount(actor.inventory, actor.wants) < 1) {
-    const wanted = actor.wants;
-    const askPrice = resourceValue(state.rules, wanted);
-    if (getResourceAmount(actor.inventory, "currency") >= askPrice) {
-      const give = [{ resource: "currency", amount: askPrice }];
-      const receive = [{ resource: wanted, amount: 1 }];
-      const seller = findCounterparty(
-        state,
-        actorId,
-        actor,
-        (candidate) =>
-          getResourceAmount(candidate.inventory, wanted) >= 1 &&
-          evaluateTradeAcceptance(
-            state.rules,
-            candidate.drives ?? NEUTRAL_DRIVES,
-            give,
-            receive,
-          ),
-      );
-      if (seller) {
-        candidates.push({
-          utility: drives.thrift * 0.3,
-          factsRead: [
-            `actor:${actorId}.inventory`,
-            `actor:${seller}.inventory`,
-          ],
-          build: () => ({ kind: "trade", counterparty: seller, give, receive }),
-        });
-      }
-    }
+  const wanted = wantedWant(state, actorId, actor);
+  if (wanted && "deal" in wanted) {
+    const { counterparty: seller, give, receive } = wanted.deal;
+    candidates.push({
+      utility: drives.thrift * 0.3,
+      factsRead: [`actor:${actorId}.inventory`, `actor:${seller}.inventory`],
+      build: () => ({ kind: "trade", counterparty: seller, give, receive }),
+    });
   }
 
   const recipeOutput = firstSatisfiedRecipe(state, actor);

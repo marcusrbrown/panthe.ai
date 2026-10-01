@@ -18,6 +18,7 @@ import type {
   GatherProposal,
   LegendProposal,
   MoveProposal,
+  PrayProposal,
   ProduceProposal,
   Proposal,
   RealmTransitionProposal,
@@ -36,8 +37,9 @@ import {
   NEUTRAL_DRIVES,
 } from "./economy";
 import { igniteThresholdOf } from "./fire";
-import { crossesRealm, findEdge, isAdjacent } from "./geography";
+import { ALTAR, crossesRealm, findEdge, isAdjacent } from "./geography";
 import { getMemories } from "./memory";
+import { canPray, petitionFor } from "./petitions";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -568,6 +570,38 @@ function claimIdsExist(state: WorldState, claim: Consequence): boolean {
   );
 }
 
+/**
+ * A mortal prays at the altar about a cause it remembers. The rules open the
+ * petition: they check the mortal could pray (a living mortal, at the altar,
+ * not in its cooldown), that the cause is one it can still pray about and has
+ * not, and then choose the request and route the prayer.
+ */
+function handlePray(state: WorldState, proposal: PrayProposal): RuleOutcome {
+  const actor = getActor(state, proposal.actor);
+  if (!canPray(actor)) {
+    return reject("unauthorized-claim", "only a living mortal may pray");
+  }
+  if (actor.locationId !== ALTAR) {
+    return reject("not-adjacent", "a prayer is made at the altar");
+  }
+  const petition = petitionFor(state, proposal.actor, proposal.cause);
+  if (petition === undefined) {
+    return reject(
+      "malformed",
+      `${proposal.cause} is not a cause this mortal can pray about now`,
+    );
+  }
+  return commit([
+    {
+      kind: "petition-opened",
+      entityId: proposal.actor,
+      god: petition.god,
+      cause: proposal.cause,
+      request: petition.request,
+    },
+  ]);
+}
+
 function handleReport(
   state: WorldState,
   proposal: ReportProposal,
@@ -678,8 +712,9 @@ export function validateProposal(
       // A goal-only proposal has no action; its goal events are recorded by the tick.
       return commit([]);
     case "pray":
+      return handlePray(state, proposal);
     case "bless":
-      // Their rules arrive with the units that produce them.
+      // Its rules arrive with the unit that produces it.
       return reject(
         "malformed",
         `no rule yet for proposal kind: ${proposal.kind}`,

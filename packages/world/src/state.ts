@@ -22,6 +22,7 @@ import type {
   InhabitantDrives,
   LegendId,
   LocationEdge,
+  PetitionRequest,
   Realm,
   Recipe,
   ResourceAmount,
@@ -77,6 +78,8 @@ export interface ActorState {
    * directly, never `packages/world/src/routines.ts`.
    */
   readonly drives?: InhabitantDrives;
+  /** Where a mortal's routine takes it back to after it has gone elsewhere (to pray). Set from its authored starting place; absent for a fixture actor. */
+  readonly home?: EntityId;
   /** The resource this actor gathers when no more pressing action is eligible. Absent means it never gathers. */
   readonly gathers?: string;
   /** A resource this actor seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
@@ -252,6 +255,37 @@ export interface OpenNeed {
   readonly tick: number;
 }
 
+/** What a mortal can pray about: a recorded event that happened to it. */
+export type PetitionCauseKind =
+  | "damage"
+  | "fire"
+  | "theft"
+  | "spoilage"
+  | "need"
+  | "grudge";
+
+export interface PetitionCause {
+  readonly eventId: EventId;
+  readonly tick: number;
+  readonly kind: PetitionCauseKind;
+  /** Who did it, when someone did and the world knows who. */
+  readonly offender?: EntityId;
+  readonly building?: EntityId;
+  readonly resource?: string;
+}
+
+/** A petition: who asked which god, for what, about which cause, and how it stands. Rebuilt from the log. */
+export interface Petition {
+  /** The `petition-opened` event's id. */
+  readonly id: EventId;
+  readonly petitioner: EntityId;
+  readonly god: EntityId;
+  readonly cause: EventId;
+  readonly request: PetitionRequest;
+  readonly tick: number;
+  readonly status: "open" | "answered" | "lapsed";
+}
+
 /** Whether `capabilities` satisfy a location's `requiredCapability`; the one rule move, realm-transition validation, and route search apply, exported so a caller can offer only what the rules would allow. */
 export function hasCapability(
   capabilities: readonly string[],
@@ -300,6 +334,10 @@ export interface WorldState {
   readonly goals: ReadonlyMap<EntityId, ActiveGoal>;
   /** Each mortal's open unmet needs, keyed by `needKey`. */
   readonly needs: ReadonlyMap<string, OpenNeed>;
+  /** Each mortal's most recent prayable causes (newest last, bounded), recorded as the events happen. A need is a cause too, held in `needs`. */
+  readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
+  /** Every petition ever opened, by its event id. */
+  readonly petitions: ReadonlyMap<EventId, Petition>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -381,6 +419,9 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       locationId: toEntityId(inhabitant.locationId),
       alive: true,
       ...(inhabitant.deity ? { isDeity: true } : {}),
+      ...(inhabitant.drives === undefined
+        ? {}
+        : { home: toEntityId(inhabitant.locationId) }),
       capabilities: inhabitant.deity ? [DIVINE_CAPABILITY] : [],
       inventory: toInventoryMap(inhabitant.startingInventory),
       ...(inhabitant.drives === undefined ? {} : { drives: inhabitant.drives }),
@@ -423,6 +464,8 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     relationships: new Map(),
     goals: new Map(),
     needs: new Map(),
+    causes: new Map(),
+    petitions: new Map(),
     rules: pack.rules,
     recipes: pack.recipes,
   };

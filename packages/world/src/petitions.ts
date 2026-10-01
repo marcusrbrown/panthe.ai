@@ -1,0 +1,352 @@
+// Petitions: a mortal prays at the altar about something that happened to it,
+// and the named god hears it wherever it is.
+//
+// A prayer has a recorded cause (an event the mortal remembers in `causes`, or
+// one of its open unmet needs), one god, and one request: help with what was
+// lost, or punishment of an offender who owns a building. The routine walks the
+// mortal to the altar and back; the validator opens the petition and routes it.
+// Everything here is a pure function of world state, and a petition is state
+// changed only by events, so a replay rebuilds it.
+//
+// Favor is the mortal's affinity toward the god. There is no separate score.
+
+import type {
+  EntityId,
+  EventId,
+  PetitionOpenedEvent,
+  PetitionRequest,
+  WorldEvent,
+  WorldRules,
+} from "@panthea/contracts";
+import { ALTAR, nextHop } from "./geography";
+import { getRelationship } from "./memory";
+import {
+  type ActorState,
+  getActor,
+  type Petition,
+  type PetitionCause,
+  type WorldState,
+} from "./state";
+
+/** Defaults for `rules.petitionBalance`, in simulation ticks unless a count. */
+export const DEFAULT_PETITION_BALANCE: Readonly<Record<string, number>> = {
+  /**
+   * How long after a petition opens a god's answer still counts. At least
+   * twice the longest route from the great hall to a petition target, plus the
+   * answering action, at the slowest god pace measured (one action per 25
+   * ticks): 2 x (4 + 1) x 25. A test holds it to the map.
+   */
+  answerWindowTicks: 250,
+  /** How long after it happened an event stays something a mortal will pray about. */
+  causePrayableTicks: 150,
+  /** Fewest ticks between two prayers by one mortal. */
+  prayerCooldownTicks: 20,
+  /** Divinity a god spends to bless. */
+  blessDivinityCost: 2,
+  /** Planks a bless grants for a damaged building. */
+  blessPlanks: 3,
+  /** Units of a resource a bless grants for an unmet need. */
+  blessResourceAmount: 2,
+  /** Ticks without a consequential event before the director causes trouble. */
+  directorQuietTicks: 120,
+  /** Ticks a goal stays unreplaceable without a reason. */
+  goalLockTicks: 40,
+};
+
+/** A petition tunable from `rules`, or its default. */
+export function petitionBalanceOf(rules: WorldRules, key: string): number {
+  return rules.petitionBalance?.[key] ?? DEFAULT_PETITION_BALANCE[key] ?? 0;
+}
+
+/** Most causes a mortal keeps: the newest, so state stays bounded. */
+export const MAX_CAUSES = 8;
+
+// --- Causes ------------------------------------------------------------------
+
+/** What a mortal could pray about now, newest first: the causes it remembers and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
+export function prayableCauses(
+  state: WorldState,
+  actorId: EntityId,
+): readonly PetitionCause[] {
+  if (inCooldown(state, actorId)) return [];
+  const window = petitionBalanceOf(state.rules, "causePrayableTicks");
+  const prayedAbout = new Set(
+    [...state.petitions.values()].map((petition) => petition.cause),
+  );
+  const needs: PetitionCause[] = [...state.needs.values()]
+    .filter((need) => need.actor === actorId)
+    .map((need) => ({
+      eventId: need.eventId,
+      tick: need.tick,
+      kind: "need" as const,
+      resource: need.resource,
+    }));
+  return [...(state.causes.get(actorId) ?? []), ...needs]
+    .filter(
+      (cause) =>
+        state.tick - cause.tick <= window &&
+        !prayedAbout.has(cause.eventId) &&
+        requestFor(state, cause) !== undefined,
+    )
+    .sort(
+      (a, b) =>
+        b.tick - a.tick ||
+        (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
+    );
+}
+
+function inCooldown(state: WorldState, actorId: EntityId): boolean {
+  const cooldown = petitionBalanceOf(state.rules, "prayerCooldownTicks");
+  for (const petition of state.petitions.values()) {
+    if (
+      petition.petitioner === actorId &&
+      state.tick - petition.tick < cooldown
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The buildings `owner` holds, in id order. */
+function buildingsOwnedBy(state: WorldState, owner: EntityId): EntityId[] {
+  return [...state.buildings.values()]
+    .filter((building) => building.owner === owner)
+    .map((building) => building.id)
+    .sort();
+}
+
+/**
+ * What a mortal would ask for about `cause`: punishment of an offender who owns
+ * a building, otherwise help with what was lost. A grudge with no such offender
+ * has nothing to ask for, so it is not prayable.
+ */
+export function requestFor(
+  state: WorldState,
+  cause: PetitionCause,
+): PetitionRequest | undefined {
+  const owned =
+    cause.offender === undefined ? [] : buildingsOwnedBy(state, cause.offender);
+  if (cause.offender !== undefined && owned.length > 0) {
+    return { kind: "punish", offender: cause.offender, buildings: owned };
+  }
+  switch (cause.kind) {
+    case "damage":
+    case "fire":
+      return cause.building === undefined
+        ? undefined
+        : {
+            kind: "help",
+            need: { kind: "building", building: cause.building },
+          };
+    case "theft":
+    case "spoilage":
+    case "need":
+      return cause.resource === undefined
+        ? undefined
+        : {
+            kind: "help",
+            need: { kind: "resource", resource: cause.resource },
+          };
+    case "grudge":
+      return undefined;
+  }
+}
+
+// --- Routing and opening ---------------------------------------------------------------
+
+/** Petitions ever addressed to `god`: the tie-break when a mortal favors two gods equally. */
+function petitionsReceivedBy(state: WorldState, god: EntityId): number {
+  let count = 0;
+  for (const petition of state.petitions.values()) {
+    if (petition.god === god) count += 1;
+  }
+  return count;
+}
+
+/** The god `mortal` prays to: the living deity it has the highest affinity toward; on a tie, the one that has received the fewest petitions; then by id. */
+export function routePetition(
+  state: WorldState,
+  mortal: EntityId,
+): EntityId | undefined {
+  const gods = [...state.actors.values()]
+    .filter((actor) => actor.alive && actor.isDeity === true)
+    .map((actor) => actor.id)
+    .sort();
+  let best: EntityId | undefined;
+  let bestAffinity = Number.NEGATIVE_INFINITY;
+  let bestReceived = Number.POSITIVE_INFINITY;
+  for (const god of gods) {
+    const affinity = getRelationship(state, mortal, god)?.affinity ?? 0;
+    const received = petitionsReceivedBy(state, god);
+    if (
+      affinity > bestAffinity ||
+      (affinity === bestAffinity && received < bestReceived)
+    ) {
+      best = god;
+      bestAffinity = affinity;
+      bestReceived = received;
+    }
+  }
+  return best;
+}
+
+/** The petition `mortal` would open citing `causeId` now, or `undefined` when the cause is not one it can pray about. */
+export function petitionFor(
+  state: WorldState,
+  mortal: EntityId,
+  causeId: EventId,
+): { readonly god: EntityId; readonly request: PetitionRequest } | undefined {
+  const cause = prayableCauses(state, mortal).find(
+    (c) => c.eventId === causeId,
+  );
+  if (cause === undefined) return undefined;
+  const request = requestFor(state, cause);
+  const god = routePetition(state, mortal);
+  return request === undefined || god === undefined
+    ? undefined
+    : { god, request };
+}
+
+/** Whether `actor` may pray: a living mortal. */
+export function canPray(actor: ActorState | undefined): actor is ActorState {
+  return actor !== undefined && actor.alive && actor.isDeity !== true;
+}
+
+/** The petitions addressed to `god` that are still open. This is the divine sense: the god's own petitions, read from world state, whatever it can perceive. */
+export function openPetitionsFor(
+  state: WorldState,
+  god: EntityId,
+): readonly Petition[] {
+  return [...state.petitions.values()]
+    .filter((petition) => petition.god === god && petition.status === "open")
+    .sort((a, b) => a.tick - b.tick || (a.id < b.id ? -1 : 1));
+}
+
+// --- The routine's part -----------------------------------------------------------------
+
+/** What a mortal's routine does about prayer this tick, if anything: pray, or take one step toward the altar or home. */
+export type PrayerStep =
+  | { readonly kind: "pray"; readonly cause: EventId }
+  | {
+      readonly kind: "walk";
+      readonly to: EntityId;
+      readonly purpose: "altar" | "home";
+    };
+
+export function prayerStep(
+  state: WorldState,
+  actorId: EntityId,
+): PrayerStep | undefined {
+  const actor = getActor(state, actorId);
+  if (!canPray(actor)) return undefined;
+  const [cause] = prayableCauses(state, actorId);
+  if (cause !== undefined) {
+    if (actor.locationId === ALTAR)
+      return { kind: "pray", cause: cause.eventId };
+    const hop = nextHop(state, actor.locationId, ALTAR, actor.capabilities);
+    return hop === undefined
+      ? undefined
+      : { kind: "walk", to: hop, purpose: "altar" };
+  }
+  if (actor.home !== undefined && actor.locationId !== actor.home) {
+    const hop = nextHop(
+      state,
+      actor.locationId,
+      actor.home,
+      actor.capabilities,
+    );
+    return hop === undefined
+      ? undefined
+      : { kind: "walk", to: hop, purpose: "home" };
+  }
+  return undefined;
+}
+
+// --- Reducers ----------------------------------------------------------------------------
+
+/** Records `cause` for `owner`, keeping only the newest `MAX_CAUSES`. */
+function recordCause(
+  state: WorldState,
+  owner: EntityId | undefined,
+  cause: PetitionCause,
+): WorldState {
+  if (owner === undefined || !getActor(state, owner)) return state;
+  const causes = new Map(state.causes);
+  causes.set(
+    owner,
+    [...(state.causes.get(owner) ?? []), cause].slice(-MAX_CAUSES),
+  );
+  return { ...state, causes };
+}
+
+/**
+ * What an event that happened to a mortal leaves in its memory of causes:
+ * damage or fire to its building, a theft from it, spoiled stock, a grudge. Run
+ * against the state just before the event is applied.
+ */
+export function recordCauses(state: WorldState, event: WorldEvent): WorldState {
+  switch (event.kind) {
+    case "building-damaged":
+      return recordCause(state, state.buildings.get(event.entityId)?.owner, {
+        eventId: event.id,
+        tick: event.tick,
+        kind: "damage",
+        offender: event.actor,
+        building: event.entityId,
+      });
+    case "building-ignited":
+      return recordCause(state, state.buildings.get(event.entityId)?.owner, {
+        eventId: event.id,
+        tick: event.tick,
+        kind: "fire",
+        ...(event.cause.kind === "director" || event.cause.actor === undefined
+          ? {}
+          : { offender: event.cause.actor }),
+        building: event.entityId,
+      });
+    case "theft":
+      return recordCause(state, event.victim, {
+        eventId: event.id,
+        tick: event.tick,
+        kind: "theft",
+        offender: event.entityId,
+        resource: event.resource,
+      });
+    case "stock-spoiled":
+      return recordCause(state, event.entityId, {
+        eventId: event.id,
+        tick: event.tick,
+        kind: "spoilage",
+        resource: event.resource,
+      });
+    case "relationship-changed":
+      return event.grudgeDelta > 0
+        ? recordCause(state, event.entityId, {
+            eventId: event.id,
+            tick: event.tick,
+            kind: "grudge",
+            offender: event.toward,
+          })
+        : state;
+    default:
+      return state;
+  }
+}
+
+export function applyPetitionOpened(
+  state: WorldState,
+  event: PetitionOpenedEvent,
+): WorldState {
+  const petitions = new Map(state.petitions);
+  petitions.set(event.id, {
+    id: event.id,
+    petitioner: event.entityId,
+    god: event.god,
+    cause: event.cause,
+    request: event.request,
+    tick: event.tick,
+    status: "open",
+  });
+  return { ...state, petitions };
+}

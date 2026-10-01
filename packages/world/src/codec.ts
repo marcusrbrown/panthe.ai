@@ -37,6 +37,7 @@ import {
   parseOptionalBoolean,
   parseOptionalString,
   parsePetitionBalance,
+  parsePetitionRequest,
   parseRecipes,
   parseReportContent,
   parseSalience,
@@ -62,6 +63,8 @@ import {
   type MemoryEntry,
   needKey,
   type OpenNeed,
+  type Petition,
+  type PetitionCause,
   type RelationshipState,
   relationshipKey,
   type WorldState,
@@ -84,6 +87,8 @@ export interface EncodedWorldState {
   readonly relationships: readonly (readonly [string, RelationshipState])[];
   readonly goals: readonly (readonly [EntityId, ActiveGoal])[];
   readonly needs: readonly (readonly [string, OpenNeed])[];
+  readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
+  readonly petitions: readonly (readonly [EventId, Petition])[];
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -130,6 +135,8 @@ export function encode(state: WorldState): EncodedWorldState {
     relationships: [...state.relationships.entries()],
     goals: [...state.goals.entries()],
     needs: [...state.needs.entries()],
+    causes: [...state.causes.entries()],
+    petitions: [...state.petitions.entries()],
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -332,6 +339,11 @@ function parseActorState(
   if (!inventory.ok) return inventory;
   const drives = parseDrives(value.drives, `${path}.drives`);
   if (!drives.ok) return drives;
+  const home =
+    value.home === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.home, `${path}.home`);
+  if (!home.ok) return home;
   const gathers = parseOptionalString(value.gathers, `${path}.gathers`);
   if (!gathers.ok) return gathers;
   const wants = parseOptionalString(value.wants, `${path}.wants`);
@@ -348,6 +360,7 @@ function parseActorState(
     capabilities: capabilities.value,
     inventory: inventory.value,
     ...(drives.value === undefined ? {} : { drives: drives.value }),
+    ...(home.value === undefined ? {} : { home: home.value }),
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
     ...(favors.value === undefined ? {} : { favors: favors.value }),
@@ -792,6 +805,116 @@ function parseGoalEntry(
   ] as const);
 }
 
+const CAUSE_KINDS = [
+  "damage",
+  "fire",
+  "theft",
+  "spoilage",
+  "need",
+  "grudge",
+] as const;
+
+function parseCauseEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EntityId, readonly PetitionCause[]]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [actor, causes] entry");
+  }
+  const owner = parseEntityId(value[0], `${path}[0]`);
+  if (!owner.ok) return owner;
+  if (!knownActorIds.has(owner.value)) {
+    return fail(`${path}[0]`, `causes belong to unknown actor: ${owner.value}`);
+  }
+  const causes = parseArray(value[1], `${path}[1]`, (item, at) => {
+    if (!isRecord(item)) return fail(at, "expected a cause");
+    const eventId = parseEventId(item.eventId, `${at}.eventId`);
+    if (!eventId.ok) return eventId;
+    const tick = parseNonNegativeInteger(item.tick, `${at}.tick`);
+    if (!tick.ok) return tick;
+    const kind = parseEnum(item.kind, `${at}.kind`, CAUSE_KINDS);
+    if (!kind.ok) return kind;
+    const offender =
+      item.offender === undefined
+        ? ok<EntityId | undefined>(undefined)
+        : parseEntityId(item.offender, `${at}.offender`);
+    if (!offender.ok) return offender;
+    const building =
+      item.building === undefined
+        ? ok<EntityId | undefined>(undefined)
+        : parseEntityId(item.building, `${at}.building`);
+    if (!building.ok) return building;
+    const resource = parseOptionalString(item.resource, `${at}.resource`);
+    if (!resource.ok) return resource;
+    return ok({
+      eventId: eventId.value,
+      tick: tick.value,
+      kind: kind.value,
+      ...(offender.value === undefined ? {} : { offender: offender.value }),
+      ...(building.value === undefined ? {} : { building: building.value }),
+      ...(resource.value === undefined ? {} : { resource: resource.value }),
+    });
+  });
+  if (!causes.ok) return causes;
+  return ok([owner.value, causes.value] as const);
+}
+
+function parsePetitionEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EventId, Petition]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [id, petition] entry");
+  }
+  const key = parseEventId(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a petition");
+  const id = parseEventId(record.id, `${path}[1].id`);
+  if (!id.ok) return id;
+  if (id.value !== key.value) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${key.value}" does not match its own id`,
+    );
+  }
+  const petitioner = parseEntityId(record.petitioner, `${path}[1].petitioner`);
+  if (!petitioner.ok) return petitioner;
+  const god = parseEntityId(record.god, `${path}[1].god`);
+  if (!god.ok) return god;
+  for (const actor of [petitioner.value, god.value]) {
+    if (!knownActorIds.has(actor)) {
+      return fail(`${path}[1]`, `petition names unknown actor: ${actor}`);
+    }
+  }
+  const cause = parseEventId(record.cause, `${path}[1].cause`);
+  if (!cause.ok) return cause;
+  const request = parsePetitionRequest(record.request, `${path}[1].request`);
+  if (!request.ok) return request;
+  const tick = parseNonNegativeInteger(record.tick, `${path}[1].tick`);
+  if (!tick.ok) return tick;
+  const status = parseEnum(record.status, `${path}[1].status`, [
+    "open",
+    "answered",
+    "lapsed",
+  ] as const);
+  if (!status.ok) return status;
+  return ok([
+    key.value,
+    {
+      id: id.value,
+      petitioner: petitioner.value,
+      god: god.value,
+      cause: cause.value,
+      request: request.value,
+      tick: tick.value,
+      status: status.value,
+    },
+  ] as const);
+}
+
 function parseNeedEntry(
   value: unknown,
   path: string,
@@ -1019,6 +1142,28 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const needs = new Map(needEntries.value);
 
+  const causeEntries = parseArray(value.causes, "causes", (item, path) =>
+    parseCauseEntry(item, path, knownActorIds),
+  );
+  if (!causeEntries.ok) return causeEntries;
+  const duplicateCauseOwner = findDuplicateKey(causeEntries.value);
+  if (duplicateCauseOwner !== undefined) {
+    return fail("causes", `duplicate cause owner: ${duplicateCauseOwner}`);
+  }
+  const causes = new Map(causeEntries.value);
+
+  const petitionEntries = parseArray(
+    value.petitions,
+    "petitions",
+    (item, path) => parsePetitionEntry(item, path, knownActorIds),
+  );
+  if (!petitionEntries.ok) return petitionEntries;
+  const duplicatePetition = findDuplicateKey(petitionEntries.value);
+  if (duplicatePetition !== undefined) {
+    return fail("petitions", `duplicate petition: ${duplicatePetition}`);
+  }
+  const petitions = new Map(petitionEntries.value);
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -1066,6 +1211,8 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     relationships,
     goals,
     needs,
+    causes,
+    petitions,
     rules: rules.value,
     recipes: recipes.value,
   });

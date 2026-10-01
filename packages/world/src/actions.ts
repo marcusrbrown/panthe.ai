@@ -58,6 +58,7 @@ import {
   applyUnmetNeed,
   planNeedStep,
 } from "./needs";
+import { applyPetitionOpened, recordCauses } from "./petitions";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -244,6 +245,8 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       );
       break;
     case "petition-opened":
+      next = applyPetitionOpened(state, event);
+      break;
     case "petition-answered":
     case "petition-lapsed":
     case "goal-change-refused":
@@ -257,7 +260,9 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       );
     }
   }
-  return { ...next, lastSequence: event.sequence };
+  // What an event leaves in a mortal's memory of causes, judged against the
+  // world it happened in (a building's owner does not change with the event).
+  return { ...recordCauses(next, event), lastSequence: event.sequence };
 }
 
 /** Applies an ordered event stream to `state`, in order. */

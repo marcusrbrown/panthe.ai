@@ -4,6 +4,7 @@ import { loadContentPack, loadGodProfiles } from "@panthea/content";
 import {
   createInitialWorldState,
   DEFAULT_MEMORY_BALANCE,
+  DEFAULT_PETITION_BALANCE,
 } from "@panthea/world";
 import {
   loadEmbeddedGreekGodProfiles,
@@ -91,4 +92,10 @@ test("the Greek pack gives the woodcutter a woodshed at the square, so a theft b
       "prayerCooldownTicks",
     ].sort(),
   );
+});
+
+test("the Greek pack states the petition tunables the world rules default to, so a retune edits one place and shows in both", () => {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+  expect(pack.value.rules.petitionBalance).toEqual(DEFAULT_PETITION_BALANCE);
 });

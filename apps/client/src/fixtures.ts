@@ -133,6 +133,8 @@ function worldOf(
     relationships: new Map(),
     goals: new Map(),
     needs: new Map(),
+    causes: new Map(),
+    petitions: new Map(),
     rules: RULES,
     recipes: {},
   };

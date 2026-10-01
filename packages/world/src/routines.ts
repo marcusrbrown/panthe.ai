@@ -25,6 +25,7 @@ import {
   NEUTRAL_DRIVES,
   resourceValue,
 } from "./economy";
+import { prayerStep } from "./petitions";
 import { actorHoldsEnoughToRepair, findRepairableBuilding } from "./repair";
 import { type ActorState, getActor, type WorldState } from "./state";
 
@@ -196,6 +197,11 @@ type ProposalDetails = DistributiveOmit<
   keyof ProposalBase
 >;
 
+/** Utility of praying and of walking to the altar: above idle gathering (0.1). */
+const PRAYER_UTILITY = 0.15;
+/** Utility of walking home after praying. */
+const HOME_UTILITY = 0.2;
+
 interface Candidate {
   readonly utility: number;
   readonly factsRead: readonly string[];
@@ -331,6 +337,24 @@ export function decideRoutineProposal(
         `building:${structureId}.status`,
       ],
       build: () => ({ kind: "repair", structure: structureId }),
+    });
+  }
+
+  // Prayer and the walks to and from the altar rank below repair, production,
+  // and the usual trades, and above idle gathering: a mortal prays when it has
+  // nothing better to do, and walks home once it has.
+  const prayer = prayerStep(state, actorId);
+  if (prayer?.kind === "pray") {
+    candidates.push({
+      utility: PRAYER_UTILITY,
+      factsRead: [`actor:${actorId}.location`, `event:${prayer.cause}`],
+      build: () => ({ kind: "pray", cause: prayer.cause }),
+    });
+  } else if (prayer?.kind === "walk") {
+    candidates.push({
+      utility: prayer.purpose === "home" ? HOME_UTILITY : PRAYER_UTILITY,
+      factsRead: [`actor:${actorId}.location`],
+      build: () => ({ kind: "move", to: prayer.to }),
     });
   }
 

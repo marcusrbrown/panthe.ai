@@ -22,6 +22,7 @@ import {
   MAX_ASSERTION_LENGTH,
   MAX_GOAL_HISTORY,
   MAX_OWN_ACTIONS,
+  MAX_REPEATED_REPORTS,
   rememberedBy,
   shownIds,
 } from "./context";
@@ -613,4 +614,65 @@ test("a legend intent with a claim builds a legend proposal carrying it", () => 
     kind: "legend",
     claim: { effect: "harm", agent: "zeus", target: "farmer" },
   });
+});
+
+test("repeated reports to the same listener collapse to the newest few in what a god sees of its own actions, and other actions are not crowded out", () => {
+  const run = tavernRun();
+  run.tick({ actor: "zeus", kind: "move", to: "town-square" });
+  for (let i = 1; i <= 6; i += 1) {
+    run.tick({
+      actor: "zeus",
+      kind: "report",
+      listener: "hera",
+      content: `Word number ${i}.`,
+    });
+  }
+  const shown = run.remembered("zeus").ownActions;
+  const toHera = shown.filter((e) => e.kind === "report-told");
+  expect(toHera).toHaveLength(MAX_REPEATED_REPORTS);
+  // The newest ones are what remain, and the earlier move shows instead of the reports it was pushed out by.
+  expect(
+    toHera.map((e) => (e.kind === "report-told" ? e.content : "")),
+  ).toEqual(["Word number 5.", "Word number 6."]);
+  expect(shown.some((e) => e.kind === "entity-moved")).toBe(true);
+  // A report to someone else is a different target: not collapsed with them.
+  run.tick({
+    actor: "zeus",
+    kind: "report",
+    listener: "woodcutter",
+    content: "Word to the woodcutter.",
+  });
+  const after = run.remembered("zeus").ownActions;
+  expect(
+    after.filter(
+      (e) => e.kind === "report-told" && e.listenerId === id("hera"),
+    ),
+  ).toHaveLength(MAX_REPEATED_REPORTS);
+  expect(
+    after.some(
+      (e) => e.kind === "report-told" && e.listenerId === id("woodcutter"),
+    ),
+  ).toBe(true);
+});
+
+test("repeated told memories from the same teller collapse to the newest few, so one repeated voice does not fill what the god remembers", () => {
+  const run = new Run(
+    actorAt(actorAt(greekState(), "zeus", "tavern"), "hera", "tavern"),
+  );
+  for (let i = 1; i <= 5; i += 1) {
+    run.tick({
+      actor: "hera",
+      kind: "report",
+      listener: "zeus",
+      content: `Hera's word number ${i}.`,
+    });
+  }
+  const told = run
+    .remembered("zeus")
+    .memories.filter((m) => m.kind === "told" && m.teller === id("hera"));
+  expect(told).toHaveLength(MAX_REPEATED_REPORTS);
+  expect(told.map((m) => (m.kind === "told" ? m.content : ""))).toEqual([
+    "Hera's word number 4.",
+    "Hera's word number 5.",
+  ]);
 });

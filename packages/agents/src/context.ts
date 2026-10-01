@@ -109,6 +109,8 @@ export const MAX_FEELINGS = 5;
 export const MAX_OWN_ACTIONS = 5;
 /** Most entries of a goal's history a prompt shows: the newest since the goal was set. */
 export const MAX_GOAL_HISTORY = 4;
+/** Most reports to one listener, or told memories from one teller, a prompt shows: the newest, so one repeated voice cannot crowd out what else the god did or heard. */
+export const MAX_REPEATED_REPORTS = 2;
 /** How many of a god's own newest authored events a turn reads: enough for the actions shown and for a goal's history to reach back past them. */
 export const OWN_EVENT_WINDOW = 4 * MAX_OWN_ACTIONS;
 
@@ -249,16 +251,16 @@ function goalInstruction(remembered: Remembered): string {
   const shape =
     'add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}.';
   if (remembered.goalLockTicks === undefined) {
-    return `You may keep one goal across turns: ${shape} A new goal ends your old one.`;
+    return `You may keep one goal across turns: ${shape} A new goal ends your old one. A goal change goes with any action in the same turn (a move, a strike, a bless, a report); it never needs a turn of its own.`;
   }
-  return `You may keep one goal across turns: ${shape} A goal holds: you may end it as achieved or failed any time, but you may replace or abandon it only after ${remembered.goalLockTicks} ticks, or once news of its target or a prayer to you gives you cause.`;
+  return `You may keep one goal across turns: ${shape} A goal holds: you may end it as achieved or failed any time, but you may replace or abandon it only after ${remembered.goalLockTicks} ticks, or once news of its target or a prayer to you gives you cause. A goal change goes with any action in the same turn; it never needs a turn of its own.`;
 }
 
 /** What prayers are and how a god may answer one; empty when none are addressed to it. */
 function prayerInstructions(remembered: Remembered): string[] {
   if (remembered.petitions.length === 0) return [];
   return [
-    `Mortals pray to you, and you hear them wherever you are. You may answer one by striking the offender's building (action "strike") where it stands, or, for a petitioner who is here, by blessing them (action "bless", naming the petition, at a cost of ${remembered.blessCost} divinity).`,
+    `Mortals pray to you, and you hear them wherever you are. Answering a prayer is how you are worshipped: strike the offender's building (action "strike") where it stands, or, for a petitioner who is here, bless them (action "bless", naming the petition, at a cost of ${remembered.blessCost} divinity). If the petitioner or the building is elsewhere, move toward it first; each prayer below says the next step.`,
   ];
 }
 
@@ -345,6 +347,25 @@ function petitionView(
   };
 }
 
+/** `items` with at most `MAX_REPEATED_REPORTS` per key kept, the newest (the last in order); order is kept. */
+function newestPerKey<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string | undefined,
+): T[] {
+  const seen = new Map<string, number>();
+  const kept: T[] = [];
+  for (const item of [...items].reverse()) {
+    const key = keyOf(item);
+    if (key !== undefined) {
+      const count = (seen.get(key) ?? 0) + 1;
+      seen.set(key, count);
+      if (count > MAX_REPEATED_REPORTS) continue;
+    }
+    kept.push(item);
+  }
+  return kept.reverse();
+}
+
 export function rememberedBy(
   state: WorldState,
   actorId: EntityId,
@@ -379,7 +400,12 @@ export function rememberedBy(
     }
     goalHistory.sort((a, b) => a.sequence - b.sequence);
   }
-  const memories = [...getMemories(state, actorId)]
+  const memories = newestPerKey(
+    [...getMemories(state, actorId)].sort(
+      (a, b) => a.recordedAt - b.recordedAt,
+    ),
+    (memory) => (memory.kind === "told" ? memory.teller : undefined),
+  )
     .sort((a, b) => b.salience - a.salience || b.recordedAt - a.recordedAt)
     .slice(0, MAX_REMEMBERED)
     .sort((a, b) => a.recordedAt - b.recordedAt);
@@ -396,7 +422,9 @@ export function rememberedBy(
   return {
     memories,
     relationships,
-    ownActions: own.slice(-MAX_OWN_ACTIONS),
+    ownActions: newestPerKey(own, (event) =>
+      event.kind === "report-told" ? event.listenerId : undefined,
+    ).slice(-MAX_OWN_ACTIONS),
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
     petitions: self?.isDeity
@@ -1138,6 +1166,47 @@ function targetIsHere(snapshot: PerceptionSnapshot, target: EntityId): boolean {
   );
 }
 
+/** One short line on how to answer a prayer from where the god stands: bless or strike now, or the next hop toward it first. */
+function answerGuidance(petition: PetitionView): string[] {
+  const { request } = petition;
+  if (request.kind === "help") {
+    if (petition.petitionerHere) {
+      return [
+        `  ${petition.petitioner} is here: bless them now (action "bless", petition [${petition.id}]) to answer it.`,
+      ];
+    }
+    const hop = petition.whereabouts.find((entry) =>
+      entry.who.includes(petition.petitioner),
+    )?.place.hop;
+    return hop === undefined
+      ? []
+      : [
+          `  To answer it, take ${hop.name} [${hop.id}] toward ${petition.petitioner}, and keep going each turn until you are with them; then bless them.`,
+        ];
+  }
+  const buildings = request.buildings;
+  const here = petition.whereabouts.find(
+    (entry) =>
+      entry.place.here && entry.who.some((id) => buildings.includes(id)),
+  );
+  const target = (entry: { who: readonly EntityId[] }) =>
+    entry.who.find((id) => buildings.includes(id));
+  if (here !== undefined) {
+    return [
+      `  ${target(here)} is here: strike it (action "strike") to answer it.`,
+    ];
+  }
+  const away = petition.whereabouts.find(
+    (entry) => entry.place.hop !== undefined && target(entry) !== undefined,
+  );
+  const hop = away?.place.hop;
+  return away === undefined || hop === undefined
+    ? []
+    : [
+        `  To answer it, take ${hop.name} [${hop.id}] toward ${away.place.name}, and keep going each turn until you are there; then strike ${target(away)}.`,
+      ];
+}
+
 /** The prayers addressed to the god: who asked, for what, about what, and where each place is from here. */
 function describePetitions(remembered: Remembered): string[] {
   if (remembered.petitions.length === 0) return [];
@@ -1164,9 +1233,7 @@ function describePetitions(remembered: Remembered): string[] {
         }.`,
       );
     }
-    if (petition.petitionerHere && request.kind === "help") {
-      lines.push(`  ${petition.petitioner} is here: you may bless them.`);
-    }
+    lines.push(...answerGuidance(petition));
   }
   return lines;
 }
@@ -1281,6 +1348,7 @@ export function buildGodContext(
   const prompt = [
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
+    ...describePetitions(remembered),
     "Here with you:",
     ...(snapshot.actors.length === 0
       ? ["- no one else"]
@@ -1299,7 +1367,6 @@ export function buildGodContext(
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
     ...describeRemembered(remembered),
-    ...describePetitions(remembered),
     ...describeSelf(snapshot, remembered),
     "Ways out:",
     ...(usableExits(snapshot).length === 0

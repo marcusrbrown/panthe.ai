@@ -129,8 +129,15 @@ class Run {
 }
 
 const greek = () => new Run(greekState());
-const section = (text: string, from: string, to: string) =>
-  text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
+/** The prayers section alone: its heading and the indented or dashed lines under it. */
+const prayersOf = (text: string) => {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => l.startsWith("Prayers to you:"));
+  if (start < 0) return "";
+  let end = start + 1;
+  while (end < lines.length && /^( {2}|- )/.test(lines[end] ?? "")) end += 1;
+  return lines.slice(start, end).join("\n");
+};
 
 test("Hera on Olympus is shown the farmer's punish petition: who asked, the request, the offender and the building, where each is, and the way toward the town square", () => {
   const run = greek();
@@ -144,7 +151,7 @@ test("Hera on Olympus is shown the farmer's punish petition: who asked, the requ
   const hera = getActor(run.state, id("hera"));
   expect(hera?.locationId).toBe(id("great-hall"));
 
-  const prayers = section(run.prompt("hera"), "Prayers to you", "Ways out");
+  const prayers = prayersOf(run.prompt("hera"));
   expect(prayers).toContain(`[${opened.id}]`);
   expect(prayers).toContain("farmer");
   expect(prayers).toContain("punish woodcutter");
@@ -203,9 +210,7 @@ test("the woodshed becomes a strike target only once it is in the scene: not fro
   run.state = actorAt(run.state, "hera", "town-square");
   expect(strikeTargets("hera")).toContain("woodshed");
   // And the prayers section no longer needs a route: she is there.
-  expect(
-    section(run.prompt("hera"), "Prayers to you", "Ways out"),
-  ).not.toContain("take ");
+  expect(prayersOf(run.prompt("hera"))).not.toContain("take ");
 });
 
 test("bless is offered only for a petitioner who is present, naming one of its open help petitions", () => {
@@ -527,11 +532,7 @@ test("a help prayer about an unwitnessed theft tells its god no offender: the fa
   });
   const opened = prayAbout(run, "farmer", theft.id);
   expect(opened.request).toMatchObject({ kind: "help" });
-  const prayers = section(
-    run.prompt(String(opened.god)),
-    "Prayers to you",
-    "Ways out",
-  );
+  const prayers = prayersOf(run.prompt(String(opened.god)));
   expect(prayers).toContain(opened.id);
   expect(prayers).toContain("currency");
   expect(prayers).not.toContain("woodcutter");
@@ -556,11 +557,7 @@ test("a help prayer about unwitnessed damage tells its god no offender: the farm
   });
   const opened = prayAbout(run, "farmer", damage.id);
   expect(opened.request).toMatchObject({ kind: "help" });
-  const prayers = section(
-    run.prompt(String(opened.god)),
-    "Prayers to you",
-    "Ways out",
-  );
+  const prayers = prayersOf(run.prompt(String(opened.god)));
   expect(prayers).toContain("the-tavern");
   expect(prayers).not.toContain("zeus");
 });
@@ -586,10 +583,87 @@ test("control: a witnessed damage keeps its attribution in a help prayer", () =>
   });
   const opened = prayAbout(run, "farmer", damage.id);
   expect(opened.request).toMatchObject({ kind: "help" });
-  const prayers = section(
-    run.prompt(String(opened.god)),
-    "Prayers to you",
-    "Ways out",
-  );
+  const prayers = prayersOf(run.prompt(String(opened.god)));
   expect(prayers).toContain("zeus");
+});
+
+test("prayers come before what the god remembers and what happened here: the first thing in the scene after where it stands", () => {
+  const run = greek();
+  const opened = run.prayAboutTheft("farmer", "woodcutter");
+  // Hera also remembers being told something, and has a feeling about it.
+  run.apply({
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: "hera",
+    sourceEventId: "evt-1-901",
+    teller: "zeus",
+    content: "The farmer cheated me.",
+    subjects: ["zeus", "farmer"],
+    salience: 4,
+  });
+  const text = run.prompt(String(opened.god));
+  const prayers = text.indexOf("Prayers to you");
+  expect(prayers).toBeGreaterThan(-1);
+  expect(text.indexOf("You remember")).toBeGreaterThan(prayers);
+  expect(text.indexOf("Here with you")).toBeGreaterThan(prayers);
+  expect(text.indexOf("Recent events here")).toBeGreaterThan(prayers);
+});
+
+test("a help prayer from afar says how to answer it: take the next hop toward the petitioner, and bless once there", () => {
+  const run = greek();
+  const theft = run.apply({
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 1,
+    cause: "director",
+  });
+  const opened = prayAbout(run, "farmer", theft.id);
+  const prayers = prayersOf(run.prompt(String(opened.god)));
+  expect(prayers).toContain("To answer it");
+  expect(prayers).toContain("take Gates of Olympus [olympus-gate]");
+  expect(prayers).toContain("bless");
+  // It takes several moves: the guidance says to keep going, not turn back.
+  expect(prayers).toContain("keep going");
+  // Not the guidance for a petitioner who is here.
+  expect(prayers).not.toContain("bless them now");
+});
+
+test("a help prayer from a petitioner who is here says bless now answers it", () => {
+  const run = greek();
+  const theft = run.apply({
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 1,
+    cause: "director",
+  });
+  const opened = prayAbout(run, "farmer", theft.id);
+  const god = String(opened.god);
+  run.state = actorAt(run.state, god, "altar");
+  const prayers = prayersOf(run.prompt(god));
+  expect(prayers).toContain("bless them now");
+  expect(prayers).not.toContain("To answer it");
+});
+
+test("a punish prayer says to strike the offender's building: go toward it from afar, and strike it where it stands once there", () => {
+  const run = greek();
+  const opened = run.prayAboutTheft("farmer", "woodcutter");
+  const god = String(opened.god);
+  const afar = prayersOf(run.prompt(god));
+  expect(afar).toContain("To answer it");
+  expect(afar).toContain("strike woodshed");
+  expect(afar).toContain("keep going");
+  expect(afar).toContain("take Gates of Olympus [olympus-gate]");
+  run.state = actorAt(run.state, god, "town-square");
+  const near = prayersOf(run.prompt(god));
+  expect(near).toContain("woodshed is here: strike it");
+});
+
+test("the instructions say a goal change can ride with a move or an answer in the same turn", () => {
+  const run = greek();
+  const text = run.prompt("hera");
+  expect(text).toContain("same turn");
 });

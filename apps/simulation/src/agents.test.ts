@@ -1441,7 +1441,8 @@ describe("the service with model routing configured", () => {
     );
     const start = catchUps(service).starts[before]?.at ?? 0;
     const end = catchUps(service).ends[before]?.at ?? 0;
-    expect(end).toBeGreaterThan(start);
+    // A catch-up may begin and end inside one millisecond; that is valid.
+    expect(end).toBeGreaterThanOrEqual(start);
     // Turns were flowing before it (control for the assertion below) ...
     expect(provider.requests.some((request) => request.at < start)).toBe(true);
     // ... none started inside it ...

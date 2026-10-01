@@ -243,6 +243,86 @@ test("an action that overflows the action cap still commits its goal change whil
   );
 });
 
+/** The goal events of `outcome`, as `kind outcome-or-text` strings in commit order. */
+const goalTrail = (outcome: ReturnType<typeof stepWorldTick>) =>
+  outcome.result.events.flatMap((event) =>
+    event.kind === "goal-set"
+      ? [`set ${event.text}`]
+      : event.kind === "goal-ended"
+        ? [`end ${event.outcome}`]
+        : [],
+  );
+
+/** Zeus's and the farmer's legends fill the action cap of 2; Hera's legend carrying `rescued` then overflows into the goal bucket. */
+function overflowQueue(rescued: Record<string, unknown>) {
+  return [
+    manualProposal("zeus", { kind: "legend", assertion: "I speak first." }),
+    manualProposal("farmer", { kind: "legend", assertion: "I speak next." }),
+    manualProposal("hera", {
+      kind: "legend",
+      assertion: "I am over the limit.",
+      goal: rescued,
+    }),
+  ];
+}
+
+test("a rescued goal declaration runs where its action stood in the queue: an earlier set, then a later goal-only set, leaves the later goal active", () => {
+  const state = loadGreekWorldState();
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 2 },
+  };
+  const queue = [
+    ...overflowQueue({ set: { text: "Earlier aim.", target: "zeus" } }),
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { set: { text: "Later aim.", target: "farmer" } },
+    }),
+  ];
+
+  const outcome = stepWorldTick(capped, createPrng(1), queue);
+  // Hera's legend is the rescued one: over-limit, its goal kept.
+  expect(outcome.overflow).toEqual([queue[2] as QueuedProposal]);
+  expect(
+    outcome.overflowGoalEvents
+      .get(queue[2] as QueuedProposal)
+      ?.map((e) => e.kind),
+  ).toEqual(["goal-set"]);
+  // The later set replaces the earlier one, in queue order: set, abandon, set.
+  expect(goalTrail(outcome)).toEqual([
+    "set Earlier aim.",
+    "end abandoned",
+    "set Later aim.",
+  ]);
+  expect(String(outcome.result.state.goals.get(toEntityId("hera"))?.text)).toBe(
+    "Later aim.",
+  );
+});
+
+test("a rescued set followed by a later goal-only end: the end ends that goal", () => {
+  const state = loadGreekWorldState();
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 2 },
+  };
+  const queue = [
+    ...overflowQueue({ set: { text: "Earlier aim.", target: "zeus" } }),
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { end: { outcome: "achieved" } },
+    }),
+  ];
+
+  const outcome = stepWorldTick(capped, createPrng(1), queue);
+  expect(goalTrail(outcome)).toEqual(["set Earlier aim.", "end achieved"]);
+  expect(outcome.result.state.goals.get(toEntityId("hera"))).toBeUndefined();
+  // Control: the end alone, with no earlier set, records nothing.
+  const alone = stepWorldTick(capped, createPrng(1), [
+    queue[3] as QueuedProposal,
+  ]);
+  expect(goalTrail(alone)).toEqual([]);
+});
+
 test("control: when the goal capacity is also full, an overflowing action's goal overflows with it", () => {
   const state = loadGreekWorldState();
   const zeusLegend = manualProposal("zeus", {

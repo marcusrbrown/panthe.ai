@@ -314,12 +314,19 @@ export function stepWorldTick(
   const declarations = new Map(
     goalOnly.map((queued) => [queued, goalOnlyOf(queued.proposal)] as const),
   );
-  const result = runTick(
-    state,
-    prng,
-    [...admitted.map((queued) => queued.proposal), ...declarations.values()],
-    { elapsedMs: options.elapsedMs, approximate: options.approximate },
-  );
+  // The world engine runs the queue in its original order, a rescued goal
+  // declaration standing where its action stood: a later set must replace an
+  // earlier one, and a later end must end it.
+  const admittedSet = new Set(admitted);
+  const runQueue = queue.flatMap((queued) => {
+    if (admittedSet.has(queued)) return [queued.proposal];
+    const declaration = declarations.get(queued);
+    return declaration === undefined ? [] : [declaration];
+  });
+  const result = runTick(state, prng, runQueue, {
+    elapsedMs: options.elapsedMs,
+    approximate: options.approximate,
+  });
   const overflowGoalEvents = new Map<QueuedProposal, readonly WorldEvent[]>();
   for (const [queued, declaration] of declarations) {
     const record = result.committed.find((c) => c.proposal === declaration);

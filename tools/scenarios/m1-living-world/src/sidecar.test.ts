@@ -1,4 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { killAllSidecars, liveSidecarCount, startSidecar } from "./sidecar";
 
 function alive(pid: number): boolean {
@@ -38,6 +47,39 @@ describe("startSidecar when startup fails", () => {
     ).rejects.toThrow(/exited \(0\) before printing its port/);
 
     expect(liveSidecarCount()).toBe(before);
+  });
+
+  test("a child that closes its stdin before the token is written and then exits is reported as an early exit, not as a broken pipe", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "panthea-sidecar-test-"));
+    try {
+      // The child closes fd 0, signals it with a marker file, and exits shortly after.
+      // Holding the launch until the marker exists makes the token write fail with EPIPE every time.
+      const marker = join(dir, "stdin-closed");
+      const script = join(dir, "closes-stdin.sh");
+      writeFileSync(
+        script,
+        `#!/bin/sh\nexec 0<&-\n: > "${marker}"\nsleep 0.2\nexit 0\n`,
+      );
+      chmodSync(script, 0o755);
+      const before = liveSidecarCount();
+
+      await expect(
+        startSidecar(script, "/tmp/unused", {
+          startTimeoutMs: 5000,
+          onSpawn: async () => {
+            const deadline = Date.now() + 5000;
+            while (!existsSync(marker) && Date.now() < deadline) {
+              await Bun.sleep(5);
+            }
+            expect(existsSync(marker)).toBe(true);
+          },
+        }),
+      ).rejects.toThrow(/exited \(0\) before printing its port/);
+
+      expect(liveSidecarCount()).toBe(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("killAllSidecars leaves nothing tracked", () => {

@@ -281,8 +281,8 @@
         await renderer.init();
         const backend = renderer.backend;
         log(
-          `booted — backend.isWebGLBackend=${!!(backend && backend.isWebGLBackend)} ` +
-            `backend.isWebGPUBackend=${!!(backend && backend.isWebGPUBackend)}`,
+          `booted — backend.isWebGLBackend=${!!backend?.isWebGLBackend} ` +
+            `backend.isWebGPUBackend=${!!backend?.isWebGPUBackend}`,
         );
         logDeviceLost("after initial boot");
         startLoop();

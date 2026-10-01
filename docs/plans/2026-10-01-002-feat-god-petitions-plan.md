@@ -178,8 +178,19 @@ Gate 2 failed on llama3.2 3B and Gemma 4. Goals and self-knowledge didn't break 
 - **Tick order.** Primary events come first, then the environmental steps: income, fire, the unmet-need scan, and the director. Derivation follows: answer judging, then lapses, then memories (sign and lapse memories included), then relationship changes.
 - **Unmet needs are found by an environmental scan, not by the routine's proposal.** Each tick, a pure function shared with the routine's need logic checks every living mortal. It records one `unmet-need` event per mortal per resource or trade it needs but can't get: no seller, an empty larder, no willing trader. Recording takes no action slot, and routines keep returning one proposal. The need stays open until it is met. Praying about it doesn't close it, but it can't produce a second petition.
 - **Prayer is a routine candidate.** It ranks below repair and production and above idle gathering, and it is capped by a per-mortal cooldown. A mortal with a prayable cause walks to the altar one step per tick, prays, then returns to its home location. A cause stays prayable for a tunable number of ticks after it happened.
+- **A mortal prays only about what it knows (W04).** A cause is prayable only through one of these:
+  - **A memory:** the mortal holds a memory of the cause event, witnessed or told, and the memory's subjects name the offender.
+  - **Its own unmet need:** a mortal always knows its own needs.
+  - **What it now sees:** its own building damaged or burned, or its own stock gone, perceived where it stands. A loss discovered this way has no known offender.
+
+  A punish petition needs a known offender, which only a memory supplies. Otherwise the petition asks for help. The global event log is never the mortal's knowledge.
 - **Routing:** the god with the highest affinity. On a tie, the god that has received the fewest petitions worldwide, then by id order.
-- **Bless mirrors strike and names a petition.** The god must be a deity with enough divinity and stand with the petitioner. The bless commits the divinity it consumes, plus a grant for that petition's cause: planks for the damaged building it cites, or the resource its unmet need names. The mortal's repair routine repairs a building it was granted planks for before any other, and the damage history stays.
+- **Bless mirrors strike and names a petition.** The god must be a deity with enough divinity and stand with the petitioner. The bless commits the divinity it consumes, plus a grant for that petition's cause:
+  - planks for a damaged building it cites;
+  - the needed resource for an unmet need;
+  - the lost resource and amount for spoiled stock or theft, up to a tunable cap.
+
+  A grudge never yields a help petition. If the offender owns no building, a grudge yields no petition at all. The mortal's repair routine repairs a building it was granted planks for before any other, and the damage history stays.
 - **The director is an environmental step in the world tick, beside income and fire**, using the persisted PRNG. The quiet timer is ticks since the last consequential event. Consequential means a strike, theft, fire, trade, bless, answered petition, or the director's own trouble. God talk, prayers, and goals don't count. Because the director's own trouble resets the timer, the quiet window is also its only rate limit. When the timer passes the quiet window, the director picks a trouble type and its victims from eligible living mortals in id order. The choices are theft between two mortals, a fire in a storehouse, or spoiled stock. The event records the director as its cause. If too few mortals are eligible, the director skips that tick.
 - **Theft and spoilage are new event kinds.** Theft moves goods from victim to offender and names the offender. Spoilage removes stock. Each is a prayable cause.
 - **Goals are gated in `planGoalEvents`:**

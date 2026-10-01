@@ -13,7 +13,7 @@ Mortals pray at the altar to a named god about something that really happened to
 
 ## Problem Frame
 
-Gate 2 of the M2 experience gate failed on both models (`tools/scenarios/m2-greek-cast/episodes/2026-10-01T15-37-30/` for llama3.2 3B, `2026-10-01T15-52-36/` for Gemma 4). Goals and self-knowledge (docs/brainstorms/2026-10-01-god-goals-requirements.md) did not break the Zeus↔Hera report loop. Repetition failed in 5 of 6 god-episodes on llama and in 6 of 6 on Gemma, with runs of up to 25. Every goal on both models targeted the other god.
+Gate 2 of the M2 experience gate failed on both models (`tools/scenarios/m2-greek-cast/episodes/2026-10-01T15-37-30/` for llama3.2 3B, `2026-10-01T15-52-36/` for Gemma 4). Goals and self-knowledge (docs/brainstorms/2026-10-01-god-goals-requirements.md) did not break the Zeus↔Hera report loop. Repetition failed in 5 of 6 god-episodes on llama and in 6 of 6 on Gemma, with runs of up to 25. Every Gemma goal and most llama goals targeted the other god. The rest of llama's goals named places.
 
 The world gives the gods nothing else to react to:
 
@@ -36,7 +36,7 @@ External research found no evidence that models of 8B or smaller can hold open-e
 ## Requirements
 
 **Petitions**
-- R1. A mortal prays at the altar when something real has happened to it. That means one of its buildings burned or was damaged, it was robbed, its stock spoiled, a trade it sought failed, it ran out of a resource its routine needs, or it holds a grudge against someone.
+- R1. A mortal prays at the altar when something real has happened to it that it knows of: it saw it, was told of it, or now sees the loss. That means one of its buildings burned or was damaged, it was robbed, its stock spoiled, a trade it sought failed, it ran out of a resource its routine needs, or it holds a grudge against someone.
 - R2. Each cause is a recorded world event. When a routine finds a need it can't meet (a resource it lacks, a trade no one accepts), the world records that unmet need as an event, so a prayer about it can cite it. A mortal has at most one open unmet need per resource or trade, until the need is met.
 - R3. A prayer names one god and makes one request. The request is help for the petitioner, or punishment of a named offender. A mortal asks for punishment only when the offender owns a building; otherwise it asks for help. The prayer records the event that prompted it, and each cause leads to at most one petition.
 - R4. A mortal prays to the god it favours most. When favour is tied, it prays to the god that has received fewer petitions so far.

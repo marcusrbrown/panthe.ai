@@ -649,9 +649,12 @@ export function judgeAnswers(
   const answered = new Set<EventId>();
   let running = before;
   for (const event of primary) {
+    // An event answers only a petition already heard: one opened earlier in
+    // sequence, never one that comes later in the same tick.
     const open = (petition: Petition) =>
       !answered.has(petition.id) &&
       petitions.petitions.get(petition.id)?.status === "open" &&
+      petition.sequence < event.sequence &&
       inAnswerWindow(petitions, petition, event.tick);
     const answer = (petition: Petition) => {
       answered.add(petition.id);
@@ -689,12 +692,12 @@ export function judgeAnswers(
   return answers;
 }
 
-/** The open petitions whose window ends at or before `state.tick`: the lapse check, run after answers. */
+/** The open petitions whose window has closed: `state.tick` is past the last answerable tick (T + window), so a petition opened at T lapses on T + window + 1. Run after answers, which count through T + window. */
 export function lapsingPetitions(state: WorldState): readonly Petition[] {
   const window = petitionBalanceOf(state.rules, "answerWindowTicks");
   return [...state.petitions.values()].filter(
     (petition) =>
-      petition.status === "open" && state.tick - petition.tick >= window,
+      petition.status === "open" && state.tick - petition.tick > window,
   );
 }
 

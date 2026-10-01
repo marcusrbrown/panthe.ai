@@ -1144,7 +1144,7 @@ test("a strike answers every open punish petition against that offender's buildi
   expect(world.state.petitions.get(c.id)?.status).toBe("open");
 });
 
-test("the window is inclusive: an action on its last tick answers, and one on the next tick does not and the petition lapses then", () => {
+test("the window is inclusive: an action on its last tick answers, and one on the tick after does not and the petition lapses then", () => {
   const window = (w: World) =>
     petitionBalanceOf(w.state.rules, "answerWindowTicks");
   const last = new World();
@@ -1177,17 +1177,150 @@ test("the window is inclusive: an action on its last tick answers, and one on th
   expect(late.state.petitions.get(second.id)?.status).toBe("lapsed");
 });
 
+/** The farmer is at the altar with a theft by the woodcutter it saw, fond of Zeus; returns the world after one tick of `pray` and `strike` in the given order. */
+function prayerAndStrike(order: "prayer-first" | "strike-first") {
+  const world = new World();
+  const theft = world.apply(theftBy("woodcutter"));
+  remembers(world, "farmer", theft, "woodcutter", "theft");
+  relate(world, "farmer", "zeus", 5);
+  place(world, "farmer", "altar");
+  const propose = (raw: Record<string, unknown>) => {
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      targets: [],
+      expectedRevisions: [],
+      source: "model",
+      observationId: `obs-same-${String(raw.kind)}`,
+      ...raw,
+    });
+    if (!submitted.ok) throw new Error(submitted.rejection.message);
+    return submitted.proposal;
+  };
+  const pray = propose({
+    actor: "farmer",
+    kind: "pray",
+    cause: theft.id,
+    source: "routine",
+  });
+  const strike = propose({
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  const ran = runTick(
+    world.state,
+    world.prng,
+    order === "prayer-first" ? [pray, strike] : [strike, pray],
+  );
+  world.state = ran.state;
+  world.log.push(...ran.events);
+  return { world, ran };
+}
+
+test("an answer counts only for a petition already heard: a strike sequenced before the prayer in the same tick does not answer it, and sends no sign", () => {
+  const { world, ran } = prayerAndStrike("strike-first");
+  expect(ran.rejected).toEqual([]);
+  const kinds = ran.events.map((e) => e.kind);
+  expect(kinds.indexOf("building-damaged")).toBeLessThan(
+    kinds.indexOf("petition-opened"),
+  );
+  const opened = ofKind(ran.events, "petition-opened")[0] as Extract<
+    WorldEvent,
+    { kind: "petition-opened" }
+  >;
+  expect(String(opened.god)).toBe("zeus");
+  expect(world.state.petitions.get(opened.id)?.status).toBe("open");
+  expect(ofKind(ran.events, "petition-answered")).toEqual([]);
+  expect(ofKind(ran.events, "worship-performed")).toEqual([]);
+  expect(
+    ofKind(ran.events, "memory-recorded").filter(
+      (m) => m.memoryKind === "sign",
+    ),
+  ).toEqual([]);
+});
+
+test("control: the prayer sequenced before the strike in the same tick is answered by it, with a sign", () => {
+  const { world, ran } = prayerAndStrike("prayer-first");
+  const kinds = ran.events.map((e) => e.kind);
+  expect(kinds.indexOf("petition-opened")).toBeLessThan(
+    kinds.indexOf("building-damaged"),
+  );
+  const opened = ofKind(ran.events, "petition-opened")[0] as Extract<
+    WorldEvent,
+    { kind: "petition-opened" }
+  >;
+  expect(world.state.petitions.get(opened.id)?.status).toBe("answered");
+  expect(ofKind(ran.events, "petition-answered")).toHaveLength(1);
+  expect(
+    ofKind(ran.events, "memory-recorded").filter(
+      (m) => m.memoryKind === "sign",
+    ),
+  ).toHaveLength(1);
+});
+
+test("a petition opened at T with window W is still open after tick T+W unanswered, lapses on tick T+W+1, and an answer on T+W wins", () => {
+  const W = (w: World) => petitionBalanceOf(w.state.rules, "answerWindowTicks");
+  const build = () => {
+    const world = new World();
+    const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
+    return {
+      world,
+      opened,
+      at: world.state.petitions.get(opened.id)?.tick ?? 0,
+    };
+  };
+  // After tick T+W, unanswered: still open.
+  const waiting = build();
+  waiting.world.state = {
+    ...waiting.world.state,
+    tick: waiting.at + W(waiting.world) - 1,
+  };
+  const onLast = waiting.world.tick();
+  expect(waiting.world.state.tick).toBe(waiting.at + W(waiting.world));
+  expect(ofKind(onLast, "petition-lapsed")).toEqual([]);
+  expect(waiting.world.state.petitions.get(waiting.opened.id)?.status).toBe(
+    "open",
+  );
+  // The next tick, T+W+1, lapses it.
+  const after = waiting.world.tick();
+  expect(waiting.world.state.tick).toBe(waiting.at + W(waiting.world) + 1);
+  expect(ofKind(after, "petition-lapsed")).toHaveLength(1);
+  expect(waiting.world.state.petitions.get(waiting.opened.id)?.status).toBe(
+    "lapsed",
+  );
+  // An answer on T+W wins, and nothing lapses it after.
+  const answered = build();
+  answered.world.state = {
+    ...answered.world.state,
+    tick: answered.at + W(answered.world) - 1,
+  };
+  const ran = godActs(answered.world, {
+    actor: "zeus",
+    kind: "strike",
+    target: "woodshed",
+    power: 1,
+  });
+  expect(answered.world.state.tick).toBe(answered.at + W(answered.world));
+  expect(ofKind(ran.events, "petition-answered")).toHaveLength(1);
+  expect(ofKind(ran.events, "petition-lapsed")).toEqual([]);
+  expect(ofKind(answered.world.tick(), "petition-lapsed")).toEqual([]);
+  expect(answered.world.state.petitions.get(answered.opened.id)?.status).toBe(
+    "answered",
+  );
+});
+
 test("a window that closes unanswered lapses the petition, and the petitioner's affinity toward that god falls, with a grudge", () => {
   const world = new World();
   const opened = petition(world, "farmer", "zeus", theftBy("woodcutter"));
   const openedAt = world.state.petitions.get(opened.id)?.tick ?? 0;
   const window = petitionBalanceOf(world.state.rules, "answerWindowTicks");
-  // Nothing happens before the window's last tick; on it, the lapse check runs.
-  world.state = { ...world.state, tick: openedAt + window - 2 };
+  // Nothing happens through the window's last tick, T+W; the tick after it, T+W+1, lapses it.
+  world.state = { ...world.state, tick: openedAt + window - 1 };
   expect(ofKind(world.tick(), "petition-lapsed")).toEqual([]);
-  expect(world.state.tick).toBe(openedAt + window - 1);
-  const lapse = world.tick();
   expect(world.state.tick).toBe(openedAt + window);
+  const lapse = world.tick();
+  expect(world.state.tick).toBe(openedAt + window + 1);
   const lapsed = ofKind(lapse, "petition-lapsed");
   expect(lapsed).toHaveLength(1);
   expect(lapsed[0]).toMatchObject({
@@ -1651,7 +1784,7 @@ test("once the food petition lapses, the next food cause leads to a prayer; the 
   const opened = world.petitions()[0];
   const window = petitionBalanceOf(world.state.rules, "answerWindowTicks");
   // Let it lapse, then a fresh food cause appears.
-  world.state = { ...world.state, tick: (opened?.tick ?? 0) + window - 1 };
+  world.state = { ...world.state, tick: (opened?.tick ?? 0) + window };
   world.tick();
   expect(world.petitions()[0]?.status).toBe("lapsed");
   const fresh = foodSpoiled(world, 3);

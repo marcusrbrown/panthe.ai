@@ -819,6 +819,40 @@ describe("a store fault", () => {
     expect(provider.requests).toHaveLength(1);
     expect(unhandled).toEqual([]);
   });
+
+  test("in the lifecycle gate never throws into the tick: dispatch says no, logs it, asks no model, and works again once the read does", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const logs: string[] = [];
+    let pausedFails = true;
+    const runner = createGodTurnRunner({
+      ...deps(provider, ["zeus"]),
+      store: world.store,
+      getState: () => world.state,
+      lifecycle: {
+        ...world.lifecycle,
+        paused: () => {
+          if (pausedFails) throw new Error("db down");
+          return world.flags.paused;
+        },
+      },
+      statusRef: world.statusRef,
+      onLog: (message) => logs.push(message),
+    });
+
+    expect(() => runner.dispatch()).not.toThrow();
+    expect(runner.dispatch()).toBe(false);
+    expect(runner.inFlight()).toBe(false);
+    expect(logs).toContain("god turn not started: db down");
+    expect(provider.requests).toHaveLength(0);
+
+    // Control: with the read healthy the same runner takes its turn.
+    pausedFails = false;
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(provider.requests).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+  });
 });
 
 // --- What a god is shown of its own actions ------------------------------------------------------------------

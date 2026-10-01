@@ -11,8 +11,14 @@ import type {
   GoalEndedEvent,
   GoalSetEvent,
 } from "@panthea/contracts";
-import type { WorldEventDraft } from "./state";
-import { type ActiveGoal, getActor, type WorldState } from "./state";
+import { getMemories } from "./memory";
+import { petitionBalanceOf } from "./petitions";
+import {
+  type ActiveGoal,
+  getActor,
+  type WorldEventDraft,
+  type WorldState,
+} from "./state";
 
 /** `actor`'s active goal, if it has one. */
 export function getGoal(
@@ -32,6 +38,7 @@ export function applyGoalSet(
     target: event.target,
     eventId: event.id,
     sequence: event.sequence,
+    tick: event.tick,
   });
   return { ...state, goals };
 }
@@ -56,6 +63,52 @@ export function applyGoalEnded(
  * goal is still active first ends it as abandoned. Nothing for an actor that
  * is not a living, known actor, or when there is nothing to end.
  */
+/** Text compared as a goal's identity: trimmed, lowercased, whitespace collapsed. */
+function normalized(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Whether the god may now drop its active goal for another reason than having
+ * met or failed it: the lock (ticks since the set) has passed, or since the
+ * set it has a memory involving the goal's target, or a petition has been
+ * addressed to it. Nothing here judges the goal; it only asks whether the god
+ * has had cause to change its mind.
+ */
+function unlocked(
+  state: WorldState,
+  actor: EntityId,
+  goal: ActiveGoal,
+): boolean {
+  if (
+    state.tick - goal.tick >=
+    petitionBalanceOf(state.rules, "goalLockTicks")
+  ) {
+    return true;
+  }
+  const remembers = getMemories(state, actor).some(
+    (memory) =>
+      memory.recordedAt > goal.sequence &&
+      memory.subjects.includes(goal.target),
+  );
+  if (remembers) return true;
+  for (const petition of state.petitions.values()) {
+    if (petition.god === actor && petition.sequence > goal.sequence)
+      return true;
+  }
+  return false;
+}
+
+/**
+ * The goal events one goal change records, in order: an end first, then a set.
+ *
+ * With the petition features on (the pack states `petitionBalance`) a goal
+ * sticks: setting the identical goal again records nothing, ending a goal as
+ * achieved or failed is always allowed, and replacing or abandoning one needs
+ * `unlocked`; otherwise nothing of the change is applied and a private
+ * `goal-change-refused` event records that the goal is locked, and for how
+ * long. Without the tunables a goal change is never refused.
+ */
 export function planGoalEvents(
   state: WorldState,
   actor: EntityId,
@@ -64,6 +117,34 @@ export function planGoalEvents(
   if (!getActor(state, actor)?.alive) return [];
   const drafts: WorldEventDraft[] = [];
   let active = getGoal(state, actor);
+  const gate = state.rules.petitionBalance !== undefined;
+
+  if (gate && active !== undefined) {
+    const identical =
+      change.end === undefined &&
+      change.set !== undefined &&
+      change.set.target === active.target &&
+      normalized(change.set.text) === normalized(active.text);
+    if (identical) return [];
+    const settled =
+      change.end !== undefined && change.end.outcome !== "abandoned";
+    const dropping =
+      change.end?.outcome === "abandoned" ||
+      (!settled && change.set !== undefined);
+    if (dropping && !unlocked(state, actor, active)) {
+      const lock = petitionBalanceOf(state.rules, "goalLockTicks");
+      return [
+        {
+          kind: "goal-change-refused",
+          entityId: actor,
+          reason: "locked",
+          attempted: change.set === undefined ? "abandon" : "replace",
+          unlocksInTicks: Math.max(0, lock - (state.tick - active.tick)),
+        },
+      ];
+    }
+  }
+
   if (change.end !== undefined && active !== undefined) {
     drafts.push({
       kind: "goal-ended",

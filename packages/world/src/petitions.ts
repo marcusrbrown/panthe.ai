@@ -351,6 +351,7 @@ export function applyPetitionOpened(
     cause: event.cause,
     request: event.request,
     tick: event.tick,
+    sequence: event.sequence,
     status: "open",
   });
   return { ...state, petitions };

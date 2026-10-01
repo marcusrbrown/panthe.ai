@@ -1252,6 +1252,7 @@ describe("a goal change on a journaled proposal", () => {
         target: "hera",
         eventId: "evt-1-1",
         sequence: 1,
+        tick: 1,
       },
     ]);
     db.run("UPDATE projections SET data = ? WHERE id = 1", [

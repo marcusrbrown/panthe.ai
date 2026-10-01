@@ -251,6 +251,8 @@ export interface ActiveGoal {
   readonly eventId: EventId;
   /** The `goal-set` event's sequence: what happened "since the goal was set" is measured from it. */
   readonly sequence: number;
+  /** The tick it was set in: the goal's lock counts from it. */
+  readonly tick: number;
 }
 
 /** A mortal's routine needs `resource` and cannot get it, as recorded by the event `eventId` on `tick`. Open until a `need-met` event closes it. */
@@ -290,6 +292,8 @@ export interface Petition {
   readonly cause: EventId;
   readonly request: PetitionRequest;
   readonly tick: number;
+  /** The `petition-opened` event's sequence: "since a goal was set" is measured in events. */
+  readonly sequence: number;
   readonly status: "open" | "answered" | "lapsed";
 }
 

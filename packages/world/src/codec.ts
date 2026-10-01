@@ -816,6 +816,8 @@ function parseGoalEntry(
     `${path}[1].sequence`,
   );
   if (!sequence.ok) return sequence;
+  const setTick = parseNonNegativeInteger(record.tick, `${path}[1].tick`);
+  if (!setTick.ok) return setTick;
   return ok([
     owner.value,
     {
@@ -823,6 +825,7 @@ function parseGoalEntry(
       target: target.value,
       eventId: eventId.value,
       sequence: sequence.value,
+      tick: setTick.value,
     },
   ] as const);
 }
@@ -917,6 +920,11 @@ function parsePetitionEntry(
   if (!request.ok) return request;
   const tick = parseNonNegativeInteger(record.tick, `${path}[1].tick`);
   if (!tick.ok) return tick;
+  const sequence = parseNonNegativeInteger(
+    record.sequence,
+    `${path}[1].sequence`,
+  );
+  if (!sequence.ok) return sequence;
   const status = parseEnum(record.status, `${path}[1].status`, [
     "open",
     "answered",
@@ -932,6 +940,7 @@ function parsePetitionEntry(
       cause: cause.value,
       request: request.value,
       tick: tick.value,
+      sequence: sequence.value,
       status: status.value,
     },
   ] as const);

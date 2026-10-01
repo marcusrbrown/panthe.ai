@@ -48,6 +48,7 @@ import {
   applyRelationshipChanged,
   type DerivedDraft,
   legendTellings,
+  noticedMemory,
   planRelationships,
   reportTelling,
   signMemory,
@@ -63,11 +64,13 @@ import {
 import {
   answeredDraft,
   applyBlessingGranted,
+  applyLossNoticed,
   applyPetitionAnswered,
   applyPetitionLapsed,
   applyPetitionOpened,
   judgeAnswers,
   lapsingPetitions,
+  planNoticeStep,
   recordCauses,
 } from "./petitions";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
@@ -237,6 +240,9 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "goal-ended":
       next = applyGoalEnded(state, event);
+      break;
+    case "loss-noticed":
+      next = applyLossNoticed(state, event);
       break;
     case "unmet-need":
       next = applyUnmetNeed(state, event);
@@ -612,6 +618,14 @@ export function runTick(
     completePrimary(draft, environmentCause),
   );
   working = applyEvents(working, directorEvents);
+  // The loss scan: owners standing at their own damaged buildings, and owners
+  // of stolen or spoiled stock, each noticed once. Like the need scan it takes
+  // no action slot, and it follows the director's step so a loss the director
+  // caused this tick is noticed this tick.
+  const noticeEvents = planNoticeStep(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, noticeEvents);
 
   // Rejected proposals' goal events were committed in queue order with the
   // rest; `events` lists them with the primary events, in sequence order.
@@ -624,6 +638,7 @@ export function runTick(
     ...fireEvents,
     ...needEvents,
     ...directorEvents,
+    ...noticeEvents,
   ];
 
   // Derivation phase: with the primary events numbered and applied, memories
@@ -685,9 +700,13 @@ export function runTick(
       ? (signMemory(working, event) ?? [])
       : [],
   );
+  const noticed = noticeEvents.flatMap((event) =>
+    event.kind === "loss-noticed" ? (noticedMemory(working, event) ?? []) : [],
+  );
   const memoryEvents = derive([
     ...planMemories(state, primaryEvents, working),
     ...signs,
+    ...noticed,
   ]);
   working = applyEvents(working, memoryEvents);
   const relationshipEvents = derive(

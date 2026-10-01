@@ -28,6 +28,7 @@ import type {
   EntityId,
   EventId,
   LegendRecordedEvent,
+  LossNoticedEvent,
   MemoryRecordedEvent,
   ReportToldEvent,
   WitnessedEventKind,
@@ -59,6 +60,8 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   salience_theft: 6,
   /** A mortal's memory of a god's answer or silence. */
   salience_sign: 6,
+  /** A loss the mortal noticed. */
+  salience_noticed: 5,
   /** Affinity lost toward whoever did harm one witnessed. */
   harmAffinity: 2,
   /** Affinity gained toward whoever did one a kindness. */
@@ -121,6 +124,8 @@ function memoryEntryOf(event: MemoryRecordedEvent): MemoryEntry {
   switch (event.memoryKind) {
     case "witnessed":
       return { ...base, kind: "witnessed", eventKind: event.eventKind };
+    case "noticed":
+      return { ...base, kind: "noticed", causeEventId: event.causeEventId };
     case "sign":
       return {
         ...base,
@@ -442,6 +447,30 @@ export function toldMemory(
       ]),
       salience,
       ...(claim === undefined ? {} : { consequence: claim }),
+    },
+  };
+}
+
+/** The memory a mortal forms of a loss it noticed: what it lost and the cause, with no offender and no consequence. */
+export function noticedMemory(
+  after: WorldState,
+  event: LossNoticedEvent,
+): DerivedDraft | undefined {
+  const salience = balanceOf(after, "salience_noticed");
+  if (salience < 1) return undefined;
+  return {
+    cause: event,
+    draft: {
+      kind: "memory-recorded",
+      memoryKind: "noticed",
+      entityId: event.entityId,
+      sourceEventId: event.id,
+      causeEventId: event.causeEventId,
+      subjects: [
+        event.entityId,
+        ...(event.building === undefined ? [] : [event.building]),
+      ],
+      salience,
     },
   };
 }

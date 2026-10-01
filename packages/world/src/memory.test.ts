@@ -250,7 +250,15 @@ test("derived memory events are committed with the tick, after the primary event
   const tick = world.tick(strike("zeus", "the-tavern"));
   const ignition = ignitionOf(tick.events, "the-tavern");
 
-  const memoryEvents = ofKind(tick.events, "memory-recorded");
+  // The farmer stands at its own burning tavern, so it also notices the loss: that memory rests on
+  // the loss-noticed event, not on the ignition, and is checked with the others below.
+  const noticedBy = ofKind(tick.events, "memory-recorded").filter(
+    (event) => event.memoryKind === "noticed",
+  );
+  expect(noticedBy.map((event) => event.entityId)).toEqual([id("farmer")]);
+  const memoryEvents = ofKind(tick.events, "memory-recorded").filter(
+    (event) => event.memoryKind === "witnessed",
+  );
   expect(memoryEvents.map((event) => event.entityId).sort()).toEqual(
     ["bard", "farmer", "zeus"].map(id),
   );
@@ -263,8 +271,10 @@ test("derived memory events are committed with the tick, after the primary event
       )
       .map((event) => event.sequence),
   );
-  for (const event of memoryEvents) {
+  for (const event of [...memoryEvents, ...noticedBy]) {
     expect(event.sequence).toBeGreaterThan(lastPrimary);
+  }
+  for (const event of memoryEvents) {
     expect(event.sourceEventId).toBe(ignition.id);
     expect(event.causationId as string).toBe(ignition.id as string);
     expect(event.correlationId as string).toBe(`tick-${tick.state.tick}`);

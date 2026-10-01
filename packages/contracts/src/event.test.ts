@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(29);
+  expect(WORLD_EVENT_KINDS).toHaveLength(30);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -987,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 10);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 11);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -1555,5 +1555,79 @@ test("a help request for a resource may carry the amount lost, a whole positive 
   expect(ask({ kind: "resource", resource: "food" }).ok).toBe(true);
   for (const amount of [0, -1, 1.5, "3"]) {
     expect(ask({ kind: "resource", resource: "food", amount }).ok).toBe(false);
+  }
+});
+
+// --- Losses noticed ------------------------------------------------------------------------
+
+test("a loss-noticed event names the owner, the event that caused the loss, and what was lost: a building, or a resource and amount; it is private and follows its cause", () => {
+  const building = parseEvent(
+    envelope({
+      kind: "loss-noticed",
+      entityId: "farmer",
+      causeEventId: "evt-3",
+      building: "the-tavern",
+    }),
+  );
+  expect(building.ok).toBe(true);
+  if (building.ok) {
+    expect(String(eventCause(building.value))).toBe("evt-3");
+    expect(subjectsOf(building.value)).toEqual(["farmer", "the-tavern"]);
+  }
+  const stock = parseEvent(
+    envelope({
+      kind: "loss-noticed",
+      entityId: "farmer",
+      causeEventId: "evt-3",
+      resource: "food",
+      amount: 2,
+    }),
+  );
+  expect(stock.ok).toBe(true);
+  expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain("loss-noticed");
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(
+    "loss-noticed",
+  );
+  for (const bad of [
+    { causeEventId: undefined, building: "the-tavern" },
+    { entityId: undefined, building: "the-tavern" },
+    // It names a building or a resource, not neither and not both.
+    {},
+    { building: "the-tavern", resource: "food", amount: 1 },
+    { resource: "food" },
+    { resource: "food", amount: 0 },
+  ]) {
+    expect(
+      parseEvent(
+        envelope({
+          kind: "loss-noticed",
+          entityId: "farmer",
+          causeEventId: "evt-3",
+          ...bad,
+        }),
+      ).ok,
+    ).toBe(false);
+  }
+});
+
+test("a noticed memory records which loss the mortal noticed and names no offender: it cites the cause event and the loss", () => {
+  const noticed = {
+    kind: "memory-recorded",
+    memoryKind: "noticed",
+    entityId: "farmer",
+    sourceEventId: "evt-9",
+    causeEventId: "evt-3",
+    subjects: ["farmer", "the-tavern"],
+    salience: 5,
+  };
+  expect(parseEvent(envelope(noticed)).ok).toBe(true);
+  for (const bad of [
+    { causeEventId: undefined },
+    { sourceEventId: undefined },
+    { salience: 0 },
+    // A noticed memory carries no consequence: no one is blamed.
+    { consequence: { effect: "harm", agent: "zeus", target: "farmer" } },
+  ]) {
+    expect(parseEvent(envelope({ ...noticed, ...bad })).ok).toBe(false);
   }
 });

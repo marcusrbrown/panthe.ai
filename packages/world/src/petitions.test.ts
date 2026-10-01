@@ -7,8 +7,8 @@ import {
   DEFAULT_PETITION_BALANCE,
   openPetitionsFor,
   petitionBalanceOf,
+  planNoticeStep,
   prayableCauses,
-  requestFor,
 } from "./petitions";
 import { decideRoutineProposal } from "./routines";
 import {
@@ -209,7 +209,7 @@ function remembers(
   });
 }
 
-test("an offscreen strike on the farmer's tavern is not something the farmer knows: it prays about nothing and names no striker; once it stands at the damaged tavern it prays for help, then walks home", () => {
+test("an offscreen strike on the farmer's tavern yields no petition and no striker; once the farmer stands at the damaged tavern it notices the loss, walks to the altar, prays for help, and walks home", () => {
   const world = new World();
   world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
   const ignition = ofKind(world.log, "building-ignited")[0];
@@ -219,50 +219,170 @@ test("an offscreen strike on the farmer's tavern is not something the farmer kno
   expect(getActor(world.state, id("farmer"))?.locationId).toBe(id("square"));
   expect(prayableCauses(world.state, id("farmer"))).toEqual([]);
   for (let n = 0; n < 30; n += 1) world.tick();
-  expect(world.petitions()).toEqual([]);
   expect(ofKind(world.log, "petition-opened")).toEqual([]);
+  expect(ofKind(world.log, "loss-noticed")).toEqual([]);
   expect(JSON.stringify(world.log)).not.toContain("punish");
 
-  // It walks there (a fixture: nothing in its routine takes it) and sees the damage.
+  // It stands at the tavern (a fixture: nothing in its routine takes it there) and sees the damage.
   place(world, "farmer", "tavern");
-  const cause = prayableCauses(world.state, id("farmer")).find(
-    (c) => c.eventId === ignition?.id,
-  );
-  expect(cause).toMatchObject({ eventId: ignition?.id, kind: "fire" });
-  // What it saw is the loss; the striker is not something it saw.
-  expect(cause?.offender).toBeUndefined();
-  // Seeing is what it can do from here: it holds the cause, names no striker, and the request it
-  // would make is for help with the building.
-  const [seen] = prayableCauses(world.state, id("farmer")).filter(
-    (c) => c.eventId === ignition?.id,
-  );
-  expect(requestFor(world.state, seen as NonNullable<typeof seen>)).toEqual({
-    kind: "help",
-    need: { kind: "building", building: id("the-tavern") },
+  world.tick();
+  const noticed = ofKind(world.log, "loss-noticed");
+  expect(noticed).toHaveLength(1);
+  expect(noticed[0]).toMatchObject({
+    entityId: "farmer",
+    causeEventId: ignition?.id,
+    building: "the-tavern",
   });
+  // A memory of it, with no offender: not the striker, not anyone.
+  const memory = world.state.memories
+    .get(id("farmer"))
+    ?.find((m) => m.kind === "noticed");
+  expect(memory).toMatchObject({ kind: "noticed", causeEventId: ignition?.id });
+  expect(memory?.consequence).toBeUndefined();
+  expect(memory?.subjects).not.toContain(id("zeus"));
+  expect(
+    prayableCauses(world.state, id("farmer")).find(
+      (c) => c.eventId === ignition?.id,
+    )?.offender,
+  ).toBeUndefined();
+
+  // It walks away to the altar, prays for help, and goes home: the memory is what keeps the cause.
+  world.until(
+    () =>
+      world.petitions().some((p) => p.petitioner === id("farmer")) &&
+      getActor(world.state, id("farmer"))?.locationId === id("square"),
+  );
+  const petition = world.petitions().find((p) => p.petitioner === id("farmer"));
+  expect(petition).toMatchObject({
+    cause: ignition?.id,
+    request: {
+      kind: "help",
+      need: { kind: "building", building: "the-tavern" },
+    },
+  });
+  expect(JSON.stringify(world.log)).not.toContain("punish");
+  const farmerMoves = world.log.filter(
+    (e) =>
+      e.kind === "entity-moved" &&
+      e.entityId === id("farmer") &&
+      world.log.indexOf(e) > world.log.indexOf(ignition as WorldEvent),
+  );
+  expect(farmerMoves.map((e) => (e as { to: string }).to)).toEqual([
+    "square",
+    "altar",
+    "square",
+  ]);
 });
 
-test("the tavern is seen only by its owner standing at it, and only while it is damaged or burned: another mortal there sees nothing of the farmer's loss, and a tavern that is whole is no cause", () => {
+test("a loss is noticed once: standing at the building again, or still there, records no second loss-noticed; a second damage is a new loss", () => {
   const world = new World();
-  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
-  place(world, "drifter", "tavern");
-  expect(prayableCauses(world.state, id("drifter"))).toEqual([]);
-  // The owner there, with the building whole again, has nothing to pray about.
+  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 1 });
   place(world, "farmer", "tavern");
-  expect(prayableCauses(world.state, id("farmer"))).toHaveLength(1);
+  world.tick();
+  expect(ofKind(world.log, "loss-noticed")).toHaveLength(1);
+  // Still there next tick, then away and back: no second record for the same loss.
+  const stay = (n: number) => {
+    for (let i = 0; i < n; i += 1) {
+      place(world, "farmer", "tavern");
+      world.tick();
+    }
+  };
+  stay(3);
+  place(world, "farmer", "square");
+  world.tick();
+  stay(2);
+  expect(ofKind(world.log, "loss-noticed")).toHaveLength(1);
+  // Control: a new cause, a second strike on the same building, is a new loss.
   const tavern = world.state.buildings.get(id("the-tavern"));
   if (!tavern) throw new Error("tavern");
   world.state = {
     ...world.state,
     buildings: new Map(world.state.buildings).set(id("the-tavern"), {
-      ...tavern,
+      ...(tavern as object),
       status: "operational",
       fireIntensity: undefined,
       ticksBurning: undefined,
       ignition: undefined,
     } as never),
   };
-  expect(prayableCauses(world.state, id("farmer"))).toEqual([]);
+  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 1 });
+  // (The farmer's routine would walk it off to pray this tick, so the scan is read directly.)
+  place(world, "farmer", "tavern");
+  const next = planNoticeStep(world.state);
+  expect(next).toHaveLength(1);
+  expect(next[0]).toMatchObject({
+    kind: "loss-noticed",
+    entityId: "farmer",
+    building: "the-tavern",
+  });
+  const second = world.state.causes.get(id("farmer"))?.at(-1);
+  expect((next[0] as unknown as { causeEventId: string }).causeEventId).toBe(
+    String(second?.eventId),
+  );
+  expect(ofKind(world.log, "loss-noticed")).toHaveLength(1);
+});
+
+test("a stolen or spoiled stock is noticed by its owner, with the resource and amount, once", () => {
+  const world = new World();
+  const spoiled = world.apply({
+    kind: "stock-spoiled",
+    entityId: "farmer",
+    resource: "food",
+    amount: 3,
+    cause: "director",
+  });
+  world.tick();
+  world.tick();
+  const noticed = ofKind(world.log, "loss-noticed");
+  expect(noticed).toHaveLength(1);
+  expect(noticed[0]).toMatchObject({
+    entityId: "farmer",
+    causeEventId: spoiled.id,
+    resource: "food",
+    amount: 3,
+  });
+  // Someone else's stock is not the farmer's to notice.
+  expect(noticed.some((e) => e.entityId !== id("farmer"))).toBe(false);
+});
+
+test("only the owner notices: another mortal at the damaged building, a building that is whole, and a dead owner notice nothing", () => {
+  const world = new World();
+  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
+  place(world, "drifter", "tavern");
+  world.tick();
+  expect(ofKind(world.log, "loss-noticed")).toEqual([]);
+  // A dead owner at its building notices nothing.
+  const farmer = getActor(world.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  world.state = withActor(world.state, {
+    ...farmer,
+    alive: false,
+    locationId: id("tavern"),
+  });
+  world.tick();
+  expect(ofKind(world.log, "loss-noticed")).toEqual([]);
+  // Control: the living owner there does.
+  world.state = withActor(world.state, { ...farmer, locationId: id("tavern") });
+  world.tick();
+  expect(ofKind(world.log, "loss-noticed")).toHaveLength(1);
+});
+
+test("noticed losses rebuild from the log and survive encode and decode, and a noticed record naming a ghost is refused", () => {
+  const world = new World();
+  world.tick({ actor: "zeus", kind: "strike", target: "the-tavern", power: 3 });
+  place(world, "farmer", "tavern");
+  world.tick();
+  const rebuilt = applyEvents(
+    world.initial,
+    world.log.map((e, i) => ({ ...e, sequence: i + 1 })) as WorldEvent[],
+  );
+  expect([...rebuilt.noticed]).toEqual([...world.state.noticed]);
+  expect(rebuilt.noticed.size).toBe(1);
+  const encoded = JSON.parse(JSON.stringify(encode(world.state)));
+  expect([...decode(encoded).noticed]).toEqual([...world.state.noticed]);
+  const ghost = JSON.parse(JSON.stringify(encoded));
+  ghost.noticed[0][1].owner = "ghost";
+  expect(() => decode(ghost)).toThrow(/ghost/);
 });
 
 test("a theft is prayed about as lost stock, always known to its victim, with no offender; only a memory of the theft naming the offender, who owns a building, makes it a punish petition", () => {

@@ -109,9 +109,6 @@ export const MAX_FEELINGS = 5;
 export const MAX_OWN_ACTIONS = 5;
 /** Most entries of a goal's history a prompt shows: the newest since the goal was set. */
 export const MAX_GOAL_HISTORY = 4;
-/** Most petitions a prompt shows: the oldest still open, since they lapse first. */
-export const MAX_PETITIONS_SHOWN = 3;
-
 /** How many of a god's own newest authored events a turn reads: enough for the actions shown and for a goal's history to reach back past them. */
 export const OWN_EVENT_WINDOW = 4 * MAX_OWN_ACTIONS;
 
@@ -195,7 +192,7 @@ export interface Remembered {
   readonly goal: ActiveGoal | undefined;
   /** What the god itself remembers or did involving the goal's target since it set the goal, oldest first, at most `MAX_GOAL_HISTORY`. */
   readonly goalHistory: readonly GoalHistoryEntry[];
-  /** The open petitions addressed to this god, oldest first, at most `MAX_PETITIONS_SHOWN`. */
+  /** Every open petition addressed to this god, oldest first (R7: none is hidden). */
   readonly petitions: readonly PetitionView[];
   /** Ticks a goal stays locked, when goals are gated; absent when they are not. */
   readonly goalLockTicks: number | undefined;
@@ -410,9 +407,9 @@ export function rememberedBy(
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
     petitions: self?.isDeity
-      ? openPetitionsFor(state, actorId)
-          .slice(0, MAX_PETITIONS_SHOWN)
-          .map((petition) => petitionView(state, self, petition))
+      ? openPetitionsFor(state, actorId).map((petition) =>
+          petitionView(state, self, petition),
+        )
       : [],
     goalLockTicks: lock,
     blessCost: petitionBalanceOf(state.rules, "blessDivinityCost"),
@@ -1080,6 +1077,9 @@ function describeMemory(memory: MemoryEntry): string {
   const what = describeConsequence(memory.consequence);
   if (memory.kind === "witnessed") {
     return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
+  }
+  if (memory.kind === "noticed") {
+    return `- You noticed a loss (${memory.subjects.join(", ")}), caused by [${memory.causeEventId}]`;
   }
   if (memory.kind === "sign") {
     // A god's own memory is never a sign (signs go to mortals), but the type allows it.

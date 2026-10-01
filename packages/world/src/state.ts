@@ -220,6 +220,11 @@ export type MemoryEntry = {
       readonly linkedEventId?: EventId;
     }
   | {
+      /** A loss the mortal noticed, with no offender: it keeps the cause prayable after the mortal walks away. */
+      readonly kind: "noticed";
+      readonly causeEventId: EventId;
+    }
+  | {
       /** A god's answer, or its silence, to a petition: favor is the affinity it leaves. */
       readonly kind: "sign";
       readonly god: EntityId;
@@ -283,6 +288,19 @@ export interface PetitionCause {
   readonly resource?: string;
   /** How much was lost, for a theft or spoiled stock. */
   readonly amount?: number;
+}
+
+/** One loss an owner has noticed. */
+export interface NoticedLoss {
+  readonly owner: EntityId;
+  readonly causeEventId: EventId;
+  /** The `loss-noticed` event that recorded it. */
+  readonly eventId: EventId;
+}
+
+/** The key a noticed loss is held under. */
+export function noticedKey(owner: EntityId, causeEventId: EventId): string {
+  return `${owner}|${causeEventId}`;
 }
 
 /** A petition: who asked which god, for what, about which cause, and how it stands. Rebuilt from the log. */
@@ -351,6 +369,8 @@ export interface WorldState {
   readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
   /** Every petition ever opened, by its event id. */
   readonly petitions: ReadonlyMap<EventId, Petition>;
+  /** The losses each owner has already noticed, keyed `owner|causeEventId`: what makes noticing once per loss. */
+  readonly noticed: ReadonlyMap<string, NoticedLoss>;
   /** The quiet-world director's timer: the tick of the last consequential event. */
   readonly director: { readonly lastConsequentialTick: number };
   /** The building a mortal was last blessed planks for: its repair routine mends that one first. */
@@ -484,6 +504,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     causes: new Map(),
     petitions: new Map(),
     repairGrants: new Map(),
+    noticed: new Map(),
     director: { lastConsequentialTick: 0 },
     rules: pack.rules,
     recipes: pack.recipes,

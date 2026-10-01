@@ -1143,6 +1143,59 @@ describe("a god's own recent actions", () => {
     expect(provider.requests.at(-1)?.body ?? "").not.toContain("were refused");
   });
 
+  test("a fault while the turn reads the open petitions is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = newWorld();
+      const provider = startProvider();
+      let broken = true;
+      // Petitions are read from world state inside the turn: a state whose petitions cannot be read.
+      const faulty = (): WorldState =>
+        broken
+          ? {
+              ...world.state,
+              petitions: new Proxy(new Map(), {
+                get(target, property) {
+                  if (property === "values" || property === Symbol.iterator) {
+                    return () => {
+                      throw new Error("injected petition read failure");
+                    };
+                  }
+                  const value = Reflect.get(target, property, target);
+                  return typeof value === "function"
+                    ? value.bind(target)
+                    : value;
+                },
+              }),
+            }
+          : world.state;
+      const logs: string[] = [];
+      const runner = createGodTurnRunner({
+        ...deps(provider, ["hera"]),
+        store: world.store,
+        getState: faulty,
+        lifecycle: world.lifecycle,
+        statusRef: world.statusRef,
+        onLog: (message) => logs.push(message),
+      });
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      expect(runner.inFlight()).toBe(false);
+      expect(logs.join("\n")).toContain("injected petition read failure");
+      expect(provider.requests).toHaveLength(0);
+      broken = false;
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      expect(provider.requests).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("a store fault in the read of the latest refusal is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);

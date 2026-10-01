@@ -21,12 +21,7 @@ import {
   type WorldState,
   withActor,
 } from "@panthea/world";
-import {
-  buildGodContext,
-  godIntentSchema,
-  MAX_PETITIONS_SHOWN,
-  rememberedBy,
-} from "./context";
+import { buildGodContext, godIntentSchema, rememberedBy } from "./context";
 import { buildModelProposal } from "./observation";
 import { actorAt, godProfile, greekState } from "./test-fixtures";
 
@@ -440,37 +435,62 @@ test("a refusal from before the current goal was set is not shown", () => {
   expect(`${none.instructions}\n${none.prompt}`).not.toContain("refused");
 });
 
-// --- Size -------------------------------------------------------------------------------------------
+// --- R7: every open petition is listed ------------------------------------------------------------
 
-test("the prayers section is bounded: a god with many petitions is shown the oldest few, and with three the whole prompt stays within the 4K budget", () => {
+test("every open petition addressed to the god is listed, however many there are, oldest first, and the prompt's growth is measured", () => {
   const run = greek();
-  const opened = ["farmer", "woodcutter", "farmer", "woodcutter", "farmer"].map(
-    (mortal) => {
-      run.state = { ...run.state, tick: run.state.tick + 21 };
-      // Each prayer to the same god: fondness for Hera keeps them coming to her.
-      const relationships = new Map(run.state.relationships);
-      relationships.set(`${mortal}>hera`, {
-        from: id(mortal),
-        toward: id("hera"),
-        affinity: 5,
-        grudge: 0,
-        allied: false,
-      });
-      run.state = { ...run.state, relationships };
-      const offender = mortal === "farmer" ? "woodcutter" : "farmer";
-      return run.prayAboutTheft(mortal, offender);
-    },
-  );
+  const bare = run.prompt("hera");
+  const opened = [
+    "farmer",
+    "woodcutter",
+    "farmer",
+    "woodcutter",
+    "farmer",
+    "woodcutter",
+    "farmer",
+  ].map((mortal) => {
+    run.state = { ...run.state, tick: run.state.tick + 21 };
+    // Fondness for Hera keeps each prayer coming to her.
+    const relationships = new Map(run.state.relationships);
+    relationships.set(`${mortal}>hera`, {
+      from: id(mortal),
+      toward: id("hera"),
+      affinity: 5,
+      grudge: 0,
+      allied: false,
+    });
+    run.state = { ...run.state, relationships };
+    return run.prayAboutTheft(
+      mortal,
+      mortal === "farmer" ? "woodcutter" : "farmer",
+    );
+  });
   expect(new Set(opened.map((o) => String(o.god))).size).toBe(1);
   const text = run.prompt("hera");
   const shown = text.split("\n").filter((line) => /^- \[evt-/.test(line));
-  expect(shown).toHaveLength(MAX_PETITIONS_SHOWN);
-  expect(shown[0]).toContain(opened[0]?.id as string);
-  expect(text).not.toContain(opened.at(-1)?.id as string);
-  // Three petitions add a bounded amount to the prompt (measured 1109 characters on the
-  // authored world: the prayers section and its one instruction line).
-  expect(MAX_PETITIONS_SHOWN).toBe(3);
-  const bare = greek().prompt("hera");
-  expect(text.length - bare.length).toBeLessThan(1300);
-  expect(text.length).toBeLessThan(5600);
+  // All seven, in the order they were opened.
+  expect(shown).toHaveLength(opened.length);
+  expect(shown.map((line) => /\[(evt-[^\]]+)\]/.exec(line)?.[1])).toEqual(
+    opened.map((o) => o.id),
+  );
+  // Control: once one is answered, it is no longer listed and the rest all are.
+  const first = run.state.petitions.get(opened[0]?.id as never);
+  if (!first) throw new Error("petition");
+  run.state = {
+    ...run.state,
+    petitions: new Map(run.state.petitions).set(first.id, {
+      ...first,
+      status: "answered",
+    }),
+  };
+  expect(
+    run
+      .prompt("hera")
+      .split("\n")
+      .filter((l) => /^- \[evt-/.test(l)),
+  ).toHaveLength(opened.length - 1);
+  // Measured on the authored world: what seven petitions add to the prompt, in characters.
+  console.log(
+    `PROMPT_GROWTH_SEVEN_PETITIONS ${text.length - bare.length} total ${text.length}`,
+  );
 });

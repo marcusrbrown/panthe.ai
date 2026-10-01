@@ -61,7 +61,9 @@ import {
   type LegendRecord,
   type LocationState,
   type MemoryEntry,
+  type NoticedLoss,
   needKey,
+  noticedKey,
   type OpenNeed,
   type Petition,
   type PetitionCause,
@@ -90,6 +92,7 @@ export interface EncodedWorldState {
   readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
   readonly petitions: readonly (readonly [EventId, Petition])[];
   readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
+  readonly noticed: readonly (readonly [string, NoticedLoss])[];
   readonly director: { readonly lastConsequentialTick: number };
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
@@ -140,6 +143,7 @@ export function encode(state: WorldState): EncodedWorldState {
     causes: [...state.causes.entries()],
     petitions: [...state.petitions.entries()],
     repairGrants: [...state.repairGrants.entries()],
+    noticed: [...state.noticed.entries()],
     director: state.director,
     rules: state.rules,
     recipes: state.recipes,
@@ -746,6 +750,14 @@ function parseMemoryEntry(
           : { linkedEventId: linkedEventIdRaw.value as EventId }),
       });
     }
+    case "noticed": {
+      const causeEventId = parseEventId(
+        value.causeEventId,
+        `${path}.causeEventId`,
+      );
+      if (!causeEventId.ok) return causeEventId;
+      return ok({ ...base, kind: "noticed", causeEventId: causeEventId.value });
+    }
     case "sign": {
       const god = parseEntityId(value.god, `${path}.god`);
       if (!god.ok) return god;
@@ -1227,6 +1239,47 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   if (!grantEntries.ok) return grantEntries;
   const repairGrants = new Map(grantEntries.value);
 
+  const noticedEntries = parseArray(value.noticed, "noticed", (item, path) => {
+    if (!Array.isArray(item) || item.length !== 2) {
+      return fail(path, "expected a [key, loss] entry");
+    }
+    const key = parseString(item[0], `${path}[0]`);
+    if (!key.ok) return key;
+    const record = item[1];
+    if (!isRecord(record)) return fail(`${path}[1]`, "expected a loss");
+    const owner = parseEntityId(record.owner, `${path}[1].owner`);
+    if (!owner.ok) return owner;
+    if (!knownActorIds.has(owner.value)) {
+      return fail(
+        `${path}[1]`,
+        `loss belongs to unknown actor: ${owner.value}`,
+      );
+    }
+    const causeEventId = parseEventId(
+      record.causeEventId,
+      `${path}[1].causeEventId`,
+    );
+    if (!causeEventId.ok) return causeEventId;
+    const eventId = parseEventId(record.eventId, `${path}[1].eventId`);
+    if (!eventId.ok) return eventId;
+    if (key.value !== noticedKey(owner.value, causeEventId.value)) {
+      return fail(
+        `${path}[0]`,
+        `entry key "${key.value}" does not match its own loss`,
+      );
+    }
+    return ok([
+      key.value,
+      {
+        owner: owner.value,
+        causeEventId: causeEventId.value,
+        eventId: eventId.value,
+      },
+    ] as const);
+  });
+  if (!noticedEntries.ok) return noticedEntries;
+  const noticed = new Map(noticedEntries.value);
+
   if (!isRecord(value.director)) {
     return fail("director", "expected the director's state");
   }
@@ -1287,6 +1340,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     causes,
     petitions,
     repairGrants,
+    noticed,
     director,
     rules: rules.value,
     recipes: recipes.value,

@@ -14,6 +14,7 @@ import type {
   BlessingGrantedEvent,
   EntityId,
   EventId,
+  LossNoticedEvent,
   PetitionAnsweredEvent,
   PetitionLapsedEvent,
   PetitionOpenedEvent,
@@ -27,6 +28,7 @@ import { getMemories, getRelationship } from "./memory";
 import {
   type ActorState,
   getActor,
+  noticedKey,
   type Petition,
   type PetitionCause,
   type WorldEventDraft,
@@ -77,13 +79,10 @@ export const MAX_CAUSES = 8;
  *
  * - a memory of the cause event, witnessed or told (a told one cites it), whose
  *   subjects name the offender: it knows who did it;
- * - its own unmet need;
- * - a loss it perceives where it stands now: spoiled or stolen stock of its own,
- *   always (it holds the stock), or its own building damaged or burned, only
- *   while it stands at the building. A loss known only this way has no known
- *   offender.
- *
- * A grudge is its own feeling and names who it is against.
+ * - a memory of a loss it noticed (`planNoticeStep`): it knows what it lost and
+ *   not who did it, so the offender is dropped;
+ * - its own unmet need, or its own grudge, which it always knows;
+ * - its own stolen or spoiled stock, which it always knows it lost.
  */
 export function knownCause(
   state: WorldState,
@@ -92,7 +91,8 @@ export function knownCause(
 ): PetitionCause | undefined {
   const { offender: _unknown, ...withoutOffender } = cause;
   if (cause.kind === "need" || cause.kind === "grudge") return cause;
-  const remembered = getMemories(state, actorId).some(
+  const memories = getMemories(state, actorId);
+  const namesOffender = memories.some(
     (memory) =>
       cause.offender !== undefined &&
       (memory.kind === "witnessed"
@@ -100,22 +100,81 @@ export function knownCause(
         : memory.kind === "told" && memory.linkedEventId === cause.eventId) &&
       memory.subjects.includes(cause.offender),
   );
-  if (remembered) return cause;
-  if (cause.kind === "theft" || cause.kind === "spoilage") {
+  if (namesOffender) return cause;
+  const noticedIt = memories.some(
+    (memory) =>
+      memory.kind === "noticed" && memory.causeEventId === cause.eventId,
+  );
+  if (noticedIt || cause.kind === "theft" || cause.kind === "spoilage") {
     return withoutOffender;
   }
-  const actor = getActor(state, actorId);
-  const building =
-    cause.building === undefined
-      ? undefined
-      : state.buildings.get(cause.building);
-  const seesIt =
-    building !== undefined &&
-    actor !== undefined &&
-    building.owner === actorId &&
-    building.locationId === actor.locationId &&
-    building.status !== "operational";
-  return seesIt ? withoutOffender : undefined;
+  return undefined;
+}
+
+// --- Noticing a loss -----------------------------------------------------------------------
+
+/**
+ * The `loss-noticed` events this tick records: each living owner standing at its
+ * own damaged, burning, or destroyed building, and each owner of stolen or
+ * spoiled stock, once per loss (`state.noticed`). The loss is the owner's own
+ * recorded cause (`state.causes`), so the event names the cause that made it.
+ * An environmental step like the need scan: it proposes nothing and takes no
+ * action slot.
+ */
+export function planNoticeStep(state: WorldState): readonly WorldEventDraft[] {
+  const drafts: WorldEventDraft[] = [];
+  for (const [owner, causes] of state.causes) {
+    const actor = getActor(state, owner);
+    if (!actor?.alive) continue;
+    for (const cause of causes) {
+      if (state.noticed.has(noticedKey(owner, cause.eventId))) continue;
+      if (cause.kind === "damage" || cause.kind === "fire") {
+        const building =
+          cause.building === undefined
+            ? undefined
+            : state.buildings.get(cause.building);
+        const seesIt =
+          building !== undefined &&
+          building.owner === owner &&
+          building.locationId === actor.locationId &&
+          building.status !== "operational";
+        if (seesIt) {
+          drafts.push({
+            kind: "loss-noticed",
+            entityId: owner,
+            causeEventId: cause.eventId,
+            building: building.id,
+          });
+        }
+      } else if (
+        (cause.kind === "theft" || cause.kind === "spoilage") &&
+        cause.resource !== undefined &&
+        cause.amount !== undefined
+      ) {
+        drafts.push({
+          kind: "loss-noticed",
+          entityId: owner,
+          causeEventId: cause.eventId,
+          resource: cause.resource,
+          amount: cause.amount,
+        });
+      }
+    }
+  }
+  return drafts;
+}
+
+export function applyLossNoticed(
+  state: WorldState,
+  event: LossNoticedEvent,
+): WorldState {
+  const noticed = new Map(state.noticed);
+  noticed.set(noticedKey(event.entityId, event.causeEventId), {
+    owner: event.entityId,
+    causeEventId: event.causeEventId,
+    eventId: event.id,
+  });
+  return { ...state, noticed };
 }
 
 /** What a mortal could pray about now, newest first: the causes it knows (`knownCause`) and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */

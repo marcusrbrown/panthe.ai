@@ -316,6 +316,7 @@ const MEMORY_COUNT_KEYS: ReadonlySet<string> = new Set([
   "allianceAffinity",
   "salience_told",
   "salience_sign",
+  "salience_noticed",
   ...WITNESSED_EVENT_KINDS.map((kind) => `salience_${kind}`),
 ]);
 

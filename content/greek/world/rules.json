@@ -50,6 +50,7 @@
       "salience_told": 4,
       "salience_sign": 6,
       "salience_theft": 6,
+      "salience_noticed": 5,
       "harmAffinity": 2,
       "kindnessAffinity": 1,
       "toldShare": 0.5,

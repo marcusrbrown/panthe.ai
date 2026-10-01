@@ -27,6 +27,7 @@ import type {
   Consequence,
   EntityId,
   EventId,
+  LegendRecordedEvent,
   MemoryRecordedEvent,
   ReportToldEvent,
   WitnessedEventKind,
@@ -52,7 +53,6 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   "salience_building-destroyed": 9,
   "salience_building-repaired": 4,
   "salience_worship-performed": 4,
-  "salience_legend-recorded": 3,
   /** A belief formed from a report. */
   salience_told: 4,
   /** Affinity lost toward whoever did harm one witnessed. */
@@ -217,10 +217,19 @@ export interface DerivedDraft {
   readonly cause: WorldEvent;
 }
 
+/**
+ * Whether an actor present can come to remember `event` as something it saw.
+ * Not the unplaced kinds, which no one perceives; and not a legend, which its
+ * hearers remember as told by its narrator (`legendTellings`), so a hearer
+ * never holds one legend twice. A legend stays placed and visible.
+ */
 function isWitnessable(
   event: WorldEvent,
 ): event is Extract<WorldEvent, { kind: WitnessedEventKind }> {
-  return !(UNPLACED_EVENT_KINDS as readonly string[]).includes(event.kind);
+  return (
+    event.kind !== "legend-recorded" &&
+    !(UNPLACED_EVENT_KINDS as readonly string[]).includes(event.kind)
+  );
 }
 
 function unique(ids: readonly EntityId[]): readonly EntityId[] {
@@ -316,8 +325,47 @@ function sameClaim(a: Consequence | undefined, b: Consequence | undefined) {
   );
 }
 
+/** One telling heard by one listener: a report to its listener, or a legend to one of its hearers. */
+export interface Telling {
+  /** The committed event the listener's belief rests on: the report, or the legend. */
+  readonly sourceEvent: WorldEvent;
+  readonly teller: EntityId;
+  readonly listener: EntityId;
+  readonly content: string;
+  readonly claim?: Consequence;
+  readonly linkedEventId?: EventId;
+}
+
+/** A report is a telling to its one listener. */
+export function reportTelling(report: ReportToldEvent): Telling {
+  return {
+    sourceEvent: report,
+    teller: report.entityId,
+    listener: report.listenerId,
+    content: report.content,
+    ...(report.claim === undefined ? {} : { claim: report.claim }),
+    ...(report.linkedEventId === undefined
+      ? {}
+      : { linkedEventId: report.linkedEventId }),
+  };
+}
+
+/** A legend is a telling to each hearer recorded on it; the narrator is not one. */
+export function legendTellings(legend: LegendRecordedEvent): Telling[] {
+  return legend.hearers.map((listener) => ({
+    sourceEvent: legend,
+    teller: legend.entityId,
+    listener,
+    content: legend.assertion,
+    ...(legend.claim === undefined ? {} : { claim: legend.claim }),
+    ...(legend.linkedEventId === undefined
+      ? {}
+      : { linkedEventId: legend.linkedEventId }),
+  }));
+}
+
 /**
- * The belief a report gives its listener: the teller's account, verbatim and
+ * The belief a telling gives its listener: the teller's account, verbatim and
  * attributed to the teller, never checked against what happened. What the
  * listener comes to believe about who did what to whom is the report's `claim`
  * and nothing else: the event the teller cited is provenance, and teaches the
@@ -334,15 +382,15 @@ function sameClaim(a: Consequence | undefined, b: Consequence | undefined) {
  */
 export function toldMemory(
   after: WorldState,
-  report: ReportToldEvent,
+  telling: Telling,
 ): DerivedDraft | undefined {
-  const claim = report.claim;
-  const heard = getMemories(after, report.listenerId).some(
+  const { claim } = telling;
+  const heard = getMemories(after, telling.listener).some(
     (memory) =>
       memory.kind === "told" &&
-      memory.teller === report.entityId &&
+      memory.teller === telling.teller &&
       (claim === undefined
-        ? memory.consequence === undefined && memory.content === report.content
+        ? memory.consequence === undefined && memory.content === telling.content
         : sameClaim(memory.consequence, claim)),
   );
   if (heard) return undefined;
@@ -351,19 +399,19 @@ export function toldMemory(
   const salience = balanceOf(after, "salience_told");
   if (salience < 1) return undefined;
   return {
-    cause: report,
+    cause: telling.sourceEvent,
     draft: {
       kind: "memory-recorded",
       memoryKind: "told",
-      entityId: report.listenerId,
-      sourceEventId: report.id,
-      teller: report.entityId,
-      content: report.content,
-      ...(report.linkedEventId === undefined
+      entityId: telling.listener,
+      sourceEventId: telling.sourceEvent.id,
+      teller: telling.teller,
+      content: telling.content,
+      ...(telling.linkedEventId === undefined
         ? {}
-        : { linkedEventId: report.linkedEventId }),
+        : { linkedEventId: telling.linkedEventId }),
       subjects: unique([
-        report.entityId,
+        telling.teller,
         ...(claim === undefined
           ? []
           : [

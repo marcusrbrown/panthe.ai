@@ -12,6 +12,7 @@
 
 import type {
   ClaimProposal,
+  Consequence,
   ConsumeProposal,
   EntityId,
   GatherProposal,
@@ -518,9 +519,26 @@ function handleWorship(
  * from one unchanged observation stay distinct.
  */
 function handleLegend(
-  _state: WorldState,
+  state: WorldState,
   proposal: LegendProposal,
 ): RuleOutcome {
+  const claim = proposal.claim;
+  if (claim !== undefined && !claimIdsExist(state, claim)) {
+    return reject("malformed", CLAIM_IDS_MESSAGE);
+  }
+  const narrator = getActor(state, proposal.actor);
+  // A legend is told aloud to everyone present at the narrator's place when it
+  // commits: the living actors there, minus the narrator. The audience is fixed
+  // here and recorded on the event, so who arrives later never hears it.
+  const hearers = [...state.actors.values()]
+    .filter(
+      (actor) =>
+        actor.alive &&
+        actor.id !== proposal.actor &&
+        actor.locationId === narrator?.locationId,
+    )
+    .map((actor) => actor.id)
+    .sort();
   return commit([
     {
       kind: "legend-recorded",
@@ -529,8 +547,8 @@ function handleLegend(
       ...(proposal.linkedEventId
         ? { linkedEventId: proposal.linkedEventId }
         : {}),
-      // The audience is fixed here at execution (Unit 3); none until then.
-      hearers: [],
+      ...(claim === undefined ? {} : { claim }),
+      hearers,
     },
   ]);
 }
@@ -544,6 +562,19 @@ function handleLegend(
  * memory backs one, so a rumor stops at one hop: someone who was only told may
  * retell the story, but not cite the event as their own evidence.
  */
+const CLAIM_IDS_MESSAGE =
+  "a claim must name an actor as its agent and an actor or building as its target";
+
+/** Whether the ids a claim names exist: an actor as its agent, an actor or building as its target. Its truth is never judged. */
+function claimIdsExist(state: WorldState, claim: Consequence): boolean {
+  return (
+    getActor(state, claim.agent) !== undefined &&
+    (claim.target === undefined ||
+      getActor(state, claim.target) !== undefined ||
+      getBuilding(state, claim.target) !== undefined)
+  );
+}
+
 function handleReport(
   state: WorldState,
   proposal: ReportProposal,
@@ -582,17 +613,8 @@ function handleReport(
     );
   }
   const claim = proposal.claim;
-  if (
-    claim !== undefined &&
-    (!getActor(state, claim.agent) ||
-      (claim.target !== undefined &&
-        !getActor(state, claim.target) &&
-        !getBuilding(state, claim.target)))
-  ) {
-    return reject(
-      "malformed",
-      "a claim must name an actor as its agent and an actor or building as its target",
-    );
+  if (claim !== undefined && !claimIdsExist(state, claim)) {
+    return reject("malformed", CLAIM_IDS_MESSAGE);
   }
   return commit([
     {

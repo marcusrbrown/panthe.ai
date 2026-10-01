@@ -1114,6 +1114,48 @@ test("a legend proposal citing an event commits the citation as an evidence link
   }
 });
 
+test("a legend's hearers are fixed by the validator at execution: the living actors at the narrator's place, minus the narrator; a claim to nonexistent ids is refused", () => {
+  const state = fireFixtureState();
+  const told = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "legend",
+      assertion: "Zeus has wronged me.",
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
+    }),
+  );
+  expect(told.ok).toBe(true);
+  if (told.ok) {
+    // The woodcutter shares the square; Zeus is in the great hall, so does not hear.
+    expect(told.events[0]).toMatchObject({
+      kind: "legend-recorded",
+      hearers: ["woodcutter"],
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
+    });
+  }
+  // A dead actor present does not hear.
+  const woodcutter = state.actors.get(toEntityId("woodcutter"));
+  if (!woodcutter) throw new Error("no woodcutter");
+  const gone = withActor(state, { ...woodcutter, alive: false });
+  const alone = validateProposal(
+    gone,
+    proposal({ actor: "farmer", kind: "legend", assertion: "To no one." }),
+  );
+  expect(alone.ok && alone.events[0]).toMatchObject({ hearers: [] });
+
+  const bad = validateProposal(
+    state,
+    proposal({
+      actor: "farmer",
+      kind: "legend",
+      assertion: "x",
+      claim: { effect: "harm", agent: "nobody" },
+    }),
+  );
+  expect(bad.ok).toBe(false);
+});
+
 function fireFixtureState(): WorldState {
   const pack: ContentPack = {
     schemaVersion: 1,

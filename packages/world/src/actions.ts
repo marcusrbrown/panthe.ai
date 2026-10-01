@@ -46,7 +46,9 @@ import {
   applyMemoryRecorded,
   applyRelationshipChanged,
   type DerivedDraft,
+  legendTellings,
   planRelationships,
+  reportTelling,
   toldMemory,
   witnessMemories,
 } from "./memory";
@@ -365,8 +367,15 @@ function planMemories(
   let running = before;
   for (const event of primary) {
     drafts.push(...witnessMemories(running, event));
-    if (event.kind === "report-told") {
-      const belief = toldMemory(after, event);
+    // A report gives its listener a belief; a legend gives each hearer one.
+    const tellings =
+      event.kind === "report-told"
+        ? [reportTelling(event)]
+        : event.kind === "legend-recorded"
+          ? legendTellings(event)
+          : [];
+    for (const telling of tellings) {
+      const belief = toldMemory(after, telling);
       if (belief) drafts.push(belief);
     }
     running = applyEvent(running, event);

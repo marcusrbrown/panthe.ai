@@ -181,7 +181,7 @@ export const MAX_GOAL_LENGTH = 140;
 export const GOAL_OUTCOMES = ["achieved", "failed", "abandoned"] as const;
 export type GoalOutcome = (typeof GOAL_OUTCOMES)[number];
 
-/** Most characters of report text a proposal, an event, or a stored belief may hold. A D23 tunable (docs/product/defaults.md); a prompt-sized account, not a document. */
+/** Most characters of report text (and of a legend's assertion, which every hearer's belief holds) a proposal, an event, or a stored belief may hold. A D23 tunable (docs/product/defaults.md); a prompt-sized account, not a document. */
 export const MAX_REPORT_LENGTH = 280;
 
 /** What a happening did to someone, as a witness or a listener understands it. `target` is who or what suffered or was served, when someone was. */
@@ -875,7 +875,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     case "legend-recorded": {
       const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
-      const assertion = parseString(input.assertion, "assertion");
+      const assertion = parseReportContent(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       const linkedEventIdRaw = parseOptionalString(
         input.linkedEventId,

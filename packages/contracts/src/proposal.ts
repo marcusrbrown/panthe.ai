@@ -499,7 +499,7 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       return ok({ ...base, kind: "claim", assertion: assertion.value });
     }
     case "legend": {
-      const assertion = parseString(input.assertion, "assertion");
+      const assertion = parseReportContent(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       const linkedEventId =
         input.linkedEventId === undefined

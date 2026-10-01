@@ -505,8 +505,8 @@ export async function stepHera(
         .filter((r) => r.god === "hera")
         .at(-1);
       check(
-        before?.reply === WAIT && !before.prompt.includes("zeus told you"),
-        "the turn before, with no belief in her prompt, she waited",
+        before?.reply === WAIT && !before.prompt.includes(report.content),
+        "the turn before, with no belief about the strike in her prompt, she waited",
         `${before?.reply}`,
       );
       const zeusHeard = (await stateOf(story)).memories

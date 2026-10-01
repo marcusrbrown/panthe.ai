@@ -79,6 +79,7 @@ const GOD_ACTIONS: ReadonlySet<string> = new Set([
   "strike",
   "legend",
   "report",
+  "bless",
   "goal",
 ]);
 
@@ -92,6 +93,8 @@ export function namedIds(proposal: Record<string, unknown>): string[] {
   add(proposal.listener);
   add(proposal.to);
   add(proposal.linkedEventId);
+  // The petition a bless answers is an id the god was shown.
+  add(proposal.petition);
   const claim = proposal.claim;
   if (typeof claim === "object" && claim !== null) {
     add((claim as Record<string, unknown>).agent);
@@ -238,6 +241,56 @@ function goalPrivacy(
     detail:
       leaks.length === 0
         ? `${checked} prompts checked against ${goals.length} goals: none carried another god's goal outside a told account or a perceived legend`
+        : leaks.join("; "),
+  };
+}
+
+/**
+ * No god's prompt may list a petition addressed to another god (R7): the divine
+ * sense is the named god's alone. Every petition's id is searched for in the
+ * prompt of each other god.
+ */
+function petitionPrivacy(
+  requests: readonly RealRequest[],
+  events: readonly StoredEvent[],
+): Property {
+  const name = "petition privacy";
+  const petitions = events.flatMap((e) =>
+    e.kind === "petition-opened" &&
+    typeof e.god === "string" &&
+    typeof e.id === "string"
+      ? [{ id: e.id, god: e.god }]
+      : [],
+  );
+  const leaks: string[] = [];
+  let checked = 0;
+  for (const request of requests) {
+    if (request.promptPayload === undefined) continue;
+    checked += 1;
+    for (const petition of petitions) {
+      if (
+        petition.god !== request.role &&
+        new RegExp(`${petition.id}(?![0-9])`).test(request.promptPayload)
+      ) {
+        leaks.push(
+          `${request.role}'s prompt lists ${petition.id}, addressed to ${petition.god}`,
+        );
+      }
+    }
+  }
+  if (petitions.length > 0 && checked === 0) {
+    return {
+      name,
+      ok: false,
+      detail: `${petitions.length} petitions were opened but no prompt payload was recorded to check them against`,
+    };
+  }
+  return {
+    name,
+    ok: leaks.length === 0,
+    detail:
+      leaks.length === 0
+        ? `${checked} prompts checked against ${petitions.length} petitions: none listed a petition addressed to another god`
         : leaks.join("; "),
   };
 }
@@ -395,6 +448,7 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       relationshipProvenance(events),
       changedNextAction(proposals, events),
       goalPrivacy(requests, events),
+      petitionPrivacy(requests, events),
     ],
   };
 }

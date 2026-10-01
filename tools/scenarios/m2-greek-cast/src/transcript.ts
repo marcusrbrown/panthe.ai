@@ -257,6 +257,110 @@ export function buildActions(record: EpisodeRecord): ActionEntry[] {
   return entries.sort((a, b) => a.sequence - b.sequence);
 }
 
+/** What the world did that no god's action caused: the director's trouble, needs, prayers, answers, signs, lapses, blessings, and refused goal changes. */
+export interface WorldNote {
+  readonly tick: number;
+  readonly sequence: number;
+  readonly line: string;
+}
+
+const REQUEST_WORDS = (request: unknown): string => {
+  const r = request as {
+    kind: string;
+    offender?: string;
+    buildings?: string[];
+    need?: { kind: string; building?: string; resource?: string };
+  };
+  if (r.kind === "punish") {
+    return `punish ${r.offender}, who owns ${(r.buildings ?? []).join(", ")}`;
+  }
+  return `help with ${r.need?.kind === "building" ? r.need.building : r.need?.resource}`;
+};
+
+/** The world's own notable events, in the order they were committed. Everything a god did is under `buildActions`. */
+export function buildWorldNotes(record: EpisodeRecord): WorldNote[] {
+  const events = record.input.events;
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const notes: WorldNote[] = [];
+  const note = (e: StoredEvent, line: string) =>
+    notes.push({ tick: Number(e.tick), sequence: Number(e.sequence), line });
+  for (const e of events) {
+    switch (e.kind) {
+      case "unmet-need":
+        note(e, `${e.entityId} cannot get ${e.resource} (${e.reason})`);
+        break;
+      case "theft":
+        note(
+          e,
+          `the director made ${e.entityId} take ${e.amount} ${e.resource} from ${e.victim}`,
+        );
+        break;
+      case "stock-spoiled":
+        note(
+          e,
+          `the director spoiled ${e.amount} ${e.resource} of ${e.entityId}`,
+        );
+        break;
+      case "building-ignited":
+        if ((e.cause as { kind?: string } | undefined)?.kind === "director") {
+          note(e, `the director set ${e.entityId} alight`);
+        }
+        break;
+      case "petition-opened":
+        note(
+          e,
+          `${e.entityId} prayed to ${e.god}: ${REQUEST_WORDS(e.request)} [${e.id}]`,
+        );
+        break;
+      case "petition-answered":
+        note(e, `${e.god} answered ${e.entityId}'s prayer [${e.petitionId}]`);
+        break;
+      case "petition-lapsed":
+        note(
+          e,
+          `${e.entityId}'s prayer to ${e.god} lapsed unanswered [${e.petitionId}]`,
+        );
+        break;
+      case "blessing-granted":
+        note(
+          e,
+          `${e.entityId} blessed ${e.recipient}: ${e.amount} ${e.resource}${e.building === undefined ? "" : ` for ${e.building}`}`,
+        );
+        break;
+      case "goal-change-refused":
+        note(
+          e,
+          `${e.entityId}'s change to ${e.entityId === "hera" ? "her" : "his"} goal was refused (${e.reason}, ${e.unlocksInTicks} ticks left)`,
+        );
+        break;
+      case "memory-recorded":
+        if (e.memoryKind === "sign") {
+          note(
+            e,
+            `${e.entityId} remembers ${e.god}'s ${e.outcome === "answered" ? "answer" : "silence"}`,
+          );
+        }
+        break;
+      case "relationship-changed": {
+        const memory = byId.get(String(e.memoryEventId));
+        if (
+          memory?.kind === "memory-recorded" &&
+          memory.memoryKind === "sign"
+        ) {
+          note(
+            e,
+            `${e.entityId} → ${e.toward}: affinity ${signed(e.affinityDelta)}${Number(e.grudgeDelta) > 0 ? `, grudge +${e.grudgeDelta}` : ""}`,
+          );
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return notes.sort((a, b) => a.sequence - b.sequence);
+}
+
 const nameOf = (record: EpisodeRecord, god: string): string =>
   record.identities.find((i) => i.id === god)?.name ?? god;
 
@@ -299,6 +403,13 @@ function renderAction(
     lines.push(`   - caused: ${entry.caused.join("; ")}`);
   for (const change of entry.changes) lines.push(`   - then: ${change}`);
   return lines.join("\n");
+}
+
+function renderWorldNotes(record: EpisodeRecord): string {
+  const notes = buildWorldNotes(record);
+  return notes.length === 0
+    ? "Nothing happened to the world beyond the gods' own actions."
+    : notes.map((n) => `- tick ${n.tick}: ${n.line}`).join("\n");
 }
 
 function renderRepetition(record: EpisodeRecord): string {
@@ -383,6 +494,10 @@ export function renderTranscript(record: EpisodeRecord): string {
       ? "No god took a committed action."
       : actions.map((entry, i) => renderAction(entry, i, record)).join("\n"),
     "",
+    "## What the world did",
+    "",
+    renderWorldNotes(record),
+    "",
     "## Repetition",
     "",
     renderRepetition(record),
@@ -423,7 +538,7 @@ export function renderSummary(
   const checkRows = records.flatMap((record) =>
     record.episode.gods.map((g) => {
       const failed = g.checks.filter((c) => !c.ok).map((c) => c.name);
-      return `| ${record.index} | ${nameOf(record, g.god)} | ${g.actions} (${g.abilityBacked} ability, ${g.contextBacked} context) | ${g.longestRun?.length ?? 0} | ${g.influence} | ${g.goalsSet} / ${g.goalsEnded} | ${failed.length === 0 ? "pass" : `FAIL: ${failed.join(", ")}`} |`;
+      return `| ${record.index} | ${nameOf(record, g.god)} | ${g.actions} (${g.abilityBacked} ability, ${g.contextBacked} context) | ${g.longestRun?.length ?? 0} | ${g.influence} | ${g.goalsSet} / ${g.goalsEnded} | ${g.petitionsHeard} / ${g.petitionsAnswered} | ${g.refusals} | ${failed.length === 0 ? "pass" : `FAIL: ${failed.join(", ")}`} |`;
     }),
   );
   const failures = records.flatMap((record) => [
@@ -452,8 +567,8 @@ export function renderSummary(
     "",
     "## Automated checks",
     "",
-    "| Episode | God | Committed actions | Longest run | Told beliefs and feelings caused | Goals set / ended | Checks |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
+    "| Episode | God | Committed actions | Longest run | Told beliefs and feelings caused | Goals set / ended | Petitions heard / answered | Goal changes refused | Checks |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...checkRows,
     "",
     failures.length === 0

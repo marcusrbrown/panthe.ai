@@ -186,3 +186,79 @@ export const goalEndedEvent = (
   outcome,
   goalEventId,
 });
+
+const envelope = (id: string, sequence: number, tick: number) => ({
+  schemaVersion: 1,
+  id,
+  sequence,
+  simTime: 0,
+  tick,
+  correlationId: `tick-${tick}`,
+  causationId: `tick-${tick}`,
+  approximate: false,
+});
+
+/** A prayer by `petitioner` to `god`, about the event `cause`. */
+export const petitionOpenedEvent = (
+  id: string,
+  sequence: number,
+  petitioner: string,
+  god: string,
+  cause = "evt-1-1",
+  tick = 1,
+) => ({
+  ...envelope(id, sequence, tick),
+  kind: "petition-opened",
+  entityId: petitioner,
+  god,
+  cause,
+  request: { kind: "help", need: { kind: "resource", resource: "food" } },
+});
+
+/** `god` answering `petitioner`'s petition `petitionId`. */
+export const petitionAnsweredEvent = (
+  id: string,
+  sequence: number,
+  petitioner: string,
+  god: string,
+  petitionId: string,
+  answeredBy = "evt-9-9",
+  tick = 5,
+) => ({
+  ...envelope(id, sequence, tick),
+  kind: "petition-answered",
+  entityId: petitioner,
+  god,
+  petitionId,
+  answeredBy,
+});
+
+export const petitionLapsedEvent = (
+  id: string,
+  sequence: number,
+  petitioner: string,
+  god: string,
+  petitionId: string,
+  tick = 250,
+) => ({
+  ...envelope(id, sequence, tick),
+  kind: "petition-lapsed",
+  entityId: petitioner,
+  god,
+  petitionId,
+});
+
+export const goalRefusedEvent = (
+  id: string,
+  sequence: number,
+  god: string,
+  tick = 3,
+  unlocksInTicks = 37,
+) => ({
+  ...envelope(id, sequence, tick),
+  kind: "goal-change-refused",
+  entityId: god,
+  reason: "locked",
+  attempted: "replace",
+  unlocksInTicks,
+});

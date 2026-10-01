@@ -22,6 +22,7 @@ export const CONTEXT_ACTIONS: readonly string[] = [
   "move",
   "realm-transition",
   "report",
+  "bless",
 ];
 
 /** What the checks and the transcript need of a god's profile. */
@@ -42,7 +43,9 @@ export type CheckName =
   | "minimum activity"
   | "influence"
   | "goal set"
-  | "goal ended";
+  | "goal ended"
+  | "petition heard"
+  | "petition answered";
 
 export interface EpisodeCheck {
   readonly name: CheckName;
@@ -65,6 +68,13 @@ export interface GodEpisode {
   /** Goals the god set, and goals it ended (by any outcome). */
   readonly goalsSet: number;
   readonly goalsEnded: number;
+  /** Ticks each ended goal lasted, from its set to its end. */
+  readonly goalLifetimes: readonly number[];
+  /** Goal changes the world refused. */
+  readonly refusals: number;
+  /** Petitions addressed to this god, and how many it answered. */
+  readonly petitionsHeard: number;
+  readonly petitionsAnswered: number;
   readonly checks: readonly EpisodeCheck[];
 }
 
@@ -88,6 +98,8 @@ export function primaryTarget(proposal: Record<string, unknown>): string {
       return typeof proposal.linkedEventId === "string"
         ? proposal.linkedEventId
         : "legend";
+    case "bless":
+      return String(proposal.petition);
     default:
       return "";
   }
@@ -246,6 +258,20 @@ function analyzeGod(
     (e) => e.kind === "goal-ended" && e.entityId === god,
   );
   const outcomes = [...new Set(goalsEnded.map((e) => String(e.outcome)))];
+  const setTicks = new Map(goalsSet.map((e) => [e.id, Number(e.tick)]));
+  const goalLifetimes = goalsEnded.flatMap((e) => {
+    const setAt = setTicks.get(String(e.goalEventId));
+    return setAt === undefined ? [] : [Number(e.tick) - setAt];
+  });
+  const refusals = input.events.filter(
+    (e) => e.kind === "goal-change-refused" && e.entityId === god,
+  ).length;
+  const heard = input.events.filter(
+    (e) => e.kind === "petition-opened" && e.god === god,
+  );
+  const answered = input.events.filter(
+    (e) => e.kind === "petition-answered" && e.god === god,
+  );
   const run = longestRun(ordered);
   const influence = influenceOf(ordered, input.events);
   const kindsSeen = [...new Set(influence.kinds)].join(", ");
@@ -258,6 +284,10 @@ function analyzeGod(
     influence: influence.count,
     goalsSet: goalsSet.length,
     goalsEnded: goalsEnded.length,
+    goalLifetimes,
+    refusals,
+    petitionsHeard: heard.length,
+    petitionsAnswered: answered.length,
     checks: [
       trace.check,
       {
@@ -293,6 +323,22 @@ function analyzeGod(
           goalsEnded.length > 0
             ? `${goalsEnded.length} goals ended (${outcomes.join(", ")}); at least 1, any outcome`
             : "no goal ended (at least 1, any outcome)",
+      },
+      {
+        name: "petition heard",
+        ok: heard.length > 0,
+        detail:
+          heard.length > 0
+            ? `${heard.length} petition${heard.length === 1 ? "" : "s"} addressed to this god (at least 1)`
+            : "no petition was addressed to this god (at least 1)",
+      },
+      {
+        name: "petition answered",
+        ok: answered.length > 0,
+        detail:
+          answered.length > 0
+            ? `${answered.length} of ${heard.length} answered (at least 1)`
+            : `${heard.length} heard, none answered (at least 1)`,
       },
     ],
   };

@@ -10,11 +10,15 @@ import { analyzeEpisode } from "./episode-analysis";
 import {
   act,
   goalEndedEvent,
+  goalRefusedEvent,
   goalSetEvent,
   identities,
   input,
   memoryEvent,
   move,
+  petitionAnsweredEvent,
+  petitionLapsedEvent,
+  petitionOpenedEvent,
 } from "./episode-test-data";
 import { analyzeReal, type RealInput } from "./real-analysis";
 import {
@@ -356,6 +360,8 @@ test("the summary covers every episode with each god's numbers and checks, and l
       }),
       goalSetEvent("evt-0-1", 1, "zeus"),
       goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+      petitionOpenedEvent("evt-0-3", 3, "farmer", "zeus"),
+      petitionAnsweredEvent("evt-0-4", 4, "farmer", "zeus", "evt-0-3"),
     ],
   );
   const zeus = identities.get("zeus");
@@ -528,6 +534,8 @@ test("the summary does not say everything held when a real-run property failed, 
       }),
       goalSetEvent("evt-0-1", 1, "zeus"),
       goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+      petitionOpenedEvent("evt-0-3", 3, "farmer", "zeus"),
+      petitionAnsweredEvent("evt-0-4", 4, "farmer", "zeus", "evt-0-3"),
     ],
   );
   const zeus = identities.get("zeus");
@@ -796,6 +804,8 @@ test("the summary shows each god's goals set and ended", () => {
   const withGoals = record(acts, [
     goalSetEvent("evt-0-1", 1, "zeus"),
     goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+    petitionOpenedEvent("evt-0-3", 3, "farmer", "zeus"),
+    petitionAnsweredEvent("evt-0-4", 4, "farmer", "zeus", "evt-0-3"),
   ]);
   const text = renderSummary([withGoals], {
     seconds: 60,
@@ -822,4 +832,191 @@ test("the model-run block states the prompt size against the 4K budget", () => {
   };
   const text = renderTranscript(withPrompts);
   expect(text).toContain("prompt p50 3900 / max 4800 characters");
+});
+
+// --- Prayers, answers, trouble, needs, and refusals ------------------------------------------------
+
+const worldSection = (text: string) =>
+  text.slice(
+    text.indexOf("## What the world did"),
+    text.indexOf("## Repetition"),
+  );
+
+const baseEvent = (id: string, sequence: number, tick: number) => ({
+  schemaVersion: 1,
+  id,
+  sequence,
+  simTime: 0,
+  tick,
+  correlationId: `tick-${tick}`,
+  causationId: `tick-${tick}`,
+  approximate: false,
+});
+
+test("a transcript shows the director's theft, the farmer's prayer, Zeus's strike answering it, the sign, and the affinity rise, in order", () => {
+  const theft = {
+    ...baseEvent("evt-12-1", 1, 12),
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 3,
+    cause: "director",
+  };
+  const prayer = {
+    ...petitionOpenedEvent("evt-20-2", 2, "farmer", "zeus", "evt-12-1", 20),
+    request: {
+      kind: "punish",
+      offender: "woodcutter",
+      buildings: ["woodshed"],
+    },
+  };
+  const strike = act(
+    "zeus",
+    { kind: "strike", target: "woodshed", power: 1 },
+    30,
+  );
+  const answered = petitionAnsweredEvent(
+    "evt-30-31",
+    31,
+    "farmer",
+    "zeus",
+    "evt-20-2",
+    strike.event.id,
+    30,
+  );
+  const sign = {
+    ...baseEvent("evt-30-32", 32, 30),
+    kind: "memory-recorded",
+    memoryKind: "sign",
+    entityId: "farmer",
+    sourceEventId: "evt-30-31",
+    god: "zeus",
+    outcome: "answered",
+    petitionId: "evt-20-2",
+    subjects: ["zeus"],
+    salience: 6,
+    consequence: { effect: "kindness", agent: "zeus", target: "farmer" },
+  };
+  const feeling = {
+    ...baseEvent("evt-30-33", 33, 30),
+    kind: "relationship-changed",
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: 1,
+    grudgeDelta: 0,
+    memoryEventId: "evt-30-32",
+  };
+  const text = renderTranscript(
+    record([strike], [theft, prayer, answered, sign, feeling]),
+  );
+  const world = worldSection(text);
+  const lines = world.split("\n").filter((l) => l.startsWith("- tick"));
+  expect(lines[0]).toContain("tick 12");
+  expect(lines[0]).toContain(
+    "the director made woodcutter take 3 currency from farmer",
+  );
+  expect(lines[1]).toContain("tick 20: farmer prayed to zeus");
+  expect(lines[1]).toContain("punish woodcutter");
+  expect(lines[2]).toContain("tick 30: zeus answered farmer's prayer");
+  expect(lines[3]).toContain("farmer remembers zeus's answer");
+  expect(lines[4]).toContain("farmer → zeus: affinity +1");
+  expect(lines).toHaveLength(5);
+  // The god's own action is still listed under what it did.
+  expect(actionBlocks(text)[0]?.block).toContain("strike → woodshed");
+});
+
+test("a lapse, a blessing, spoiled stock, a director fire, an unmet need, and a refused goal change each get a line, and nothing else is listed", () => {
+  const events = [
+    {
+      ...baseEvent("evt-3-1", 1, 3),
+      kind: "unmet-need",
+      entityId: "farmer",
+      resource: "planks",
+      reason: "no-seller",
+    },
+    {
+      ...baseEvent("evt-4-2", 2, 4),
+      kind: "stock-spoiled",
+      entityId: "farmer",
+      resource: "food",
+      amount: 2,
+      cause: "director",
+    },
+    {
+      ...baseEvent("evt-5-3", 3, 5),
+      kind: "building-ignited",
+      entityId: "the-tavern",
+      cause: { kind: "director" },
+    },
+    {
+      ...baseEvent("evt-6-4", 4, 6),
+      kind: "blessing-granted",
+      entityId: "hera",
+      recipient: "farmer",
+      petitionId: "evt-2-0",
+      resource: "planks",
+      amount: 3,
+      building: "the-tavern",
+    },
+    petitionLapsedEvent("evt-250-9", 9, "farmer", "zeus", "evt-1-0", 250),
+    goalRefusedEvent("evt-7-6", 6, "hera", 7, 33),
+    // Not listed: a strike's ignition, an ordinary move, a resource gathered.
+    {
+      ...baseEvent("evt-8-7", 7, 8),
+      kind: "building-ignited",
+      entityId: "woodshed",
+      cause: { kind: "strike", actor: "zeus" },
+    },
+    {
+      ...baseEvent("evt-8-8", 8, 8),
+      kind: "resource-gathered",
+      entityId: "farmer",
+      resource: "food",
+      amount: 1,
+    },
+  ];
+  const lines = worldSection(
+    renderTranscript(record([move("zeus", "a", 9)], events)),
+  )
+    .split("\n")
+    .filter((l) => l.startsWith("- tick"));
+  expect(lines.map((l) => l.replace(/^- tick (\d+):.*/, "$1"))).toEqual([
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "250",
+  ]);
+  expect(lines[0]).toContain("farmer cannot get planks (no-seller)");
+  expect(lines[1]).toContain("the director spoiled 2 food of farmer");
+  expect(lines[2]).toContain("the director set the-tavern alight");
+  expect(lines[3]).toContain("hera blessed farmer: 3 planks for the-tavern");
+  expect(lines[4]).toContain("hera's change to her goal was refused");
+  expect(lines[4]).toContain("33 ticks");
+  expect(lines[5]).toContain("farmer's prayer to zeus lapsed unanswered");
+});
+
+test("a transcript with none of these says so, and the summary shows each god's petitions heard and answered and its refusals", () => {
+  const quiet = renderTranscript(record([move("zeus", "a", 1)]));
+  expect(worldSection(quiet)).toContain(
+    "Nothing happened to the world beyond the gods' own actions.",
+  );
+  const acts = ["a", "b", "c", "d", "e"].map((to, i) =>
+    move("zeus", to, i + 1),
+  );
+  const withPrayers = record(acts, [
+    petitionOpenedEvent("evt-1-6", 6, "farmer", "zeus"),
+    petitionAnsweredEvent("evt-2-7", 7, "farmer", "zeus", "evt-1-6"),
+    goalRefusedEvent("evt-3-8", 8, "zeus"),
+  ]);
+  const text = renderSummary([withPrayers], {
+    seconds: 60,
+    model: "m",
+    files: ["episode-1.md"],
+  });
+  expect(text).toContain("Petitions heard / answered");
+  expect(text).toMatch(/\| 1 \| Zeus \|[^\n]*\| 1 \/ 1 \|/);
+  expect(text).toContain("Goal changes refused");
 });

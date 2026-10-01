@@ -125,12 +125,17 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       moveProposal("wanderer", "wilderness-path", "obs-1"),
     ]);
     expect(tick1.rejected).toEqual([]);
-    // The move commits at sequence 1; the farmer's two operational, owned
-    // buildings (the shop and the tavern) each earn one income-earned
-    // event every tick, right after the proposal queue drains.
+    // The move commits at sequence 1; the farmer's two operational,
+    // service-offering buildings (the shop and the tavern) each earn one
+    // income-earned event every tick, right after the proposal queue
+    // drains (the woodcutter's woodshed sells nothing, so earns nothing);
+    // then the need scan records what the two mortals' routines cannot get
+    // (the woodcutter's food, the farmer's planks).
     const moveEvents1 = tick1.committed.flatMap((record) => record.events);
     expect(moveEvents1.map((event) => event.sequence)).toEqual([1]);
-    expect(tick1.events.map((event) => event.sequence)).toEqual([1, 2, 3]);
+    expect(tick1.events.map((event) => event.sequence)).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
 
     const commit1 = commitTick(store, projectionReducers, {
       events: tick1.events,
@@ -140,7 +145,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick1.state.simTime,
       prngState: serializePrngState(tick1.prng),
     });
-    expect(commit1.sequence).toBe(3);
+    expect(commit1.sequence).toBe(6);
 
     const tick2 = runTick(tick1.state, tick1.prng, [
       moveProposal("wanderer", "town-square", "obs-2"),
@@ -148,7 +153,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     expect(tick2.rejected).toEqual([]);
     const moveEvents2 = tick2.committed.flatMap((record) => record.events);
     // Contiguous with tick 1's sequence, not reset to 1 again.
-    expect(moveEvents2.map((event) => event.sequence)).toEqual([4]);
+    expect(moveEvents2.map((event) => event.sequence)).toEqual([7]);
 
     const commit2 = commitTick(store, projectionReducers, {
       events: tick2.events,
@@ -158,10 +163,10 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick2.state.simTime,
       prngState: serializePrngState(tick2.prng),
     });
-    expect(commit2.sequence).toBe(6);
+    expect(commit2.sequence).toBe(9);
     expect(tick2.state.tick).toBe(2);
     expect(tick2.state.simTime).toBe(2_000);
-    expect(tick2.state.lastSequence).toBe(6);
+    expect(tick2.state.lastSequence).toBe(9);
 
     // --- 2. Close -> reopen -> live projections restored to the full state
     closeStore(store);
@@ -197,7 +202,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     ]);
     expect(tick3.rejected).toEqual([]);
     const moveEvents3 = tick3.committed.flatMap((record) => record.events);
-    expect(moveEvents3.map((event) => event.sequence)).toEqual([7]);
+    expect(moveEvents3.map((event) => event.sequence)).toEqual([10]);
 
     const commit3 = commitTick(store, projectionReducers, {
       events: tick3.events,
@@ -207,12 +212,12 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick3.state.simTime,
       prngState: serializePrngState(tick3.prng),
     });
-    expect(commit3.sequence).toBe(9);
+    expect(commit3.sequence).toBe(12);
 
     // --- 4. Export -> importArchive (world codec) -> reopen -> equal ------
     const exportPath = join(exportDir, "archive.sqlite");
     const manifest = exportArchive(store, exportPath);
-    expect(manifest.eventSequence).toBe(9);
+    expect(manifest.eventSequence).toBe(12);
 
     const importResult = importArchive(
       exportPath,
@@ -259,7 +264,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       prngState: serializePrngState(tick3.prng),
     });
     // Sequence is unchanged: no events were committed.
-    expect(commit4.sequence).toBe(9);
+    expect(commit4.sequence).toBe(12);
     const restoredAfterRejection = restoreWorldTime(
       readLiveProjections(store, projectionReducers),
       readClock(store.db),

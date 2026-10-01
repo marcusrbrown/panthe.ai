@@ -48,12 +48,26 @@
       "salience_building-repaired": 4,
       "salience_worship-performed": 4,
       "salience_told": 4,
+      "salience_sign": 6,
+      "salience_theft": 6,
+      "salience_noticed": 5,
       "harmAffinity": 2,
       "kindnessAffinity": 1,
       "toldShare": 0.5,
       "affinityLimit": 10,
       "grudgeLimit": 10,
       "allianceAffinity": 5
+    },
+    "petitionBalance": {
+      "answerWindowTicks": 250,
+      "causePrayableTicks": 150,
+      "prayerCooldownTicks": 20,
+      "blessDivinityCost": 2,
+      "blessPlanks": 3,
+      "blessResourceAmount": 2,
+      "blessResourceCap": 4,
+      "directorQuietTicks": 120,
+      "goalLockTicks": 40
     }
   }
 }

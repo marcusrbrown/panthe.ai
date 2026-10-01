@@ -79,6 +79,7 @@ function fakeEvent(id: EventId): WorldEvent {
     simTime: 1,
     correlationId: createCorrelationId(),
     causationId: createCausationId(),
+    tick: 1,
     approximate: false,
     kind: "entity-moved",
     entityId: createEntityId(),

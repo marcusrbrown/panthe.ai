@@ -16,18 +16,25 @@ import {
   type EventId,
   GOAL_OUTCOMES,
   type GoalChange,
+  type GoalChangeRefusedEvent,
   MAX_GOAL_LENGTH,
   MAX_REPORT_LENGTH,
   type WorldEvent,
 } from "@panthea/contracts";
 import {
   type ActiveGoal,
+  type ActorState,
+  getActor,
   getMemories,
   hasCapability,
   type MemoryEntry,
+  nextHop,
+  openPetitionsFor,
   type PerceivedEvent,
   type PerceivedExit,
   type PerceptionSnapshot,
+  type Petition,
+  petitionBalanceOf,
   type RelationshipState,
   type WorldState,
 } from "@panthea/world";
@@ -41,6 +48,7 @@ export const GOD_INTENT_ACTIONS = [
   "strike",
   "legend",
   "report",
+  "bless",
   "wait",
 ] as const;
 export type GodIntentAction = (typeof GOD_INTENT_ACTIONS)[number];
@@ -78,6 +86,8 @@ type GodAction =
       readonly claim?: Consequence;
       readonly linkedEventId?: EventId;
     }
+  /** Bless the mortal behind one open help petition, standing with it. */
+  | { readonly action: "bless"; readonly petition: EventId }
   /** Do nothing this turn. Always allowed; nothing is journaled. */
   | { readonly action: "wait" };
 
@@ -138,6 +148,39 @@ export type GoalHistoryEntry =
       readonly event: WorldEvent;
     };
 
+/** One place a petition names, with where it is and the first step toward it. */
+export interface PetitionPlace {
+  readonly id: EntityId;
+  readonly name: string;
+  /** The exit to take from where the god is, or `undefined` when it is already there or no route exists. */
+  readonly hop?: { readonly id: EntityId; readonly name: string };
+  readonly here: boolean;
+}
+
+/** An open petition addressed to this god, resolved for the prompt: read from world state (the divine sense), whatever the god can perceive. */
+export interface PetitionView {
+  readonly id: EventId;
+  readonly petitioner: EntityId;
+  readonly request: Petition["request"];
+  /** The cause in words: what happened to the petitioner. */
+  readonly cause: string;
+  /** Where each named person and building is, by place. */
+  readonly whereabouts: readonly {
+    readonly who: readonly EntityId[];
+    readonly place: PetitionPlace;
+  }[];
+  /** Whether the petitioner stands with the god, so a bless is possible. */
+  readonly petitionerHere: boolean;
+}
+
+/** A refusal of the god's last goal change, as the prompt tells it. */
+export interface RefusalView {
+  readonly attempted: "replace" | "abandon";
+  readonly reason: GoalChangeRefusedEvent["reason"];
+  /** Ticks left on the lock now. */
+  readonly ticksLeft: number;
+}
+
 /** What a god carries into a turn from its own memory and record: bounded, and nothing but what it holds or did. */
 export interface Remembered {
   /** Oldest first. */
@@ -149,6 +192,14 @@ export interface Remembered {
   readonly goal: ActiveGoal | undefined;
   /** What the god itself remembers or did involving the goal's target since it set the goal, oldest first, at most `MAX_GOAL_HISTORY`. */
   readonly goalHistory: readonly GoalHistoryEntry[];
+  /** Every open petition addressed to this god, oldest first (R7: none is hidden). */
+  readonly petitions: readonly PetitionView[];
+  /** Ticks a goal stays locked, when goals are gated; absent when they are not. */
+  readonly goalLockTicks: number | undefined;
+  /** Divinity a bless costs. */
+  readonly blessCost: number;
+  /** The god's latest goal-change refusal since it set its goal, if any. */
+  readonly refusal: RefusalView | undefined;
 }
 
 /** Whether `ids` name `target` or a building `target` owns. */
@@ -192,10 +243,113 @@ function memoryInvolves(memory: MemoryEntry, target: EntityId): boolean {
  * its `MAX_REMEMBERED` most salient memories (the newest among equals),
  * oldest first, and its `MAX_FEELINGS` strongest feelings.
  */
+/** What one petition's cause was, in the god's words. */
+/** How a god is told it may keep and change one goal. */
+function goalInstruction(remembered: Remembered): string {
+  const shape =
+    'add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}.';
+  if (remembered.goalLockTicks === undefined) {
+    return `You may keep one goal across turns: ${shape} A new goal ends your old one.`;
+  }
+  return `You may keep one goal across turns: ${shape} A goal holds: you may end it as achieved or failed any time, but you may replace or abandon it only after ${remembered.goalLockTicks} ticks, or once news of its target or a prayer to you gives you cause.`;
+}
+
+/** What prayers are and how a god may answer one; empty when none are addressed to it. */
+function prayerInstructions(remembered: Remembered): string[] {
+  if (remembered.petitions.length === 0) return [];
+  return [
+    `Mortals pray to you, and you hear them wherever you are. You may answer one by striking the offender's building (action "strike") where it stands, or, for a petitioner who is here, by blessing them (action "bless", naming the petition, at a cost of ${remembered.blessCost} divinity).`,
+  ];
+}
+
+function describeCause(petition: Petition): string {
+  // What the petitioner knew when it prayed, not what the world recorded: an offender it never learned stays unknown.
+  const cause = petition.about;
+  switch (cause.kind) {
+    case "damage":
+      return `${cause.building} was damaged${cause.offender === undefined ? "" : ` by ${cause.offender}`}`;
+    case "fire":
+      return `${cause.building} burned`;
+    case "theft":
+      return cause.offender === undefined
+        ? `its ${cause.resource} was stolen`
+        : `${cause.offender} stole ${cause.resource}`;
+    case "spoilage":
+      return `its ${cause.resource} spoiled`;
+    case "need":
+      return `it lacked ${cause.resource}`;
+    case "grudge":
+      return `it holds a grudge against ${cause.offender}`;
+  }
+}
+
+/** A place as the god sees it: its name, whether the god is there, and the exit to take first. */
+function placeFor(
+  state: WorldState,
+  god: ActorState,
+  place: EntityId,
+): PetitionPlace | undefined {
+  const location = state.locations.get(place);
+  if (!location) return undefined;
+  if (god.locationId === place) {
+    return { id: place, name: location.name, here: true };
+  }
+  const hop = nextHop(state, god.locationId, place, god.capabilities);
+  const exit = hop === undefined ? undefined : state.locations.get(hop);
+  return {
+    id: place,
+    name: location.name,
+    here: false,
+    ...(hop === undefined || !exit
+      ? {}
+      : { hop: { id: hop, name: exit.name } }),
+  };
+}
+
+function petitionView(
+  state: WorldState,
+  god: ActorState,
+  petition: Petition,
+): PetitionView {
+  const request = petition.request;
+  const named: EntityId[] =
+    request.kind === "punish"
+      ? [request.offender, ...request.buildings]
+      : request.need.kind === "building"
+        ? [request.need.building]
+        : [];
+  const whoByPlace = new Map<EntityId, EntityId[]>();
+  const stand = (who: EntityId, at: EntityId | undefined) => {
+    if (at === undefined) return;
+    whoByPlace.set(at, [...(whoByPlace.get(at) ?? []), who]);
+  };
+  stand(petition.petitioner, getActor(state, petition.petitioner)?.locationId);
+  for (const id of named) {
+    stand(
+      id,
+      getActor(state, id)?.locationId ?? state.buildings.get(id)?.locationId,
+    );
+  }
+  const whereabouts = [...whoByPlace].flatMap(([at, who]) => {
+    const place = placeFor(state, god, at);
+    return place === undefined ? [] : [{ who, place }];
+  });
+  return {
+    id: petition.id,
+    petitioner: petition.petitioner,
+    request,
+    cause: describeCause(petition),
+    whereabouts,
+    petitionerHere:
+      getActor(state, petition.petitioner)?.locationId === god.locationId,
+  };
+}
+
 export function rememberedBy(
   state: WorldState,
   actorId: EntityId,
   ownEvents: readonly WorldEvent[] = [],
+  refusal?: GoalChangeRefusedEvent,
 ): Remembered {
   const own = ownEvents
     .filter((event) => authoredAction(event, actorId))
@@ -234,12 +388,37 @@ export function rememberedBy(
     .filter((r) => r.from === actorId)
     .sort((a, b) => strength(b) - strength(a) || (a.toward < b.toward ? -1 : 1))
     .slice(0, MAX_FEELINGS);
+  const self = getActor(state, actorId);
+  const lock =
+    state.rules.petitionBalance === undefined
+      ? undefined
+      : petitionBalanceOf(state.rules, "goalLockTicks");
   return {
     memories,
     relationships,
     ownActions: own.slice(-MAX_OWN_ACTIONS),
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
+    petitions: self?.isDeity
+      ? openPetitionsFor(state, actorId).map((petition) =>
+          petitionView(state, self, petition),
+        )
+      : [],
+    goalLockTicks: lock,
+    blessCost: petitionBalanceOf(state.rules, "blessDivinityCost"),
+    refusal:
+      refusal !== undefined &&
+      goal !== undefined &&
+      refusal.sequence > goal.sequence
+        ? {
+            attempted: refusal.attempted,
+            reason: refusal.reason,
+            ticksLeft: Math.max(
+              0,
+              refusal.unlocksInTicks - (state.tick - refusal.tick),
+            ),
+          }
+        : undefined,
   };
 }
 
@@ -249,6 +428,10 @@ export const NOTHING_REMEMBERED: Remembered = {
   ownActions: [],
   goal: undefined,
   goalHistory: [],
+  petitions: [],
+  goalLockTicks: undefined,
+  blessCost: 0,
+  refusal: undefined,
 };
 
 /**
@@ -281,6 +464,15 @@ export function shownIds(
     ids.add(relationship.toward);
   }
   if (remembered.goal !== undefined) ids.add(remembered.goal.target);
+  for (const petition of remembered.petitions) {
+    ids.add(petition.petitioner);
+    if (petition.request.kind === "punish") {
+      ids.add(petition.request.offender);
+      for (const building of petition.request.buildings) ids.add(building);
+    } else if (petition.request.need.kind === "building") {
+      ids.add(petition.request.need.building);
+    }
+  }
   ids.delete(snapshot.self.id);
   return [...ids];
 }
@@ -350,6 +542,27 @@ interface Offer {
   readonly hasGoal: boolean;
   /** The ids a new goal may name as its target (`shownIds`). */
   readonly goalTargets: readonly EntityId[];
+  /** Open help petitions whose petitioner stands here and whose bless the god can pay for. */
+  readonly blessPetitions: readonly EventId[];
+}
+
+/** Help petitions whose petitioner is here, the one thing a bless can answer. */
+function blessablePetitions(
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered,
+): readonly EventId[] {
+  const divinity =
+    snapshot.self.inventory.find((item) => item.resource === "divinity")
+      ?.amount ?? 0;
+  if (divinity < remembered.blessCost) return [];
+  return remembered.petitions
+    .filter(
+      (petition) =>
+        petition.request.kind === "help" &&
+        petition.petitionerHere &&
+        snapshot.actors.some((actor) => actor.id === petition.petitioner),
+    )
+    .map((petition) => petition.id);
 }
 
 function offerFor(
@@ -380,6 +593,7 @@ function offerFor(
     ),
     hasGoal: remembered.goal !== undefined,
     goalTargets: shownIds(snapshot, remembered),
+    blessPetitions: blessablePetitions(snapshot, remembered),
   };
 }
 
@@ -390,6 +604,7 @@ function availableActions(offer: Offer): readonly GodIntentAction[] {
   if (offer.strikeCap >= 1) actions.push("strike");
   if (offer.canLegend) actions.push("legend");
   if (offer.listeners.length > 0) actions.push("report");
+  if (offer.blessPetitions.length > 0) actions.push("bless");
   actions.push("wait");
   return actions;
 }
@@ -403,15 +618,17 @@ function availableActions(offer: Offer): readonly GodIntentAction[] {
 export function godAvailableActions(
   profile: GodProfile,
   snapshot: PerceptionSnapshot,
+  remembered: Remembered = NOTHING_REMEMBERED,
 ): readonly GodIntentAction[] {
   const offered = new Set(
-    availableActions(offerFor(profile, snapshot, NOTHING_REMEMBERED)),
+    availableActions(offerFor(profile, snapshot, remembered)),
   );
   const order = [
     "move",
     "realm-transition",
     ...profile.abilities.map((ability) => ability.action),
     "report",
+    "bless",
     "wait",
   ];
   return [...new Set(order)].filter(
@@ -611,6 +828,20 @@ function parseAction(
     }
     case "report":
       return parseReport(offer, fields);
+    case "bless": {
+      const petition = parseMember(
+        fields.petition,
+        "petition",
+        offer.blessPetitions,
+        "petition",
+      );
+      return petition.ok
+        ? {
+            ok: true,
+            value: { action: "bless", petition: petition.value as EventId },
+          }
+        : petition;
+    }
     case "wait":
       return { ok: true, value: { action: "wait" } };
   }
@@ -722,7 +953,7 @@ export function godIntentSchema(
   remembered: Remembered = NOTHING_REMEMBERED,
 ): IntentSchema<ParsedGodIntent> {
   const offer = offerFor(profile, snapshot, remembered);
-  const actions = godAvailableActions(profile, snapshot);
+  const actions = godAvailableActions(profile, snapshot, remembered);
 
   const properties: Record<string, unknown> = {
     action: { type: "string", enum: [...actions] },
@@ -763,6 +994,9 @@ export function godIntentSchema(
       required: ["effect", "agent"],
       additionalProperties: false,
     };
+  }
+  if (offer.blessPetitions.length > 0) {
+    properties.petition = { type: "string", enum: [...offer.blessPetitions] };
   }
   properties.goal = {
     type: "object",
@@ -837,6 +1071,13 @@ function describeMemory(memory: MemoryEntry): string {
   if (memory.kind === "witnessed") {
     return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
   }
+  if (memory.kind === "noticed") {
+    return `- You noticed a loss (${memory.subjects.join(", ")}), caused by [${memory.causeEventId}]`;
+  }
+  if (memory.kind === "sign") {
+    // A god's own memory is never a sign (signs go to mortals), but the type allows it.
+    return `- ${memory.god} ${memory.outcome === "answered" ? "answered" : "did not answer"} a petition`;
+  }
   return `- ${memory.teller} told you: "${memory.content}"${what === "" ? "" : ` (claiming ${what})`}`;
 }
 
@@ -897,6 +1138,39 @@ function targetIsHere(snapshot: PerceptionSnapshot, target: EntityId): boolean {
   );
 }
 
+/** The prayers addressed to the god: who asked, for what, about what, and where each place is from here. */
+function describePetitions(remembered: Remembered): string[] {
+  if (remembered.petitions.length === 0) return [];
+  const lines = ["Prayers to you:"];
+  for (const petition of remembered.petitions) {
+    const request = petition.request;
+    const ask =
+      request.kind === "punish"
+        ? `asks you to punish ${request.offender}, who owns ${request.buildings.join(", ")}`
+        : request.need.kind === "building"
+          ? `asks for help with ${request.need.building}`
+          : `asks for help with ${request.need.resource}`;
+    lines.push(
+      `- [${petition.id}] ${petition.petitioner} ${ask} (${petition.cause}).`,
+    );
+    for (const { who, place } of petition.whereabouts) {
+      lines.push(
+        `  ${who.join(", ")} at ${place.name} [${place.id}]${
+          place.here
+            ? " (here)"
+            : place.hop === undefined
+              ? ": no way there"
+              : `: take ${place.hop.name} [${place.hop.id}] toward ${place.name}`
+        }.`,
+      );
+    }
+    if (petition.petitionerHere && request.kind === "help") {
+      lines.push(`  ${petition.petitioner} is here: you may bless them.`);
+    }
+  }
+  return lines;
+}
+
 /** The god's own recent actions, and its goal with what has happened with its target since. */
 function describeSelf(
   snapshot: PerceptionSnapshot,
@@ -913,6 +1187,12 @@ function describeSelf(
   if (goal === undefined) {
     lines.push("You have no goal. You may set one.");
   } else {
+    if (remembered.refusal !== undefined) {
+      const { attempted, reason, ticksLeft } = remembered.refusal;
+      lines.push(
+        `You tried to ${attempted} your goal and were refused: it is ${reason}${ticksLeft > 0 ? ` for ${ticksLeft} more ticks` : ""}, and nothing has given you cause to change it.`,
+      );
+    }
     lines.push(
       `Your goal: "${goal.text}" (target ${goal.target}, ${targetIsHere(snapshot, goal.target) ? "here" : "not here"}).`,
     );
@@ -986,7 +1266,8 @@ export function buildGodContext(
         ]),
     "Speak your report and legend words in the first person, to those who hear them, without using your own name.",
     `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
-    'You may keep one goal across turns: add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}. A new goal ends your old one.',
+    goalInstruction(remembered),
+    ...prayerInstructions(remembered),
     'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");
@@ -1018,6 +1299,7 @@ export function buildGodContext(
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
     ...describeRemembered(remembered),
+    ...describePetitions(remembered),
     ...describeSelf(snapshot, remembered),
     "Ways out:",
     ...(usableExits(snapshot).length === 0

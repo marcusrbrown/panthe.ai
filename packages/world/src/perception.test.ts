@@ -111,6 +111,7 @@ function event(
     simTime: sequence * 1000,
     correlationId: `obs-${sequence}`,
     causationId: `obs-${sequence}`,
+    tick: 1,
     approximate: false,
     ...payload,
   } as unknown as WorldEvent;

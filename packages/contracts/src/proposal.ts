@@ -229,6 +229,24 @@ export interface LegendProposal extends ProposalBase {
   readonly claim?: Consequence;
 }
 
+/**
+ * A mortal's routine prays at the altar about one cause event. Only a routine
+ * makes it: mortals have no model, and their petitions are built from state.
+ */
+export interface PrayProposal extends ProposalBase {
+  readonly kind: "pray";
+  readonly cause: EventId;
+}
+
+/**
+ * A god blesses the petitioner of one open petition, who must be where the god
+ * stands, at a cost in divinity. It grants only what that petition needs.
+ */
+export interface BlessProposal extends ProposalBase {
+  readonly kind: "bless";
+  readonly petition: EventId;
+}
+
 /** A turn that does nothing but change the god's goal: what a wait with a goal change becomes. */
 export interface GoalProposal extends ProposalBase {
   readonly kind: "goal";
@@ -265,7 +283,9 @@ export type Proposal =
   | ClaimProposal
   | LegendProposal
   | ReportProposal
-  | GoalProposal;
+  | GoalProposal
+  | PrayProposal
+  | BlessProposal;
 
 export type ProposalKind = Proposal["kind"];
 
@@ -286,6 +306,8 @@ const PROPOSAL_KIND_SET = {
   legend: true,
   report: true,
   goal: true,
+  pray: true,
+  bless: true,
 } as const satisfies Record<ProposalKind, true>;
 
 export const PROPOSAL_KINDS = Object.keys(
@@ -540,6 +562,16 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
           ? {}
           : { linkedEventId: linkedEventId.value }),
       });
+    }
+    case "pray": {
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
+      return ok({ ...base, kind: "pray", cause: cause.value });
+    }
+    case "bless": {
+      const petition = parseEventId(input.petition, "petition");
+      if (!petition.ok) return petition;
+      return ok({ ...base, kind: "bless", petition: petition.value });
     }
     case "goal": {
       if (base.goal === undefined) {

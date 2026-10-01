@@ -339,7 +339,10 @@ test("a legend stays visible to a co-located god in its recent events", () => {
   expect(run.text("zeus", told.events)).toContain("Zeus has wronged me.");
   // Control: a god elsewhere does not see it.
   const elsewhere = new Run(actorAt(run.state, "zeus", "town-square"));
-  expect(elsewhere.snapshot("zeus", told.events).events).toEqual([]);
+  // (The woodshed's income earned in the square is a placed event there, so look for the legend itself.)
+  expect(
+    elsewhere.snapshot("zeus", told.events).events.map((e) => e.id),
+  ).not.toContain(legend?.id as never);
 });
 
 // --- The goal change an intent may carry ---------------------------------------------------------------

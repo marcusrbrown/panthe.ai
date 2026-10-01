@@ -5,7 +5,9 @@ import {
   findEdge,
   isAdjacent,
   locationsInRealm,
+  nextHop,
   outgoingEdges,
+  routeLength,
 } from "./geography";
 import { createInitialWorldState, toEntityId } from "./state";
 
@@ -176,4 +178,100 @@ test("outgoingEdges includes both declared and synthesized reverse edges", () =>
   const edges = outgoingEdges(state, toEntityId("tavern"));
   expect(edges).toHaveLength(1);
   expect(edges[0]).toMatchObject({ to: "square" });
+});
+
+// --- Next hop --------------------------------------------------------------------------------
+
+function hallMap() {
+  return createInitialWorldState(
+    pack([
+      { id: "hall", realm: "olympus", name: "Hall", edges: [] },
+      {
+        id: "gate",
+        realm: "olympus",
+        name: "Gate",
+        requiredCapability: "divine",
+        edges: [
+          { to: "hall", transport: "path", bidirectional: true },
+          { to: "pass", transport: "divine-transport", bidirectional: true },
+        ],
+      },
+      {
+        id: "pass",
+        realm: "mortal",
+        name: "Pass",
+        edges: [{ to: "square", transport: "path", bidirectional: true }],
+      },
+      {
+        id: "square",
+        realm: "mortal",
+        name: "Square",
+        edges: [{ to: "tavern", transport: "path", bidirectional: true }],
+      },
+      { id: "tavern", realm: "mortal", name: "Tavern", edges: [] },
+      { id: "island", realm: "mortal", name: "Island", edges: [] },
+    ]),
+  );
+}
+
+const here = toEntityId;
+
+test("the next hop is the first exit on a shortest route, through realms and over declared and reverse edges", () => {
+  const state = hallMap();
+  const divine = ["divine"];
+  expect(nextHop(state, here("hall"), here("square"), divine)).toBe(
+    here("gate"),
+  );
+  expect(nextHop(state, here("gate"), here("square"), divine)).toBe(
+    here("pass"),
+  );
+  expect(nextHop(state, here("pass"), here("tavern"), divine)).toBe(
+    here("square"),
+  );
+  // Back the other way, over the reverse of declared edges.
+  expect(nextHop(state, here("tavern"), here("hall"), divine)).toBe(
+    here("square"),
+  );
+  // Adjacent: the hop is the place itself.
+  expect(nextHop(state, here("square"), here("tavern"), divine)).toBe(
+    here("tavern"),
+  );
+});
+
+test("a place already here, an unreachable place, and an unknown place have no hop", () => {
+  const state = hallMap();
+  expect(
+    nextHop(state, here("hall"), here("hall"), ["divine"]),
+  ).toBeUndefined();
+  expect(
+    nextHop(state, here("hall"), here("island"), ["divine"]),
+  ).toBeUndefined();
+  expect(
+    nextHop(state, here("hall"), here("nowhere"), ["divine"]),
+  ).toBeUndefined();
+  expect(
+    nextHop(state, here("nowhere"), here("hall"), ["divine"]),
+  ).toBeUndefined();
+});
+
+test("a route through a place needing a capability the traveler lacks is not a route, and the same journey with it is", () => {
+  const state = hallMap();
+  expect(nextHop(state, here("square"), here("hall"), [])).toBeUndefined();
+  expect(nextHop(state, here("square"), here("hall"), ["divine"])).toBe(
+    here("pass"),
+  );
+  // A mortal can still walk everywhere that does not need it.
+  expect(nextHop(state, here("pass"), here("tavern"), [])).toBe(here("square"));
+});
+
+test("a route's length counts moves: zero when already there, one per hop, and none when there is no route", () => {
+  const state = hallMap();
+  const divine = ["divine"];
+  expect(routeLength(state, here("hall"), here("hall"), divine)).toBe(0);
+  expect(routeLength(state, here("hall"), here("gate"), divine)).toBe(1);
+  expect(routeLength(state, here("hall"), here("tavern"), divine)).toBe(4);
+  expect(
+    routeLength(state, here("hall"), here("island"), divine),
+  ).toBeUndefined();
+  expect(routeLength(state, here("tavern"), here("hall"), [])).toBeUndefined();
 });

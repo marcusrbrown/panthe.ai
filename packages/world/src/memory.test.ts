@@ -10,7 +10,12 @@ import {
 } from "@panthea/contracts";
 import { applyEvent, applyEvents, runTick, submitProposal } from "./actions";
 import { decode, encode } from "./codec";
-import { getMemories, getRelationship } from "./memory";
+import {
+  DEFAULT_MEMORY_BALANCE,
+  getMemories,
+  getRelationship,
+  witnessMemories,
+} from "./memory";
 import { perceive } from "./perception";
 import {
   createInitialWorldState,
@@ -245,7 +250,15 @@ test("derived memory events are committed with the tick, after the primary event
   const tick = world.tick(strike("zeus", "the-tavern"));
   const ignition = ignitionOf(tick.events, "the-tavern");
 
-  const memoryEvents = ofKind(tick.events, "memory-recorded");
+  // The farmer stands at its own burning tavern, so it also notices the loss: that memory rests on
+  // the loss-noticed event, not on the ignition, and is checked with the others below.
+  const noticedBy = ofKind(tick.events, "memory-recorded").filter(
+    (event) => event.memoryKind === "noticed",
+  );
+  expect(noticedBy.map((event) => event.entityId)).toEqual([id("farmer")]);
+  const memoryEvents = ofKind(tick.events, "memory-recorded").filter(
+    (event) => event.memoryKind === "witnessed",
+  );
   expect(memoryEvents.map((event) => event.entityId).sort()).toEqual(
     ["bard", "farmer", "zeus"].map(id),
   );
@@ -258,8 +271,10 @@ test("derived memory events are committed with the tick, after the primary event
       )
       .map((event) => event.sequence),
   );
-  for (const event of memoryEvents) {
+  for (const event of [...memoryEvents, ...noticedBy]) {
     expect(event.sequence).toBeGreaterThan(lastPrimary);
+  }
+  for (const event of memoryEvents) {
     expect(event.sourceEventId).toBe(ignition.id);
     expect(event.causationId as string).toBe(ignition.id as string);
     expect(event.correlationId as string).toBe(`tick-${tick.state.tick}`);
@@ -1185,6 +1200,7 @@ function memoryEvent(
     simTime: sequence * 1000,
     correlationId: `tick-${sequence}`,
     causationId: `evt-${sequence - 1}`,
+    tick: 1,
     approximate: false,
     kind: "memory-recorded",
     memoryKind: "witnessed",
@@ -1471,4 +1487,51 @@ test("a building's fields belong to its status: decode refuses fire fields outsi
   expect(() => decode(swap({ ...plain, status: "burning" }))).toThrow();
   expect(() => decode(swap({ ...building, ignition: undefined }))).toThrow();
   expect(() => decode(swap({ ...plain, status: "repairing" }))).toThrow();
+});
+
+// --- Signs -------------------------------------------------------------------------------------
+
+test("a sign memory's salience is a tunable like the others, and with none the mortal remembers no sign and feels nothing", () => {
+  // The default is the number the authored content states; 0 turns signs off without breaking decode.
+  expect(DEFAULT_MEMORY_BALANCE.salience_sign).toBe(6);
+});
+
+// --- A theft is witnessed ----------------------------------------------------------------------
+
+test("a theft is remembered by whoever is where it happened, as harm by the thief on the victim; a mortal elsewhere, the victim included, remembers nothing", () => {
+  const world = new World();
+  const theft = {
+    schemaVersion: 1,
+    id: "evt-1-900",
+    sequence: 900,
+    simTime: 0,
+    tick: 1,
+    correlationId: "tick-1",
+    causationId: "tick-1",
+    approximate: false,
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "food",
+    amount: 2,
+    cause: "director",
+  } as unknown as WorldEvent;
+  // The woodcutter and Hera stand in the square; the farmer and the bard are at the tavern.
+  const drafts = witnessMemories(world.state, theft);
+  const who = (name: string) =>
+    drafts.find((d) => (d.draft as { entityId: string }).entityId === name);
+  expect(who("hera")?.draft).toMatchObject({
+    memoryKind: "witnessed",
+    eventKind: "theft",
+    consequence: { effect: "harm", agent: "woodcutter", target: "farmer" },
+  });
+  const heraSaw = who("hera")?.draft as unknown as
+    | { subjects: string[] }
+    | undefined;
+  expect(heraSaw?.subjects).toEqual(
+    expect.arrayContaining(["woodcutter", "farmer"]),
+  );
+  expect(who("woodcutter")).toBeDefined();
+  expect(who("farmer")).toBeUndefined();
+  expect(who("bard")).toBeUndefined();
 });

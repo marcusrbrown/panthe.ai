@@ -15,7 +15,7 @@ import {
   OWN_EVENT_WINDOW,
   parseRoutingConfig,
 } from "@panthea/agents";
-import { parseSyncFrame } from "@panthea/contracts";
+import { parseSyncFrame, type WorldEvent } from "@panthea/contracts";
 import {
   closeStore,
   listEvents,
@@ -32,9 +32,12 @@ import {
   type ProposalId,
 } from "@panthea/telemetry";
 import {
+  applyEvent,
   createPrng,
   getActor,
   type PrngState,
+  runTick,
+  submitProposal,
   toEntityId,
   type WorldState,
   withActor,
@@ -1047,6 +1050,185 @@ describe("a god's own recent actions", () => {
     // Hera's belief and feeling are hers: nothing of them is in Zeus's prompt.
     expect(prompt).not.toContain("How you feel now");
     expect(prompt).not.toContain("told you:");
+  });
+
+  test("a petition addressed to the god is in its turn prompt, and one addressed to the other god is not", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    // The farmer prays about a theft; the petition goes to Hera (fewest petitions, then id).
+    const theft = {
+      schemaVersion: 1,
+      id: "evt-1-901",
+      sequence: world.state.lastSequence + 1,
+      simTime: 0,
+      tick: world.state.tick,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      kind: "theft",
+      entityId: "woodcutter",
+      victim: "farmer",
+      resource: "food",
+      amount: 1,
+      cause: "director",
+    } as unknown as WorldEvent;
+    let staged = applyEvent(world.state, theft);
+    const farmer = getActor(staged, id("farmer"));
+    if (!farmer) throw new Error("farmer");
+    staged = withActor(staged, { ...farmer, locationId: id("altar") });
+    const submitted = submitProposal({
+      schemaVersion: 1,
+      actor: "farmer",
+      kind: "pray",
+      cause: "evt-1-901",
+      targets: [],
+      expectedRevisions: [],
+      source: "routine",
+      observationId: "obs-pray",
+    });
+    if (!submitted.ok) throw new Error("fixture");
+    const prayed = runTick(staged, createPrng(1), [submitted.proposal]);
+    expect(prayed.rejected).toEqual([]);
+    world.state = prayed.state;
+    const opened = prayed.events.find((e) => e.kind === "petition-opened");
+    if (opened?.kind !== "petition-opened") throw new Error("no petition");
+
+    provider.respond = () => '{"action":"wait"}';
+    for (const [god, mine] of [
+      ["hera", true],
+      ["zeus", false],
+    ] as const) {
+      const runner = runnerFor(world, provider, [god]);
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      const body = provider.requests.at(-1)?.body ?? "";
+      expect(body.includes("Prayers to you")).toBe(mine);
+      expect(body.includes(String(opened.id))).toBe(mine);
+    }
+    expect(String(opened.god)).toBe("hera");
+  });
+
+  test("after the world refuses a goal change, the god's next prompt says so and why", async () => {
+    const world = newWorld();
+    const provider = startProvider();
+    const set = (text: string) =>
+      JSON.stringify({
+        action: "wait",
+        goal: { set: { text, target: "zeus" } },
+      });
+    // Turn 1 sets a goal; turn 2 tries to replace it at once and is refused.
+    await actOut(
+      world,
+      provider,
+      [set("Make Zeus admit it."), set("Win Zeus over.")],
+      "hera",
+    );
+    const refused = listEvents(world.store.db).filter(
+      (e) => e.kind === "goal-change-refused",
+    );
+    expect(refused).toHaveLength(1);
+    expect(world.state.goals.get(id("hera"))?.text).toBe("Make Zeus admit it.");
+
+    const runner = runnerFor(world, provider, ["hera"]);
+    provider.respond = () => '{"action":"wait"}';
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    const prompt = provider.requests.at(-1)?.body ?? "";
+    expect(prompt).toContain("were refused");
+    expect(prompt).toContain("locked");
+    // Control: the other god, who tried nothing, is told nothing.
+    const zeusRunner = runnerFor(world, provider, ["zeus"]);
+    expect(zeusRunner.dispatch()).toBe(true);
+    await zeusRunner.idle();
+    expect(provider.requests.at(-1)?.body ?? "").not.toContain("were refused");
+  });
+
+  test("a fault while the turn reads the open petitions is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = newWorld();
+      const provider = startProvider();
+      let broken = true;
+      // Petitions are read from world state inside the turn: a state whose petitions cannot be read.
+      const faulty = (): WorldState =>
+        broken
+          ? {
+              ...world.state,
+              petitions: new Proxy(new Map(), {
+                get(target, property) {
+                  if (property === "values" || property === Symbol.iterator) {
+                    return () => {
+                      throw new Error("injected petition read failure");
+                    };
+                  }
+                  const value = Reflect.get(target, property, target);
+                  return typeof value === "function"
+                    ? value.bind(target)
+                    : value;
+                },
+              }),
+            }
+          : world.state;
+      const logs: string[] = [];
+      const runner = createGodTurnRunner({
+        ...deps(provider, ["hera"]),
+        store: world.store,
+        getState: faulty,
+        lifecycle: world.lifecycle,
+        statusRef: world.statusRef,
+        onLog: (message) => logs.push(message),
+      });
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      expect(runner.inFlight()).toBe(false);
+      expect(logs.join("\n")).toContain("injected petition read failure");
+      expect(provider.requests).toHaveLength(0);
+      broken = false;
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      expect(provider.requests).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("a store fault in the read of the latest refusal is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const world = newWorld();
+      const provider = startProvider();
+      const failing = { on: true, match: "goal-change-refused" };
+      const logs: string[] = [];
+      const runner = createGodTurnRunner({
+        ...deps(provider, ["hera"]),
+        store: faultyStore(world.store, failing),
+        getState: () => world.state,
+        lifecycle: world.lifecycle,
+        statusRef: world.statusRef,
+        onLog: (message) => logs.push(message),
+      });
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      await Bun.sleep(20);
+      expect(unhandled).toEqual([]);
+      expect(runner.inFlight()).toBe(false);
+      expect(logs.join("\n")).toContain(
+        "injected read failure: goal-change-refused",
+      );
+      expect(provider.requests).toHaveLength(0);
+      failing.on = false;
+      expect(runner.dispatch()).toBe(true);
+      await runner.idle();
+      expect(provider.requests).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   test("a store fault in the read of its own actions is logged and the turn abandoned: nothing rejects, no model is asked, and the next dispatch works", async () => {

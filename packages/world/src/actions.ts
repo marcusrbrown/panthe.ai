@@ -28,6 +28,7 @@ import {
   type RejectionReasonCode,
   type WorldEvent,
 } from "@panthea/contracts";
+import { noteConsequential, planDirectorStep } from "./director";
 import {
   applyRecipe,
   creditActorInventory,
@@ -47,11 +48,31 @@ import {
   applyRelationshipChanged,
   type DerivedDraft,
   legendTellings,
+  noticedMemory,
   planRelationships,
   reportTelling,
+  signMemory,
   toldMemory,
   witnessMemories,
 } from "./memory";
+import {
+  applyNeedMet,
+  applyTheft,
+  applyUnmetNeed,
+  planNeedStep,
+} from "./needs";
+import {
+  answeredDraft,
+  applyBlessingGranted,
+  applyLossNoticed,
+  applyPetitionAnswered,
+  applyPetitionLapsed,
+  applyPetitionOpened,
+  judgeAnswers,
+  lapsingPetitions,
+  planNoticeStep,
+  recordCauses,
+} from "./petitions";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -61,7 +82,7 @@ import {
   withLegend,
 } from "./state";
 import { validateProposal } from "./validate";
-import { applyWorshipPerformed } from "./worship";
+import { answeredWorshipDraft, applyWorshipPerformed } from "./worship";
 
 /** Moves an actor to `to`, bumping the actor's and both locations' revisions. */
 function moveActor(
@@ -146,7 +167,11 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "building-ignited":
       next = applyBuildingIgnited(state, event.entityId, {
         eventId: event.id,
-        actor: event.cause.actor,
+        ...(event.cause.kind === "director"
+          ? {}
+          : event.cause.actor === undefined
+            ? {}
+            : { actor: event.cause.actor }),
       });
       break;
     case "building-burn-ticked":
@@ -216,6 +241,42 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "goal-ended":
       next = applyGoalEnded(state, event);
       break;
+    case "loss-noticed":
+      next = applyLossNoticed(state, event);
+      break;
+    case "unmet-need":
+      next = applyUnmetNeed(state, event);
+      break;
+    case "need-met":
+      next = applyNeedMet(state, event);
+      break;
+    case "theft":
+      next = applyTheft(state, event);
+      break;
+    case "stock-spoiled":
+      next = debitActorInventory(
+        state,
+        event.entityId,
+        event.resource,
+        event.amount,
+      );
+      break;
+    case "petition-opened":
+      next = applyPetitionOpened(state, event);
+      break;
+    case "blessing-granted":
+      next = applyBlessingGranted(state, event);
+      break;
+    case "petition-answered":
+      next = applyPetitionAnswered(state, event);
+      break;
+    case "petition-lapsed":
+      next = applyPetitionLapsed(state, event);
+      break;
+    case "goal-change-refused":
+      // Their world state arrives with the units that produce them.
+      next = state;
+      break;
     default: {
       const exhaustiveCheck: never = event;
       throw new Error(
@@ -223,7 +284,12 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       );
     }
   }
-  return { ...next, lastSequence: event.sequence };
+  // What an event leaves in a mortal's memory of causes, judged against the
+  // world it happened in (a building's owner does not change with the event).
+  return {
+    ...noteConsequential(recordCauses(next, event), event),
+    lastSequence: event.sequence,
+  };
 }
 
 /** Applies an ordered event stream to `state`, in order. */
@@ -345,6 +411,7 @@ function completeEvent(
     id: toEventId(`evt-${meta.tick}-${meta.sequence}`),
     sequence: meta.sequence,
     simTime: meta.simTime,
+    tick: meta.tick,
     correlationId: toCorrelationId(meta.correlationId),
     causationId: toCausationId(meta.causationId),
     approximate: meta.approximate,
@@ -388,13 +455,17 @@ function incomePerTickOf(state: WorldState): number {
   return state.rules.economyBalance.incomePerTick ?? 0;
 }
 
-/** Every operational, owned building earns its owner one income-earned draft this tick -- a declared currency source, distinct from a trade. */
+/** Every operational, owned building that offers a service earns its owner one income-earned draft this tick -- a declared currency source, distinct from a trade. Revenue is for services: a woodshed that sells nothing earns nothing. */
 function planIncomeStep(state: WorldState): readonly WorldEventDraft[] {
   const amount = incomePerTickOf(state);
   if (amount <= 0) return [];
   const drafts: WorldEventDraft[] = [];
   for (const building of state.buildings.values()) {
-    if (building.status !== "operational" || building.owner === undefined) {
+    if (
+      building.status !== "operational" ||
+      building.owner === undefined ||
+      building.services.length === 0
+    ) {
       continue;
     }
     drafts.push({
@@ -532,13 +603,43 @@ export function runTick(
   );
   working = applyEvents(working, fireEvents);
 
+  // The need scan: what mortals' routines want and cannot get. It proposes
+  // nothing and takes no action slot, so routines keep their one proposal.
+  const needEvents = planNeedStep(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, needEvents);
+
+  // The quiet-world director: after a quiet window it causes attributed
+  // trouble among mortals. It draws from the persisted PRNG after the fire
+  // step's, so replays choose the same trouble.
+  const directorStep = planDirectorStep(working, fireStep.prng, working.tick);
+  const directorEvents = directorStep.events.map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, directorEvents);
+  // The loss scan: owners standing at their own damaged buildings, and owners
+  // of stolen or spoiled stock, each noticed once. Like the need scan it takes
+  // no action slot, and it follows the director's step so a loss the director
+  // caused this tick is noticed this tick.
+  const noticeEvents = planNoticeStep(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, noticeEvents);
+
   // Rejected proposals' goal events were committed in queue order with the
   // rest; `events` lists them with the primary events, in sequence order.
   const proposalEvents = [
     ...committed.flatMap((record) => record.events),
     ...rejected.flatMap((record) => record.goalEvents),
   ].sort((a, b) => a.sequence - b.sequence);
-  const environmentEvents = [...incomeEvents, ...fireEvents];
+  const environmentEvents = [
+    ...incomeEvents,
+    ...fireEvents,
+    ...needEvents,
+    ...directorEvents,
+    ...noticeEvents,
+  ];
 
   // Derivation phase: with the primary events numbered and applied, memories
   // and then the relationship changes they cause are derived and committed in
@@ -556,9 +657,57 @@ export function runTick(
         approximate,
       });
     });
-  const memoryEvents = derive(
-    planMemories(state, [...proposalEvents, ...environmentEvents], working),
+  // Answers first, then lapses: an answer on a petition's last tick wins over
+  // its lapse. A dead petitioner's petition is closed and nothing follows it.
+  const primaryEvents = [...proposalEvents, ...environmentEvents];
+  const answerEvents = derive(
+    judgeAnswers(state, primaryEvents, working, applyEvent).map((answer) => ({
+      draft: answeredDraft(answer),
+      cause: answer.answeredBy,
+    })),
   );
+  working = applyEvents(working, answerEvents);
+  const lapseEvents = derive(
+    lapsingPetitions(working).map((petition) => ({
+      cause: { id: petition.id },
+      draft: {
+        kind: "petition-lapsed" as const,
+        entityId: petition.petitioner,
+        god: petition.god,
+        petitionId: petition.id,
+      },
+    })),
+  );
+  working = applyEvents(working, lapseEvents);
+  // A living petitioner whose petition was answered worships the god, crediting
+  // its divinity and earning the favor; the answer is its cause.
+  const worshipEvents = derive(
+    answerEvents.flatMap((answer) =>
+      answer.kind === "petition-answered" &&
+      working.actors.get(answer.entityId)?.alive
+        ? [
+            {
+              cause: answer,
+              draft: answeredWorshipDraft(working, answer.entityId, answer.god),
+            },
+          ]
+        : [],
+    ),
+  );
+  working = applyEvents(working, worshipEvents);
+  const signs = [...answerEvents, ...lapseEvents].flatMap((event) =>
+    event.kind === "petition-answered" || event.kind === "petition-lapsed"
+      ? (signMemory(working, event) ?? [])
+      : [],
+  );
+  const noticed = noticeEvents.flatMap((event) =>
+    event.kind === "loss-noticed" ? (noticedMemory(working, event) ?? []) : [],
+  );
+  const memoryEvents = derive([
+    ...planMemories(state, primaryEvents, working),
+    ...signs,
+    ...noticed,
+  ]);
   working = applyEvents(working, memoryEvents);
   const relationshipEvents = derive(
     planRelationships(
@@ -567,10 +716,16 @@ export function runTick(
     ),
   );
   working = applyEvents(working, relationshipEvents);
-  const derivedEvents = [...memoryEvents, ...relationshipEvents];
+  const derivedEvents = [
+    ...answerEvents,
+    ...lapseEvents,
+    ...worshipEvents,
+    ...memoryEvents,
+    ...relationshipEvents,
+  ];
   return {
     state: working,
-    prng: fireStep.prng,
+    prng: directorStep.prng,
     committed,
     rejected,
     environmentEvents,

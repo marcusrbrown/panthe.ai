@@ -70,6 +70,9 @@ export function snapshotFacts(
   for (const feeling of remembered.relationships) {
     facts.add(`feeling:${feeling.toward}`);
   }
+  for (const petition of remembered.petitions) {
+    facts.add(`petition:${petition.id}`);
+  }
   return facts;
 }
 
@@ -235,6 +238,34 @@ export function buildModelProposal(
         ...(intent.linkedEventId === undefined
           ? {}
           : { linkedEventId: intent.linkedEventId }),
+      };
+      break;
+    }
+    case "bless": {
+      const petition = remembered.petitions.find(
+        (candidate) => candidate.id === intent.petition,
+      );
+      const petitioner = snapshot.actors.find(
+        (actor) => actor.id === petition?.petitioner,
+      );
+      if (!petition || !petitioner) {
+        return refuse(
+          `${intent.petition} is not a petition whose petitioner is here`,
+        );
+      }
+      factsRead.push(
+        `petition:${petition.id}`,
+        `actor:${petitioner.id}.location`,
+      );
+      expectedRevisions.push({
+        entityId: petitioner.id,
+        revision: petitioner.revision,
+      });
+      proposal = {
+        ...base,
+        targets: [petitioner.id],
+        kind: "bless",
+        petition: petition.id,
       };
       break;
     }

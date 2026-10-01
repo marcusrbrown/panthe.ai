@@ -116,6 +116,7 @@ test("a goal set on a move proposal records goal-set and the active goal shows i
     target: "farmer",
     eventId: set?.id,
     sequence: set?.sequence,
+    tick: set?.tick,
   });
   // The action itself still happened, and the goal came with its proposal's observation.
   expect(kinds(result.events)).toContain("entity-moved");
@@ -419,4 +420,274 @@ test("decode refuses a goal held by someone who is not an actor", () => {
   expect(() =>
     decode({ ...encoded, goals: [["hera", { ...goal, text: "" }]] }),
   ).toThrow();
+});
+
+// --- The gate (petition features on) ------------------------------------------------------
+
+const LOCK = 40;
+
+/** The same world with the petition tunables stated, so goals are gated. */
+function gated(): WorldState {
+  const base = createInitialWorldState(pack());
+  return {
+    ...base,
+    rules: { ...base.rules, petitionBalance: { goalLockTicks: LOCK } },
+  };
+}
+
+/** A world where Hera set her goal at tick 1. */
+function heraHasGoal(): WorldState {
+  const result = tick(
+    gated(),
+    propose({
+      actor: "hera",
+      kind: "goal",
+      goal: SET("Win the farmer.", "farmer"),
+    }),
+  );
+  return result.state;
+}
+
+const later = (state: WorldState, ticks: number): WorldState => ({
+  ...state,
+  tick: state.tick + ticks,
+});
+
+const refusals = (events: readonly WorldEvent[]) =>
+  events.filter((e) => e.kind === "goal-change-refused");
+
+const replaceWith = (text = "Make Zeus admit it.", target = "zeus") =>
+  propose({ actor: "hera", kind: "goal", goal: SET(text, target) });
+
+test("setting the same goal again records nothing; so does text that differs only by case and spacing", () => {
+  const state = heraHasGoal();
+  const eventsBefore = state.lastSequence;
+  for (const text of [
+    "Win the farmer.",
+    "win the farmer.",
+    "  WIN   the\tfarmer.  ",
+  ]) {
+    const result = tick(
+      later(state, 1),
+      propose({ actor: "hera", kind: "goal", goal: SET(text, "farmer") }),
+    );
+    expect(goalEvents(result.events)).toEqual([]);
+    expect(refusals(result.events)).toEqual([]);
+    expect(result.state.lastSequence).toBe(eventsBefore);
+    expect(getGoal(result.state, id("hera"))?.text).toBe("Win the farmer.");
+  }
+  // Control: the same words aimed at someone else are a different goal, and are gated like any replacement.
+  const other = tick(
+    later(state, 1),
+    propose({
+      actor: "hera",
+      kind: "goal",
+      goal: SET("Win the farmer.", "bard"),
+    }),
+  );
+  expect(refusals(other.events)).toHaveLength(1);
+});
+
+test("a replacement two ticks after the set, with no news, is refused: the goal stays, and the refusal says why and when it unlocks", () => {
+  const state = heraHasGoal();
+  const result = tick(later(state, 1), replaceWith());
+  expect(result.rejected).toEqual([]);
+  expect(goalEvents(result.events)).toEqual([]);
+  const [refused] = refusals(result.events);
+  expect(refused).toMatchObject({
+    kind: "goal-change-refused",
+    entityId: "hera",
+    reason: "locked",
+    attempted: "replace",
+    unlocksInTicks: LOCK - (result.state.tick - 1),
+  });
+  expect(getGoal(result.state, id("hera"))?.text).toBe("Win the farmer.");
+  // It is private: no one else perceives it, and no memory is formed of it.
+  expect(
+    perceive(result.state, id("zeus"), [refused as WorldEvent])?.events,
+  ).toEqual([]);
+  expect(result.state.memories.size).toBe(0);
+});
+
+test("once the lock has passed a replacement is allowed: the old goal is abandoned and the new one set", () => {
+  const state = heraHasGoal();
+  const set = getGoal(state, id("hera"));
+  const atLock = later(
+    state,
+    LOCK -
+      1 -
+      (state.tick - (set?.tick ?? 0)) +
+      (state.tick - (set?.tick ?? 0)),
+  );
+  // One tick before the lock passes: still refused.
+  const early = tick(
+    { ...state, tick: (set?.tick ?? 0) + LOCK - 2 },
+    replaceWith(),
+  );
+  expect(early.state.tick).toBe((set?.tick ?? 0) + LOCK - 1);
+  expect(refusals(early.events)).toHaveLength(1);
+  // On the tick the lock passes: allowed.
+  const open = tick(
+    { ...state, tick: (set?.tick ?? 0) + LOCK - 1 },
+    replaceWith(),
+  );
+  expect(open.state.tick).toBe((set?.tick ?? 0) + LOCK);
+  expect(refusals(open.events)).toEqual([]);
+  expect(goalEvents(open.events).map((e) => e.kind)).toEqual([
+    "goal-ended",
+    "goal-set",
+  ]);
+  expect(getGoal(open.state, id("hera"))?.text).toBe("Make Zeus admit it.");
+  void atLock;
+});
+
+test("something since the set unlocks it: a memory whose subjects include the target, or a petition addressed to this god; not one addressed to the other", () => {
+  const state = heraHasGoal();
+  const set = getGoal(state, id("hera"));
+  const sequence = (set?.sequence ?? 0) + 1;
+  const memory = (subjects: string[], after = sequence) => ({
+    ...state,
+    memories: new Map(state.memories).set(id("hera"), [
+      {
+        id: "evt-9-9" as never,
+        sourceEventId: "evt-9-8" as never,
+        salience: 5,
+        recordedAt: after,
+        subjects: subjects.map(id),
+        kind: "witnessed" as const,
+        eventKind: "entity-moved" as const,
+      },
+    ]),
+  });
+  // A memory of the target, formed since the goal was set.
+  expect(
+    refusals(tick(later(memory(["farmer"]), 1), replaceWith()).events),
+  ).toEqual([]);
+  // About someone else, or from before the set: no.
+  expect(
+    refusals(tick(later(memory(["bard"]), 1), replaceWith()).events),
+  ).toHaveLength(1);
+  expect(
+    refusals(
+      tick(later(memory(["farmer"], set?.sequence ?? 0), 1), replaceWith())
+        .events,
+    ),
+  ).toHaveLength(1);
+
+  const withPetition = (god: string, afterSequence = sequence) => ({
+    ...state,
+    petitions: new Map(state.petitions).set("evt-8-8" as never, {
+      id: "evt-8-8" as never,
+      petitioner: id("farmer"),
+      god: id(god),
+      cause: "evt-7-7" as never,
+      about: {
+        eventId: "evt-7-7" as never,
+        tick: state.tick,
+        kind: "need" as const,
+        resource: "food",
+      },
+      request: {
+        kind: "help" as const,
+        need: { kind: "resource" as const, resource: "food" },
+      },
+      tick: state.tick + 1,
+      sequence: afterSequence,
+      status: "open" as const,
+    }),
+  });
+  expect(
+    refusals(tick(later(withPetition("hera"), 1), replaceWith()).events),
+  ).toEqual([]);
+  // The other god's petition does not unlock Hera's goal.
+  expect(
+    refusals(tick(later(withPetition("zeus"), 1), replaceWith()).events),
+  ).toHaveLength(1);
+  // A petition from before the set is not news.
+  expect(
+    refusals(
+      tick(later(withPetition("hera", set?.sequence ?? 0), 1), replaceWith())
+        .events,
+    ),
+  ).toHaveLength(1);
+});
+
+test("ending a goal as achieved or failed is allowed at any time; abandoning one is gated", () => {
+  const state = later(heraHasGoal(), 1);
+  for (const outcome of ["achieved", "failed"]) {
+    const result = tick(
+      state,
+      propose({ actor: "hera", kind: "goal", goal: END(outcome) }),
+    );
+    expect(refusals(result.events)).toEqual([]);
+    expect(goalEvents(result.events)).toMatchObject([
+      { kind: "goal-ended", outcome },
+    ]);
+    expect(getGoal(result.state, id("hera"))).toBeUndefined();
+  }
+  const abandon = tick(
+    state,
+    propose({ actor: "hera", kind: "goal", goal: END("abandoned") }),
+  );
+  expect(refusals(abandon.events)).toMatchObject([
+    { attempted: "abandon", reason: "locked" },
+  ]);
+  expect(getGoal(abandon.state, id("hera"))?.text).toBe("Win the farmer.");
+  // An explicit achieved-then-set in one turn is not a replacement: nothing to gate.
+  const done = tick(
+    state,
+    propose({
+      actor: "hera",
+      kind: "goal",
+      goal: { ...END("achieved"), ...SET("Make Zeus admit it.", "zeus") },
+    }),
+  );
+  expect(refusals(done.events)).toEqual([]);
+  expect(getGoal(done.state, id("hera"))?.text).toBe("Make Zeus admit it.");
+  // A first goal, with none active, is never gated.
+  expect(refusals(tick(gated(), replaceWith()).events)).toEqual([]);
+});
+
+test("a refused change rides on its action whatever becomes of it: a rejected action still records the refusal, and replay reproduces the state", () => {
+  const state = later(heraHasGoal(), 1);
+  const stale = propose({
+    actor: "zeus",
+    kind: "strike",
+    target: "the-tavern",
+    power: 1,
+    expectedRevisions: [{ entityId: "the-tavern", revision: 999 }],
+    goal: SET("Burn it.", "farmer"),
+  });
+  const zeusGoal = tick(
+    state,
+    propose({ actor: "zeus", kind: "goal", goal: SET("Calm.", "hera") }),
+  ).state;
+  const result = tick(later(zeusGoal, 1), stale);
+  expect(result.rejected.map((r) => r.reason)).toEqual(["stale-target"]);
+  const refused = refusals(result.events);
+  expect(refused).toHaveLength(1);
+  expect(result.rejected[0]?.goalEvents.map((e) => e.id)).toEqual(
+    refused.map((e) => e.id),
+  );
+  const replayed = applyEvents(
+    createInitialWorldState(pack()),
+    result.events.map((e) => e),
+  );
+  expect(getGoal(replayed, id("zeus"))).toBeUndefined();
+});
+
+test("a world whose pack states no petition tunables leaves goals ungated, as before", () => {
+  const first = tick(
+    start(),
+    propose({ actor: "hera", kind: "goal", goal: SET("A.", "farmer") }),
+  ).state;
+  const swap = tick(
+    first,
+    propose({ actor: "hera", kind: "goal", goal: SET("B.", "zeus") }),
+  );
+  expect(refusals(swap.events)).toEqual([]);
+  expect(goalEvents(swap.events).map((e) => e.kind)).toEqual([
+    "goal-ended",
+    "goal-set",
+  ]);
 });

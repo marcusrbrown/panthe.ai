@@ -85,6 +85,7 @@ function makeMoveEvent(sequence: number): EntityMovedEvent {
     simTime: sequence,
     correlationId: createCorrelationId(),
     causationId: createCausationId(),
+    tick: 1,
     approximate: false,
     kind: "entity-moved",
     entityId: createEntityId(),
@@ -498,6 +499,7 @@ describe("importArchive: social events", () => {
       simTime: sequence,
       correlationId: createCorrelationId(),
       causationId: createCausationId(),
+      tick: 1,
       approximate: false,
     });
     const owner = createEntityId();

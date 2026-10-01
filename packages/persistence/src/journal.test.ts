@@ -51,6 +51,7 @@ function advance(store: Store, tick: number, onCommitted?: () => void): void {
         simTime: tick,
         correlationId: createCorrelationId(),
         causationId: createCausationId(),
+        tick: 1,
         approximate: false,
         kind: "entity-moved",
         entityId: createEntityId(),

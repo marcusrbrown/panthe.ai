@@ -7,11 +7,14 @@ import {
 import {
   act,
   goalEndedEvent,
+  goalRefusedEvent,
   goalSetEvent,
   identities,
   input,
   memoryEvent,
   move,
+  petitionAnsweredEvent,
+  petitionOpenedEvent,
 } from "./episode-test-data";
 
 const check = (
@@ -286,6 +289,7 @@ test("influence is credited to the immediate cause only: Hera reporting a Zeus e
     simTime: 0,
     correlationId: "tick-12",
     causationId: "x",
+    tick: 1,
     approximate: false,
     kind: "relationship-changed",
     entityId: "farmer",
@@ -347,6 +351,7 @@ test("influence: a relationship change counts through the told belief it cites; 
     simTime: 0,
     correlationId: "tick-1",
     causationId: "x",
+    tick: 1,
     approximate: false,
     kind: "relationship-changed",
     entityId: "farmer",
@@ -411,6 +416,8 @@ test("the episode is ok only when every check of every god holds", () => {
   const goals = [
     goalSetEvent("evt-0-1", 1, "zeus"),
     goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+    petitionOpenedEvent("evt-0-3", 3, "farmer", "zeus"),
+    petitionAnsweredEvent("evt-0-4", 4, "farmer", "zeus", "evt-0-3"),
   ];
   const ok = analyzeEpisode(input(good, [belief, ...goals]), identities, [
     "zeus",
@@ -558,6 +565,7 @@ test("influence counts a told belief sourced from the god's own legend, for the 
     simTime: 0,
     correlationId: "tick-10",
     causationId: "x",
+    tick: 1,
     approximate: false,
     kind: "relationship-changed",
     entityId: "zeus",
@@ -582,4 +590,96 @@ test("influence counts a told belief sourced from the god's own legend, for the 
     ["hera"],
   );
   expect(check(without, "hera", "influence")?.ok).toBe(false);
+});
+
+// --- Petitions ------------------------------------------------------------------------------
+
+test("petition checks: a god that heard none fails the heard check; one that heard a petition passes it, and a petition to the other god does not count", () => {
+  const events = [petitionOpenedEvent("evt-1-2", 2, "farmer", "hera")];
+  const episode = analyzeEpisode(
+    input([move("hera", "a", 10), move("zeus", "a", 11)], events),
+    identities,
+    ["zeus", "hera"],
+  );
+  expect(check(episode, "hera", "petition heard")?.ok).toBe(true);
+  expect(check(episode, "hera", "petition heard")?.detail).toContain(
+    "1 petition",
+  );
+  const zeus = check(episode, "zeus", "petition heard");
+  expect(zeus?.ok).toBe(false);
+  expect(zeus?.detail).toContain("no petition");
+  expect(episode.gods.find((g) => g.god === "hera")?.petitionsHeard).toBe(1);
+});
+
+test("petition checks: a god that heard a petition but answered none fails the answered check; with an answer it passes, and an answer by the other god does not count", () => {
+  const heard = [petitionOpenedEvent("evt-1-2", 2, "farmer", "hera")];
+  const none = analyzeEpisode(
+    input([move("hera", "a", 10)], heard),
+    identities,
+    ["hera"],
+  );
+  expect(check(none, "hera", "petition answered")?.ok).toBe(false);
+  expect(check(none, "hera", "petition answered")?.detail).toContain("none");
+
+  const answered = [
+    ...heard,
+    petitionAnsweredEvent("evt-5-3", 3, "farmer", "hera", "evt-1-2"),
+  ];
+  const ok = analyzeEpisode(
+    input([move("hera", "a", 10)], answered),
+    identities,
+    ["hera"],
+  );
+  expect(check(ok, "hera", "petition answered")?.ok).toBe(true);
+  expect(ok.gods[0]?.petitionsAnswered).toBe(1);
+
+  // Zeus answered a petition addressed to Hera: Hera has answered none.
+  const wrong = [
+    ...heard,
+    petitionAnsweredEvent("evt-5-3", 3, "farmer", "zeus", "evt-1-2"),
+  ];
+  const mixed = analyzeEpisode(
+    input([move("hera", "a", 10), move("zeus", "a", 11)], wrong),
+    identities,
+    ["zeus", "hera"],
+  );
+  expect(check(mixed, "hera", "petition answered")?.ok).toBe(false);
+  expect(check(mixed, "zeus", "petition answered")?.ok).toBe(true);
+});
+
+test("a bless is a valid context action, keyed by the petition it answers", () => {
+  const blessings = [1, 2, 3, 4].map((i) =>
+    act("hera", { kind: "bless", petition: "evt-1-2" }, i),
+  );
+  const episode = analyzeEpisode(input(blessings), identities, ["hera"]);
+  expect(check(episode, "hera", "profile trace")?.ok).toBe(true);
+  expect(episode.gods[0]?.longestRun?.key).toBe("bless:evt-1-2");
+  expect(check(episode, "hera", "repetition")?.ok).toBe(false);
+  expect(episode.gods[0]?.contextBacked).toBe(4);
+});
+
+test("goal lifetimes and refusals are reported per god: how long each ended goal lasted, and how many changes were refused", () => {
+  const events = [
+    { ...goalSetEvent("evt-3-1", 1, "hera", "A.", "zeus"), tick: 3 },
+    {
+      ...goalEndedEvent("evt-43-2", 2, "hera", "evt-3-1", "abandoned"),
+      tick: 43,
+    },
+    { ...goalSetEvent("evt-43-3", 3, "hera", "B.", "zeus"), tick: 43 },
+    goalRefusedEvent("evt-45-4", 4, "hera", 45),
+    goalRefusedEvent("evt-46-5", 5, "hera", 46),
+    { ...goalSetEvent("evt-9-9", 9, "zeus", "Z.", "hera"), tick: 9 },
+  ];
+  const episode = analyzeEpisode(
+    input([move("hera", "a", 10), move("zeus", "a", 11)], events),
+    identities,
+    ["zeus", "hera"],
+  );
+  const hera = episode.gods.find((g) => g.god === "hera");
+  expect(hera?.goalLifetimes).toEqual([40]);
+  expect(hera?.refusals).toBe(2);
+  // Zeus's goal never ended: no lifetime, no refusal.
+  const zeus = episode.gods.find((g) => g.god === "zeus");
+  expect(zeus?.goalLifetimes).toEqual([]);
+  expect(zeus?.refusals).toBe(0);
 });

@@ -122,6 +122,7 @@ test("control: the same goal text anywhere else in the prompt is still a leak, a
         simTime: 0,
         correlationId: "c",
         causationId: "c",
+        tick: 1,
         approximate: false,
         kind: "goal-set",
         entityId: "hera",

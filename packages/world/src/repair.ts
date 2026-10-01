@@ -31,15 +31,18 @@ export function findRepairableBuilding(
   state: WorldState,
   actorId: EntityId,
 ): BuildingState | undefined {
-  for (const building of state.buildings.values()) {
-    if (building.owner !== actorId) continue;
-    if (
-      building.status === "damaged" ||
+  const needsRepair = (building: BuildingState): boolean =>
+    building.owner === actorId &&
+    (building.status === "damaged" ||
       building.status === "destroyed" ||
-      building.status === "repairing"
-    ) {
-      return building;
-    }
+      building.status === "repairing");
+  // A building the owner was blessed planks for comes first.
+  const granted = state.buildings.get(
+    state.repairGrants.get(actorId) as EntityId,
+  );
+  if (granted && needsRepair(granted)) return granted;
+  for (const building of state.buildings.values()) {
+    if (needsRepair(building)) return building;
   }
   return undefined;
 }

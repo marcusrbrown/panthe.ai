@@ -12,7 +12,12 @@ import {
   waitForTicks,
 } from "../../../m1-living-world/src/steps/api";
 import { eventsOf } from "../../../m1-living-world/src/steps/direct";
-import { explainChain, type StoredEvent, tracesIn } from "../checks";
+import {
+  explainChain,
+  type StoredEvent,
+  tracesIn,
+  withoutPrayers,
+} from "../checks";
 import { WAIT } from "../provider";
 
 /** Every stored event's full payload, oldest first. */
@@ -23,7 +28,7 @@ import type { Recorder, Story } from "./context";
 import {
   check,
   driveGod,
-  locationOf,
+  lastInputOrder,
   postFixture,
   stateOf,
   waitFor,
@@ -89,25 +94,56 @@ export async function stepStrike(
       ] as const) {
         await walk(story, "zeus", kind, to);
       }
+      // Stage the strike so the farmer is at the tavern when it lands, without
+      // racing the farmer's own routine (it walks to the altar when it has
+      // something to pray about). Zeus's reply is a function of what he is shown:
+      // he strikes only once his prompt lists the farmer here at the tavern. The
+      // farmer's fixture move displaces its routine for that tick, Zeus's next
+      // turn is taken with the farmer present, and his strike is journaled and
+      // runs on the following tick before any routine can move the farmer.
+      let struck = false;
+      const afterStrikeOrder = lastInputOrder(story);
+      story.provider.policy("zeus", (seen) => {
+        const here =
+          seen.prompt.split("Here with you:")[1]?.split("Buildings here:")[0] ??
+          "";
+        if (
+          struck ||
+          !here.includes("- farmer") ||
+          !seen.prompt.includes("The Tavern")
+        ) {
+          return WAIT;
+        }
+        struck = true;
+        return JSON.stringify({
+          action: "strike",
+          target: "the-tavern",
+          power: 3,
+        });
+      });
       await postFixture(
         story,
         "farmer",
         { kind: "move", to: "tavern" },
         "the farmer goes to the tavern",
       );
-      const farmerAt = await locationOf(story, "farmer");
-      check(
-        farmerAt === "tavern",
-        "the farmer stands at the tavern",
-        String(farmerAt),
-      );
-
-      const row = await driveGod(
+      const journaled = await waitForModelProposal(
         story,
         "zeus",
         "strike",
-        JSON.stringify({ action: "strike", target: "the-tavern", power: 3 }),
-        "zeus strikes the tavern",
+        afterStrikeOrder,
+        "zeus strikes once his prompt shows the farmer at the tavern",
+      );
+      story.provider.policy("zeus", undefined);
+      const row = await waitForConsumed(
+        story,
+        journaled.proposalId,
+        "zeus's strike runs on a tick",
+      );
+      check(
+        row.outcome === "committed",
+        "zeus strikes the tavern: it commits",
+        `${row.outcome} ${row.reason}`,
       );
       const observationId = String(row.proposal.observationId);
       const events = storedEvents(story);
@@ -224,7 +260,7 @@ export async function stepIsolation(
   return recorder.run(
     "S5",
     "Knowledge isolation",
-    "Through the strike and the tavern's destruction, none of Hera's prompts carries any trace of it: not the ignition or destruction event, not the strike's observation, not the tavern; while Zeus's own prompts after it do carry the ignition.",
+    "Through the strike and the tavern's destruction, none of Hera's prompts carries any trace of it outside a prayer addressed to her: not the ignition or destruction event, not the strike's observation, not the tavern; the farmer's own prayer about the burning, if it is addressed to her, is how she may hear of it (R7, W04's divine sense), and is the one place it may appear; Zeus's own prompts after it do carry the ignition.",
     async (step) => {
       const destroyed = await waitFor(
         "the tavern burns down",
@@ -258,7 +294,7 @@ export async function stepIsolation(
       const heraPrompts = story.provider.requests
         .slice(strike.requestMark)
         .filter((r) => r.god === "hera")
-        .map((r) => r.prompt);
+        .map((r) => withoutPrayers(r.prompt));
       check(
         heraPrompts.length >= 3,
         "Hera took several turns through the strike and its aftermath",
@@ -273,7 +309,7 @@ export async function stepIsolation(
       const leaked = heraPrompts.flatMap((prompt) => tracesIn(prompt, traces));
       check(
         leaked.length === 0,
-        "no prompt Hera was shown carries a trace of the strike",
+        "no prompt Hera was shown carries a trace of the strike outside a prayer addressed to her",
         `found ${leaked.join(", ")}`,
       );
       // Control in the run: the same check does see the ignition in a prompt Zeus was shown at the tavern.

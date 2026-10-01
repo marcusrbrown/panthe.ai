@@ -132,6 +132,12 @@ function worldOf(
     memories: new Map(),
     relationships: new Map(),
     goals: new Map(),
+    needs: new Map(),
+    causes: new Map(),
+    petitions: new Map(),
+    repairGrants: new Map(),
+    noticed: new Map(),
+    director: { lastConsequentialTick: 0 },
     rules: RULES,
     recipes: {},
   };

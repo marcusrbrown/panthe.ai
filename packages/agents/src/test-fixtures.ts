@@ -31,6 +31,21 @@ export function greekState(): WorldState {
   return createInitialWorldState(pack);
 }
 
+/**
+ * `state` with fire unable to spread, for a test about what one strike made
+ * its witnesses remember: the square now holds a woodshed beside the oak, and
+ * a spread to either would be a second thing Hera saw.
+ */
+export function withoutFireSpread(state: WorldState): WorldState {
+  return {
+    ...state,
+    rules: {
+      ...state.rules,
+      fireBalance: { ...state.rules.fireBalance, spreadChancePerTick: 0 },
+    },
+  };
+}
+
 export function godProfile(id: string): GodProfile {
   const profile = gods.find((god) => god.id === id);
   if (!profile) throw new Error(`no god profile for ${id}`);
@@ -78,6 +93,7 @@ export function committedEvent(
     simTime: sequence * 1000,
     correlationId: `obs-${sequence}`,
     causationId: `obs-${sequence}`,
+    tick: 1,
     approximate: false,
     ...payload,
   } as unknown as WorldEvent;

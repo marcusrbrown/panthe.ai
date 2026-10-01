@@ -22,9 +22,11 @@ import type {
   InhabitantDrives,
   LegendId,
   LocationEdge,
+  PetitionRequest,
   Realm,
   Recipe,
   ResourceAmount,
+  UnmetNeedReason,
   WitnessedEventKind,
   WorldEvent,
   WorldRules,
@@ -76,6 +78,8 @@ export interface ActorState {
    * directly, never `packages/world/src/routines.ts`.
    */
   readonly drives?: InhabitantDrives;
+  /** Where a mortal's routine takes it back to after it has gone elsewhere (to pray). Set from its authored starting place; absent for a fixture actor. */
+  readonly home?: EntityId;
   /** The resource this actor gathers when no more pressing action is eligible. Absent means it never gathers. */
   readonly gathers?: string;
   /** A resource this actor seeks to buy when it lacks some and can afford it. Absent means it wants nothing in particular. */
@@ -98,7 +102,8 @@ export type BuildingStatus = (typeof BUILDING_STATUSES)[number];
 /** What started a building's current fire, stored when it ignites and never inferred later: the ignition event, and the actor whose strike began the fire (carried through any spread). */
 export interface BuildingIgnition {
   readonly eventId: EventId;
-  readonly actor: EntityId;
+  /** The actor whose strike began the fire; absent when the quiet-world director did. */
+  readonly actor?: EntityId;
 }
 
 /** What every building has, whatever its status. */
@@ -214,6 +219,18 @@ export type MemoryEntry = {
       readonly content: string;
       readonly linkedEventId?: EventId;
     }
+  | {
+      /** A loss the mortal noticed, with no offender: it keeps the cause prayable after the mortal walks away. */
+      readonly kind: "noticed";
+      readonly causeEventId: EventId;
+    }
+  | {
+      /** A god's answer, or its silence, to a petition: favor is the affinity it leaves. */
+      readonly kind: "sign";
+      readonly god: EntityId;
+      readonly outcome: "answered" | "lapsed";
+      readonly petitionId: EventId;
+    }
 );
 
 /** How one actor feels toward another. Changed only by `relationship-changed` events, each citing the memory that caused it. */
@@ -239,6 +256,80 @@ export interface ActiveGoal {
   readonly eventId: EventId;
   /** The `goal-set` event's sequence: what happened "since the goal was set" is measured from it. */
   readonly sequence: number;
+  /** The tick it was set in: the goal's lock counts from it. */
+  readonly tick: number;
+}
+
+/** A mortal's routine needs `resource` and cannot get it, as recorded by the event `eventId` on `tick`. Open until a `need-met` event closes it. */
+export interface OpenNeed {
+  readonly actor: EntityId;
+  readonly resource: string;
+  readonly reason: UnmetNeedReason;
+  readonly eventId: EventId;
+  readonly tick: number;
+}
+
+/** What a mortal can pray about: a recorded event that happened to it. */
+export type PetitionCauseKind =
+  | "damage"
+  | "fire"
+  | "theft"
+  | "spoilage"
+  | "need"
+  | "grudge";
+
+export interface PetitionCause {
+  readonly eventId: EventId;
+  readonly tick: number;
+  readonly kind: PetitionCauseKind;
+  /** Who did it, when someone did and the world knows who. */
+  readonly offender?: EntityId;
+  readonly building?: EntityId;
+  readonly resource?: string;
+  /** How much was lost, for a theft or spoiled stock. */
+  readonly amount?: number;
+}
+
+/** One loss an owner has noticed. */
+export interface NoticedLoss {
+  readonly owner: EntityId;
+  readonly causeEventId: EventId;
+  /** The `loss-noticed` event that recorded it. */
+  readonly eventId: EventId;
+}
+
+/** The key a noticed loss is held under. */
+export function noticedKey(owner: EntityId, causeEventId: EventId): string {
+  return `${owner}|${causeEventId}`;
+}
+
+/** A petition: who asked which god, for what, about which cause, and how it stands. Rebuilt from the log. */
+export interface Petition {
+  /** The `petition-opened` event's id. */
+  readonly id: EventId;
+  readonly petitioner: EntityId;
+  readonly god: EntityId;
+  readonly cause: EventId;
+  /** The cause as the petitioner knew it when it prayed: an offender it never learned is absent. What the god is told, and what the one-open-petition rule holds, outlive the petitioner's bounded memory of causes. */
+  readonly about: PetitionCause;
+  readonly request: PetitionRequest;
+  readonly tick: number;
+  /** The `petition-opened` event's sequence: "since a goal was set" is measured in events. */
+  readonly sequence: number;
+  readonly status: "open" | "answered" | "lapsed";
+}
+
+/** Whether `capabilities` satisfy a location's `requiredCapability`; the one rule move, realm-transition validation, and route search apply, exported so a caller can offer only what the rules would allow. */
+export function hasCapability(
+  capabilities: readonly string[],
+  required: string | undefined,
+): boolean {
+  return required === undefined || capabilities.includes(required);
+}
+
+/** The key an open need is held under: one per mortal per resource. */
+export function needKey(actor: EntityId, resource: string): string {
+  return `${actor}|${resource}`;
 }
 
 export interface WorldState {
@@ -274,6 +365,18 @@ export interface WorldState {
    * never bumps an actor's revision and never stales a delayed proposal.
    */
   readonly goals: ReadonlyMap<EntityId, ActiveGoal>;
+  /** Each mortal's open unmet needs, keyed by `needKey`. */
+  readonly needs: ReadonlyMap<string, OpenNeed>;
+  /** Each mortal's most recent prayable causes (newest last, bounded), recorded as the events happen. A need is a cause too, held in `needs`. */
+  readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
+  /** Every petition ever opened, by its event id. */
+  readonly petitions: ReadonlyMap<EventId, Petition>;
+  /** The losses each owner has already noticed, keyed `owner|causeEventId`: what makes noticing once per loss. */
+  readonly noticed: ReadonlyMap<string, NoticedLoss>;
+  /** The quiet-world director's timer: the tick of the last consequential event. */
+  readonly director: { readonly lastConsequentialTick: number };
+  /** The building a mortal was last blessed planks for: its repair routine mends that one first. */
+  readonly repairGrants: ReadonlyMap<EntityId, EntityId>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
   readonly rules: WorldRules;
   /** Recipes `produce` proposals convert inputs to outputs through; never mutated. */
@@ -355,6 +458,9 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
       locationId: toEntityId(inhabitant.locationId),
       alive: true,
       ...(inhabitant.deity ? { isDeity: true } : {}),
+      ...(inhabitant.drives === undefined
+        ? {}
+        : { home: toEntityId(inhabitant.locationId) }),
       capabilities: inhabitant.deity ? [DIVINE_CAPABILITY] : [],
       inventory: toInventoryMap(inhabitant.startingInventory),
       ...(inhabitant.drives === undefined ? {} : { drives: inhabitant.drives }),
@@ -396,6 +502,12 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     memories: new Map(),
     relationships: new Map(),
     goals: new Map(),
+    needs: new Map(),
+    causes: new Map(),
+    petitions: new Map(),
+    repairGrants: new Map(),
+    noticed: new Map(),
+    director: { lastConsequentialTick: 0 },
     rules: pack.rules,
     recipes: pack.recipes,
   };

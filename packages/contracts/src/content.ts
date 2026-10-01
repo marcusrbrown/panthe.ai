@@ -104,6 +104,8 @@ export interface WorldRules {
   readonly economyBalance: Readonly<Record<string, number>>;
   /** Memory and relationship tunables (capacity, salience per event kind, affinity effects). Absent means every default in packages/world's memory rules. */
   readonly memoryBalance?: Readonly<Record<string, number>>;
+  /** Petition, bless, director, and goal-lock tunables. Absent means every default in packages/world's petition rules. */
+  readonly petitionBalance?: Readonly<Record<string, number>>;
 }
 
 export interface ContentPack {
@@ -313,6 +315,8 @@ const MEMORY_COUNT_KEYS: ReadonlySet<string> = new Set([
   "grudgeLimit",
   "allianceAffinity",
   "salience_told",
+  "salience_sign",
+  "salience_noticed",
   ...WITNESSED_EVENT_KINDS.map((kind) => `salience_${kind}`),
 ]);
 
@@ -343,6 +347,44 @@ export function parseMemoryBalance(
       return fail(at, "not a memory tunable");
     }
     if (!parsed.ok) return parsed;
+    balance[key] = parsed.value;
+  }
+  return ok(balance);
+}
+
+/** The keys of `rules.petitionBalance`: every one a positive whole number of ticks or units. */
+export const PETITION_BALANCE_KEYS = [
+  "answerWindowTicks",
+  "causePrayableTicks",
+  "prayerCooldownTicks",
+  "blessDivinityCost",
+  "blessPlanks",
+  "blessResourceAmount",
+  "blessResourceCap",
+  "directorQuietTicks",
+  "goalLockTicks",
+] as const;
+
+/**
+ * `rules.petitionBalance`, checked key by key: each is a positive whole
+ * number, and any other key is refused, since a typo would silently leave the
+ * default in force. Used for authored content and when a stored world's rules
+ * are decoded.
+ */
+export function parsePetitionBalance(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, number>>> {
+  if (!isRecord(value)) return fail(path, "expected a balance object");
+  const balance: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const at = `${path}.${key}`;
+    if (!(PETITION_BALANCE_KEYS as readonly string[]).includes(key)) {
+      return fail(at, "not a petition tunable");
+    }
+    const parsed = parseNonNegativeInteger(entry, at);
+    if (!parsed.ok) return parsed;
+    if (parsed.value < 1) return fail(at, "expected a positive integer");
     balance[key] = parsed.value;
   }
   return ok(balance);
@@ -402,6 +444,11 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parseMemoryBalance(value.memoryBalance, `${path}.memoryBalance`);
   if (!memoryBalance.ok) return memoryBalance;
+  const petitionBalance =
+    value.petitionBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parsePetitionBalance(value.petitionBalance, `${path}.petitionBalance`);
+  if (!petitionBalance.ok) return petitionBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -412,6 +459,9 @@ function parseWorldRules(
     ...(memoryBalance.value === undefined
       ? {}
       : { memoryBalance: memoryBalance.value }),
+    ...(petitionBalance.value === undefined
+      ? {}
+      : { petitionBalance: petitionBalance.value }),
   });
 }
 

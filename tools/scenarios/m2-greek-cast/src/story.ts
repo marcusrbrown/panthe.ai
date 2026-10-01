@@ -31,6 +31,7 @@ import { stepKillInference } from "./steps/s03-kill-inference";
 import { stepStale } from "./steps/s09-stale";
 import { stepCatchUp } from "./steps/s10-catch-up";
 import { stepRestore } from "./steps/s11-restore";
+import { stepPetitionPrivacy } from "./steps/s12-petition-privacy";
 
 export {
   CONTROL_NAMES,
@@ -64,7 +65,15 @@ export async function runStory(
       roles: { zeus: { endpoint: "scripted" }, hera: { endpoint: "scripted" } },
     }),
   );
-  const env = { PANTHEA_MODEL_CONFIG: configPath };
+  // The scripted story is a causal chain the harness stages, so the quiet-world
+  // director is off for it (a quiet window longer than any run); the real gate
+  // keeps it on. Everything else is the authored pack.
+  const env = {
+    PANTHEA_MODEL_CONFIG: configPath,
+    PANTHEA_PETITION_BALANCE: JSON.stringify({
+      directorQuietTicks: 10_000_000,
+    }),
+  };
   let story: Story | undefined;
   try {
     const first = await startSidecar(binary, dataDir, { env });
@@ -91,6 +100,7 @@ export async function runStory(
     const report = await stepReport(recorder, running, strike);
     await stepHera(recorder, running, report);
     await stepTrace(recorder, running, strike, destroyedId);
+    await stepPetitionPrivacy(recorder, running);
     await stepStale(recorder, running);
     await stepCatchUp(recorder, running);
     await stepRestore(recorder, running, report);

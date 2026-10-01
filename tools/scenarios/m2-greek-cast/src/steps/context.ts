@@ -14,7 +14,8 @@ export type ControlName =
   | "trace"
   | "stale"
   | "catch-up-inference"
-  | "restore-memory";
+  | "restore-memory"
+  | "petition-privacy";
 
 export const CONTROL_NAMES: readonly ControlName[] = [
   "kill-journal",
@@ -25,6 +26,7 @@ export const CONTROL_NAMES: readonly ControlName[] = [
   "stale",
   "catch-up-inference",
   "restore-memory",
+  "petition-privacy",
 ];
 
 export interface StoryOptions {

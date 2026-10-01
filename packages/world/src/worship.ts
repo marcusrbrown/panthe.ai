@@ -7,7 +7,12 @@
 
 import type { EntityId, ResourceAmount } from "@panthea/contracts";
 import { creditActorInventory, debitActorInventory } from "./economy";
-import { type ActorState, activeFavors, type WorldState } from "./state";
+import {
+  type ActorState,
+  activeFavors,
+  type WorldEventDraft,
+  type WorldState,
+} from "./state";
 
 /** The one favor effect worship grants. */
 export const FAVOR_EFFECT = "divine-favor";
@@ -36,6 +41,25 @@ export function hasActiveGatherFavor(
   return activeFavors(actor, currentTick).some(
     (favor) => favor.effect === FAVOR_EFFECT,
   );
+}
+
+/**
+ * The worship a mortal offers when a god answers it: no offering, the usual
+ * favor. Drafted by the tick from the answer, so it credits the god's divinity
+ * and grants the favor through the one worship reducer.
+ */
+export function answeredWorshipDraft(
+  state: WorldState,
+  worshiper: EntityId,
+  deity: EntityId,
+): WorldEventDraft {
+  return {
+    kind: "worship-performed",
+    entityId: worshiper,
+    deity,
+    favorEffect: FAVOR_EFFECT,
+    favorExpiresAtTick: state.tick + favorDurationTicksOf(state),
+  };
 }
 
 /**

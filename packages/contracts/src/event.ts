@@ -34,6 +34,8 @@ export interface EventEnvelope {
   readonly id: EventId;
   readonly sequence: number;
   readonly simTime: number;
+  /** The world tick it happened in. Windows, cooldowns, and locks count these, never wall time, so a replay reproduces them. */
+  readonly tick: number;
   readonly correlationId: CorrelationId;
   readonly causationId: CausationId;
   readonly approximate: boolean;
@@ -97,10 +99,13 @@ export interface BuildingDamagedEvent extends EventEnvelope {
  */
 export type FireCause =
   | { readonly kind: "strike"; readonly actor: EntityId }
+  /** The quiet-world director started it: no god's act, so no actor, and nothing for any god to be blamed for. */
+  | { readonly kind: "director" }
   | {
       readonly kind: "spread";
       readonly from: EventId;
-      readonly actor: EntityId;
+      /** Who began the fire this one spread from; absent when the director did. */
+      readonly actor?: EntityId;
     };
 
 export interface BuildingIgnitedEvent extends EventEnvelope {
@@ -208,6 +213,157 @@ export interface ReportToldEvent extends EventEnvelope {
   readonly linkedEventId?: EventId;
 }
 
+/** Why a mortal could not get what its routine needs. */
+export const UNMET_NEED_REASONS = [
+  "no-seller",
+  "no-funds",
+  "no-buyer",
+] as const;
+export type UnmetNeedReason = (typeof UNMET_NEED_REASONS)[number];
+
+/**
+ * A mortal's routine needs `resource` and cannot get it: a recorded cause a
+ * prayer can cite. One stays open per mortal per resource until the need is
+ * met. Private to the mortal.
+ */
+export interface UnmetNeedEvent extends EventEnvelope {
+  readonly kind: "unmet-need";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly reason: UnmetNeedReason;
+}
+
+/**
+ * An owner noticed a loss of its own: it stood at its damaged, burning, or
+ * destroyed building, or saw its own stock gone. Private to the mortal, and
+ * recorded once per loss. It says what was lost and which event caused it, and
+ * nothing of who did it: a loss known only this way has no known offender.
+ */
+export interface LossNoticedEvent extends EventEnvelope {
+  readonly kind: "loss-noticed";
+  readonly entityId: EntityId;
+  /** The event that caused the loss: the damage, the fire, the theft, the spoilage. */
+  readonly causeEventId: EventId;
+  readonly building?: EntityId;
+  readonly resource?: string;
+  readonly amount?: number;
+}
+
+/** A mortal's unmet need was met: the scan found the routine can now get what it needed, and the open need is closed. Private to the mortal. */
+export interface NeedMetEvent extends EventEnvelope {
+  readonly kind: "need-met";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  /** The `unmet-need` event this closes. */
+  readonly needEventId: EventId;
+}
+
+/** The quiet-world director made `entityId` take `amount` of `resource` from `victim`. Never undone. A prayer can cite it. */
+export interface TheftEvent extends EventEnvelope {
+  readonly kind: "theft";
+  /** The offender. */
+  readonly entityId: EntityId;
+  readonly victim: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+  readonly cause: "director";
+}
+
+/** The quiet-world director spoiled `amount` of `entityId`'s `resource`. Never undone. A prayer can cite it. */
+export interface StockSpoiledEvent extends EventEnvelope {
+  readonly kind: "stock-spoiled";
+  readonly entityId: EntityId;
+  readonly resource: string;
+  readonly amount: number;
+  readonly cause: "director";
+}
+
+/** What a petition asks: help with a need, or punishment of an offender who owns buildings. */
+export type PetitionRequest =
+  | {
+      readonly kind: "help";
+      readonly need:
+        | { readonly kind: "building"; readonly building: EntityId }
+        | {
+            readonly kind: "resource";
+            readonly resource: string;
+            /** What was lost, for spoiled stock or a theft; absent for an unmet need. A blessing grants it back up to a cap. */
+            readonly amount?: number;
+          };
+    }
+  | {
+      readonly kind: "punish";
+      readonly offender: EntityId;
+      /** The offender's buildings when the prayer was made; never empty. */
+      readonly buildings: readonly EntityId[];
+    };
+
+/**
+ * A mortal prayed at the altar to one god about one recorded cause, asking one
+ * thing. Placed at the altar: anyone there saw the mortal pray. The named god
+ * hears it wherever it is, through the divine sense, and no other god does.
+ */
+export interface PetitionOpenedEvent extends EventEnvelope {
+  readonly kind: "petition-opened";
+  readonly entityId: EntityId;
+  readonly god: EntityId;
+  /** The committed event that happened to the petitioner, which this prayer is about. */
+  readonly cause: EventId;
+  readonly request: PetitionRequest;
+}
+
+/**
+ * `entityId` (a god) blessed `recipient` at the god's own place, granting what
+ * the petition `petitionId` needs: planks for a damaged `building`, or an amount
+ * of a resource. The cost in divinity is a separate consumption event. The
+ * mortal rebuilds through its own routine; the damage stays on record.
+ */
+export interface BlessingGrantedEvent extends EventEnvelope {
+  readonly kind: "blessing-granted";
+  readonly entityId: EntityId;
+  readonly recipient: EntityId;
+  readonly petitionId: EventId;
+  readonly resource: string;
+  readonly amount: number;
+  readonly building?: EntityId;
+}
+
+/**
+ * The world judged that `god` answered the petition `petitionId`, and sends
+ * `entityId` a sign: a recorded, private divine act. It carries no knowledge
+ * of where or how the god answered. `answeredBy` is the event of the answering
+ * action.
+ */
+export interface PetitionAnsweredEvent extends EventEnvelope {
+  readonly kind: "petition-answered";
+  readonly entityId: EntityId;
+  readonly god: EntityId;
+  readonly petitionId: EventId;
+  readonly answeredBy: EventId;
+}
+
+/** The answer window closed with the petition unanswered. */
+export interface PetitionLapsedEvent extends EventEnvelope {
+  readonly kind: "petition-lapsed";
+  readonly entityId: EntityId;
+  readonly god: EntityId;
+  readonly petitionId: EventId;
+}
+
+/** Why a god's goal change was refused. */
+export const GOAL_REFUSAL_REASONS = ["locked"] as const;
+export type GoalRefusalReason = (typeof GOAL_REFUSAL_REASONS)[number];
+
+/** A god tried to replace or abandon its goal without a reason the world accepts. Private to the god, and shown in its next prompt. */
+export interface GoalChangeRefusedEvent extends EventEnvelope {
+  readonly kind: "goal-change-refused";
+  readonly entityId: EntityId;
+  readonly reason: GoalRefusalReason;
+  readonly attempted: "replace" | "abandon";
+  /** Ticks until the goal's lock passes on its own. */
+  readonly unlocksInTicks: number;
+}
+
 /**
  * A god declared a goal: its own words and the one target it knows. A
  * declaration, like a legend: the world never checks that the target is alive
@@ -235,6 +391,12 @@ export const UNPLACED_EVENT_KINDS = [
   "relationship-changed",
   "goal-set",
   "goal-ended",
+  "unmet-need",
+  "need-met",
+  "loss-noticed",
+  "petition-answered",
+  "petition-lapsed",
+  "goal-change-refused",
 ] as const;
 
 /** The kinds an actor can witness. */
@@ -269,9 +431,35 @@ export interface ToldMemoryRecordedEvent extends MemoryRecordedBase {
   readonly linkedEventId?: EventId;
 }
 
+/**
+ * A mortal remembers a god's answer, or its silence: the sign of an answered
+ * petition (a kindness by the god) or a lapse (harm by its neglect). The
+ * consequence is what moves the mortal's affinity toward the god.
+ */
+export interface SignMemoryRecordedEvent extends MemoryRecordedBase {
+  readonly memoryKind: "sign";
+  readonly god: EntityId;
+  readonly outcome: "answered" | "lapsed";
+  readonly petitionId: EventId;
+  readonly consequence: Consequence;
+}
+
+/**
+ * A mortal remembers a loss it noticed, with no offender: what lets it pray for
+ * help about the loss after it has walked away from it. Carries no consequence,
+ * so it blames no one and moves no affinity.
+ */
+export interface NoticedMemoryRecordedEvent extends MemoryRecordedBase {
+  readonly memoryKind: "noticed";
+  /** The event that caused the loss: what a prayer about it cites. */
+  readonly causeEventId: EventId;
+}
+
 export type MemoryRecordedEvent =
   | WitnessedMemoryRecordedEvent
-  | ToldMemoryRecordedEvent;
+  | ToldMemoryRecordedEvent
+  | SignMemoryRecordedEvent
+  | NoticedMemoryRecordedEvent;
 
 /**
  * A relationship changed because of one memory: `entityId` now feels
@@ -309,7 +497,17 @@ export type WorldEvent =
   | MemoryRecordedEvent
   | RelationshipChangedEvent
   | GoalSetEvent
-  | GoalEndedEvent;
+  | GoalEndedEvent
+  | UnmetNeedEvent
+  | NeedMetEvent
+  | LossNoticedEvent
+  | TheftEvent
+  | StockSpoiledEvent
+  | PetitionOpenedEvent
+  | BlessingGrantedEvent
+  | PetitionAnsweredEvent
+  | PetitionLapsedEvent
+  | GoalChangeRefusedEvent;
 
 const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "entity-moved": true,
@@ -332,6 +530,16 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "relationship-changed": true,
   "goal-set": true,
   "goal-ended": true,
+  "unmet-need": true,
+  "need-met": true,
+  "loss-noticed": true,
+  theft: true,
+  "stock-spoiled": true,
+  "petition-opened": true,
+  "blessing-granted": true,
+  "petition-answered": true,
+  "petition-lapsed": true,
+  "goal-change-refused": true,
 };
 
 /** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
@@ -371,6 +579,36 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
         return [event.entityId, event.toward];
       case "goal-set":
         return [event.entityId, event.target];
+      case "loss-noticed":
+        return [
+          event.entityId,
+          ...(event.building === undefined ? [] : [event.building]),
+        ];
+      case "theft":
+        return [event.entityId, event.victim];
+      case "blessing-granted":
+        return [
+          event.entityId,
+          event.recipient,
+          ...(event.building === undefined ? [] : [event.building]),
+        ];
+      case "petition-opened":
+        return [
+          event.entityId,
+          event.god,
+          ...(event.request.kind === "punish"
+            ? [event.request.offender, ...event.request.buildings]
+            : event.request.need.kind === "building"
+              ? [event.request.need.building]
+              : []),
+        ];
+      case "petition-answered":
+      case "petition-lapsed":
+        return [event.entityId, event.god];
+      case "unmet-need":
+      case "need-met":
+      case "stock-spoiled":
+      case "goal-change-refused":
       case "goal-ended":
       case "memory-recorded":
       case "resource-gathered":
@@ -411,6 +649,16 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.memoryEventId;
     case "goal-ended":
       return event.goalEventId;
+    case "petition-opened":
+      return event.cause;
+    case "need-met":
+      return event.needEventId;
+    case "loss-noticed":
+      return event.causeEventId;
+    case "petition-answered":
+    case "petition-lapsed":
+    case "blessing-granted":
+      return event.petitionId;
     default:
       return undefined;
   }
@@ -458,15 +706,25 @@ function parseOptionalEventId(
 
 function parseFireCause(value: unknown, path: string): ParseResult<FireCause> {
   if (!isRecord(value)) return fail(path, "expected a fire cause object");
-  const actor = parseEntityId(value.actor, `${path}.actor`);
+  if (value.kind === "director") return ok({ kind: "director" });
+  const actor =
+    value.actor === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.actor, `${path}.actor`);
   if (!actor.ok) return actor;
   if (value.kind === "strike") {
+    if (actor.value === undefined)
+      return fail(`${path}.actor`, "a strike names who struck");
     return ok({ kind: "strike", actor: actor.value });
   }
   if (value.kind === "spread") {
     const from = parseEventId(value.from, `${path}.from`);
     if (!from.ok) return from;
-    return ok({ kind: "spread", from: from.value, actor: actor.value });
+    return ok({
+      kind: "spread",
+      from: from.value,
+      ...(actor.value === undefined ? {} : { actor: actor.value }),
+    });
   }
   return fail(path, `unknown fire cause: ${String(value.kind)}`);
 }
@@ -507,6 +765,83 @@ export function parseReportContent(
     return fail(path, `expected at most ${MAX_REPORT_LENGTH} characters`);
   }
   return content;
+}
+
+/** A positive whole number. */
+function parsePositiveInteger(
+  value: unknown,
+  path: string,
+): ParseResult<number> {
+  const n = parseNonNegativeInteger(value, path);
+  if (!n.ok) return n;
+  if (n.value < 1) return fail(path, "expected a positive integer");
+  return n;
+}
+
+/** A petition's request: help with a building or a resource, or punishment of an offender and the buildings it owns. */
+export function parsePetitionRequest(
+  value: unknown,
+  path: string,
+): ParseResult<PetitionRequest> {
+  if (!isRecord(value)) return fail(path, "expected a request object");
+  if (value.kind === "help") {
+    if (!isRecord(value.need))
+      return fail(`${path}.need`, "expected a need object");
+    if (value.need.kind === "building") {
+      const building = parseEntityId(
+        value.need.building,
+        `${path}.need.building`,
+      );
+      if (!building.ok) return building;
+      return ok({
+        kind: "help",
+        need: { kind: "building", building: building.value },
+      });
+    }
+    if (value.need.kind === "resource") {
+      const resource = parseString(
+        value.need.resource,
+        `${path}.need.resource`,
+      );
+      if (!resource.ok) return resource;
+      const amount =
+        value.need.amount === undefined
+          ? ok<number | undefined>(undefined)
+          : parsePositiveInteger(value.need.amount, `${path}.need.amount`);
+      if (!amount.ok) return amount;
+      return ok({
+        kind: "help",
+        need: {
+          kind: "resource",
+          resource: resource.value,
+          ...(amount.value === undefined ? {} : { amount: amount.value }),
+        },
+      });
+    }
+    return fail(`${path}.need.kind`, "expected a building or a resource");
+  }
+  if (value.kind === "punish") {
+    const offender = parseEntityId(value.offender, `${path}.offender`);
+    if (!offender.ok) return offender;
+    const buildings = parseArray(
+      value.buildings,
+      `${path}.buildings`,
+      parseEntityId,
+    );
+    if (!buildings.ok) return buildings;
+    if (buildings.value.length === 0) {
+      return fail(
+        `${path}.buildings`,
+        "a punish request needs an offender who owns a building",
+      );
+    }
+    return ok({
+      kind: "punish",
+      offender: offender.value,
+      buildings: buildings.value,
+    });
+  }
+  return fail(`${path}.kind`, "expected help or punish");
 }
 
 /** A goal's text: not blank and at most `MAX_GOAL_LENGTH` characters. */
@@ -594,6 +929,40 @@ function parseMemoryRecorded(
           : { linkedEventId: linkedEventId.value }),
       });
     }
+    case "noticed": {
+      const causeEventId = parseEventId(input.causeEventId, "causeEventId");
+      if (!causeEventId.ok) return causeEventId;
+      if (consequence.value !== undefined) {
+        return fail("consequence", "a noticed loss blames no one");
+      }
+      return ok({
+        ...base,
+        memoryKind: "noticed",
+        causeEventId: causeEventId.value,
+      });
+    }
+    case "sign": {
+      const god = parseEntityId(input.god, "god");
+      if (!god.ok) return god;
+      const outcome = parseEnum(input.outcome, "outcome", [
+        "answered",
+        "lapsed",
+      ] as const);
+      if (!outcome.ok) return outcome;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      if (consequence.value === undefined) {
+        return fail("consequence", "a sign leaves a kindness or a harm");
+      }
+      return ok({
+        ...base,
+        memoryKind: "sign",
+        god: god.value,
+        outcome: outcome.value,
+        petitionId: petitionId.value,
+        consequence: consequence.value,
+      });
+    }
     default:
       return fail(
         "memoryKind",
@@ -619,6 +988,8 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
   if (!sequence.ok) return sequence;
   const simTime = parseFiniteNumber(input.simTime, "simTime");
   if (!simTime.ok) return simTime;
+  const tick = parseNonNegativeInteger(input.tick, "tick");
+  if (!tick.ok) return tick;
   const correlationId = parseCorrelationId(
     input.correlationId,
     "correlationId",
@@ -634,6 +1005,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     id: id.value,
     sequence: sequence.value,
     simTime: simTime.value,
+    tick: tick.value,
     correlationId: correlationId.value,
     causationId: causationId.value,
     approximate: approximate.value,
@@ -966,6 +1338,221 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         entityId: entityId.value,
         text: text.value,
         target: target.value,
+      });
+    }
+    case "unmet-need": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const reason = parseEnum(input.reason, "reason", UNMET_NEED_REASONS);
+      if (!reason.ok) return reason;
+      return ok({
+        ...envelope,
+        kind: "unmet-need",
+        entityId: entityId.value,
+        resource: resource.value,
+        reason: reason.value,
+      });
+    }
+    case "loss-noticed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const causeEventId = parseEventId(input.causeEventId, "causeEventId");
+      if (!causeEventId.ok) return causeEventId;
+      const building =
+        input.building === undefined
+          ? ok<EntityId | undefined>(undefined)
+          : parseEntityId(input.building, "building");
+      if (!building.ok) return building;
+      const resource = parseOptionalString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount =
+        input.amount === undefined
+          ? ok<number | undefined>(undefined)
+          : parsePositiveInteger(input.amount, "amount");
+      if (!amount.ok) return amount;
+      // A building, or a resource and its amount: exactly one of the two.
+      const lostStock =
+        resource.value !== undefined || amount.value !== undefined;
+      if (building.value !== undefined && lostStock) {
+        return fail("building", "a loss is a building or stock, not both");
+      }
+      if (building.value === undefined && !lostStock) {
+        return fail("building", "a loss names a building or a resource");
+      }
+      if (
+        lostStock &&
+        (resource.value === undefined || amount.value === undefined)
+      ) {
+        return fail("resource", "lost stock names a resource and an amount");
+      }
+      return ok({
+        ...envelope,
+        kind: "loss-noticed",
+        entityId: entityId.value,
+        causeEventId: causeEventId.value,
+        ...(building.value === undefined ? {} : { building: building.value }),
+        ...(resource.value === undefined ? {} : { resource: resource.value }),
+        ...(amount.value === undefined ? {} : { amount: amount.value }),
+      });
+    }
+    case "need-met": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const needEventId = parseEventId(input.needEventId, "needEventId");
+      if (!needEventId.ok) return needEventId;
+      return ok({
+        ...envelope,
+        kind: "need-met",
+        entityId: entityId.value,
+        resource: resource.value,
+        needEventId: needEventId.value,
+      });
+    }
+    case "theft": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const victim = parseEntityId(input.victim, "victim");
+      if (!victim.ok) return victim;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parsePositiveInteger(input.amount, "amount");
+      if (!amount.ok) return amount;
+      if (input.cause !== "director") {
+        return fail("cause", 'expected "director"');
+      }
+      return ok({
+        ...envelope,
+        kind: "theft",
+        entityId: entityId.value,
+        victim: victim.value,
+        resource: resource.value,
+        amount: amount.value,
+        cause: "director",
+      });
+    }
+    case "stock-spoiled": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parsePositiveInteger(input.amount, "amount");
+      if (!amount.ok) return amount;
+      if (input.cause !== "director") {
+        return fail("cause", 'expected "director"');
+      }
+      return ok({
+        ...envelope,
+        kind: "stock-spoiled",
+        entityId: entityId.value,
+        resource: resource.value,
+        amount: amount.value,
+        cause: "director",
+      });
+    }
+    case "blessing-granted": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const recipient = parseEntityId(input.recipient, "recipient");
+      if (!recipient.ok) return recipient;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      const resource = parseString(input.resource, "resource");
+      if (!resource.ok) return resource;
+      const amount = parsePositiveInteger(input.amount, "amount");
+      if (!amount.ok) return amount;
+      const building =
+        input.building === undefined
+          ? ok<EntityId | undefined>(undefined)
+          : parseEntityId(input.building, "building");
+      if (!building.ok) return building;
+      return ok({
+        ...envelope,
+        kind: "blessing-granted",
+        entityId: entityId.value,
+        recipient: recipient.value,
+        petitionId: petitionId.value,
+        resource: resource.value,
+        amount: amount.value,
+        ...(building.value === undefined ? {} : { building: building.value }),
+      });
+    }
+    case "petition-opened": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const god = parseEntityId(input.god, "god");
+      if (!god.ok) return god;
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
+      const request = parsePetitionRequest(input.request, "request");
+      if (!request.ok) return request;
+      return ok({
+        ...envelope,
+        kind: "petition-opened",
+        entityId: entityId.value,
+        god: god.value,
+        cause: cause.value,
+        request: request.value,
+      });
+    }
+    case "petition-answered": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const god = parseEntityId(input.god, "god");
+      if (!god.ok) return god;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      const answeredBy = parseEventId(input.answeredBy, "answeredBy");
+      if (!answeredBy.ok) return answeredBy;
+      return ok({
+        ...envelope,
+        kind: "petition-answered",
+        entityId: entityId.value,
+        god: god.value,
+        petitionId: petitionId.value,
+        answeredBy: answeredBy.value,
+      });
+    }
+    case "petition-lapsed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const god = parseEntityId(input.god, "god");
+      if (!god.ok) return god;
+      const petitionId = parseEventId(input.petitionId, "petitionId");
+      if (!petitionId.ok) return petitionId;
+      return ok({
+        ...envelope,
+        kind: "petition-lapsed",
+        entityId: entityId.value,
+        god: god.value,
+        petitionId: petitionId.value,
+      });
+    }
+    case "goal-change-refused": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const reason = parseEnum(input.reason, "reason", GOAL_REFUSAL_REASONS);
+      if (!reason.ok) return reason;
+      const attempted = parseEnum(input.attempted, "attempted", [
+        "replace",
+        "abandon",
+      ] as const);
+      if (!attempted.ok) return attempted;
+      const unlocksInTicks = parseNonNegativeInteger(
+        input.unlocksInTicks,
+        "unlocksInTicks",
+      );
+      if (!unlocksInTicks.ok) return unlocksInTicks;
+      return ok({
+        ...envelope,
+        kind: "goal-change-refused",
+        entityId: entityId.value,
+        reason: reason.value,
+        attempted: attempted.value,
+        unlocksInTicks: unlocksInTicks.value,
       });
     }
     case "goal-ended": {

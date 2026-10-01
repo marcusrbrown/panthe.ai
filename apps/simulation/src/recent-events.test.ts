@@ -6,6 +6,7 @@ import {
   eventSubjects,
   type Proposal,
   parseSyncFrame,
+  UNPLACED_EVENT_KINDS,
   type WorldEvent,
 } from "@panthea/contracts";
 import {
@@ -107,6 +108,13 @@ function withStore<T>(
   });
 }
 
+/** The kinds the frame window leaves out: they happen at no place, so the client has nothing to draw. */
+const UNPLACED: readonly string[] = UNPLACED_EVENT_KINDS;
+
+/** `events` as the window lists them. */
+const placed = (events: readonly WorldEvent[]) =>
+  events.filter((event) => !UNPLACED.includes(event.kind));
+
 test("the recent-event window defaults to the last 10 ticks, capped at 200 events", () => {
   expect(RECENT_EVENT_WINDOW_TICKS).toBe(10);
   expect(RECENT_EVENT_CAP).toBe(200);
@@ -117,7 +125,7 @@ test("a frame window after a strike tick lists the strike's events with their id
     const chain = commitTicks(store, reducers, seeded, [
       [strikeProposal("the-tavern", 3)],
     ]);
-    const struck = chain.eventsByTick[0] ?? [];
+    const struck = placed(chain.eventsByTick[0] ?? []);
     expect(struck.some((event) => event.kind === "building-ignited")).toBe(
       true,
     );
@@ -207,7 +215,8 @@ test("the window never includes events committed after the sequence a frame repo
       [],
     ]);
     const firstTickLast =
-      chain.eventsByTick[0]?.at(-1)?.sequence ?? Number.POSITIVE_INFINITY;
+      placed(chain.eventsByTick[0] ?? []).at(-1)?.sequence ??
+      Number.POSITIVE_INFINITY;
 
     const recent = readRecentEvents(store.db, firstTickLast, 1);
 
@@ -239,7 +248,7 @@ test("GET /frame carries the strike's events, and the frame parses under the con
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
 
-      const struck = chain.eventsByTick[0] ?? [];
+      const struck = placed(chain.eventsByTick[0] ?? []);
       expect(parsed.value.recentEvents.map((event) => event.id)).toEqual(
         struck.map((event) => event.id),
       );
@@ -353,7 +362,7 @@ test("a burst of memories and feelings never displaces the events the client dra
         event.kind === "memory-recorded" ||
         event.kind === "relationship-changed",
     );
-    const primary = all.filter((event) => !derived.includes(event));
+    const primary = all.filter((event) => !UNPLACED.includes(event.kind));
     expect(derived.length).toBeGreaterThan(RECENT_EVENT_CAP);
     expect(primary.some((event) => event.kind === "building-ignited")).toBe(
       true,
@@ -395,11 +404,7 @@ test("positive control: with fewer derived events the window is the same primary
     ]);
     const primary = chain.eventsByTick
       .flat()
-      .filter(
-        (event) =>
-          event.kind !== "memory-recorded" &&
-          event.kind !== "relationship-changed",
-      );
+      .filter((event) => !UNPLACED.includes(event.kind));
     const recent = readRecentEvents(
       store.db,
       chain.state.lastSequence,

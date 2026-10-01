@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { goalSetEvent } from "./episode-test-data";
+import { goalSetEvent, petitionOpenedEvent } from "./episode-test-data";
 import {
   analyzeReal,
   namedIds,
@@ -20,6 +20,7 @@ const event = (
   simTime: 0,
   correlationId: `c-${id}`,
   causationId: `c-${id}`,
+  tick: 1,
   approximate: false,
   kind,
   ...extra,
@@ -530,4 +531,104 @@ test("goal privacy checks something: goals were set but no prompt could be read,
       "goal privacy",
     )?.ok,
   ).toBe(true);
+});
+
+// --- Petition privacy ---------------------------------------------------------------------
+
+const prayerToHera = () => petitionOpenedEvent("evt-26-7", 7, "farmer", "hera");
+
+test("petition privacy fails when a petition addressed to Hera appears in Zeus's prompt; names the petition and the prompt's god", () => {
+  const leaked = base({
+    events: [prayerToHera()] as never,
+    requests: [
+      asked(
+        "zeus",
+        "You are Zeus.\nPrayers to you:\n- [evt-26-7] farmer asks for help with food (it lacked food).",
+      ),
+      asked(
+        "hera",
+        "You are Hera.\nPrayers to you:\n- [evt-26-7] farmer asks for help with food (it lacked food).",
+      ),
+    ],
+  });
+  const result = property(leaked, "petition privacy");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("zeus");
+  expect(result?.detail).toContain("evt-26-7");
+  expect(result?.detail).toContain("hera");
+});
+
+test("petition privacy passes when only the named god's prompt lists it, and when no prompt does; with no petitions or no readable prompts it checks nothing and says so", () => {
+  const private_ = base({
+    events: [prayerToHera()] as never,
+    requests: [
+      asked("zeus", "You are Zeus.\nWhat do you do?"),
+      asked(
+        "hera",
+        "You are Hera.\nPrayers to you:\n- [evt-26-7] farmer asks for help with food.",
+      ),
+    ],
+  });
+  expect(property(private_, "petition privacy")?.ok).toBe(true);
+  expect(
+    property(
+      base({
+        events: [prayerToHera()] as never,
+        requests: [asked("zeus", "x")],
+      }),
+      "petition privacy",
+    )?.ok,
+  ).toBe(true);
+  // Petitions exist but no prompt could be read: nothing was checked, so it fails like goal privacy.
+  const unread = base({
+    events: [prayerToHera()] as never,
+    requests: [{ ...asked("zeus", "x"), promptPayload: undefined }],
+  });
+  const result = property(unread, "petition privacy");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("no prompt");
+  // No petitions: nothing to leak.
+  expect(
+    property(base({ requests: [asked("zeus", "x")] }), "petition privacy")?.ok,
+  ).toBe(true);
+});
+
+test("a bless is a valid god action, and the petition it names must be in the prompt like any named id", () => {
+  const prompt =
+    "Prayers to you:\n- [evt-26-7] farmer asks for help with food.";
+  const ok = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "hera", { kind: "bless", petition: "evt-26-7" }),
+    ],
+  });
+  expect(property(ok, "valid actions")?.ok).toBe(true);
+  expect(property(ok, "perception compliance")?.ok).toBe(true);
+  expect(namedIds({ kind: "bless", petition: "evt-26-7" })).toEqual([
+    "evt-26-7",
+  ]);
+  const unseen = base({
+    requests: [request("p1", "You are Hera.")],
+    proposals: [
+      proposal("p1", "hera", { kind: "bless", petition: "evt-26-7" }),
+    ],
+  });
+  expect(property(unseen, "perception compliance")?.ok).toBe(false);
+});
+
+test("petition privacy matches whole ids: evt-26-7 does not match inside evt-26-70, and does match at the end of a line", () => {
+  const events = [prayerToHera()] as never;
+  const near = base({
+    events,
+    requests: [
+      asked("zeus", "A note about evt-26-70 only."),
+      asked("hera", "ok"),
+    ],
+  });
+  expect(property(near, "petition privacy")?.ok).toBe(true);
+  const exact = base({
+    events,
+    requests: [asked("zeus", "A note about evt-26-7"), asked("hera", "ok")],
+  });
+  expect(property(exact, "petition privacy")?.ok).toBe(false);
 });

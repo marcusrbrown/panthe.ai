@@ -268,9 +268,11 @@ function overflowQueue(rescued: Record<string, unknown>) {
 
 test("a rescued goal declaration runs where its action stood in the queue: an earlier set, then a later goal-only set, leaves the later goal active", () => {
   const state = loadGreekWorldState();
+  // The queue order is what is under test, not the goal lock, so the goal gate is off here.
+  const { petitionBalance: _gateOff, ...rules } = state.rules;
   const capped = {
     ...state,
-    rules: { ...state.rules, maxProposalsPerTick: 2 },
+    rules: { ...rules, maxProposalsPerTick: 2 },
   };
   const queue = [
     ...overflowQueue({ set: { text: "Earlier aim.", target: "zeus" } }),

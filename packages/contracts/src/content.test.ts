@@ -384,3 +384,50 @@ test("memory tunables are checked key by key: whole non-negative numbers where a
   }
   expect(parseContentPack(packWithMemoryBalance(["capacity"])).ok).toBe(false);
 });
+
+function packWithPetitionBalance(
+  petitionBalance: unknown,
+): Record<string, unknown> {
+  const pack = validPack();
+  (pack.rules as Record<string, unknown>).petitionBalance = petitionBalance;
+  return pack;
+}
+
+test("petition tunables are strict: each a positive whole number, unknown keys refused, a missing record means the features are off", () => {
+  const good = {
+    answerWindowTicks: 250,
+    causePrayableTicks: 150,
+    prayerCooldownTicks: 20,
+    blessDivinityCost: 2,
+    blessPlanks: 3,
+    blessResourceAmount: 2,
+    blessResourceCap: 4,
+    directorQuietTicks: 120,
+    goalLockTicks: 40,
+  };
+  const parsed = parseContentPack(packWithPetitionBalance(good));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok) expect(parsed.value.rules.petitionBalance).toEqual(good);
+  // A partial record is fine: the rest take their defaults.
+  expect(
+    parseContentPack(packWithPetitionBalance({ goalLockTicks: 10 })).ok,
+  ).toBe(true);
+  // Without one, nothing changes for packs that never had it.
+  const plain = parseContentPack(validPack());
+  expect(plain.ok && plain.value.rules.petitionBalance === undefined).toBe(
+    true,
+  );
+
+  for (const bad of [
+    { answerWindowTicks: 0 },
+    { answerWindowTicks: -5 },
+    { answerWindowTicks: 2.5 },
+    { directorQuietTicks: "soon" },
+    { blessPlanks: Number.POSITIVE_INFINITY },
+    { goalLockTicks: null },
+    { answerWindow: 250 },
+  ]) {
+    expect(parseContentPack(packWithPetitionBalance(bad)).ok).toBe(false);
+  }
+  expect(parseContentPack(packWithPetitionBalance([250])).ok).toBe(false);
+});

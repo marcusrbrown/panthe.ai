@@ -592,3 +592,28 @@ test("a legend proposal may carry a claim shaped like a report's, and a malforme
     ).toBe(false);
   }
 });
+
+// --- Praying and blessing ---------------------------------------------------------------------
+
+test("a pray proposal names the cause event it prays about, and a bless proposal names the petition it answers", () => {
+  const pray = parseProposal(base({ kind: "pray", cause: "evt-3" }));
+  expect(pray.ok).toBe(true);
+  if (pray.ok && pray.value.kind === "pray")
+    expect(String(pray.value.cause)).toBe("evt-3");
+  const bless = parseProposal(
+    base({ kind: "bless", petition: "evt-4", targets: ["farmer"] }),
+  );
+  expect(bless.ok).toBe(true);
+  if (bless.ok && bless.value.kind === "bless")
+    expect(String(bless.value.petition)).toBe("evt-4");
+  expect(PROPOSAL_KINDS).toContain("pray");
+  expect(PROPOSAL_KINDS).toContain("bless");
+  for (const bad of [
+    { kind: "pray" },
+    { kind: "pray", cause: 7 },
+    { kind: "bless" },
+    { kind: "bless", petition: "" },
+  ]) {
+    expect(parseProposal(base(bad)).ok).toBe(false);
+  }
+});

@@ -18,6 +18,7 @@ import {
 } from "@panthea/agents";
 import {
   type EntityId,
+  type GoalChangeRefusedEvent,
   UNPLACED_EVENT_KINDS,
   type WorldEvent,
 } from "@panthea/contracts";
@@ -101,6 +102,30 @@ export function readOwnEvents(
   return rows.reverse().map((row) => JSON.parse(row.payload) as WorldEvent);
 }
 
+/**
+ * The god's latest refused goal change up to `toSequence`, if any. Read inside
+ * the turn's handled path with the other store reads, so a store fault abandons
+ * the turn like any other.
+ */
+export function readLatestRefusal(
+  db: Store["db"],
+  god: EntityId,
+  toSequence: number,
+): GoalChangeRefusedEvent | undefined {
+  const row = db
+    .query(
+      `SELECT payload FROM events
+       WHERE sequence <= ? AND kind = 'goal-change-refused'
+         AND json_extract(payload, '$.entityId') = ?
+       ORDER BY sequence DESC
+       LIMIT 1`,
+    )
+    .get(toSequence, god) as { payload: string } | null;
+  return row === null
+    ? undefined
+    : (JSON.parse(row.payload) as GoalChangeRefusedEvent);
+}
+
 /** The actors with a pending journal entry: they have a proposal waiting and get no new turn. */
 function actorsWithPendingProposals(store: Store): ReadonlySet<string> {
   const actors = new Set<string>();
@@ -176,11 +201,13 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
         newest: RECENT_EVENT_CAP,
       });
       const ownEvents = readOwnEvents(deps.store.db, god, state.lastSequence);
+      const refusal = readLatestRefusal(deps.store.db, god, state.lastSequence);
       const result = await runGodTurn(deps, {
         state,
         actorId: god,
         recentEvents,
         ownEvents,
+        ...(refusal === undefined ? {} : { refusal }),
         signal,
       });
       if (result && !signal.aborted) conclude(result);

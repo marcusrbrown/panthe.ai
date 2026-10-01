@@ -113,7 +113,11 @@ export function planFireStep(
         events.push({
           kind: "building-ignited",
           entityId: candidateId,
-          cause: { kind: "spread", from: eventId, actor },
+          cause: {
+            kind: "spread",
+            from: eventId,
+            ...(actor === undefined ? {} : { actor }),
+          },
         });
         ignitedThisStep.add(candidateId);
         spreadCount += 1;

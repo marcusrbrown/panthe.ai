@@ -151,16 +151,13 @@ export async function walk(
   check(at === to, `${god} stands at ${to}`, String(at));
 }
 
-/**
- * Posts a fixture proposal for `actor` (source fixture, staging the world) and
- * waits for the tick that runs it. Returns its journal row.
- */
-export async function postFixture(
+/** Posts a fixture proposal for `actor` (source fixture, staging the world) and returns its id without waiting for a tick to run it. */
+export async function submitFixture(
   story: Story,
   actor: string,
   fields: Record<string, unknown>,
   why: string,
-): Promise<JournaledProposal> {
+): Promise<string> {
   const { frame } = await readFrame(story.sidecar);
   const proposalId = createProposalId();
   const observationId = createObservationId();
@@ -189,6 +186,20 @@ export async function postFixture(
     `${why}: the fixture is accepted`,
     `${response.status} ${JSON.stringify(response.body)}`,
   );
+  return proposalId;
+}
+
+/**
+ * Posts a fixture proposal for `actor` (source fixture, staging the world) and
+ * waits for the tick that runs it. Returns its journal row.
+ */
+export async function postFixture(
+  story: Story,
+  actor: string,
+  fields: Record<string, unknown>,
+  why: string,
+): Promise<JournaledProposal> {
+  const proposalId = await submitFixture(story, actor, fields, why);
   return waitForConsumed(story, proposalId, `${why}: the fixture runs`);
 }
 

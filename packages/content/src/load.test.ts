@@ -233,7 +233,12 @@ test("the authored Greek world content loads with the expected geography and rul
   }
 
   const buildingIds = pack.buildings.map((b) => b.id).sort();
-  expect(buildingIds).toEqual(["agora-shop", "old-oak", "the-tavern"]);
+  expect(buildingIds).toEqual([
+    "agora-shop",
+    "old-oak",
+    "the-tavern",
+    "woodshed",
+  ]);
   const shop = pack.buildings.find((b) => b.id === "agora-shop");
   expect(shop).toMatchObject({
     owner: "farmer",

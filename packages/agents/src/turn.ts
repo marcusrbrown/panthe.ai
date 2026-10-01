@@ -8,6 +8,7 @@
 import type { GodProfile } from "@panthea/content";
 import type {
   EntityId,
+  GoalChangeRefusedEvent,
   ObservationRecord,
   Proposal,
   WorldEvent,
@@ -76,6 +77,8 @@ export async function runGodTurn(
     readonly recentEvents?: readonly WorldEvent[];
     /** The events this god's own actions committed, newest few: what it is shown it did. */
     readonly ownEvents?: readonly WorldEvent[];
+    /** The god's latest refused goal change, if any: what it is told when it asks to change its goal too soon. */
+    readonly refusal?: GoalChangeRefusedEvent;
     readonly signal?: AbortSignal;
   },
 ): Promise<GodTurnResult | undefined> {
@@ -83,7 +86,12 @@ export async function runGodTurn(
   const snapshot = perceive(turn.state, turn.actorId, turn.recentEvents);
   if (!profile || !snapshot) return undefined;
 
-  const remembered = rememberedBy(turn.state, turn.actorId, turn.ownEvents);
+  const remembered = rememberedBy(
+    turn.state,
+    turn.actorId,
+    turn.ownEvents,
+    turn.refusal,
+  );
   const context = buildGodContext(profile, snapshot, remembered);
   const prompt = `${context.instructions}\n\n${context.prompt}`;
   const role = turn.actorId as string;

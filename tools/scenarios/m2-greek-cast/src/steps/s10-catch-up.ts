@@ -1,5 +1,5 @@
 // S10: through a startup catch-up of half an hour, no god is asked anything;
-// after it, turns resume; memory and relationships come through the restart
+// after it, turns resume; the gods' memory and feelings come through the restart
 // unchanged.
 
 import {
@@ -97,14 +97,17 @@ export async function stepCatchUp(
         { timeoutMs: 20_000 },
       );
       const after = await stateOf(story);
-      const changed = differences(before, after);
+      // The gods' own memories and feelings are what a restart must keep. The
+      // mortals' live on through the catch-up (they pray, and unanswered prayers
+      // lapse into harm and a fall in affinity: R4, R8), so theirs may change.
+      const changed = differences(before, after, ["zeus", "hera"]);
       check(
         changed.length === 0,
-        "memory and relationships are exactly what they were before the restart",
+        "the gods' memory and feelings are exactly what they were before the restart",
         changed.join("; "),
       );
       step.done(
-        `${(frame.catchUpSummary?.appliedMs ?? 0) / 1000} s applied by a catch-up that ran ${(finished?.at ?? 0) - started.at} ms; 0 provider requests inside it; the first request after it at +${resumed.at - (finished?.at ?? 0)} ms; ${before.memories.size} actors' memories and ${before.relationships.size} relationships unchanged`,
+        `${(frame.catchUpSummary?.appliedMs ?? 0) / 1000} s applied by a catch-up that ran ${(finished?.at ?? 0) - started.at} ms; 0 provider requests inside it; the first request after it at +${resumed.at - (finished?.at ?? 0)} ms; the gods' memories and feelings unchanged (the mortals' are free to move on)`,
         [
           {
             name: "catch-up gap applied",

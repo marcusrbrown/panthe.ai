@@ -218,6 +218,15 @@ function goalPrivacy(
       }
     }
   }
+  // Goals were set but no prompt could be read: nothing was checked, and an
+  // empty pass would claim a privacy the run never looked at.
+  if (goals.length > 0 && checked === 0) {
+    return {
+      name,
+      ok: false,
+      detail: `${goals.length} goals were set but no prompt payload was recorded to check them against`,
+    };
+  }
   return {
     name,
     ok: leaks.length === 0,

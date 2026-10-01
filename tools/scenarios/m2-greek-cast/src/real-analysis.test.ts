@@ -498,3 +498,36 @@ test("a goal-only proposal is a valid god action, and the goal's target must be 
   expect(result?.ok).toBe(false);
   expect(result?.detail).toContain("the-woodcutter");
 });
+
+test("goal privacy checks something: goals were set but no prompt could be read, so it fails and says so; with no goals set there is nothing to check and it passes", () => {
+  const unread = base({
+    events: [heraGoal()] as never,
+    requests: [
+      { ...asked("zeus", "x"), promptPayload: undefined },
+      { ...asked("hera", "y"), promptPayload: undefined },
+    ],
+  });
+  const result = property(unread, "goal privacy");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("no prompt");
+  // No requests at all is the same: nothing was checked.
+  expect(
+    property(base({ events: [heraGoal()] as never }), "goal privacy")?.ok,
+  ).toBe(false);
+  // Controls: no goals set means nothing to leak, and a readable prompt passes as before.
+  expect(
+    property(
+      base({ requests: [{ ...asked("zeus", "x"), promptPayload: undefined }] }),
+      "goal privacy",
+    )?.ok,
+  ).toBe(true);
+  expect(
+    property(
+      base({
+        events: [heraGoal()] as never,
+        requests: [asked("zeus", "You are Zeus.")],
+      }),
+      "goal privacy",
+    )?.ok,
+  ).toBe(true);
+});

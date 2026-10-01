@@ -901,6 +901,99 @@ describe("a god's own recent actions", () => {
     );
   });
 
+  test("two gods in one store: each read returns only its own author's events, and Zeus's prompt carries Hera's words only as a belief he was told", async () => {
+    const world = newWorld("great-hall");
+    const provider = startProvider();
+    const HERA_REPORT = "Hera's report about the sacred vows.";
+    const HERA_LEGEND = "Hera's legend of the broken oath.";
+    // Hera speaks first, with Zeus in the hall: a report to him, and a legend he hears.
+    await actOut(
+      world,
+      provider,
+      [
+        JSON.stringify({
+          action: "report",
+          listener: "zeus",
+          content: HERA_REPORT,
+        }),
+        JSON.stringify({ action: "legend", assertion: HERA_LEGEND }),
+      ],
+      "hera",
+    );
+    // Then each of them moves, and Zeus makes a report of his own.
+    await actOut(
+      world,
+      provider,
+      [
+        JSON.stringify({
+          action: "report",
+          listener: "hera",
+          content: "Zeus's own word.",
+        }),
+      ],
+      "zeus",
+    );
+    await actOut(
+      world,
+      provider,
+      [JSON.stringify({ action: "move", to: "olympus-gate" })],
+      "hera",
+    );
+    await actOut(
+      world,
+      provider,
+      [JSON.stringify({ action: "move", to: "olympus-gate" })],
+      "zeus",
+    );
+
+    const all = listEvents(world.store.db);
+    const authored = (god: string) =>
+      all.filter((e) => authoredAction(e, id(god)));
+    const heras = authored("hera");
+    expect(heras.map((e) => e.kind as string).sort()).toEqual(
+      ["entity-moved", "legend-recorded", "report-told"].sort(),
+    );
+    expect(authored("zeus").length).toBeGreaterThan(0);
+
+    const last = world.state.lastSequence;
+    const zeusRead = readOwnEvents(world.store.db, id("zeus"), last);
+    const heraRead = readOwnEvents(world.store.db, id("hera"), last);
+    // Zeus's read excludes every one of Hera's events; Hera's includes them.
+    for (const event of heras) {
+      expect(zeusRead.map((e) => e.id)).not.toContain(event.id);
+      expect(heraRead.map((e) => e.id)).toContain(event.id);
+    }
+    expect(zeusRead.map((e) => e.id)).toEqual(
+      authored("zeus").map((e) => e.id),
+    );
+    expect(heraRead.map((e) => e.id)).toEqual(heras.map((e) => e.id));
+    expect(
+      zeusRead.every((e) => "entityId" in e && e.entityId === id("zeus")),
+    ).toBe(true);
+
+    // Zeus's prompt: his own action lines never carry Hera's words ...
+    const runner = runnerFor(world, provider, ["zeus"]);
+    provider.respond = () => '{"action":"wait"}';
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    const prompt = JSON.parse(provider.requests.at(-1)?.body ?? "{}") as {
+      messages: { content: string }[];
+    };
+    const text = prompt.messages.map((m) => m.content).join("\n");
+    const lines = text.split("\n");
+    const mine = lines.slice(
+      lines.findIndex((l) => l.startsWith("What you did recently")),
+    );
+    for (const words of [HERA_REPORT, HERA_LEGEND]) {
+      expect(mine.slice(0, 8).join("\n")).not.toContain(words);
+      // ... and wherever her words do reach him, it is as an account she told him.
+      const carrying = lines.filter((l) => l.includes(words));
+      expect(carrying.length).toBeGreaterThan(0);
+      for (const line of carrying) expect(line).toMatch(/^- hera told you: /);
+    }
+    expect(text).toContain("Zeus's own word.");
+  });
+
   test("a turn's prompt shows the god's own committed report with its words and claim, and its goal", async () => {
     const world = newWorld("great-hall");
     const provider = startProvider();

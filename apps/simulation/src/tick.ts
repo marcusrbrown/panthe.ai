@@ -228,11 +228,12 @@ export function screenObservations(
 
 /**
  * Splits `queue`, in order, into what one tick admits and what is over the
- * limit. Actions and claims are counted separately, each up to `cap`: a
- * claim never commits and never takes an actor's slot, so it must not use up
- * capacity a routine or another action needs, yet it still has to be bounded
- * so a flood of claims cannot make the tick do unbounded validation and
- * trace writes.
+ * limit. Actions, claims, and goal-only proposals are counted separately, each
+ * up to `cap`: a claim never commits and a goal-only proposal has no action, so
+ * neither may use up capacity a routine or another action needs (a full tick
+ * would otherwise lose a god's declared goal for good), yet each still has to be
+ * bounded so a flood cannot make the tick do unbounded validation and trace
+ * writes.
  */
 function admitWithinCap(
   queue: readonly QueuedProposal[],
@@ -240,14 +241,17 @@ function admitWithinCap(
 ): { admitted: QueuedProposal[]; overflow: QueuedProposal[] } {
   const admitted: QueuedProposal[] = [];
   const overflow: QueuedProposal[] = [];
-  let actions = 0;
-  let claims = 0;
+  const counts = { action: 0, claim: 0, goal: 0 };
   for (const queued of queue) {
-    const isClaim = queued.proposal.kind === "claim";
-    if ((isClaim ? claims : actions) < cap) {
+    const bucket =
+      queued.proposal.kind === "claim"
+        ? "claim"
+        : queued.proposal.kind === "goal"
+          ? "goal"
+          : "action";
+    if (counts[bucket] < cap) {
       admitted.push(queued);
-      if (isClaim) claims += 1;
-      else actions += 1;
+      counts[bucket] += 1;
     } else {
       overflow.push(queued);
     }

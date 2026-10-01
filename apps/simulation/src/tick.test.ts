@@ -166,6 +166,43 @@ test("stepWorldTick counts claims against their own cap, so a claim never uses a
   expect(outcome.result.committed).toHaveLength(1);
 });
 
+test("stepWorldTick counts a goal-only proposal against its own cap, so it never takes an action's slot: with the action cap full it is still admitted", () => {
+  const state = loadGreekWorldState();
+  const [first, second] = buildRoutineQueue(state);
+  if (!first || !second) throw new Error("two routines");
+  const goalOnly = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Win the farmer.", target: "farmer" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    first,
+    second,
+    goalOnly,
+  ]);
+  // One action fits, the second action overflows, and the goal-only is admitted beside them.
+  expect(outcome.admitted).toEqual([first, goalOnly]);
+  expect(outcome.overflow).toEqual([second]);
+  expect(
+    outcome.result.events.filter((e) => e.kind === "goal-set"),
+  ).toHaveLength(1);
+  // The goal-only proposals have a cap of their own, so a flood of them is still bounded.
+  const flood = [
+    goalOnly,
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { set: { text: "Win.", target: "farmer" } },
+    }),
+  ];
+  const bounded = stepWorldTick(capped, createPrng(1), flood);
+  expect(bounded.admitted).toEqual([goalOnly]);
+  expect(bounded.overflow).toEqual([flood[1] as QueuedProposal]);
+});
+
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
   const storeDir = tempDir("panthea-sim-tick-");
   try {

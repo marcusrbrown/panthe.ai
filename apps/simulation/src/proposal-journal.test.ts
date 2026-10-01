@@ -1052,6 +1052,55 @@ describe("a goal change on a journaled proposal", () => {
     }
   });
 
+  test("with the action cap full, a goal-only proposal still commits once, is consumed once, and is never rejected as over-limit", async () => {
+    const world = openWorld(join(dir, "world.sqlite"), {
+      maxProposalsPerTick: 2,
+    });
+    startServer(world);
+    try {
+      const worship = (actor: string) =>
+        envelope(actor, {
+          kind: "worship",
+          deity: "zeus",
+          offering: { resource: "currency", amount: 1 },
+        });
+      const fits1 = worship("farmer");
+      const fits2 = worship("woodcutter");
+      const goalOnly = envelope("hera", {
+        kind: "goal",
+        goal: { set: { text: "Win the farmer.", target: "farmer" } },
+      });
+      for (const body of [fits1, fits2, goalOnly]) await post(world, body);
+      tick(world);
+
+      expect(outcomeOf(world, fits1.proposalId)?.outcome).toBe("committed");
+      expect(outcomeOf(world, goalOnly.proposalId)).toMatchObject({
+        outcome: "committed",
+      });
+      expect(outcomeOf(world, goalOnly.proposalId)?.reason).toBeUndefined();
+      expect(goalEventsOf(world)).toHaveLength(1);
+      expect(
+        getExternalProposal(world.store.db, goalOnly.proposalId)?.consumedTick,
+      ).toBe(1);
+      // Control: a third action in the same tick is the one over the limit.
+      const over = envelope("zeus", {
+        kind: "strike",
+        target: "old-oak",
+        power: 1,
+      });
+      await post(world, worship("farmer"));
+      await post(world, worship("woodcutter"));
+      await post(world, over);
+      tick(world);
+      expect(outcomeOf(world, over.proposalId)).toMatchObject({
+        outcome: "rejected",
+        reason: "over-limit",
+      });
+    } finally {
+      shutDown(world);
+    }
+  });
+
   test("an archive export and import rebuilds the same active goals from the event log, and a forged goal is refused", async () => {
     const source = openWorld(join(dir, "world.sqlite"));
     startServer(source);

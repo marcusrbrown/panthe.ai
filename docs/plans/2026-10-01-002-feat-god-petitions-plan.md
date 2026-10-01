@@ -249,7 +249,7 @@ flowchart TB
 
 ### Phase 1: Foundations
 
-- [ ] **Unit 1: Contracts, content, and tunables**
+- [x] **Unit 1: Contracts, content, and tunables**
 
 **Goal:** Define every new event and action, add the woodshed, and add the tunables with strict parsers.
 
@@ -279,7 +279,7 @@ flowchart TB
 
 **Verification:** the contract and content tests pass and the workspace type-checks.
 
-- [ ] **Unit 2: Unmet needs, theft and spoilage, and route search**
+- [x] **Unit 2: Unmet needs, theft and spoilage, and route search**
 
 **Goal:** Turn silent routine failures into events, apply theft and spoilage, and find the next hop toward a place.
 
@@ -309,7 +309,7 @@ flowchart TB
 
 ### Phase 2: Petitions
 
-- [ ] **Unit 3: Praying and petition state**
+- [x] **Unit 3: Praying and petition state**
 
 **Goal:** Mortals walk to the altar, pray, and open routed petitions.
 
@@ -340,7 +340,7 @@ flowchart TB
 
 **Verification:** world tests pass and the economy tests are unchanged.
 
-- [ ] **Unit 4: Bless, answer judging, signs, and lapses**
+- [x] **Unit 4: Bless, answer judging, signs, and lapses**
 
 **Goal:** Gods can bless. The world judges answers, sends signs, and lapses petitions that go unanswered.
 
@@ -379,7 +379,7 @@ flowchart TB
 
 ### Phase 3: Director and goals
 
-- [ ] **Unit 5: Quiet-world director**
+- [x] **Unit 5: Quiet-world director**
 
 **Goal:** When nothing real happens for the quiet window, the director causes attributed trouble among mortals.
 
@@ -407,7 +407,7 @@ flowchart TB
 
 **Verification:** world tests pass.
 
-- [ ] **Unit 6: Goals that stick**
+- [x] **Unit 6: Goals that stick**
 
 **Goal:** Gate goal changes and record refusals.
 
@@ -437,7 +437,7 @@ flowchart TB
 
 ### Phase 4: Prompt, evidence, and gate
 
-- [ ] **Unit 7: God prompt and intent**
+- [x] **Unit 7: God prompt and intent**
 
 **Goal:** A god sees its petitions, the way toward them, its bless option, and why a goal change was refused.
 
@@ -467,7 +467,7 @@ flowchart TB
 
 **Verification:** agents tests pass. Measure prompt length for a god with three petitions against the 4K budget.
 
-- [ ] **Unit 8: Gate checks, transcripts, and petition privacy**
+- [x] **Unit 8: Gate checks, transcripts, and petition privacy**
 
 **Goal:** The gate checks that each god heard and answered at least one petition, proves petitions stay private, and renders the new events.
 
@@ -497,7 +497,7 @@ flowchart TB
 
 **Verification:** harness tests pass, scripted `scenario:m2` passes, and a 60-second smoke run renders a real prayer.
 
-- [ ] **Unit 9: Docs**
+- [x] **Unit 9: Docs**
 
 **Goal:** Record the tunables and requirement evidence, and update the M2 plan.
 
@@ -537,6 +537,26 @@ flowchart TB
   - Inference stays outside transactions.
   - Catch-up and replay call no model.
   - Fire, income, and repair rules are unchanged, except that blessed planks feed repair.
+
+## Implementation Departures (2026-10-01)
+
+Recorded as built, units 1–9:
+
+- **Every event records the tick it happened in** (`EventEnvelope.tick`). Windows, cooldowns, and the goal lock count ticks, and a replay has to reproduce them, so the tick had to be on the event.
+- **`need-met` event and `OpenNeed` state.** An unmet need needed a closing event, so the open need is world state keyed per mortal and resource, closed by `need-met`.
+- **A `sign` memory kind and a `noticed` memory kind.** Sign and lapse memories are a memory kind with the god and the petition and a consequence (kindness or harm) that moves affinity. A `noticed` memory carries no consequence and no offender.
+- **`blessResourceCap` tunable** for the lost-resource grant, and a help request for lost stock carries the amount lost.
+- **A theft is witnessed** by whoever is where it happens (`salience_theft`), so a mortal who saw it can name the thief.
+- **Income only for buildings that offer a service.** Otherwise the woodshed paid the woodcutter for doing nothing. This changes M1's economy and is recorded in `defaults.md` as a rule change.
+- **The walk home is tied to the prayer trip:** a mortal walks home only within its prayer cooldown, so one placed elsewhere any other time stays put.
+- **`loss-noticed` event** (W04 amendment, owner decision): the plan said a mortal prays about a loss it "perceives where it stands now", which cannot survive the walk to the altar without state. An environmental scan records a private `loss-noticed` once per owner and cause when an owner stands at its own damaged, burning, or destroyed building or owns stolen or spoiled stock, and derives a `noticed` memory with no offender, which keeps the cause prayable as a help petition.
+- **Prompt caps:** the prayers section lists every open petition (R7); no cap hides one. Seven open petitions add about 2.3 thousand characters on the authored world.
+- **`PANTHEA_PETITION_BALANCE`:** an environment override of the petition tunables, through the strict parser, so the scripted story can turn the director off without a code path of its own.
+
+## Open Risks Found While Building
+
+- **Unmet food needs flap.** On the authored world the farmer and the woodcutter record an unmet food need every three to six ticks (the food market is thin), each a new cause, so each mortal prays about food about once per prayer cooldown and the gods' lists fill with food prayers. R2's "at most one open need per resource" holds, but a need that closes and reopens produces a new cause each time. Gate 3 shows whether this crowds out the prayers worth answering; the options are a longer cooldown, or a cause that is not new while an earlier petition about the same resource is still open.
+- **The scripted story fixes a race by policy.** The farmer's own routine walks it to the altar, so S4 stages the strike with a reply that strikes once Zeus's prompt shows the farmer at the tavern.
 
 ## Risks & Dependencies
 

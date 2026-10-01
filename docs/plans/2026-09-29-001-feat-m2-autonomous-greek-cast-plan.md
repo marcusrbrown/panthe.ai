@@ -489,6 +489,8 @@ Gate result (owner, 2026-09-30): replan. The owner rated all three llama3.2 3B e
 
 Replan (2026-10-01): the gate's replan is carried by `docs/plans/2026-10-01-001-feat-god-goals-plan.md` (origin `docs/brainstorms/2026-10-01-god-goals-requirements.md`): gods keep one private goal across turns and see their own recent actions, legends become public tellings that give every hearer a told memory, and the gate is rerun on llama3.2 3B and on Gemma 4 E4B with reasoning off, with per-god goal checks and a goal-privacy property added. Unit 9 starts only after that rerun earns an owner rating with no 0 in any episode and the decision continue.
 
+Replan 2 (2026-10-01): gate 2 failed on both models, and the next replan is `docs/plans/2026-10-01-002-feat-god-petitions-plan.md` (origin `docs/brainstorms/2026-10-01-god-petitions-requirements.md`): mortals pray at the altar about what happened to them, gods answer by striking or blessing, signs move affinity, a quiet-world director gives the world something to answer, and goals stick until a god has cause to change them. Gate 3 reruns on llama3.2 3B and on Gemma 4 E4B with reasoning off and is pending. Unit 9 still waits on an owner rating with no 0 in any episode and the decision continue.
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**
@@ -546,6 +548,8 @@ Replan (2026-10-01): the gate's replan is carried by `docs/plans/2026-10-01-001-
 **Verification:** tests; W09 traceability.
 
 - [ ] **Unit 12: Quiet-world director**
+
+**Covered by the petitions plan:** the director is built in the world tick, with the persisted PRNG, in `docs/plans/2026-10-01-002-feat-god-petitions-plan.md` Unit 5 (`packages/world/src/director.ts`), not as an agent-side proposer. What is left of this unit is its measurement in Unit 13: the director's trigger rate across a provider outage.
 
 **Goal:** a W10 director that adds attributed events without undoing consequences.
 

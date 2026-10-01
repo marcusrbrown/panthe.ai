@@ -28,6 +28,7 @@ import {
   type RejectionReasonCode,
   type WorldEvent,
 } from "@panthea/contracts";
+import { noteConsequential, planDirectorStep } from "./director";
 import {
   applyRecipe,
   creditActorInventory,
@@ -279,7 +280,10 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
   }
   // What an event leaves in a mortal's memory of causes, judged against the
   // world it happened in (a building's owner does not change with the event).
-  return { ...recordCauses(next, event), lastSequence: event.sequence };
+  return {
+    ...noteConsequential(recordCauses(next, event), event),
+    lastSequence: event.sequence,
+  };
 }
 
 /** Applies an ordered event stream to `state`, in order. */
@@ -600,13 +604,27 @@ export function runTick(
   );
   working = applyEvents(working, needEvents);
 
+  // The quiet-world director: after a quiet window it causes attributed
+  // trouble among mortals. It draws from the persisted PRNG after the fire
+  // step's, so replays choose the same trouble.
+  const directorStep = planDirectorStep(working, fireStep.prng, working.tick);
+  const directorEvents = directorStep.events.map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, directorEvents);
+
   // Rejected proposals' goal events were committed in queue order with the
   // rest; `events` lists them with the primary events, in sequence order.
   const proposalEvents = [
     ...committed.flatMap((record) => record.events),
     ...rejected.flatMap((record) => record.goalEvents),
   ].sort((a, b) => a.sequence - b.sequence);
-  const environmentEvents = [...incomeEvents, ...fireEvents, ...needEvents];
+  const environmentEvents = [
+    ...incomeEvents,
+    ...fireEvents,
+    ...needEvents,
+    ...directorEvents,
+  ];
 
   // Derivation phase: with the primary events numbered and applied, memories
   // and then the relationship changes they cause are derived and committed in
@@ -688,7 +706,7 @@ export function runTick(
   ];
   return {
     state: working,
-    prng: fireStep.prng,
+    prng: directorStep.prng,
     committed,
     rejected,
     environmentEvents,

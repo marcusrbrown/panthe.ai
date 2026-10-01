@@ -345,6 +345,8 @@ export interface WorldState {
   readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
   /** Every petition ever opened, by its event id. */
   readonly petitions: ReadonlyMap<EventId, Petition>;
+  /** The quiet-world director's timer: the tick of the last consequential event. */
+  readonly director: { readonly lastConsequentialTick: number };
   /** The building a mortal was last blessed planks for: its repair routine mends that one first. */
   readonly repairGrants: ReadonlyMap<EntityId, EntityId>;
   /** Numeric balance content (catch-up, fire, economy); never mutated by any event or by `runTick` itself. */
@@ -476,6 +478,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     causes: new Map(),
     petitions: new Map(),
     repairGrants: new Map(),
+    director: { lastConsequentialTick: 0 },
     rules: pack.rules,
     recipes: pack.recipes,
   };

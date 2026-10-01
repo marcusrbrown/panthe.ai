@@ -90,6 +90,7 @@ export interface EncodedWorldState {
   readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
   readonly petitions: readonly (readonly [EventId, Petition])[];
   readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
+  readonly director: { readonly lastConsequentialTick: number };
   readonly rules: WorldState["rules"];
   readonly recipes: WorldState["recipes"];
 }
@@ -139,6 +140,7 @@ export function encode(state: WorldState): EncodedWorldState {
     causes: [...state.causes.entries()],
     petitions: [...state.petitions.entries()],
     repairGrants: [...state.repairGrants.entries()],
+    director: state.director,
     rules: state.rules,
     recipes: state.recipes,
   };
@@ -1210,6 +1212,16 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   if (!grantEntries.ok) return grantEntries;
   const repairGrants = new Map(grantEntries.value);
 
+  if (!isRecord(value.director)) {
+    return fail("director", "expected the director's state");
+  }
+  const lastConsequentialTick = parseNonNegativeInteger(
+    value.director.lastConsequentialTick,
+    "director.lastConsequentialTick",
+  );
+  if (!lastConsequentialTick.ok) return lastConsequentialTick;
+  const director = { lastConsequentialTick: lastConsequentialTick.value };
+
   const rules = parseWorldRules(value.rules, "rules");
   if (!rules.ok) return rules;
 
@@ -1260,6 +1272,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     causes,
     petitions,
     repairGrants,
+    director,
     rules: rules.value,
     recipes: recipes.value,
   });

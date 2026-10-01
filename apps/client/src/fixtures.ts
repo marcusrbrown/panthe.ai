@@ -136,6 +136,7 @@ function worldOf(
     causes: new Map(),
     petitions: new Map(),
     repairGrants: new Map(),
+    director: { lastConsequentialTick: 0 },
     rules: RULES,
     recipes: {},
   };

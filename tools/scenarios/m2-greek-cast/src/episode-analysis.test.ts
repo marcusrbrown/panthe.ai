@@ -4,7 +4,15 @@ import {
   MIN_ACTIONS,
   REPETITION_CAP,
 } from "./episode-analysis";
-import { act, identities, input, memoryEvent, move } from "./episode-test-data";
+import {
+  act,
+  goalEndedEvent,
+  goalSetEvent,
+  identities,
+  input,
+  memoryEvent,
+  move,
+} from "./episode-test-data";
 
 const check = (
   episode: ReturnType<typeof analyzeEpisode>,
@@ -400,10 +408,178 @@ test("the episode is ok only when every check of every god holds", () => {
     teller: "zeus",
     content: "x",
   });
-  const ok = analyzeEpisode(input(good, [belief]), identities, ["zeus"]);
-  expect(ok.ok).toBe(true);
-  const bad = analyzeEpisode(input(good.slice(0, 4), [belief]), identities, [
+  const goals = [
+    goalSetEvent("evt-0-1", 1, "zeus"),
+    goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+  ];
+  const ok = analyzeEpisode(input(good, [belief, ...goals]), identities, [
     "zeus",
   ]);
+  expect(ok.ok).toBe(true);
+  const bad = analyzeEpisode(
+    input(good.slice(0, 4), [belief, ...goals]),
+    identities,
+    ["zeus"],
+  );
   expect(bad.ok).toBe(false);
+});
+
+// --- Goals ---------------------------------------------------------------------------------
+
+const GOAL_NAMES = ["goal set", "goal ended"] as const;
+const goalChecks = (episode: ReturnType<typeof analyzeEpisode>, god: string) =>
+  Object.fromEntries(
+    GOAL_NAMES.map((name) => [name, check(episode, god, name)?.ok]),
+  );
+
+test("goal checks: a god that set a goal and ended one, one by replacement, passes both", () => {
+  // Hera sets A, then sets B (A ends as abandoned), then ends B as achieved.
+  const events = [
+    goalSetEvent("evt-1-1", 1, "hera", "Win the farmer.", "farmer"),
+    goalEndedEvent("evt-2-2", 2, "hera", "evt-1-1", "abandoned"),
+    goalSetEvent("evt-2-3", 3, "hera", "Make Zeus admit it.", "zeus"),
+  ];
+  const replaced = analyzeEpisode(
+    input([move("hera", "a", 10)], events),
+    identities,
+    ["hera"],
+  );
+  expect(goalChecks(replaced, "hera")).toEqual({
+    "goal set": true,
+    "goal ended": true,
+  });
+  expect(check(replaced, "hera", "goal set")?.detail).toContain("2");
+  expect(check(replaced, "hera", "goal ended")?.detail).toContain("abandoned");
+});
+
+test("goal checks: a god that sets but never ends fails the end check only; one that never sets fails both; another god's goals do not count", () => {
+  const setOnly = analyzeEpisode(
+    input([move("hera", "a", 10)], [goalSetEvent("evt-1-1", 1, "hera")]),
+    identities,
+    ["hera"],
+  );
+  expect(goalChecks(setOnly, "hera")).toEqual({
+    "goal set": true,
+    "goal ended": false,
+  });
+
+  const none = analyzeEpisode(input([move("hera", "a", 10)]), identities, [
+    "hera",
+  ]);
+  expect(goalChecks(none, "hera")).toEqual({
+    "goal set": false,
+    "goal ended": false,
+  });
+
+  // Zeus's goals are Zeus's: Hera still has none.
+  const theirs = analyzeEpisode(
+    input(
+      [move("hera", "a", 10)],
+      [
+        goalSetEvent("evt-1-1", 1, "zeus"),
+        goalEndedEvent("evt-2-2", 2, "zeus", "evt-1-1"),
+      ],
+    ),
+    identities,
+    ["zeus", "hera"],
+  );
+  expect(goalChecks(theirs, "zeus")).toEqual({
+    "goal set": true,
+    "goal ended": true,
+  });
+  expect(goalChecks(theirs, "hera")).toEqual({
+    "goal set": false,
+    "goal ended": false,
+  });
+  expect(theirs.ok).toBe(false);
+});
+
+test("a goal-only proposal is not an action: it does not count toward activity or repetition, and still needs its model request", () => {
+  const moves = ["a", "b", "c", "d"].map((to, i) => move("zeus", to, i + 1));
+  const goalOnly = [5, 6, 7].map((n) =>
+    act(
+      "zeus",
+      { kind: "goal", goal: { set: { text: `Goal ${n}.`, target: "hera" } } },
+      n,
+    ),
+  );
+  const four = analyzeEpisode(input([...moves, ...goalOnly]), identities, [
+    "zeus",
+  ]);
+  // Four actions and three goal declarations: still four actions.
+  expect(four.gods[0]?.actions).toBe(4);
+  expect(check(four, "zeus", "minimum activity")?.ok).toBe(false);
+  expect(check(four, "zeus", "repetition")?.ok).toBe(true);
+  expect(check(four, "zeus", "profile trace")?.ok).toBe(true);
+  // Control: a fifth real action reaches the minimum.
+  const five = analyzeEpisode(
+    input([...moves, move("zeus", "e", 8), ...goalOnly]),
+    identities,
+    ["zeus"],
+  );
+  expect(check(five, "zeus", "minimum activity")?.ok).toBe(true);
+  // A goal-only proposal with no request fails the trace, as any proposal would.
+  const unrequested = act(
+    "zeus",
+    { kind: "goal", goal: { set: { text: "x", target: "hera" } } },
+    9,
+    { role: null },
+  );
+  expect(
+    check(
+      analyzeEpisode(input([...moves, unrequested]), identities, ["zeus"]),
+      "zeus",
+      "profile trace",
+    )?.ok,
+  ).toBe(false);
+});
+
+test("influence counts a told belief sourced from the god's own legend, for the narrator and not the hearer", () => {
+  const legend = act(
+    "hera",
+    {
+      kind: "legend",
+      assertion: "Zeus wronged me.",
+      hearers: ["farmer", "zeus"],
+    },
+    10,
+  );
+  const belief = memoryEvent("evt-10-11", 11, {
+    memoryKind: "told",
+    entityId: "zeus",
+    sourceEventId: legend.event.id,
+    teller: "hera",
+    content: "Zeus wronged me.",
+  });
+  const change = {
+    schemaVersion: 1,
+    id: "evt-10-12",
+    sequence: 12,
+    simTime: 0,
+    correlationId: "tick-10",
+    causationId: "x",
+    approximate: false,
+    kind: "relationship-changed",
+    entityId: "zeus",
+    toward: "hera",
+    affinityDelta: -1,
+    grudgeDelta: 0,
+    memoryEventId: belief.id,
+  };
+  const episode = analyzeEpisode(
+    input([legend, move("zeus", "a", 20)], [belief, change]),
+    identities,
+    ["hera", "zeus"],
+  );
+  expect(check(episode, "hera", "influence")?.ok).toBe(true);
+  expect(check(episode, "hera", "influence")?.detail).toContain("2 caused");
+  // Zeus heard it: his only link is being a hearer.
+  expect(check(episode, "zeus", "influence")?.ok).toBe(false);
+  // Control: without the legend among Hera's proposals, nothing is credited to her.
+  const without = analyzeEpisode(
+    input([move("hera", "a", 9)], [belief, change]),
+    identities,
+    ["hera"],
+  );
+  expect(check(without, "hera", "influence")?.ok).toBe(false);
 });

@@ -7,7 +7,15 @@ import {
   submitProposal,
 } from "@panthea/world";
 import { analyzeEpisode } from "./episode-analysis";
-import { act, identities, input, memoryEvent, move } from "./episode-test-data";
+import {
+  act,
+  goalEndedEvent,
+  goalSetEvent,
+  identities,
+  input,
+  memoryEvent,
+  move,
+} from "./episode-test-data";
 import { analyzeReal, type RealInput } from "./real-analysis";
 import {
   buildActions,
@@ -344,6 +352,8 @@ test("the summary covers every episode with each god's numbers and checks, and l
         teller: "zeus",
         content: "x",
       }),
+      goalSetEvent("evt-0-1", 1, "zeus"),
+      goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
     ],
   );
   const zeus = identities.get("zeus");
@@ -514,6 +524,8 @@ test("the summary does not say everything held when a real-run property failed, 
         teller: "zeus",
         content: "x",
       }),
+      goalSetEvent("evt-0-1", 1, "zeus"),
+      goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
     ],
   );
   const zeus = identities.get("zeus");
@@ -607,4 +619,204 @@ test("the repetition summary lists every distinct choice a god made, not the top
   // Control: a god with one choice lists one.
   const hera = text.split("\n").find((line) => line.startsWith("- Hera:"));
   expect(hera).toContain("Choices: none");
+});
+
+// --- Goals and legends --------------------------------------------------------------------------
+
+test("goal-set and goal-ended lines are rendered in order, and each action sits under the goal active when it was chosen", () => {
+  const beforeGoal = move("hera", "great-hall", 2);
+  const setGoal = act(
+    "hera",
+    {
+      kind: "goal",
+      goal: { set: { text: "Win the farmer's devotion.", target: "farmer" } },
+    },
+    4,
+  );
+  const duringA = move("hera", "town-square", 6);
+  const duringB = act(
+    "hera",
+    { kind: "report", listener: "farmer", content: "Be at peace." },
+    8,
+  );
+  const afterGoal = move("hera", "tavern", 12);
+  const ended = goalEndedEvent(
+    "evt-10-10",
+    10,
+    "hera",
+    setGoal.event.id,
+    "achieved",
+  );
+  const text = renderTranscript(
+    record([beforeGoal, setGoal, duringA, duringB, afterGoal], [ended]),
+  );
+  const blocks = actionBlocks(text);
+
+  expect(
+    blocks.map((b) =>
+      b.block
+        .split("\n")[0]
+        ?.replace(/^\d+\. \*\*/, "")
+        .split(":**")[1]
+        ?.trim(),
+    ),
+  ).toEqual([
+    "move → great-hall (context-backed)",
+    "goal set → farmer (declaration)",
+    "move → town-square (context-backed)",
+    "report → farmer (context-backed)",
+    "goal ended (achieved) (declaration)",
+    "move → tavern (context-backed)",
+  ]);
+  expect(blocks[1]?.block).toContain('"Win the farmer\'s devotion."');
+  expect(blocks[4]?.block).toContain('"Win the farmer\'s devotion."');
+  // Before the goal and after its end: no goal. Between: under it.
+  expect(blocks[0]?.block).not.toContain("under goal");
+  expect(blocks[2]?.block).toContain(
+    'under goal: "Win the farmer\'s devotion." (→ farmer)',
+  );
+  expect(blocks[3]?.block).toContain(
+    'under goal: "Win the farmer\'s devotion." (→ farmer)',
+  );
+  expect(blocks[5]?.block).not.toContain("under goal");
+  // The declaration is not an action: the goal-only proposal has no action line of its own.
+  expect(blocks.filter((b) => b.block.includes("(declaration)"))).toHaveLength(
+    2,
+  );
+});
+
+test("an action that carries a goal change is chosen under the old goal, and the new goal's line follows it", () => {
+  const first = act(
+    "zeus",
+    { kind: "goal", goal: { set: { text: "Calm the sky.", target: "hera" } } },
+    2,
+  );
+  // One turn: a move, and a replacement goal (the old one ends as abandoned).
+  const turn = move("zeus", "olympus-gate", 5);
+  const abandoned = goalEndedEvent(
+    "evt-5-6",
+    6,
+    "zeus",
+    first.event.id,
+    "abandoned",
+  );
+  const replacement = {
+    ...goalSetEvent("evt-5-7", 7, "zeus", "Punish the farmer.", "farmer"),
+    correlationId: turn.proposal.observationId,
+  };
+  const blocks = actionBlocks(
+    renderTranscript(
+      record(
+        [first, turn],
+        [
+          { ...abandoned, correlationId: turn.proposal.observationId },
+          replacement,
+        ],
+      ),
+    ),
+  );
+  const lines = blocks.map((b) =>
+    b.block.split("\n")[0]?.split(":**")[1]?.trim(),
+  );
+  expect(lines).toEqual([
+    "goal set → hera (declaration)",
+    "move → olympus-gate (context-backed)",
+    "goal ended (abandoned) (declaration)",
+    "goal set → farmer (declaration)",
+  ]);
+  expect(blocks[1]?.block).toContain('under goal: "Calm the sky." (→ hera)');
+  // The goal events do not clutter the move's caused list.
+  expect(blocks[1]?.block).not.toContain("goal-set");
+});
+
+test("a legend's entry lists who heard it and each hearer's belief and feeling, with the narrator, not the hearer, credited", () => {
+  const legend = act(
+    "hera",
+    {
+      kind: "legend",
+      assertion: "Zeus has wronged me.",
+      hearers: ["farmer", "zeus"],
+      claim: { effect: "harm", agent: "zeus", target: "hera" },
+    },
+    10,
+  );
+  const farmerBelief = memoryEvent("evt-10-11", 11, {
+    memoryKind: "told",
+    entityId: "farmer",
+    sourceEventId: legend.event.id,
+    teller: "hera",
+    content: "Zeus has wronged me.",
+    consequence: { effect: "harm", agent: "zeus", target: "hera" },
+  });
+  const farmerFeeling = {
+    schemaVersion: 1,
+    id: "evt-10-12",
+    sequence: 12,
+    simTime: 0,
+    correlationId: "tick-10",
+    causationId: "x",
+    approximate: false,
+    kind: "relationship-changed",
+    entityId: "farmer",
+    toward: "zeus",
+    affinityDelta: -1,
+    grudgeDelta: 0,
+    memoryEventId: farmerBelief.id,
+  };
+  const text = renderTranscript(
+    record([legend], [farmerBelief, farmerFeeling]),
+  );
+  const [entry] = actionBlocks(text);
+  expect(entry?.god).toBe("Hera");
+  expect(entry?.block).toContain("legend (ability-backed)");
+  expect(entry?.block).toContain('says: "Zeus has wronged me."');
+  expect(entry?.block).toContain("heard by: farmer, zeus");
+  expect(entry?.block).toContain(
+    'farmer now believes hera: "Zeus has wronged me."',
+  );
+  expect(entry?.block).toContain("farmer → zeus: affinity -1");
+  // Control: a legend with no one present says so.
+  const alone = act(
+    "hera",
+    { kind: "legend", assertion: "To no one.", hearers: [] },
+    20,
+  );
+  expect(actionBlocks(renderTranscript(record([alone])))[0]?.block).toContain(
+    "heard by: no one",
+  );
+});
+
+test("the summary shows each god's goals set and ended", () => {
+  const acts = ["a", "b", "c", "d", "e"].map((to, i) =>
+    move("zeus", to, i + 1),
+  );
+  const withGoals = record(acts, [
+    goalSetEvent("evt-0-1", 1, "zeus"),
+    goalEndedEvent("evt-0-2", 2, "zeus", "evt-0-1"),
+  ]);
+  const text = renderSummary([withGoals], {
+    seconds: 60,
+    model: "m",
+    files: ["episode-1.md"],
+  });
+  expect(text).toContain("Goals set / ended");
+  expect(text).toMatch(/\| 1 \| Zeus \|[^\n]*\| 1 \/ 1 \|/);
+  // Control: with none, it says 0 / 0 and names the failed checks.
+  const none = renderSummary([record(acts)], {
+    seconds: 60,
+    model: "m",
+    files: ["episode-1.md"],
+  });
+  expect(none).toMatch(/\| 1 \| Zeus \|[^\n]*\| 0 \/ 0 \|/);
+  expect(none).toContain("goal set");
+});
+
+test("the model-run block states the prompt size against the 4K budget", () => {
+  const data = record([move("zeus", "a", 1)]);
+  const withPrompts = {
+    ...data,
+    analysis: { ...data.analysis, promptChars: { p50: 3900, max: 4800 } },
+  };
+  const text = renderTranscript(withPrompts);
+  expect(text).toContain("prompt p50 3900 / max 4800 characters");
 });

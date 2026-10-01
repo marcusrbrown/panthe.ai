@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { goalSetEvent } from "./episode-test-data";
 import {
   analyzeReal,
   namedIds,
@@ -393,4 +394,107 @@ test("latency and outcome numbers come from the requests: percentiles, native ve
     },
   ]);
   expect(analysis.degradedShare).toBe(0.25);
+});
+
+// --- Goals ---------------------------------------------------------------------------------
+
+const HERA_GOAL = "Make Zeus admit his deceit.";
+
+const heraGoal = () => goalSetEvent("evt-1-1", 1, "hera", HERA_GOAL, "zeus");
+
+/** A request made for `role`, shown `prompt`. */
+const asked = (role: string, prompt: string): RealRequest => ({
+  proposalId: undefined,
+  role,
+  outcome: "intent",
+  elapsedMs: 1000,
+  promptPayload: prompt,
+  steps: [{ mode: "native" }],
+});
+
+test("goal privacy fails when another god's goal text appears in a prompt outside an account it was told; names the god and the goal", () => {
+  const leaked = base({
+    events: [heraGoal()] as never,
+    requests: [
+      asked(
+        "zeus",
+        `You are Zeus.\nYou have heard: ${HERA_GOAL}\nWhat do you do?`,
+      ),
+    ],
+  });
+  const result = property(leaked, "goal privacy");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("zeus");
+  expect(result?.detail).toContain("hera");
+});
+
+test("goal privacy passes when Hera reports her goal and her words appear in Zeus's remembered account of it, and when they appear nowhere", () => {
+  const told = base({
+    events: [heraGoal()] as never,
+    requests: [
+      asked(
+        "zeus",
+        `You remember:\n- hera told you: "${HERA_GOAL}" (claiming hera harmed zeus)\nWhat do you do?`,
+      ),
+    ],
+  });
+  expect(property(told, "goal privacy")?.ok).toBe(true);
+  const absent = base({
+    events: [heraGoal()] as never,
+    requests: [asked("zeus", "You are Zeus.\nWhat do you do?")],
+  });
+  expect(property(absent, "goal privacy")?.ok).toBe(true);
+});
+
+test("goal privacy: a god's own prompt may show its own goal; the same text outside a told line in another's prompt is a leak even if one told line also carries it", () => {
+  const own = base({
+    events: [heraGoal()] as never,
+    requests: [asked("hera", `Your goal: "${HERA_GOAL}" (target zeus, here).`)],
+  });
+  expect(property(own, "goal privacy")?.ok).toBe(true);
+  const both = base({
+    events: [heraGoal()] as never,
+    requests: [
+      asked(
+        "zeus",
+        `You remember:\n- hera told you: "${HERA_GOAL}"\nSomething else: ${HERA_GOAL}`,
+      ),
+    ],
+  });
+  expect(property(both, "goal privacy")?.ok).toBe(false);
+  // Control: with no goals set there is nothing to leak, and the property still reports.
+  expect(
+    property(base({ requests: [asked("zeus", "x")] }), "goal privacy")?.ok,
+  ).toBe(true);
+});
+
+test("a goal-only proposal is a valid god action, and the goal's target must be in the prompt like any named id", () => {
+  const prompt = "Here with you:\n- hera (a god)";
+  const goalOnly = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "zeus", {
+        kind: "goal",
+        goal: { set: { text: "Win her.", target: "hera" } },
+      }),
+    ],
+  });
+  expect(property(goalOnly, "valid actions")?.ok).toBe(true);
+  expect(property(goalOnly, "perception compliance")?.ok).toBe(true);
+  expect(
+    namedIds({ kind: "goal", goal: { set: { text: "t", target: "hera" } } }),
+  ).toEqual(["hera"]);
+  // Control: a goal target absent from the prompt is flagged.
+  const unseen = base({
+    requests: [request("p1", prompt)],
+    proposals: [
+      proposal("p1", "zeus", {
+        kind: "goal",
+        goal: { set: { text: "Hunt him.", target: "the-woodcutter" } },
+      }),
+    ],
+  });
+  const result = property(unseen, "perception compliance");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("the-woodcutter");
 });

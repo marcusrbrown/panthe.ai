@@ -10,6 +10,7 @@
 import {
   createObservationId,
   type EntityId,
+  type GoalProposal,
   type ObservationRecord,
   type Proposal,
   type ProposalBase,
@@ -66,7 +67,11 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown
   : never;
 
 /** The proposal-kind-specific fields a candidate contributes; the shared envelope fields are filled in once the winning candidate is chosen. */
-type ProposalDetails = DistributiveOmit<Proposal, keyof ProposalBase>;
+/** What a routine decides: any action. A routine never changes a goal, so the goal-only kind is not among them. */
+type ProposalDetails = DistributiveOmit<
+  Exclude<Proposal, GoalProposal>,
+  keyof ProposalBase
+>;
 
 interface Candidate {
   readonly utility: number;

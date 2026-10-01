@@ -207,6 +207,11 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "relationship-changed":
       next = applyRelationshipChanged(state, event);
       break;
+    case "goal-set":
+    case "goal-ended":
+      // The active-goal projection arrives with the tick that records them (Unit 2).
+      next = state;
+      break;
     default: {
       const exhaustiveCheck: never = event;
       throw new Error(

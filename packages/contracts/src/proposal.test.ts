@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { MAX_REPORT_LENGTH } from "./event";
+import { MAX_GOAL_LENGTH, MAX_REPORT_LENGTH } from "./event";
 import {
   PROPOSAL_KINDS,
   parseObservationRecord,
@@ -481,4 +481,114 @@ test("report text is bounded: exactly the limit is accepted, one more is rejecte
   expect(report("x".repeat(MAX_REPORT_LENGTH)).ok).toBe(true);
   expect(report("x".repeat(MAX_REPORT_LENGTH + 1)).ok).toBe(false);
   expect(MAX_REPORT_LENGTH).toBe(280);
+});
+
+// --- Goals ---------------------------------------------------------------------------------
+
+const GOAL_SET = {
+  set: { text: "Win the farmer's devotion.", target: "farmer" },
+};
+
+test("a proposal may carry a goal set, alongside its action", () => {
+  const result = parseProposal(
+    base({ kind: "move", to: "tavern", goal: GOAL_SET }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.goal as unknown).toEqual(GOAL_SET);
+  }
+  // Without a goal the field is absent: existing proposals are unchanged.
+  const plain = parseProposal(base({ kind: "move", to: "tavern" }));
+  expect(plain.ok && "goal" in plain.value).toBe(false);
+});
+
+test("a proposal may carry a goal end with each outcome, and both an end and a set", () => {
+  for (const outcome of ["achieved", "failed", "abandoned"]) {
+    const result = parseProposal(
+      base({ kind: "move", to: "tavern", goal: { end: { outcome } } }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.goal as unknown).toEqual({ end: { outcome } });
+    }
+  }
+  const both = parseProposal(
+    base({
+      kind: "report",
+      listener: "hera",
+      content: "x",
+      goal: { end: { outcome: "achieved" }, ...GOAL_SET },
+    }),
+  );
+  expect(both.ok).toBe(true);
+  if (both.ok) {
+    expect(both.value.goal as unknown).toEqual({
+      end: { outcome: "achieved" },
+      ...GOAL_SET,
+    });
+  }
+});
+
+test("a goal-only proposal parses, and needs its goal", () => {
+  const result = parseProposal(base({ kind: "goal", goal: GOAL_SET }));
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "goal") {
+    expect(result.value.goal as unknown).toEqual(GOAL_SET);
+  }
+  expect(parseProposal(base({ kind: "goal" })).ok).toBe(false);
+  expect(PROPOSAL_KINDS).toContain("goal");
+});
+
+test("a goal change with empty or over-long text, an unknown outcome, no target, or neither an end nor a set is rejected", () => {
+  const withGoal = (goal: unknown) =>
+    parseProposal(base({ kind: "move", to: "tavern", goal })).ok;
+  expect(
+    withGoal({ set: { text: "x".repeat(MAX_GOAL_LENGTH), target: "farmer" } }),
+  ).toBe(true);
+  expect(withGoal({ set: { text: "", target: "farmer" } })).toBe(false);
+  expect(withGoal({ set: { text: "   ", target: "farmer" } })).toBe(false);
+  expect(
+    withGoal({
+      set: { text: "x".repeat(MAX_GOAL_LENGTH + 1), target: "farmer" },
+    }),
+  ).toBe(false);
+  expect(withGoal({ set: { text: "ok" } })).toBe(false);
+  expect(withGoal({ set: { text: "ok", target: 7 } })).toBe(false);
+  expect(withGoal({ end: { outcome: "won" } })).toBe(false);
+  expect(withGoal({ end: {} })).toBe(false);
+  expect(withGoal({})).toBe(false);
+  expect(withGoal("achieved")).toBe(false);
+  expect(withGoal(null)).toBe(false);
+});
+
+// --- A legend's claim -------------------------------------------------------------------------
+
+test("a legend proposal may carry a claim shaped like a report's, and a malformed claim is rejected", () => {
+  const result = parseProposal(
+    base({
+      kind: "legend",
+      assertion: "Zeus cheated me.",
+      claim: { effect: "harm", agent: "zeus", target: "hera" },
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "legend") {
+    expect(result.value.claim as unknown).toEqual({
+      effect: "harm",
+      agent: "zeus",
+      target: "hera",
+    });
+  }
+  // Without one the field is absent.
+  const plain = parseProposal(base({ kind: "legend", assertion: "x" }));
+  expect(plain.ok && "claim" in plain.value).toBe(false);
+  for (const claim of [
+    { effect: "worship", agent: "zeus" },
+    { effect: "harm" },
+    "zeus harmed hera",
+  ]) {
+    expect(
+      parseProposal(base({ kind: "legend", assertion: "x", claim })).ok,
+    ).toBe(false);
+  }
 });

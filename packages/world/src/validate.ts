@@ -529,6 +529,8 @@ function handleLegend(
       ...(proposal.linkedEventId
         ? { linkedEventId: proposal.linkedEventId }
         : {}),
+      // The audience is fixed here at execution (Unit 3); none until then.
+      hearers: [],
     },
   ]);
 }
@@ -657,6 +659,9 @@ export function validateProposal(
       return handleLegend(state, proposal);
     case "report":
       return handleReport(state, proposal);
+    case "goal":
+      // A goal-only proposal has no action; its goal events are recorded by the tick.
+      return commit([]);
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

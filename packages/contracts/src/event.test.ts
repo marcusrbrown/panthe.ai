@@ -4,8 +4,10 @@ import {
   eventCause,
   eventSubjects,
   LATEST_EVENT_SCHEMA_VERSION,
+  MAX_GOAL_LENGTH,
   MAX_REPORT_LENGTH,
   parseEvent,
+  UNPLACED_EVENT_KINDS,
   WITNESSED_EVENT_KINDS,
   WORLD_EVENT_KINDS,
   type WorldEvent,
@@ -389,6 +391,7 @@ test("a legend-recorded event carries an attributed assertion and, optionally, a
       kind: "legend-recorded",
       entityId: "bard",
       assertion: "Zeus struck down the old oak",
+      hearers: [],
     }),
   );
   expect(unlinked.ok).toBe(true);
@@ -408,6 +411,7 @@ test("a legend-recorded event carries an attributed assertion and, optionally, a
       entityId: "bard",
       assertion: "Zeus destroyed the entire Underworld",
       linkedEventId: "evt-9",
+      hearers: [],
     }),
   );
   expect(linked.ok).toBe(true);
@@ -424,6 +428,7 @@ test("a legend-recorded event with a non-string linkedEventId is rejected", () =
       entityId: "bard",
       assertion: "Zeus struck down the old oak",
       linkedEventId: 9,
+      hearers: [],
     }),
   );
   expect(result.ok).toBe(false);
@@ -549,7 +554,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(18);
+  expect(WORLD_EVENT_KINDS).toHaveLength(20);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -981,5 +986,190 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 3);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 5);
+});
+
+// --- Legend tellings: a claim and the recorded hearers ------------------------------------
+
+test("a legend-recorded event records who heard it and may carry a claim shaped like a report's", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "legend-recorded",
+      entityId: "hera",
+      assertion: "Zeus cheated me.",
+      claim: { effect: "harm", agent: "zeus", target: "hera" },
+      hearers: ["farmer", "zeus"],
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "legend-recorded") {
+    expect(result.value.hearers.map(String)).toEqual(["farmer", "zeus"]);
+    expect(result.value.claim as unknown).toEqual({
+      effect: "harm",
+      agent: "zeus",
+      target: "hera",
+    });
+  }
+  // A legend told to no one is still a legend: an empty audience is valid.
+  expect(
+    parseEvent(
+      envelope({
+        kind: "legend-recorded",
+        entityId: "hera",
+        assertion: "Alone.",
+        hearers: [],
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a legend-recorded event without its hearers, or with a malformed hearer list or claim, is rejected", () => {
+  const good = {
+    kind: "legend-recorded",
+    entityId: "hera",
+    assertion: "x",
+    hearers: ["farmer"],
+  };
+  expect(parseEvent(envelope(good)).ok).toBe(true);
+  for (const overrides of [
+    { hearers: undefined },
+    { hearers: "farmer" },
+    { hearers: [3] },
+    { claim: { effect: "worship", agent: "zeus" } },
+    { claim: { effect: "harm" } },
+  ]) {
+    expect(parseEvent(envelope({ ...good, ...overrides })).ok).toBe(false);
+  }
+});
+
+// --- Goal events ---------------------------------------------------------------------------
+
+test("a goal-set event names the god, its words, and its one target", () => {
+  const result = parseEvent(
+    envelope({
+      kind: "goal-set",
+      entityId: "hera",
+      text: "Make Zeus admit his deceit.",
+      target: "zeus",
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "goal-set") {
+    expect(result.value.text).toBe("Make Zeus admit his deceit.");
+    expect(String(result.value.target)).toBe("zeus");
+  }
+});
+
+test("a goal-ended event names the god, the outcome, and the goal-set event it ends", () => {
+  for (const outcome of ["achieved", "failed", "abandoned"]) {
+    const result = parseEvent(
+      envelope({
+        kind: "goal-ended",
+        entityId: "hera",
+        outcome,
+        goalEventId: "evt-3",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok && result.value.kind === "goal-ended") {
+      expect(result.value.outcome as string).toBe(outcome);
+      expect(String(result.value.goalEventId)).toBe("evt-3");
+    }
+  }
+});
+
+test("goal events with empty or over-long text, an unknown outcome, or a missing field are rejected", () => {
+  const set = {
+    kind: "goal-set",
+    entityId: "hera",
+    text: "Win the farmer's devotion.",
+    target: "farmer",
+  };
+  expect(parseEvent(envelope(set)).ok).toBe(true);
+  expect(
+    parseEvent(envelope({ ...set, text: "x".repeat(MAX_GOAL_LENGTH) })).ok,
+  ).toBe(true);
+  for (const overrides of [
+    { text: "" },
+    { text: "x".repeat(MAX_GOAL_LENGTH + 1) },
+    { text: undefined },
+    { target: undefined },
+    { entityId: undefined },
+  ]) {
+    expect(parseEvent(envelope({ ...set, ...overrides })).ok).toBe(false);
+  }
+  const ended = {
+    kind: "goal-ended",
+    entityId: "hera",
+    outcome: "achieved",
+    goalEventId: "evt-3",
+  };
+  expect(parseEvent(envelope(ended)).ok).toBe(true);
+  for (const overrides of [
+    { outcome: "won" },
+    { outcome: undefined },
+    { goalEventId: undefined },
+  ]) {
+    expect(parseEvent(envelope({ ...ended, ...overrides })).ok).toBe(false);
+  }
+});
+
+test("goal events are private and unplaced: in the unplaced set, out of the witnessed set; and a legend stays witnessable", () => {
+  for (const kind of ["goal-set", "goal-ended"]) {
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+    // A witnessed memory cannot name them.
+    expect(
+      parseEvent(
+        envelope({
+          kind: "memory-recorded",
+          memoryKind: "witnessed",
+          entityId: "farmer",
+          sourceEventId: "evt-2",
+          eventKind: kind,
+          subjects: [],
+          salience: 4,
+        }),
+      ).ok,
+    ).toBe(false);
+  }
+  // Control: the legend event is placed and witnessable.
+  expect(UNPLACED_EVENT_KINDS as readonly string[]).not.toContain(
+    "legend-recorded",
+  );
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).toContain(
+    "legend-recorded",
+  );
+});
+
+test("a goal-ended event follows the goal it ends; a goal-set is a root; subjects name the god and the target", () => {
+  const events = new Map<string, WorldEvent>();
+  for (const [index, overrides] of [
+    {
+      kind: "goal-set",
+      entityId: "hera",
+      text: "Win devotion.",
+      target: "farmer",
+    },
+    {
+      kind: "goal-ended",
+      entityId: "hera",
+      outcome: "abandoned",
+      goalEventId: "evt-1",
+    },
+  ].entries()) {
+    const event = parsedEvent({
+      id: `evt-${index + 1}`,
+      sequence: index + 1,
+      ...overrides,
+    });
+    events.set(event.id, event);
+  }
+  const set = events.get("evt-1");
+  const ended = events.get("evt-2");
+  if (!set || !ended) throw new Error("fixture");
+  expect(eventCause(set)).toBeUndefined();
+  expect(String(eventCause(ended))).toBe("evt-1");
+  expect(subjectsOf(set)).toEqual(["hera", "farmer"]);
+  expect(subjectsOf(ended)).toEqual(["hera"]);
 });

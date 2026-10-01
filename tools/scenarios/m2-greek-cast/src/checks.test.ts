@@ -5,6 +5,7 @@ import {
   isWait,
   type RememberedView,
   tracesIn,
+  withoutPrayers,
 } from "./checks";
 
 test("tracesIn finds exactly the traces a prompt carries, and none when it carries none", () => {
@@ -152,4 +153,71 @@ test("explainChain walks a relationship change back through its memory and the r
       "evt-2-4",
     ),
   ).toEqual(["relationship-changed"]);
+});
+
+test("withoutPrayers removes exactly the prayers section of a prompt: its header, its entries and their sub-lines, and nothing after", () => {
+  const prompt = [
+    "You are at Hall.",
+    "Prayers to you:",
+    "- [evt-1-2] farmer asks for help with the-tavern (the-tavern burned).",
+    "  farmer at Town Square [town-square]: take Gates of Olympus [olympus-gate] toward Town Square.",
+    "- [evt-3-4] woodcutter asks for help with food (it lacked food).",
+    "You have no goal. You may set one.",
+    "Ways out:",
+  ].join("\n");
+  expect(withoutPrayers(prompt)).toBe(
+    [
+      "You are at Hall.",
+      "You have no goal. You may set one.",
+      "Ways out:",
+    ].join("\n"),
+  );
+  // Control: a prompt with none is unchanged, and the same words elsewhere are not removed.
+  expect(withoutPrayers("You are at Hall.\nWays out:")).toBe(
+    "You are at Hall.\nWays out:",
+  );
+  const elsewhere =
+    "You saw [evt-1-1] building-ignited (the-tavern)\nWays out:";
+  expect(withoutPrayers(elsewhere)).toBe(elsewhere);
+  expect(tracesIn(withoutPrayers(prompt), ["the-tavern"])).toEqual([]);
+  expect(tracesIn(prompt, ["the-tavern"])).toEqual(["the-tavern"]);
+});
+
+test("differences can be limited to some owners: a change in someone else's memory or feeling is not reported, and one in a listed owner's is", () => {
+  const live = view(
+    [
+      ["hera", [memory("evt-5-1")]],
+      ["farmer", [memory("evt-6-1")]],
+    ],
+    [
+      ["hera>zeus", relationship(-1)],
+      ["farmer>zeus", relationship(-2)],
+    ],
+  );
+  const later = view(
+    [
+      ["hera", [memory("evt-5-1")]],
+      ["farmer", [memory("evt-6-1"), memory("evt-9-9")]],
+    ],
+    [
+      ["hera>zeus", relationship(-1)],
+      ["farmer>zeus", relationship(-5)],
+    ],
+  );
+  expect(differences(live, later)).toEqual([
+    "memories of farmer differ",
+    "relationship farmer>zeus differs",
+  ]);
+  expect(differences(live, later, ["hera", "zeus"])).toEqual([]);
+  // Control: a change in a listed owner is still caught.
+  const heraLost = view(
+    [
+      ["hera", []],
+      ["farmer", [memory("evt-6-1")]],
+    ],
+    [["hera>zeus", relationship(-1)]],
+  );
+  expect(differences(live, heraLost, ["hera"])).toEqual([
+    "memories of hera differ",
+  ]);
 });

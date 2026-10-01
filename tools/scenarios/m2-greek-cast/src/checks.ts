@@ -31,15 +31,19 @@ export interface RememberedView {
 /**
  * How `branch` differs from `live` in what anyone remembers or feels: one
  * line per actor whose memories differ and per relationship that differs or is
- * missing on either side. Empty when a restore kept both exactly.
+ * missing on either side. Empty when a restore kept both exactly. `only`
+ * limits the comparison to those owners (and the feelings they hold).
  */
 export function differences(
   live: RememberedView,
   branch: RememberedView,
+  only?: readonly string[],
 ): readonly string[] {
   const found: string[] = [];
+  const counted = (owner: string) => only === undefined || only.includes(owner);
   const owners = new Set([...live.memories.keys(), ...branch.memories.keys()]);
   for (const owner of [...owners].sort()) {
+    if (!counted(owner)) continue;
     if (
       canonicalJson(live.memories.get(owner) ?? []) !==
       canonicalJson(branch.memories.get(owner) ?? [])
@@ -52,6 +56,7 @@ export function differences(
     ...branch.relationships.keys(),
   ]);
   for (const key of [...keys].sort()) {
+    if (!counted(key.split(">")[0] ?? "")) continue;
     if (
       canonicalJson(live.relationships.get(key)) !==
       canonicalJson(branch.relationships.get(key))
@@ -82,4 +87,25 @@ export function explainChain(
   return causalChain((id) => parsed.get(id), eventId as WorldEvent["id"]).map(
     (event) => event.kind,
   );
+}
+
+/**
+ * A prompt without its "Prayers to you:" section: the header, each entry
+ * ("- ..."), and each entry's indented lines. A god hears prayers addressed to
+ * it by the divine sense, wherever it is, so what a prayer says is not a trace
+ * of an event the god perceived; everything outside the section still is.
+ */
+export function withoutPrayers(prompt: string): string {
+  const kept: string[] = [];
+  let inPrayers = false;
+  for (const line of prompt.split("\n")) {
+    if (line === "Prayers to you:") {
+      inPrayers = true;
+      continue;
+    }
+    if (inPrayers && (line.startsWith("- ") || line.startsWith("  "))) continue;
+    inPrayers = false;
+    kept.push(line);
+  }
+  return kept.join("\n");
 }

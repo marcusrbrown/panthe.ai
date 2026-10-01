@@ -100,3 +100,33 @@ test("the Greek pack states the petition tunables the world rules default to, so
   if (!pack.ok) throw new Error(pack.message);
   expect(pack.value.rules.petitionBalance).toEqual(DEFAULT_PETITION_BALANCE);
 });
+
+test("PANTHEA_PETITION_BALANCE overrides petition tunables over the authored ones, and anything invalid is refused", () => {
+  const authored = loadEmbeddedGreekWorldPack({});
+  if (!authored.ok) throw new Error(authored.message);
+  const quiet = loadEmbeddedGreekWorldPack({
+    PANTHEA_PETITION_BALANCE: JSON.stringify({ directorQuietTicks: 100000 }),
+  });
+  if (!quiet.ok) throw new Error(quiet.message);
+  expect(quiet.value.rules.petitionBalance).toEqual({
+    ...authored.value.rules.petitionBalance,
+    directorQuietTicks: 100000,
+  });
+  // Without it, or empty, the authored tunables stand.
+  const unset = loadEmbeddedGreekWorldPack({ PANTHEA_PETITION_BALANCE: "" });
+  expect(unset.ok && unset.value.rules.petitionBalance).toEqual(
+    authored.value.rules.petitionBalance,
+  );
+  // Control: a tunable that does not exist, a non-positive value, and text that is not JSON are refused.
+  for (const bad of [
+    '{"directorQuiet": 5}',
+    '{"directorQuietTicks": 0}',
+    "not json",
+    "[1]",
+  ]) {
+    const result = loadEmbeddedGreekWorldPack({
+      PANTHEA_PETITION_BALANCE: bad,
+    });
+    expect(result.ok).toBe(false);
+  }
+});

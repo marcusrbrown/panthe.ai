@@ -40,6 +40,8 @@ const CONTROL_SABOTAGE: Readonly<Record<ControlName, string>> = {
     "The harness skips the fixture that moves Hera while her turn is in flight, so the world is unchanged and the proposal commits instead of being rejected.",
   "catch-up-inference":
     "The harness sends the provider a request inside the restart's catch-up window, as a god's turn would.",
+  "petition-privacy":
+    "The harness injects a petition addressed to Hera into the last prompt Zeus was shown, as if the divine sense leaked to the other god.",
   "restore-memory":
     "The harness drops Hera's memory and feeling from the export it is about to restore and recomputes its hash. Import rebuilds the world from the archive's event log and requires it to equal the archived projection, so the archive is refused at the import step, before any comparison of the restored branch.",
 };

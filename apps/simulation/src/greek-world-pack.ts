@@ -35,12 +35,47 @@ function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+/**
+ * The authored rules, with the petition tunables overridden by
+ * `env.PANTHEA_PETITION_BALANCE` (a JSON object of tunable names to numbers)
+ * when set. The result goes through the same strict parser as authored content,
+ * so an unknown name or an invalid value refuses the pack.
+ */
+function rulesWithOverrides(
+  rules: Record<string, unknown>,
+  env: NodeJS.ProcessEnv,
+): Record<string, unknown> {
+  const raw = env.PANTHEA_PETITION_BALANCE;
+  if (!raw) return rules;
+  let overrides: unknown;
+  try {
+    overrides = JSON.parse(raw);
+  } catch {
+    return {
+      ...rules,
+      rules: { ...asRecord(rules.rules), petitionBalance: raw },
+    };
+  }
+  const authored = asRecord(asRecord(rules.rules).petitionBalance);
+  return {
+    ...rules,
+    rules: {
+      ...asRecord(rules.rules),
+      petitionBalance: isRecord(overrides)
+        ? { ...authored, ...overrides }
+        : overrides,
+    },
+  };
+}
+
 /** Parses the embedded Greek pack. Never touches the filesystem. */
-export function loadEmbeddedGreekWorldPack(): ParseResult<ContentPack> {
+export function loadEmbeddedGreekWorldPack(
+  env: NodeJS.ProcessEnv = process.env,
+): ParseResult<ContentPack> {
   const locations = asRecord(locationsFile);
   const buildings = asRecord(buildingsFile);
   const inhabitants = asRecord(inhabitantsFile);
-  const rules = asRecord(rulesFile);
+  const rules = rulesWithOverrides(asRecord(rulesFile), env);
 
   const merged = {
     schemaVersion: locations.schemaVersion,

@@ -203,6 +203,81 @@ test("stepWorldTick counts a goal-only proposal against its own cap, so it never
   expect(bounded.overflow).toEqual([flood[1] as QueuedProposal]);
 });
 
+test("an action that overflows the action cap still commits its goal change while goal capacity remains; the action stays over-limit", () => {
+  const state = loadGreekWorldState();
+  const zeusLegend = manualProposal("zeus", {
+    kind: "legend",
+    assertion: "I speak first.",
+  });
+  const heraLegend = manualProposal("hera", {
+    kind: "legend",
+    assertion: "I speak second.",
+    goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    zeusLegend,
+    heraLegend,
+  ]);
+  expect(outcome.admitted).toEqual([zeusLegend]);
+  expect(outcome.overflow).toEqual([heraLegend]);
+  // Hera's action did not run, and her goal did.
+  expect(
+    outcome.result.events.filter((e) => e.kind === "legend-recorded"),
+  ).toHaveLength(1);
+  const goal = outcome.result.events.filter((e) => e.kind === "goal-set");
+  expect(goal).toHaveLength(1);
+  expect(String(outcome.result.state.goals.get(toEntityId("hera"))?.text)).toBe(
+    "Make Zeus admit his deceit.",
+  );
+  expect(outcome.overflowGoalEvents.get(heraLegend)?.map((e) => e.id)).toEqual(
+    goal.map((e) => e.id),
+  );
+  // The goal belongs to Hera's own observation.
+  expect(String(goal[0]?.correlationId)).toBe(
+    String(heraLegend.proposal.observationId),
+  );
+});
+
+test("control: when the goal capacity is also full, an overflowing action's goal overflows with it", () => {
+  const state = loadGreekWorldState();
+  const zeusLegend = manualProposal("zeus", {
+    kind: "legend",
+    assertion: "I speak first.",
+  });
+  const zeusGoal = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Calm the sky.", target: "hera" } },
+  });
+  const heraLegend = manualProposal("hera", {
+    kind: "legend",
+    assertion: "I speak second.",
+    goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    zeusLegend,
+    zeusGoal,
+    heraLegend,
+  ]);
+  expect(outcome.admitted).toEqual([zeusLegend, zeusGoal]);
+  expect(outcome.overflow).toEqual([heraLegend]);
+  expect(outcome.overflowGoalEvents.get(heraLegend)).toBeUndefined();
+  expect(outcome.result.state.goals.get(toEntityId("hera"))).toBeUndefined();
+  // Zeus's own goal did commit.
+  expect(String(outcome.result.state.goals.get(toEntityId("zeus"))?.text)).toBe(
+    "Calm the sky.",
+  );
+});
+
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
   const storeDir = tempDir("panthea-sim-tick-");
   try {

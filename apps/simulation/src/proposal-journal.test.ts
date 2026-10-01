@@ -1101,6 +1101,104 @@ describe("a goal change on a journaled proposal", () => {
     }
   });
 
+  test("an action that overflows the cap keeps its goal: rejected over-limit for the action, the trace row lists the goal event ids, the entry is consumed once, and a reopen repeats nothing", async () => {
+    const storePath = join(dir, "world.sqlite");
+    const world = openWorld(storePath, { maxProposalsPerTick: 1 });
+    startServer(world);
+    const first = envelope("zeus", {
+      kind: "legend",
+      assertion: "I speak first.",
+    });
+    const overflowing = envelope("hera", {
+      kind: "legend",
+      assertion: "I speak second.",
+      goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+    });
+    await post(world, first);
+    await post(world, overflowing);
+    tick(world);
+
+    const outcome = outcomeOf(world, overflowing.proposalId);
+    expect(outcome).toMatchObject({
+      outcome: "rejected",
+      reason: "over-limit",
+    });
+    const goals = goalEventsOf(world);
+    expect(goals.map((e) => e.kind)).toEqual(["goal-set"]);
+    expect(outcome?.eventIds).toEqual(goals.map((e) => e.id));
+    expect(world.state.goals.get("hera" as never)?.text).toBe(
+      "Make Zeus admit his deceit.",
+    );
+    // Her legend did not run.
+    expect(
+      eventsCausedBy(world, overflowing.observation.id).map((e) => e.kind),
+    ).toEqual(["goal-set"]);
+    expect(
+      getExternalProposal(world.store.db, overflowing.proposalId)?.consumedTick,
+    ).toBe(1);
+    shutDown(world);
+
+    // Reopened: the goal is still hers, and nothing runs again.
+    const reopened = openWorld(storePath, { maxProposalsPerTick: 1 });
+    try {
+      const before = listEvents(reopened.store.db).length;
+      expect(reopened.state.goals.get("hera" as never)?.text).toBe(
+        "Make Zeus admit his deceit.",
+      );
+      tick(reopened);
+      tick(reopened);
+      expect(goalEventsOf(reopened)).toHaveLength(1);
+      expect(
+        listEvents(reopened.store.db)
+          .slice(before)
+          .some((e) => String(e.correlationId) === overflowing.observation.id),
+      ).toBe(false);
+    } finally {
+      shutDown(reopened);
+    }
+  });
+
+  test("control: with the goal capacity also full, the overflowing action's goal overflows as before and nothing is recorded", async () => {
+    const world = openWorld(join(dir, "world.sqlite"), {
+      maxProposalsPerTick: 1,
+    });
+    startServer(world);
+    try {
+      const first = envelope("zeus", {
+        kind: "legend",
+        assertion: "I speak first.",
+      });
+      const zeusGoal = envelope("zeus", {
+        kind: "goal",
+        goal: { set: { text: "Calm the sky.", target: "hera" } },
+      });
+      const overflowing = envelope("hera", {
+        kind: "legend",
+        assertion: "I speak second.",
+        goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+      });
+      for (const body of [first, zeusGoal, overflowing])
+        await post(world, body);
+      tick(world);
+      const outcome = outcomeOf(world, overflowing.proposalId);
+      expect(outcome).toMatchObject({
+        outcome: "rejected",
+        reason: "over-limit",
+      });
+      expect(outcome?.eventIds).toEqual([]);
+      expect(world.state.goals.get("hera" as never)).toBeUndefined();
+      expect(world.state.goals.get("zeus" as never)?.text).toBe(
+        "Calm the sky.",
+      );
+      expect(
+        getExternalProposal(world.store.db, overflowing.proposalId)
+          ?.consumedTick,
+      ).toBe(1);
+    } finally {
+      shutDown(world);
+    }
+  });
+
   test("an archive export and import rebuilds the same active goals from the event log, and a forged goal is refused", async () => {
     const source = openWorld(join(dir, "world.sqlite"));
     startServer(source);

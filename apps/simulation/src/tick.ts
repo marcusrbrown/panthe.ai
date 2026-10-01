@@ -190,6 +190,11 @@ export interface WorldTickOutcome {
   readonly result: ReturnType<typeof runTick>;
   readonly admitted: readonly QueuedProposal[];
   readonly overflow: readonly QueuedProposal[];
+  /** The goal events an over-limit action's goal change still committed: the action overflowed, the declaration did not. Keyed by the overflowed proposal. */
+  readonly overflowGoalEvents: ReadonlyMap<
+    QueuedProposal,
+    readonly WorldEvent[]
+  >;
   /** Proposals that cited an observation id already bound to different content. They never reached the world; each gets a terminal `observation-conflict` rejection. */
   readonly refused: readonly QueuedProposal[];
 }
@@ -234,13 +239,22 @@ export function screenObservations(
  * would otherwise lose a god's declared goal for good), yet each still has to be
  * bounded so a flood cannot make the tick do unbounded validation and trace
  * writes.
+ *
+ * An action over the action cap that carries a goal change keeps the change
+ * while goal capacity remains: the action overflows, the declaration is
+ * admitted through the goal bucket (`goalOnly`) and committed on its own.
  */
 function admitWithinCap(
   queue: readonly QueuedProposal[],
   cap: number,
-): { admitted: QueuedProposal[]; overflow: QueuedProposal[] } {
+): {
+  admitted: QueuedProposal[];
+  overflow: QueuedProposal[];
+  goalOnly: QueuedProposal[];
+} {
   const admitted: QueuedProposal[] = [];
   const overflow: QueuedProposal[] = [];
+  const goalOnly: QueuedProposal[] = [];
   const counts = { action: 0, claim: 0, goal: 0 };
   for (const queued of queue) {
     const bucket =
@@ -254,9 +268,28 @@ function admitWithinCap(
       counts[bucket] += 1;
     } else {
       overflow.push(queued);
+      if (queued.proposal.goal !== undefined && counts.goal < cap) {
+        counts.goal += 1;
+        goalOnly.push(queued);
+      }
     }
   }
-  return { admitted, overflow };
+  return { admitted, overflow, goalOnly };
+}
+
+/** The goal change of an over-limit action as a goal-only proposal: no action, no revisions to go stale, the same actor and observation. */
+function goalOnlyOf(proposal: Proposal): Proposal {
+  if (proposal.goal === undefined) throw new Error("no goal change");
+  return {
+    schemaVersion: proposal.schemaVersion,
+    actor: proposal.actor,
+    targets: [],
+    expectedRevisions: [],
+    source: proposal.source,
+    observationId: proposal.observationId,
+    kind: "goal",
+    goal: proposal.goal,
+  };
 }
 
 /**
@@ -274,17 +307,27 @@ export function stepWorldTick(
   queue: readonly QueuedProposal[],
   options: StepOptions = {},
 ): WorldTickOutcome {
-  const { admitted, overflow } = admitWithinCap(
+  const { admitted, overflow, goalOnly } = admitWithinCap(
     queue,
     state.rules.maxProposalsPerTick,
+  );
+  const declarations = new Map(
+    goalOnly.map((queued) => [queued, goalOnlyOf(queued.proposal)] as const),
   );
   const result = runTick(
     state,
     prng,
-    admitted.map((queued) => queued.proposal),
+    [...admitted.map((queued) => queued.proposal), ...declarations.values()],
     { elapsedMs: options.elapsedMs, approximate: options.approximate },
   );
-  return { result, admitted, overflow, refused: [] };
+  const overflowGoalEvents = new Map<QueuedProposal, readonly WorldEvent[]>();
+  for (const [queued, declaration] of declarations) {
+    const record = result.committed.find((c) => c.proposal === declaration);
+    if (record && record.events.length > 0) {
+      overflowGoalEvents.set(queued, record.events);
+    }
+  }
+  return { result, admitted, overflow, overflowGoalEvents, refused: [] };
 }
 
 export type CommitOutcome =
@@ -427,6 +470,10 @@ export function traceWorldTick(
       proposal: queued.proposal,
       outcome: "rejected",
       reason: "over-limit",
+      // The action was over the limit; a goal change it carried was not.
+      eventIds: (outcome.overflowGoalEvents.get(queued) ?? []).map(
+        (event) => event.id,
+      ),
     });
     terminal.set(queued.id, { status: "rejected", reason: "over-limit" });
   }

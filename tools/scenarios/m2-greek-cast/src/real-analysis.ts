@@ -184,10 +184,15 @@ function perceptionCompliance(
 /** A prompt line giving an account the god was told: "- <teller> told you: "...". */
 const TOLD_LINE = /^- \S+ told you: ".*$/;
 
+/** A perceived legend under "Recent events here": "- [<id>] legend-recorded (...)". A legend is told aloud to everyone present, so its words are public to them. */
+const LEGEND_LINE = /^- \[[^\]]+\] legend-recorded \(.*$/;
+
 /**
- * No god's prompt may carry another god's goal text except inside an account
- * it was told (a goal disclosed by report, R5): the told lines are set aside
- * and the rest of the prompt is searched for every goal text another god set.
+ * No god's prompt may carry another god's goal text except where the goal was
+ * disclosed to it (R5): inside an account it was told by report, or in a legend
+ * it perceived, which is told aloud to everyone present. Those lines are set
+ * aside and the rest of the prompt is searched for every goal text another god
+ * set.
  */
 function goalPrivacy(
   requests: readonly RealRequest[],
@@ -208,12 +213,12 @@ function goalPrivacy(
     checked += 1;
     const outsideTold = request.promptPayload
       .split("\n")
-      .filter((line) => !TOLD_LINE.test(line))
+      .filter((line) => !TOLD_LINE.test(line) && !LEGEND_LINE.test(line))
       .join("\n");
     for (const goal of goals) {
       if (goal.god !== request.role && outsideTold.includes(goal.text)) {
         leaks.push(
-          `${request.role}'s prompt carries ${goal.god}'s goal "${goal.text}" outside an account it was told`,
+          `${request.role}'s prompt carries ${goal.god}'s goal "${goal.text}" outside a told account or a perceived legend`,
         );
       }
     }
@@ -232,7 +237,7 @@ function goalPrivacy(
     ok: leaks.length === 0,
     detail:
       leaks.length === 0
-        ? `${checked} prompts checked against ${goals.length} goals: none carried another god's goal outside a told account`
+        ? `${checked} prompts checked against ${goals.length} goals: none carried another god's goal outside a told account or a perceived legend`
         : leaks.join("; "),
   };
 }

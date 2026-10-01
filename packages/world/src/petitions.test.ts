@@ -550,11 +550,13 @@ test("each cause leads to at most one petition, and the cooldown keeps two praye
     amount: 1,
     cause: "director",
   });
+  // A different resource, so the one-open-petition-per-resource rule does not hold it back:
+  // only the cooldown and one-petition-per-cause are under test here.
   const second = world.apply({
     kind: "theft",
     entityId: "drifter",
     victim: "farmer",
-    resource: "food",
+    resource: "wood",
     amount: 1,
     cause: "director",
   });
@@ -1119,11 +1121,12 @@ test("a strike answers every open punish petition against that offender's buildi
     "zeus",
     theftBy("woodcutter", "drifter"),
   );
+  // A different resource from the farmer's first petition, which is still open.
   const c = petition(world, "farmer", "hera", {
     kind: "theft",
     entityId: "woodcutter",
     victim: "farmer",
-    resource: "food",
+    resource: "wood",
     amount: 1,
     cause: "director",
   });
@@ -1607,4 +1610,191 @@ test("a bless for lost stock grants what was lost, up to the cap: a large loss i
   expect(getActor(needy.state, id("farmer"))?.inventory.get("planks")).toBe(
     standing(needy),
   );
+});
+
+// --- One open petition per resource or building ---------------------------------------------------
+
+const foodSpoiled = (world: World, amount = 1) =>
+  world.apply({
+    kind: "stock-spoiled",
+    entityId: "farmer",
+    resource: "food",
+    amount,
+    cause: "director",
+  });
+
+test("a new food cause while the farmer's food petition is still open is not prayed about: no second prayer, however long it waits", () => {
+  const world = new World();
+  foodSpoiled(world);
+  world.until(() => world.petitions().length > 0);
+  const first = world.petitions()[0];
+  expect(first?.status).toBe("open");
+  // The food need reopens, and stock spoils again, inside the window: new causes, not prayed about.
+  const again = foodSpoiled(world, 2);
+  expect(
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === again.id,
+    ),
+  ).toBe(false);
+  const cooldown = petitionBalanceOf(world.state.rules, "prayerCooldownTicks");
+  for (let n = 0; n < cooldown * 3; n += 1) world.tick();
+  expect(
+    world.petitions().filter((p) => p.petitioner === id("farmer")),
+  ).toHaveLength(1);
+  expect(world.petitions().find((p) => p.cause === again.id)).toBeUndefined();
+});
+
+test("once the food petition lapses, the next food cause leads to a prayer; the old cause does not", () => {
+  const world = new World();
+  const old = foodSpoiled(world);
+  world.until(() => world.petitions().length > 0);
+  const opened = world.petitions()[0];
+  const window = petitionBalanceOf(world.state.rules, "answerWindowTicks");
+  // Let it lapse, then a fresh food cause appears.
+  world.state = { ...world.state, tick: (opened?.tick ?? 0) + window - 1 };
+  world.tick();
+  expect(world.petitions()[0]?.status).toBe("lapsed");
+  const fresh = foodSpoiled(world, 3);
+  world.until(() => world.petitions().some((p) => p.cause === fresh.id));
+  expect(
+    world.petitions().filter((p) => p.petitioner === id("farmer")),
+  ).toHaveLength(2);
+  expect(world.petitions().find((p) => p.cause === fresh.id)?.status).toBe(
+    "open",
+  );
+  // One cause, one petition: the first cause is never prayed about again.
+  expect(world.petitions().filter((p) => p.cause === old.id)).toHaveLength(1);
+});
+
+test("an answered food petition frees the next food cause too", () => {
+  const world = new World();
+  foodSpoiled(world);
+  world.until(() => world.petitions().length > 0);
+  const opened = world.petitions()[0];
+  if (!opened) throw new Error("petition");
+  world.state = {
+    ...world.state,
+    petitions: new Map(world.state.petitions).set(opened.id, {
+      ...opened,
+      status: "answered",
+    }),
+  };
+  const next = foodSpoiled(world);
+  world.state = {
+    ...world.state,
+    tick:
+      world.state.tick +
+      petitionBalanceOf(world.state.rules, "prayerCooldownTicks") +
+      1,
+  };
+  expect(
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === next.id,
+    ),
+  ).toBe(true);
+});
+
+test("a different resource is not blocked: an open food petition does not stop a prayer about stolen wood, nor one about a damaged building", () => {
+  const world = new World();
+  foodSpoiled(world);
+  world.until(() => world.petitions().length > 0);
+  const wood = world.apply({
+    kind: "stock-spoiled",
+    entityId: "farmer",
+    resource: "wood",
+    amount: 2,
+    cause: "director",
+  });
+  const damaged = world.apply({
+    kind: "building-damaged",
+    entityId: "the-tavern",
+    amount: 1,
+    actor: "zeus",
+  });
+  remembers(world, "farmer", damaged, "zeus", "building-damaged");
+  world.state = {
+    ...world.state,
+    tick:
+      world.state.tick +
+      petitionBalanceOf(world.state.rules, "prayerCooldownTicks") +
+      1,
+  };
+  const ids = prayableCauses(world.state, id("farmer")).map((c) => c.eventId);
+  expect(ids).toContain(wood.id);
+  expect(ids).toContain(damaged.id);
+});
+
+test("a second damage to a building while a petition about it is open is not prayed about; after it closes, or for another building, it is", () => {
+  const damage = (w: World, building = "the-tavern") => {
+    const event = w.apply({
+      kind: "building-damaged",
+      entityId: building,
+      amount: 1,
+      actor: "zeus",
+    });
+    remembers(w, "farmer", event, "zeus", "building-damaged");
+    return event;
+  };
+  const world = new World();
+  const first = damage(world);
+  world.until(() => world.petitions().some((p) => p.cause === first.id));
+  const second = damage(world);
+  world.state = {
+    ...world.state,
+    tick:
+      world.state.tick +
+      petitionBalanceOf(world.state.rules, "prayerCooldownTicks") +
+      1,
+  };
+  expect(
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === second.id,
+    ),
+  ).toBe(false);
+  for (let n = 0; n < 60; n += 1) world.tick();
+  expect(world.petitions().some((p) => p.cause === second.id)).toBe(false);
+  // Another of the farmer's buildings is a different subject: the shop is not blocked.
+  const other = world.apply({
+    kind: "building-damaged",
+    entityId: "woodshed",
+    amount: 1,
+    actor: "zeus",
+  });
+  expect(other.kind).toBe("building-damaged");
+  // Control: once the petition is answered, a new damage to the tavern is prayable again.
+  const open = world.petitions().find((p) => p.cause === first.id);
+  if (!open) throw new Error("petition");
+  world.state = {
+    ...world.state,
+    petitions: new Map(world.state.petitions).set(open.id, {
+      ...open,
+      status: "answered",
+    }),
+  };
+  expect(
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === second.id,
+    ),
+  ).toBe(true);
+});
+
+test("another mortal's open petition about food does not block the farmer's", () => {
+  const world = new World();
+  world.apply({
+    kind: "stock-spoiled",
+    entityId: "woodcutter",
+    resource: "food",
+    amount: 1,
+    cause: "director",
+  });
+  world.until(() =>
+    world.petitions().some((p) => p.petitioner === id("woodcutter")),
+  );
+  const mine = foodSpoiled(world);
+  world.state = { ...world.state, tick: world.state.tick + 1 };
+  expect(
+    prayableCauses(world.state, id("farmer")).some(
+      (c) => c.eventId === mine.id,
+    ),
+  ).toBe(true);
 });

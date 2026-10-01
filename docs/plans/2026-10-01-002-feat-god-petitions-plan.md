@@ -550,12 +550,13 @@ Recorded as built, units 1–9:
 - **Income only for buildings that offer a service.** Otherwise the woodshed paid the woodcutter for doing nothing. This changes M1's economy and is recorded in `defaults.md` as a rule change.
 - **The walk home is tied to the prayer trip:** a mortal walks home only within its prayer cooldown, so one placed elsewhere any other time stays put.
 - **`loss-noticed` event** (W04 amendment, owner decision): the plan said a mortal prays about a loss it "perceives where it stands now", which cannot survive the walk to the altar without state. An environmental scan records a private `loss-noticed` once per owner and cause when an owner stands at its own damaged, burning, or destroyed building or owns stolen or spoiled stock, and derives a `noticed` memory with no offender, which keeps the cause prayable as a help petition.
+- **One open petition per resource or building** (owner decision, after the first smoke showed food prayers flooding the gods' lists): a mortal does not pray about a resource or a building while its own earlier petition about the same one is still open. A new cause still counts as a new cause for R3 (one petition per cause); the rule only blocks praying while one is open, and an answer or a lapse frees the next cause.
 - **Prompt caps:** the prayers section lists every open petition (R7); no cap hides one. Seven open petitions add about 2.3 thousand characters on the authored world.
 - **`PANTHEA_PETITION_BALANCE`:** an environment override of the petition tunables, through the strict parser, so the scripted story can turn the director off without a code path of its own.
 
 ## Open Risks Found While Building
 
-- **Unmet food needs flap.** On the authored world the farmer and the woodcutter record an unmet food need every three to six ticks (the food market is thin), each a new cause, so each mortal prays about food about once per prayer cooldown and the gods' lists fill with food prayers. R2's "at most one open need per resource" holds, but a need that closes and reopens produces a new cause each time. Gate 3 shows whether this crowds out the prayers worth answering; the options are a longer cooldown, or a cause that is not new while an earlier petition about the same resource is still open.
+- **Unmet food needs flap** (addressed by the one-open-petition rule above). On the authored world the farmer and the woodcutter record an unmet food need every three to six ticks, each a new cause; the rule keeps each mortal to one open food petition at a time. Whether the gods' lists are still dominated by food prayers is for gate 3 to show.
 - **The scripted story fixes a race by policy.** The farmer's own routine walks it to the altar, so S4 stages the strike with a reply that strikes once Zeus's prompt shows the farmer at the tavern.
 
 ## Risks & Dependencies

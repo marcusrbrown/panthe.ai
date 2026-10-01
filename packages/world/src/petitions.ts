@@ -177,6 +177,44 @@ export function applyLossNoticed(
   return { ...state, noticed };
 }
 
+/** What a cause is about, for the one-open-petition rule: a resource, or a building. A grudge, or a cause with neither, is about nothing and blocks nothing. */
+function subjectOfCause(cause: PetitionCause): string | undefined {
+  if (cause.building !== undefined) return `building:${cause.building}`;
+  if (cause.resource !== undefined) return `resource:${cause.resource}`;
+  return undefined;
+}
+
+/**
+ * What an open petition is about: the subject of the cause it cites, found among
+ * the petitioner's recorded causes and open needs, or, if the cause has since
+ * been forgotten, the thing its request asks help with.
+ */
+function subjectOfPetition(
+  state: WorldState,
+  petition: Petition,
+): string | undefined {
+  const cause =
+    (state.causes.get(petition.petitioner) ?? []).find(
+      (c) => c.eventId === petition.cause,
+    ) ??
+    [...state.needs.values()]
+      .filter((n) => n.eventId === petition.cause)
+      .map(
+        (n): PetitionCause => ({
+          eventId: n.eventId,
+          tick: n.tick,
+          kind: "need",
+          resource: n.resource,
+        }),
+      )[0];
+  if (cause !== undefined) return subjectOfCause(cause);
+  const request = petition.request;
+  if (request.kind !== "help") return undefined;
+  return request.need.kind === "building"
+    ? `building:${request.need.building}`
+    : `resource:${request.need.resource}`;
+}
+
 /** What a mortal could pray about now, newest first: the causes it knows (`knownCause`) and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
 export function prayableCauses(
   state: WorldState,
@@ -186,6 +224,18 @@ export function prayableCauses(
   const window = petitionBalanceOf(state.rules, "causePrayableTicks");
   const prayedAbout = new Set(
     [...state.petitions.values()].map((petition) => petition.cause),
+  );
+  // One open petition per resource or building: while the mortal's own petition
+  // about a subject is open, a new cause about the same subject is not prayed
+  // about (it is still a cause of its own, and once the petition is answered or
+  // lapses a later cause can lead to a prayer).
+  const openSubjects = new Set(
+    [...state.petitions.values()]
+      .filter(
+        (petition) =>
+          petition.petitioner === actorId && petition.status === "open",
+      )
+      .flatMap((petition) => subjectOfPetition(state, petition) ?? []),
   );
   const needs: PetitionCause[] = [...state.needs.values()]
     .filter((need) => need.actor === actorId)
@@ -204,6 +254,7 @@ export function prayableCauses(
       (cause) =>
         state.tick - cause.tick <= window &&
         !prayedAbout.has(cause.eventId) &&
+        !openSubjects.has(subjectOfCause(cause) ?? "") &&
         requestFor(state, cause) !== undefined,
     )
     .sort(

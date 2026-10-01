@@ -73,12 +73,12 @@ class Run {
     return result;
   }
   /** `mortal` prays at the altar about a theft by `offender`; returns the petition's id and god. */
-  prayAboutTheft(mortal: string, offender: string) {
+  prayAboutTheft(mortal: string, offender: string, resource = "food") {
     const cause = this.apply({
       kind: "theft",
       entityId: offender,
       victim: mortal,
-      resource: "food",
+      resource,
       amount: 1,
       cause: "director",
     });
@@ -440,6 +440,8 @@ test("a refusal from before the current goal was set is not shown", () => {
 test("every open petition addressed to the god is listed, however many there are, oldest first, and the prompt's growth is measured", () => {
   const run = greek();
   const bare = run.prompt("hera");
+  // Each prayer is about a different resource, since a mortal holds one open petition per resource.
+  const resources = ["food", "wood", "planks", "currency"];
   const opened = [
     "farmer",
     "woodcutter",
@@ -448,7 +450,7 @@ test("every open petition addressed to the god is listed, however many there are
     "farmer",
     "woodcutter",
     "farmer",
-  ].map((mortal) => {
+  ].map((mortal, index) => {
     run.state = { ...run.state, tick: run.state.tick + 21 };
     // Fondness for Hera keeps each prayer coming to her.
     const relationships = new Map(run.state.relationships);
@@ -463,6 +465,7 @@ test("every open petition addressed to the god is listed, however many there are
     return run.prayAboutTheft(
       mortal,
       mortal === "farmer" ? "woodcutter" : "farmer",
+      resources[Math.floor(index / 2)],
     );
   });
   expect(new Set(opened.map((o) => String(o.god))).size).toBe(1);

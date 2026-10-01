@@ -326,7 +326,7 @@ flowchart TB
 **Approach:**
 - Add per-god checks: at least one goal set and at least one goal ended, any outcome.
 - Influence counts told beliefs sourced from the god's own legends as well as its reports.
-- Add a real-run property: no god's prompt contains another god's active goal text.
+- Add a real-run property: another god's active goal text appears in a god's prompt only inside an account it was told, which is how R5 allows a goal to be disclosed.
 - Transcripts show goal-set and goal-ended lines, list each action under the goal that was active when it was chosen, and show each legend's hearers with each hearer's belief and feeling changes.
 
 **Execution note:** Implement test-first, with a failing case and a passing control per check.
@@ -336,7 +336,8 @@ flowchart TB
 **Test scenarios:**
 - Happy path: a god with a set and an abandoned-by-replacement end passes both goal checks.
 - Error path: a god that sets but never ends a goal fails the end check, and one that never sets fails both.
-- Error path: the goal privacy property fails when Hera's goal text appears in Zeus's prompt, and passes when it doesn't.
+- Error path: the goal privacy property fails when Hera's goal text appears in Zeus's prompt outside anything he was told.
+- Happy path: the property passes when Hera reports her goal to Zeus and her words appear in his remembered account, and when her goal text doesn't appear at all.
 - Happy path: the rendered transcript shows "goal set" and "goal ended (achieved)" lines, and the actions between them sit under that goal.
 - Happy path: a legend's entry lists its hearers and the farmer's affinity change.
 - Edge case: a legend's told belief counts toward the narrator's influence, not the hearer's.

@@ -244,3 +244,92 @@ test("a report built from a turn commits: the listener forms a belief from the c
   });
   expect(refused?.kind).toBe("exhausted");
 });
+
+// --- Goals through the turn -------------------------------------------------------------
+
+test("a scripted reply that sets a goal alongside its action becomes one proposal carrying both, and the world commits both", async () => {
+  const state = zeusAtTavern();
+  const reply = JSON.stringify({
+    action: "strike",
+    target: "the-tavern",
+    power: 2,
+    goal: { set: { text: "Burn it all down.", target: "the-tavern" } },
+  });
+  const turn = await runGodTurn(deps(startStub(reply)), {
+    state,
+    actorId: id("zeus"),
+  });
+  expect(turn?.kind).toBe("proposal");
+  if (turn?.kind !== "proposal") return;
+  expect(turn.proposal).toMatchObject({
+    kind: "strike",
+    goal: { set: { text: "Burn it all down.", target: "the-tavern" } },
+  });
+  const tick = runTick(state, createPrng(1), [turn.proposal]);
+  expect(tick.rejected).toEqual([]);
+  expect(String(tick.state.goals.get(id("zeus"))?.target)).toBe("the-tavern");
+});
+
+test("a scripted wait that sets a goal journals a goal-only proposal; a plain wait journals nothing", async () => {
+  const state = zeusAtTavern();
+  const goalWait = await runGodTurn(
+    deps(
+      startStub(
+        '{"action":"wait","goal":{"set":{"text":"Watch the tavern.","target":"the-tavern"}}}',
+      ),
+    ),
+    { state, actorId: id("zeus") },
+  );
+  expect(goalWait?.kind).toBe("proposal");
+  if (goalWait?.kind === "proposal") {
+    expect(goalWait.proposal.kind).toBe("goal");
+    expect(
+      runTick(state, createPrng(1), [goalWait.proposal]).state.goals.size,
+    ).toBe(1);
+  }
+  const plain = await runGodTurn(deps(startStub('{"action":"wait"}')), {
+    state,
+    actorId: id("zeus"),
+  });
+  expect(plain?.kind).toBe("wait");
+});
+
+test("a goal naming someone the god was not shown never becomes a proposal", async () => {
+  const state = zeusAtTavern();
+  const bad =
+    '{"action":"wait","goal":{"set":{"text":"Hunt him.","target":"the-woodcutter"}}}';
+  const turn = await runGodTurn(deps(startStub(bad)), {
+    state,
+    actorId: id("zeus"),
+  });
+  expect(turn?.kind).toBe("exhausted");
+});
+
+test("the prompt shows the god its active goal and its own recent action, from the world it acted in", async () => {
+  const first = await runGodTurn(
+    deps(
+      startStub(
+        '{"action":"strike","target":"the-tavern","power":3,"goal":{"set":{"text":"Punish the farmer.","target":"the-tavern"}}}',
+      ),
+    ),
+    { state: zeusAtTavern(), actorId: id("zeus") },
+  );
+  if (first?.kind !== "proposal") throw new Error("expected a proposal");
+  const ticked = runTick(zeusAtTavern(), createPrng(1), [first.proposal]);
+
+  const stub = startStub('{"action":"wait"}');
+  await runGodTurn(deps(stub), {
+    state: ticked.state,
+    actorId: id("zeus"),
+    ownEvents: ticked.events,
+  });
+  const prompt = JSON.stringify(stub.seen[0]);
+  expect(prompt).toContain("Your goal");
+  expect(prompt).toContain("Punish the farmer.");
+  expect(prompt).toContain("you struck the-tavern");
+  // Control: without the own events read, the goal still shows but no action does.
+  const bare = startStub('{"action":"wait"}');
+  await runGodTurn(deps(bare), { state: ticked.state, actorId: id("zeus") });
+  expect(JSON.stringify(bare.seen[0])).toContain("Punish the farmer.");
+  expect(JSON.stringify(bare.seen[0])).not.toContain("What you did recently");
+});

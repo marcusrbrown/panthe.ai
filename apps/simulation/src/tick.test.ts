@@ -166,6 +166,198 @@ test("stepWorldTick counts claims against their own cap, so a claim never uses a
   expect(outcome.result.committed).toHaveLength(1);
 });
 
+test("stepWorldTick counts a goal-only proposal against its own cap, so it never takes an action's slot: with the action cap full it is still admitted", () => {
+  const state = loadGreekWorldState();
+  const [first, second] = buildRoutineQueue(state);
+  if (!first || !second) throw new Error("two routines");
+  const goalOnly = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Win the farmer.", target: "farmer" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    first,
+    second,
+    goalOnly,
+  ]);
+  // One action fits, the second action overflows, and the goal-only is admitted beside them.
+  expect(outcome.admitted).toEqual([first, goalOnly]);
+  expect(outcome.overflow).toEqual([second]);
+  expect(
+    outcome.result.events.filter((e) => e.kind === "goal-set"),
+  ).toHaveLength(1);
+  // The goal-only proposals have a cap of their own, so a flood of them is still bounded.
+  const flood = [
+    goalOnly,
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { set: { text: "Win.", target: "farmer" } },
+    }),
+  ];
+  const bounded = stepWorldTick(capped, createPrng(1), flood);
+  expect(bounded.admitted).toEqual([goalOnly]);
+  expect(bounded.overflow).toEqual([flood[1] as QueuedProposal]);
+});
+
+test("an action that overflows the action cap still commits its goal change while goal capacity remains; the action stays over-limit", () => {
+  const state = loadGreekWorldState();
+  const zeusLegend = manualProposal("zeus", {
+    kind: "legend",
+    assertion: "I speak first.",
+  });
+  const heraLegend = manualProposal("hera", {
+    kind: "legend",
+    assertion: "I speak second.",
+    goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    zeusLegend,
+    heraLegend,
+  ]);
+  expect(outcome.admitted).toEqual([zeusLegend]);
+  expect(outcome.overflow).toEqual([heraLegend]);
+  // Hera's action did not run, and her goal did.
+  expect(
+    outcome.result.events.filter((e) => e.kind === "legend-recorded"),
+  ).toHaveLength(1);
+  const goal = outcome.result.events.filter((e) => e.kind === "goal-set");
+  expect(goal).toHaveLength(1);
+  expect(String(outcome.result.state.goals.get(toEntityId("hera"))?.text)).toBe(
+    "Make Zeus admit his deceit.",
+  );
+  expect(outcome.overflowGoalEvents.get(heraLegend)?.map((e) => e.id)).toEqual(
+    goal.map((e) => e.id),
+  );
+  // The goal belongs to Hera's own observation.
+  expect(String(goal[0]?.correlationId)).toBe(
+    String(heraLegend.proposal.observationId),
+  );
+});
+
+/** The goal events of `outcome`, as `kind outcome-or-text` strings in commit order. */
+const goalTrail = (outcome: ReturnType<typeof stepWorldTick>) =>
+  outcome.result.events.flatMap((event) =>
+    event.kind === "goal-set"
+      ? [`set ${event.text}`]
+      : event.kind === "goal-ended"
+        ? [`end ${event.outcome}`]
+        : [],
+  );
+
+/** Zeus's and the farmer's legends fill the action cap of 2; Hera's legend carrying `rescued` then overflows into the goal bucket. */
+function overflowQueue(rescued: Record<string, unknown>) {
+  return [
+    manualProposal("zeus", { kind: "legend", assertion: "I speak first." }),
+    manualProposal("farmer", { kind: "legend", assertion: "I speak next." }),
+    manualProposal("hera", {
+      kind: "legend",
+      assertion: "I am over the limit.",
+      goal: rescued,
+    }),
+  ];
+}
+
+test("a rescued goal declaration runs where its action stood in the queue: an earlier set, then a later goal-only set, leaves the later goal active", () => {
+  const state = loadGreekWorldState();
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 2 },
+  };
+  const queue = [
+    ...overflowQueue({ set: { text: "Earlier aim.", target: "zeus" } }),
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { set: { text: "Later aim.", target: "farmer" } },
+    }),
+  ];
+
+  const outcome = stepWorldTick(capped, createPrng(1), queue);
+  // Hera's legend is the rescued one: over-limit, its goal kept.
+  expect(outcome.overflow).toEqual([queue[2] as QueuedProposal]);
+  expect(
+    outcome.overflowGoalEvents
+      .get(queue[2] as QueuedProposal)
+      ?.map((e) => e.kind),
+  ).toEqual(["goal-set"]);
+  // The later set replaces the earlier one, in queue order: set, abandon, set.
+  expect(goalTrail(outcome)).toEqual([
+    "set Earlier aim.",
+    "end abandoned",
+    "set Later aim.",
+  ]);
+  expect(String(outcome.result.state.goals.get(toEntityId("hera"))?.text)).toBe(
+    "Later aim.",
+  );
+});
+
+test("a rescued set followed by a later goal-only end: the end ends that goal", () => {
+  const state = loadGreekWorldState();
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 2 },
+  };
+  const queue = [
+    ...overflowQueue({ set: { text: "Earlier aim.", target: "zeus" } }),
+    manualProposal("hera", {
+      kind: "goal",
+      goal: { end: { outcome: "achieved" } },
+    }),
+  ];
+
+  const outcome = stepWorldTick(capped, createPrng(1), queue);
+  expect(goalTrail(outcome)).toEqual(["set Earlier aim.", "end achieved"]);
+  expect(outcome.result.state.goals.get(toEntityId("hera"))).toBeUndefined();
+  // Control: the end alone, with no earlier set, records nothing.
+  const alone = stepWorldTick(capped, createPrng(1), [
+    queue[3] as QueuedProposal,
+  ]);
+  expect(goalTrail(alone)).toEqual([]);
+});
+
+test("control: when the goal capacity is also full, an overflowing action's goal overflows with it", () => {
+  const state = loadGreekWorldState();
+  const zeusLegend = manualProposal("zeus", {
+    kind: "legend",
+    assertion: "I speak first.",
+  });
+  const zeusGoal = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Calm the sky.", target: "hera" } },
+  });
+  const heraLegend = manualProposal("hera", {
+    kind: "legend",
+    assertion: "I speak second.",
+    goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+  });
+  const capped = {
+    ...state,
+    rules: { ...state.rules, maxProposalsPerTick: 1 },
+  };
+
+  const outcome = stepWorldTick(capped, createPrng(1), [
+    zeusLegend,
+    zeusGoal,
+    heraLegend,
+  ]);
+  expect(outcome.admitted).toEqual([zeusLegend, zeusGoal]);
+  expect(outcome.overflow).toEqual([heraLegend]);
+  expect(outcome.overflowGoalEvents.get(heraLegend)).toBeUndefined();
+  expect(outcome.result.state.goals.get(toEntityId("hera"))).toBeUndefined();
+  // Zeus's own goal did commit.
+  expect(String(outcome.result.state.goals.get(toEntityId("zeus"))?.text)).toBe(
+    "Calm the sky.",
+  );
+});
+
 test("applyOneTick commits events, projections, clock, and PRNG in one transaction and records trace observations and outcomes for accepted and rejected proposals", () => {
   const storeDir = tempDir("panthea-sim-tick-");
   try {
@@ -713,6 +905,18 @@ test("mergeTickQueue puts every external proposal first in arrival order, then t
     ...routine.filter((queued) => queued !== woodcutter),
   ]);
   expect(merged).toContain(farmer);
+});
+
+test("mergeTickQueue: a goal-only proposal has no action, so it does not displace the actor's routine; an action does", () => {
+  const routine = manualProposal("zeus", { kind: "move", to: "tavern" });
+  const goalOnly = manualProposal("zeus", {
+    kind: "goal",
+    goal: { set: { text: "Win the farmer.", target: "farmer" } },
+  });
+  expect(mergeTickQueue([routine], [goalOnly])).toEqual([goalOnly, routine]);
+  // Control: an action for the same actor takes its slot, as before.
+  const action = manualProposal("zeus", { kind: "move", to: "town-square" });
+  expect(mergeTickQueue([routine], [action])).toEqual([action]);
 });
 
 test("mergeTickQueue depends only on its two queues: the same inputs always give the same order", () => {

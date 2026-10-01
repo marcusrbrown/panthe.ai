@@ -1,13 +1,15 @@
 // The durable journal behind POST /proposals, exercised against a real store
 // that is closed and reopened through a freshly built composition root.
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createObservationId } from "@panthea/contracts";
 import {
   closeStore,
+  computeContentHash,
   exportArchive,
   getExternalProposal,
   listEvents,
@@ -944,5 +946,340 @@ describe("a restored branch", () => {
     } finally {
       shutDown(branch);
     }
+  });
+});
+
+describe("a goal change on a journaled proposal", () => {
+  const GOAL = {
+    set: { text: "Burn the farmer's tavern.", target: "farmer" },
+  };
+  const goalEventsOf = (world: World) =>
+    listEvents(world.store.db).filter(
+      (event) => event.kind === "goal-set" || event.kind === "goal-ended",
+    );
+
+  test("a proposal rejected as stale-target still commits its goal: the trace row lists the goal event ids, the rejection reason stands, and the journal entry is consumed", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const stale = envelope("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 1,
+        expectedRevisions: [{ entityId: "the-tavern", revision: 999_999 }],
+        goal: GOAL,
+      });
+      expect((await post(world, stale)).status).toBe(202);
+      tick(world);
+
+      const outcome = outcomeOf(world, stale.proposalId);
+      expect(outcome).toMatchObject({
+        outcome: "rejected",
+        reason: "stale-target",
+      });
+      const goals = goalEventsOf(world);
+      expect(goals.map((e) => e.kind)).toEqual(["goal-set"]);
+      expect(outcome?.eventIds).toEqual(goals.map((e) => e.id));
+      expect(
+        getExternalProposal(world.store.db, stale.proposalId)?.consumedTick,
+      ).toBe(1);
+      // The action did nothing; the goal did.
+      expect(
+        eventsCausedBy(world, stale.observation.id).map((e) => e.kind),
+      ).toEqual(["goal-set"]);
+      expect(world.state.goals.get("zeus" as never)?.text).toBe(
+        "Burn the farmer's tavern.",
+      );
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("control: the same strike, not stale, commits with the goal riding along, and its trace row lists the action and the goal", async () => {
+    const world = openWorld(join(dir, "world.sqlite"));
+    startServer(world);
+    try {
+      const fresh = envelope("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 1,
+        goal: GOAL,
+      });
+      await post(world, fresh);
+      tick(world);
+      const outcome = outcomeOf(world, fresh.proposalId);
+      expect(outcome?.outcome).toBe("committed");
+      expect(
+        eventsCausedBy(world, fresh.observation.id).map((e) => e.kind),
+      ).toEqual(["resource-consumed", "building-damaged", "goal-set"]);
+      expect(outcome?.eventIds).toHaveLength(3);
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("accepted, closed, reopened: the goal commits once, and a further tick and reopen do not repeat it", async () => {
+    const storePath = join(dir, "world.sqlite");
+    const first = openWorld(storePath);
+    startServer(first);
+    const goalOnly = envelope("hera", {
+      kind: "goal",
+      goal: { set: { text: "Win the farmer.", target: "farmer" } },
+    });
+    expect((await post(first, goalOnly)).status).toBe(202);
+    shutDown(first);
+
+    const second = openWorld(storePath);
+    try {
+      expect(tick(second)).toBe("committed");
+      expect(tick(second)).toBe("committed");
+      expect(goalEventsOf(second)).toHaveLength(1);
+      expect(second.state.goals.get("hera" as never)?.text).toBe(
+        "Win the farmer.",
+      );
+    } finally {
+      shutDown(second);
+    }
+    const third = openWorld(storePath);
+    try {
+      tick(third);
+      expect(goalEventsOf(third)).toHaveLength(1);
+      expect(third.state.goals.get("hera" as never)?.text).toBe(
+        "Win the farmer.",
+      );
+    } finally {
+      shutDown(third);
+    }
+  });
+
+  test("with the action cap full, a goal-only proposal still commits once, is consumed once, and is never rejected as over-limit", async () => {
+    const world = openWorld(join(dir, "world.sqlite"), {
+      maxProposalsPerTick: 2,
+    });
+    startServer(world);
+    try {
+      const worship = (actor: string) =>
+        envelope(actor, {
+          kind: "worship",
+          deity: "zeus",
+          offering: { resource: "currency", amount: 1 },
+        });
+      const fits1 = worship("farmer");
+      const fits2 = worship("woodcutter");
+      const goalOnly = envelope("hera", {
+        kind: "goal",
+        goal: { set: { text: "Win the farmer.", target: "farmer" } },
+      });
+      for (const body of [fits1, fits2, goalOnly]) await post(world, body);
+      tick(world);
+
+      expect(outcomeOf(world, fits1.proposalId)?.outcome).toBe("committed");
+      expect(outcomeOf(world, goalOnly.proposalId)).toMatchObject({
+        outcome: "committed",
+      });
+      expect(outcomeOf(world, goalOnly.proposalId)?.reason).toBeUndefined();
+      expect(goalEventsOf(world)).toHaveLength(1);
+      expect(
+        getExternalProposal(world.store.db, goalOnly.proposalId)?.consumedTick,
+      ).toBe(1);
+      // Control: a third action in the same tick is the one over the limit.
+      const over = envelope("zeus", {
+        kind: "strike",
+        target: "old-oak",
+        power: 1,
+      });
+      await post(world, worship("farmer"));
+      await post(world, worship("woodcutter"));
+      await post(world, over);
+      tick(world);
+      expect(outcomeOf(world, over.proposalId)).toMatchObject({
+        outcome: "rejected",
+        reason: "over-limit",
+      });
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("an action that overflows the cap keeps its goal: rejected over-limit for the action, the trace row lists the goal event ids, the entry is consumed once, and a reopen repeats nothing", async () => {
+    const storePath = join(dir, "world.sqlite");
+    const world = openWorld(storePath, { maxProposalsPerTick: 1 });
+    startServer(world);
+    const first = envelope("zeus", {
+      kind: "legend",
+      assertion: "I speak first.",
+    });
+    const overflowing = envelope("hera", {
+      kind: "legend",
+      assertion: "I speak second.",
+      goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+    });
+    await post(world, first);
+    await post(world, overflowing);
+    tick(world);
+
+    const outcome = outcomeOf(world, overflowing.proposalId);
+    expect(outcome).toMatchObject({
+      outcome: "rejected",
+      reason: "over-limit",
+    });
+    const goals = goalEventsOf(world);
+    expect(goals.map((e) => e.kind)).toEqual(["goal-set"]);
+    expect(outcome?.eventIds).toEqual(goals.map((e) => e.id));
+    expect(world.state.goals.get("hera" as never)?.text).toBe(
+      "Make Zeus admit his deceit.",
+    );
+    // Her legend did not run.
+    expect(
+      eventsCausedBy(world, overflowing.observation.id).map((e) => e.kind),
+    ).toEqual(["goal-set"]);
+    expect(
+      getExternalProposal(world.store.db, overflowing.proposalId)?.consumedTick,
+    ).toBe(1);
+    shutDown(world);
+
+    // Reopened: the goal is still hers, and nothing runs again.
+    const reopened = openWorld(storePath, { maxProposalsPerTick: 1 });
+    try {
+      const before = listEvents(reopened.store.db).length;
+      expect(reopened.state.goals.get("hera" as never)?.text).toBe(
+        "Make Zeus admit his deceit.",
+      );
+      tick(reopened);
+      tick(reopened);
+      expect(goalEventsOf(reopened)).toHaveLength(1);
+      expect(
+        listEvents(reopened.store.db)
+          .slice(before)
+          .some((e) => String(e.correlationId) === overflowing.observation.id),
+      ).toBe(false);
+    } finally {
+      shutDown(reopened);
+    }
+  });
+
+  test("control: with the goal capacity also full, the overflowing action's goal overflows as before and nothing is recorded", async () => {
+    const world = openWorld(join(dir, "world.sqlite"), {
+      maxProposalsPerTick: 1,
+    });
+    startServer(world);
+    try {
+      const first = envelope("zeus", {
+        kind: "legend",
+        assertion: "I speak first.",
+      });
+      const zeusGoal = envelope("zeus", {
+        kind: "goal",
+        goal: { set: { text: "Calm the sky.", target: "hera" } },
+      });
+      const overflowing = envelope("hera", {
+        kind: "legend",
+        assertion: "I speak second.",
+        goal: { set: { text: "Make Zeus admit his deceit.", target: "zeus" } },
+      });
+      for (const body of [first, zeusGoal, overflowing])
+        await post(world, body);
+      tick(world);
+      const outcome = outcomeOf(world, overflowing.proposalId);
+      expect(outcome).toMatchObject({
+        outcome: "rejected",
+        reason: "over-limit",
+      });
+      expect(outcome?.eventIds).toEqual([]);
+      expect(world.state.goals.get("hera" as never)).toBeUndefined();
+      expect(world.state.goals.get("zeus" as never)?.text).toBe(
+        "Calm the sky.",
+      );
+      expect(
+        getExternalProposal(world.store.db, overflowing.proposalId)
+          ?.consumedTick,
+      ).toBe(1);
+    } finally {
+      shutDown(world);
+    }
+  });
+
+  test("an archive export and import rebuilds the same active goals from the event log, and a forged goal is refused", async () => {
+    const source = openWorld(join(dir, "world.sqlite"));
+    startServer(source);
+    await post(source, envelope("hera", { kind: "goal", goal: GOAL }));
+    await post(
+      source,
+      envelope("zeus", {
+        kind: "goal",
+        goal: { set: { text: "Calm the sky.", target: "hera" } },
+      }),
+    );
+    tick(source);
+    await post(
+      source,
+      envelope("zeus", {
+        kind: "goal",
+        goal: { end: { outcome: "achieved" } },
+      }),
+    );
+    tick(source);
+    const live = [...source.state.goals];
+    expect(live).toHaveLength(1);
+    const archivePath = join(dir, "snapshot.sqlite");
+    exportArchive(source.store, archivePath);
+    shutDown(source);
+
+    const slot = importWorldArchive(
+      archivePath,
+      join(dir, "slots"),
+      worldImportReducers,
+    );
+    const branch = openWorld(join(slot.slotPath, "world.sqlite"));
+    try {
+      expect([...branch.state.goals]).toEqual(live);
+    } finally {
+      shutDown(branch);
+    }
+
+    // A forged archive: Zeus's ended goal restored in the projection, with the hash recomputed.
+    const forgedPath = join(dir, "forged.sqlite");
+    copyFileSync(archivePath, forgedPath);
+    const db = new Database(forgedPath);
+    const row = db.query("SELECT data FROM projections WHERE id = 1").get() as {
+      data: string;
+    };
+    const encoded = JSON.parse(row.data);
+    encoded.goals.push([
+      "zeus",
+      {
+        text: "Calm the sky.",
+        target: "hera",
+        eventId: "evt-1-1",
+        sequence: 1,
+      },
+    ]);
+    db.run("UPDATE projections SET data = ? WHERE id = 1", [
+      JSON.stringify(encoded),
+    ]);
+    const manifest = db.query("SELECT * FROM manifest WHERE id = 1").get() as {
+      format_version: number;
+      sqlite_schema_version: number;
+      payload_schema_version: number;
+      world_id: string;
+      event_sequence: number;
+    };
+    db.run("UPDATE manifest SET content_hash = ?", [
+      computeContentHash(db, {
+        formatVersion: manifest.format_version,
+        sqliteSchemaVersion: manifest.sqlite_schema_version,
+        payloadSchemaVersion: manifest.payload_schema_version,
+        worldId: manifest.world_id as never,
+        eventSequence: manifest.event_sequence,
+      }),
+    ]);
+    db.close();
+    expect(() =>
+      importWorldArchive(
+        forgedPath,
+        join(dir, "slots-forged"),
+        worldImportReducers,
+      ),
+    ).toThrow(/event log/);
   });
 });

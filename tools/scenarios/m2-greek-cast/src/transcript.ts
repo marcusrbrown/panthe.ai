@@ -3,7 +3,11 @@
 // and what the automated checks found, and leave the rubric and the decision
 // blank: the owner scores (docs/product/acceptance.md), the tool never does.
 
-import type { WorldEvent } from "@panthea/contracts";
+import type {
+  GoalEndedEvent,
+  GoalSetEvent,
+  WorldEvent,
+} from "@panthea/contracts";
 import type { StoredEvent } from "./checks";
 import {
   CONTEXT_ACTIONS,
@@ -47,10 +51,21 @@ export interface ActionEntry {
   readonly god: string;
   /** What was done and to what, e.g. `move → olympus-gate`. */
   readonly verb: string;
-  readonly backing: "ability-backed" | "context-backed" | "unbacked";
+  readonly backing:
+    | "ability-backed"
+    | "context-backed"
+    | "unbacked"
+    /** A goal declared or ended: not an action. */
+    | "declaration";
   /** The model's own words: a report's content or a legend's assertion. */
   readonly text: string | undefined;
   readonly claim: string | undefined;
+  /** The goal the god had when it chose this action, if any. */
+  readonly underGoal: string | undefined;
+  /** For a goal declaration, the goal it sets or ends. */
+  readonly goalLine: string | undefined;
+  /** For a legend, who heard it. */
+  readonly hearers: readonly string[] | undefined;
   /** The events the proposal itself caused. */
   readonly caused: readonly string[];
   /** The memories and feelings that followed from them. */
@@ -107,8 +122,57 @@ export function buildActions(record: EpisodeRecord): ActionEntry[] {
   const entries: ActionEntry[] = [];
   for (const identity of record.identities) {
     const abilities = new Set(identity.abilities.map((a) => a.action));
+
+    // The god's goal declarations, in order: what it set and ended.
+    const goalEvents = [...parsed.values()]
+      .filter(
+        (event): event is GoalSetEvent | GoalEndedEvent =>
+          (event.kind === "goal-set" || event.kind === "goal-ended") &&
+          event.entityId === identity.id,
+      )
+      .sort((a, b) => a.sequence - b.sequence);
+    for (const event of goalEvents) {
+      const set =
+        event.kind === "goal-ended" ? parsed.get(event.goalEventId) : event;
+      const goal = set?.kind === "goal-set" ? set : undefined;
+      entries.push({
+        tick: tickOf(event.id),
+        sequence: event.sequence,
+        god: identity.id,
+        verb:
+          event.kind === "goal-set"
+            ? `goal set → ${event.target}`
+            : `goal ended (${event.outcome})`,
+        backing: "declaration",
+        text: undefined,
+        claim: undefined,
+        underGoal: undefined,
+        goalLine: goal === undefined ? undefined : `"${goal.text}"`,
+        hearers: undefined,
+        caused: [],
+        changes: [],
+      });
+    }
+    /** The goal active just before `sequence`: the god chose its action under it. */
+    const goalBefore = (sequence: number): string | undefined => {
+      let active: { text: string; target: string; id: string } | undefined;
+      for (const event of goalEvents) {
+        if (event.sequence >= sequence) break;
+        if (event.kind === "goal-set") {
+          active = { text: event.text, target: event.target, id: event.id };
+        } else if (active?.id === event.goalEventId) {
+          active = undefined;
+        }
+      }
+      return active === undefined
+        ? undefined
+        : `"${active.text}" (→ ${active.target})`;
+    };
+
     for (const action of committedInOrder(identity.id, proposals, events)) {
       const { proposal, caused, sequence } = action;
+      // A goal-only turn is a declaration (listed above), not an action.
+      if (proposal.kind === "goal") continue;
       const changes: string[] = [];
       for (const event of influencedBy(caused, parsed)) {
         if (event.kind === "relationship-changed") {
@@ -176,7 +240,16 @@ export function buildActions(record: EpisodeRecord): ActionEntry[] {
               ? fields.assertion
               : undefined,
         claim: describeClaim(fields.claim),
-        caused: caused.map(describeCaused),
+        underGoal: goalBefore(sequence),
+        goalLine: undefined,
+        hearers: caused.flatMap((event) => {
+          const legend = parsed.get(event.id);
+          return legend?.kind === "legend-recorded" ? [legend.hearers] : [];
+        })[0],
+        // The goal events a turn carries have lines of their own.
+        caused: caused
+          .filter((e) => e.kind !== "goal-set" && e.kind !== "goal-ended")
+          .map(describeCaused),
         changes,
       });
     }
@@ -213,6 +286,15 @@ function renderAction(
   ];
   if (entry.text !== undefined) lines.push(`   - says: "${entry.text}"`);
   if (entry.claim !== undefined) lines.push(`   - claim: ${entry.claim}`);
+  if (entry.goalLine !== undefined) lines.push(`   - goal: ${entry.goalLine}`);
+  if (entry.underGoal !== undefined) {
+    lines.push(`   - under goal: ${entry.underGoal}`);
+  }
+  if (entry.hearers !== undefined) {
+    lines.push(
+      `   - heard by: ${entry.hearers.length === 0 ? "no one" : entry.hearers.join(", ")}`,
+    );
+  }
   if (entry.caused.length > 0)
     lines.push(`   - caused: ${entry.caused.join("; ")}`);
   for (const change of entry.changes) lines.push(`   - then: ${change}`);
@@ -257,7 +339,7 @@ function renderChecks(record: EpisodeRecord): string {
 function renderModelRun(record: EpisodeRecord): string {
   const a = record.analysis;
   return [
-    `- ${a.requests.total} requests: ${a.requests.intent} answered (${a.requests.native} native, ${a.requests.repaired} repaired), ${a.requests.exhausted} exhausted; latency p50 ${a.latencyMs.p50} ms, p95 ${a.latencyMs.p95} ms; frames showed model-degraded in ${(a.degradedShare * 100).toFixed(0)}% of polls`,
+    `- ${a.requests.total} requests: ${a.requests.intent} answered (${a.requests.native} native, ${a.requests.repaired} repaired), ${a.requests.exhausted} exhausted; latency p50 ${a.latencyMs.p50} ms, p95 ${a.latencyMs.p95} ms; prompt p50 ${a.promptChars.p50} / max ${a.promptChars.max} characters; frames showed model-degraded in ${(a.degradedShare * 100).toFixed(0)}% of polls`,
     ...(a.exhaustion.length > 0
       ? [
           `- exhaustion: ${a.exhaustion.map((e) => `${e.count} × ${e.detail}`).join("; ")}`,
@@ -341,7 +423,7 @@ export function renderSummary(
   const checkRows = records.flatMap((record) =>
     record.episode.gods.map((g) => {
       const failed = g.checks.filter((c) => !c.ok).map((c) => c.name);
-      return `| ${record.index} | ${nameOf(record, g.god)} | ${g.actions} (${g.abilityBacked} ability, ${g.contextBacked} context) | ${g.longestRun?.length ?? 0} | ${g.influence} | ${failed.length === 0 ? "pass" : `FAIL: ${failed.join(", ")}`} |`;
+      return `| ${record.index} | ${nameOf(record, g.god)} | ${g.actions} (${g.abilityBacked} ability, ${g.contextBacked} context) | ${g.longestRun?.length ?? 0} | ${g.influence} | ${g.goalsSet} / ${g.goalsEnded} | ${failed.length === 0 ? "pass" : `FAIL: ${failed.join(", ")}`} |`;
     }),
   );
   const failures = records.flatMap((record) => [
@@ -370,8 +452,8 @@ export function renderSummary(
     "",
     "## Automated checks",
     "",
-    "| Episode | God | Committed actions | Longest run | Told beliefs and feelings caused | Checks |",
-    "| --- | --- | --- | --- | --- | --- |",
+    "| Episode | God | Committed actions | Longest run | Told beliefs and feelings caused | Goals set / ended | Checks |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
     ...checkRows,
     "",
     failures.length === 0

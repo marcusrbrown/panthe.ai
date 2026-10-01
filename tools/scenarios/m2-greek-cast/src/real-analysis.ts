@@ -79,6 +79,7 @@ const GOD_ACTIONS: ReadonlySet<string> = new Set([
   "strike",
   "legend",
   "report",
+  "goal",
 ]);
 
 /** Every entity or event id a god proposal names as a target of something, so it can be looked for in what the god was shown. */
@@ -95,6 +96,14 @@ export function namedIds(proposal: Record<string, unknown>): string[] {
   if (typeof claim === "object" && claim !== null) {
     add((claim as Record<string, unknown>).agent);
     add((claim as Record<string, unknown>).target);
+  }
+  // A goal's target is an id the god was shown, like any other it names.
+  const goal = proposal.goal;
+  if (typeof goal === "object" && goal !== null) {
+    const set = (goal as Record<string, unknown>).set;
+    if (typeof set === "object" && set !== null) {
+      add((set as Record<string, unknown>).target);
+    }
   }
   return ids;
 }
@@ -172,6 +181,67 @@ function perceptionCompliance(
   };
 }
 
+/** A prompt line giving an account the god was told: "- <teller> told you: "...". */
+const TOLD_LINE = /^- \S+ told you: ".*$/;
+
+/** A perceived legend under "Recent events here": "- [<id>] legend-recorded (...)". A legend is told aloud to everyone present, so its words are public to them. */
+const LEGEND_LINE = /^- \[[^\]]+\] legend-recorded \(.*$/;
+
+/**
+ * No god's prompt may carry another god's goal text except where the goal was
+ * disclosed to it (R5): inside an account it was told by report, or in a legend
+ * it perceived, which is told aloud to everyone present. Those lines are set
+ * aside and the rest of the prompt is searched for every goal text another god
+ * set.
+ */
+function goalPrivacy(
+  requests: readonly RealRequest[],
+  events: readonly StoredEvent[],
+): Property {
+  const name = "goal privacy";
+  const goals = events.flatMap((e) =>
+    e.kind === "goal-set" &&
+    typeof e.entityId === "string" &&
+    typeof e.text === "string"
+      ? [{ god: e.entityId, text: e.text }]
+      : [],
+  );
+  const leaks: string[] = [];
+  let checked = 0;
+  for (const request of requests) {
+    if (request.promptPayload === undefined) continue;
+    checked += 1;
+    const outsideTold = request.promptPayload
+      .split("\n")
+      .filter((line) => !TOLD_LINE.test(line) && !LEGEND_LINE.test(line))
+      .join("\n");
+    for (const goal of goals) {
+      if (goal.god !== request.role && outsideTold.includes(goal.text)) {
+        leaks.push(
+          `${request.role}'s prompt carries ${goal.god}'s goal "${goal.text}" outside a told account or a perceived legend`,
+        );
+      }
+    }
+  }
+  // Goals were set but no prompt could be read: nothing was checked, and an
+  // empty pass would claim a privacy the run never looked at.
+  if (goals.length > 0 && checked === 0) {
+    return {
+      name,
+      ok: false,
+      detail: `${goals.length} goals were set but no prompt payload was recorded to check them against`,
+    };
+  }
+  return {
+    name,
+    ok: leaks.length === 0,
+    detail:
+      leaks.length === 0
+        ? `${checked} prompts checked against ${goals.length} goals: none carried another god's goal outside a told account or a perceived legend`
+        : leaks.join("; "),
+  };
+}
+
 function relationshipProvenance(events: readonly StoredEvent[]): Property {
   const name = "relationship change with provenance";
   const changes = events.filter((e) => e.kind === "relationship-changed");
@@ -227,13 +297,13 @@ function actionsOf(
   proposals: readonly RealProposal[],
   events: readonly StoredEvent[],
 ) {
-  return committedInOrder(actor, proposals, events).map(
-    ({ proposal, sequence }) => ({
+  return committedInOrder(actor, proposals, events)
+    .filter(({ proposal }) => proposal.kind !== "goal")
+    .map(({ proposal, sequence }) => ({
       key: `${proposal.kind}:${namedIds(proposal.proposal).join(",")}`,
       kind: proposal.kind,
       sequence,
-    }),
-  );
+    }));
 }
 
 function changedNextAction(
@@ -324,6 +394,7 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       perceptionCompliance(requests, proposals),
       relationshipProvenance(events),
       changedNextAction(proposals, events),
+      goalPrivacy(requests, events),
     ],
   };
 }

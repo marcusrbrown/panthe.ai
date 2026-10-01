@@ -14,9 +14,14 @@ import {
   type Consequence,
   type EntityId,
   type EventId,
+  GOAL_OUTCOMES,
+  type GoalChange,
+  MAX_GOAL_LENGTH,
   MAX_REPORT_LENGTH,
+  type WorldEvent,
 } from "@panthea/contracts";
 import {
+  type ActiveGoal,
   getMemories,
   hasCapability,
   type MemoryEntry,
@@ -41,7 +46,12 @@ export const GOD_INTENT_ACTIONS = [
 export type GodIntentAction = (typeof GOD_INTENT_ACTIONS)[number];
 
 /** What a god decides to do. Targets are entity ids from the snapshot the intent was made from. */
-export type GodIntent =
+export type GodIntent = GodAction & {
+  /** A change to the god's own goal, alongside whatever it does. */
+  readonly goal?: GoalChange;
+};
+
+type GodAction =
   | { readonly action: "move"; readonly to: EntityId }
   | { readonly action: "realm-transition"; readonly to: EntityId }
   | {
@@ -52,6 +62,8 @@ export type GodIntent =
   | {
       readonly action: "legend";
       readonly assertion: string;
+      /** What the god asserts happened, in structure: its claim, shown ids only. */
+      readonly claim?: Consequence;
       readonly linkedEventId?: EventId;
     }
   /**
@@ -83,12 +95,96 @@ export const MAX_ASSERTION_LENGTH = 280;
 export const MAX_REMEMBERED = 6;
 /** Most feelings a prompt shows: the strongest. */
 export const MAX_FEELINGS = 5;
+/** Most of a god's own recent actions a prompt shows: the newest. */
+export const MAX_OWN_ACTIONS = 5;
+/** Most entries of a goal's history a prompt shows: the newest since the goal was set. */
+export const MAX_GOAL_HISTORY = 4;
+/** How many of a god's own newest authored events a turn reads: enough for the actions shown and for a goal's history to reach back past them. */
+export const OWN_EVENT_WINDOW = 4 * MAX_OWN_ACTIONS;
 
-/** What a god carries into a turn from its own memory: bounded, and nothing but what it holds. */
+/**
+ * Whether `event` is an action `actor` took, as opposed to a cost, a belief,
+ * a feeling, or something that happened to it: a move, a crossing, a report or
+ * legend it told, or a strike (its ignition or damage). A fire that merely
+ * spread from its strike is not. The service's bounded read of a god's own
+ * events (apps/simulation) mirrors this, and a test holds the two together.
+ */
+export function authoredAction(event: WorldEvent, actor: EntityId): boolean {
+  switch (event.kind) {
+    case "entity-moved":
+    case "realm-transitioned":
+    case "report-told":
+    case "legend-recorded":
+      return event.entityId === actor;
+    case "building-damaged":
+      return event.actor === actor;
+    case "building-ignited":
+      return event.cause.kind === "strike" && event.cause.actor === actor;
+    default:
+      return false;
+  }
+}
+
+/** One thing from a goal's history: something the god itself remembers, or did. */
+export type GoalHistoryEntry =
+  | {
+      readonly kind: "memory";
+      readonly sequence: number;
+      readonly memory: MemoryEntry;
+    }
+  | {
+      readonly kind: "action";
+      readonly sequence: number;
+      readonly event: WorldEvent;
+    };
+
+/** What a god carries into a turn from its own memory and record: bounded, and nothing but what it holds or did. */
 export interface Remembered {
   /** Oldest first. */
   readonly memories: readonly MemoryEntry[];
   readonly relationships: readonly RelationshipState[];
+  /** The god's own newest authored actions, oldest first, at most `MAX_OWN_ACTIONS`. */
+  readonly ownActions: readonly WorldEvent[];
+  /** The god's active goal, if it has one. */
+  readonly goal: ActiveGoal | undefined;
+  /** What the god itself remembers or did involving the goal's target since it set the goal, oldest first, at most `MAX_GOAL_HISTORY`. */
+  readonly goalHistory: readonly GoalHistoryEntry[];
+}
+
+/** Whether `ids` name `target` or a building `target` owns. */
+function eventInvolves(
+  state: WorldState,
+  event: WorldEvent,
+  target: EntityId,
+): boolean {
+  const claimNames = (claim: Consequence | undefined) =>
+    claim !== undefined && (claim.agent === target || claim.target === target);
+  switch (event.kind) {
+    case "entity-moved":
+    case "realm-transitioned":
+      return event.to === target;
+    case "report-told":
+      return event.listenerId === target || claimNames(event.claim);
+    case "legend-recorded":
+      return event.hearers.includes(target) || claimNames(event.claim);
+    case "building-damaged":
+    case "building-ignited":
+      return (
+        event.entityId === target ||
+        state.buildings.get(event.entityId)?.owner === target
+      );
+    default:
+      return false;
+  }
+}
+
+function memoryInvolves(memory: MemoryEntry, target: EntityId): boolean {
+  return (
+    memory.subjects.includes(target) ||
+    memory.consequence?.agent === target ||
+    memory.consequence?.target === target ||
+    (memory.kind === "told" && memory.teller === target)
+  );
 }
 
 /**
@@ -96,7 +192,39 @@ export interface Remembered {
  * its `MAX_REMEMBERED` most salient memories (the newest among equals),
  * oldest first, and its `MAX_FEELINGS` strongest feelings.
  */
-export function rememberedBy(state: WorldState, actorId: EntityId): Remembered {
+export function rememberedBy(
+  state: WorldState,
+  actorId: EntityId,
+  ownEvents: readonly WorldEvent[] = [],
+): Remembered {
+  const own = ownEvents
+    .filter((event) => authoredAction(event, actorId))
+    .sort((a, b) => a.sequence - b.sequence);
+  const goal = state.goals.get(actorId);
+  const goalHistory: GoalHistoryEntry[] = [];
+  if (goal !== undefined) {
+    for (const memory of getMemories(state, actorId)) {
+      if (
+        memory.recordedAt > goal.sequence &&
+        memoryInvolves(memory, goal.target)
+      ) {
+        goalHistory.push({
+          kind: "memory",
+          sequence: memory.recordedAt,
+          memory,
+        });
+      }
+    }
+    for (const event of own) {
+      if (
+        event.sequence > goal.sequence &&
+        eventInvolves(state, event, goal.target)
+      ) {
+        goalHistory.push({ kind: "action", sequence: event.sequence, event });
+      }
+    }
+    goalHistory.sort((a, b) => a.sequence - b.sequence);
+  }
   const memories = [...getMemories(state, actorId)]
     .sort((a, b) => b.salience - a.salience || b.recordedAt - a.recordedAt)
     .slice(0, MAX_REMEMBERED)
@@ -106,10 +234,56 @@ export function rememberedBy(state: WorldState, actorId: EntityId): Remembered {
     .filter((r) => r.from === actorId)
     .sort((a, b) => strength(b) - strength(a) || (a.toward < b.toward ? -1 : 1))
     .slice(0, MAX_FEELINGS);
-  return { memories, relationships };
+  return {
+    memories,
+    relationships,
+    ownActions: own.slice(-MAX_OWN_ACTIONS),
+    goal,
+    goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
+  };
 }
 
-const NOTHING_REMEMBERED: Remembered = { memories: [], relationships: [] };
+export const NOTHING_REMEMBERED: Remembered = {
+  memories: [],
+  relationships: [],
+  ownActions: [],
+  goal: undefined,
+  goalHistory: [],
+};
+
+/**
+ * The ids a god has been shown this turn, which are the only ones a goal may
+ * name as its target: the scene (who and what is here, the ways out, the place
+ * itself) plus the ids in the memories and feelings its prompt shows, and its
+ * goal's own target. Never the god itself.
+ */
+export function shownIds(
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered,
+): readonly EntityId[] {
+  const ids = new Set<EntityId>([
+    ...snapshot.actors.map((actor) => actor.id),
+    ...snapshot.buildings.map((building) => building.id),
+    ...snapshot.exits.map((exit) => exit.to),
+    snapshot.location.id,
+  ]);
+  for (const memory of remembered.memories) {
+    for (const subject of memory.subjects) ids.add(subject);
+    if (memory.consequence !== undefined) {
+      ids.add(memory.consequence.agent);
+      if (memory.consequence.target !== undefined) {
+        ids.add(memory.consequence.target);
+      }
+    }
+    if (memory.kind === "told") ids.add(memory.teller);
+  }
+  for (const relationship of remembered.relationships) {
+    ids.add(relationship.toward);
+  }
+  if (remembered.goal !== undefined) ids.add(remembered.goal.target);
+  ids.delete(snapshot.self.id);
+  return [...ids];
+}
 
 function isGodIntentAction(action: string): action is GodIntentAction {
   return (GOD_INTENT_ACTIONS as readonly string[]).includes(action);
@@ -172,6 +346,10 @@ interface Offer {
   readonly claimTargets: readonly EntityId[];
   /** Events the god remembers witnessing, the only ones a report may cite. */
   readonly witnessedEventIds: readonly EventId[];
+  /** Whether the god has a goal it could end. */
+  readonly hasGoal: boolean;
+  /** The ids a new goal may name as its target (`shownIds`). */
+  readonly goalTargets: readonly EntityId[];
 }
 
 function offerFor(
@@ -200,6 +378,8 @@ function offerFor(
     witnessedEventIds: remembered.memories.flatMap((memory) =>
       memory.kind === "witnessed" ? [memory.sourceEventId] : [],
     ),
+    hasGoal: remembered.goal !== undefined,
+    goalTargets: shownIds(snapshot, remembered),
   };
 }
 
@@ -262,7 +442,77 @@ function parseMember<T extends string>(
   return { ok: true, value: value as T };
 }
 
+/** The intent's action with its optional goal change: both must parse. */
 function parseIntent(
+  offer: Offer,
+  actions: readonly GodIntentAction[],
+  candidate: unknown,
+): ParseResult<GodIntent> {
+  const parsed = parseAction(offer, actions, candidate);
+  if (!parsed.ok) return parsed;
+  const raw = (candidate as Record<string, unknown>).goal;
+  if (raw === undefined || raw === null) return parsed;
+  const goal = parseGoalChange(offer, raw);
+  if (!goal.ok) return goal;
+  return { ok: true, value: { ...parsed.value, goal: goal.value } };
+}
+
+function parseGoalChange(offer: Offer, raw: unknown): ParseResult<GoalChange> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return invalid("goal", "goal must be an object");
+  }
+  const fields = raw as Record<string, unknown>;
+  let end: GoalChange["end"];
+  if (fields.end !== undefined && fields.end !== null) {
+    if (!offer.hasGoal) {
+      return invalid("goal.end", "you have no goal to end");
+    }
+    const outcome = (fields.end as Record<string, unknown>)?.outcome;
+    const parsed = parseMember(
+      outcome,
+      "goal.end.outcome",
+      GOAL_OUTCOMES,
+      "outcome",
+    );
+    if (!parsed.ok) return parsed;
+    end = { outcome: parsed.value };
+  }
+  let set: GoalChange["set"];
+  if (fields.set !== undefined && fields.set !== null) {
+    const record = fields.set as Record<string, unknown>;
+    const text = record?.text;
+    if (
+      typeof text !== "string" ||
+      text.trim() === "" ||
+      text.length > MAX_GOAL_LENGTH
+    ) {
+      return invalid(
+        "goal.set.text",
+        `text must be 1 to ${MAX_GOAL_LENGTH} characters`,
+      );
+    }
+    const target = parseMember(
+      record.target,
+      "goal.set.target",
+      offer.goalTargets,
+      "target",
+    );
+    if (!target.ok) return target;
+    set = { text, target: target.value as EntityId };
+  }
+  if (end === undefined && set === undefined) {
+    return invalid("goal", "a goal change needs an end, a set, or both");
+  }
+  return {
+    ok: true,
+    value: {
+      ...(end === undefined ? {} : { end }),
+      ...(set === undefined ? {} : { set }),
+    },
+  };
+}
+
+function parseAction(
   offer: Offer,
   actions: readonly GodIntentAction[],
   candidate: unknown,
@@ -331,9 +581,15 @@ function parseIntent(
           `assertion must be 1 to ${MAX_ASSERTION_LENGTH} characters`,
         );
       }
+      const claim = parseClaim(offer, fields.claim);
+      if (!claim.ok) return claim;
+      const claimed = claim.value === undefined ? {} : { claim: claim.value };
       const linked = fields.linkedEventId;
       if (linked === undefined || linked === null) {
-        return { ok: true, value: { action: "legend", assertion } };
+        return {
+          ok: true,
+          value: { action: "legend", assertion, ...claimed },
+        };
       }
       const linkedEventId = parseMember(
         linked,
@@ -347,6 +603,7 @@ function parseIntent(
             value: {
               action: "legend",
               assertion,
+              ...claimed,
               linkedEventId: linkedEventId.value,
             },
           }
@@ -494,6 +751,8 @@ export function godIntentSchema(
       minLength: 1,
       maxLength: MAX_REPORT_LENGTH,
     };
+  }
+  if (offer.listeners.length > 0 || offer.canLegend) {
     properties.claim = {
       type: "object",
       properties: {
@@ -505,6 +764,33 @@ export function godIntentSchema(
       additionalProperties: false,
     };
   }
+  properties.goal = {
+    type: "object",
+    properties: {
+      set: {
+        type: "object",
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: MAX_GOAL_LENGTH },
+          target: { type: "string", enum: [...offer.goalTargets] },
+        },
+        required: ["text", "target"],
+        additionalProperties: false,
+      },
+      ...(offer.hasGoal
+        ? {
+            end: {
+              type: "object",
+              properties: {
+                outcome: { type: "string", enum: [...GOAL_OUTCOMES] },
+              },
+              required: ["outcome"],
+              additionalProperties: false,
+            },
+          }
+        : {}),
+    },
+    additionalProperties: false,
+  };
   const citable = [...new Set([...offer.eventIds, ...offer.witnessedEventIds])];
   if ((offer.canLegend || offer.listeners.length > 0) && citable.length > 0) {
     properties.linkedEventId = { type: "string", enum: citable };
@@ -572,6 +858,74 @@ function describeRemembered(remembered: Remembered): string[] {
   return lines;
 }
 
+function claimClause(claim: Consequence | undefined): string {
+  return claim === undefined ? "" : ` (claiming ${describeConsequence(claim)})`;
+}
+
+/** One of the god's own committed actions, in its own terms: what it did, said, and claimed. */
+function describeOwnAction(event: WorldEvent): string {
+  switch (event.kind) {
+    case "entity-moved":
+      return `you moved to ${event.to}`;
+    case "realm-transitioned":
+      return `you crossed to ${event.to}`;
+    case "report-told":
+      return `you told ${event.listenerId}: "${event.content}"${claimClause(event.claim)}`;
+    case "legend-recorded":
+      return `you told everyone present: "${event.assertion}"${claimClause(event.claim)} (${event.hearers.length === 0 ? "no one was there" : `heard by ${event.hearers.join(", ")}`})`;
+    case "building-damaged":
+      return `you struck ${event.entityId}`;
+    case "building-ignited":
+      return `you struck ${event.entityId}, setting it alight`;
+    default:
+      return event.kind;
+  }
+}
+
+function describeHistoryEntry(entry: GoalHistoryEntry): string {
+  return entry.kind === "memory"
+    ? describeMemory(entry.memory)
+    : `- ${describeOwnAction(entry.event)}`;
+}
+
+/** Whether `target` is in the scene the god perceives now. */
+function targetIsHere(snapshot: PerceptionSnapshot, target: EntityId): boolean {
+  return (
+    snapshot.location.id === target ||
+    snapshot.actors.some((actor) => actor.id === target) ||
+    snapshot.buildings.some((building) => building.id === target)
+  );
+}
+
+/** The god's own recent actions, and its goal with what has happened with its target since. */
+function describeSelf(
+  snapshot: PerceptionSnapshot,
+  remembered: Remembered,
+): string[] {
+  const lines: string[] = [];
+  if (remembered.ownActions.length > 0) {
+    lines.push(
+      "What you did recently:",
+      ...remembered.ownActions.map((event) => `- ${describeOwnAction(event)}`),
+    );
+  }
+  const { goal } = remembered;
+  if (goal === undefined) {
+    lines.push("You have no goal. You may set one.");
+  } else {
+    lines.push(
+      `Your goal: "${goal.text}" (target ${goal.target}, ${targetIsHere(snapshot, goal.target) ? "here" : "not here"}).`,
+    );
+    if (remembered.goalHistory.length > 0) {
+      lines.push(
+        "Since you set it:",
+        ...remembered.goalHistory.map(describeHistoryEntry),
+      );
+    }
+  }
+  return lines;
+}
+
 function describeAbility(
   ability: GodAbility,
   profile: GodProfile,
@@ -623,7 +977,16 @@ export function buildGodContext(
           'You may also tell someone here something (action "report", naming the listener, your words, and optionally a claim of who harmed or did a kindness to whom, and an event you saw). It is your own account, told as you choose.',
         ]
       : []),
+    ...(abilityFor(profile, "legend") === undefined
+      ? []
+      : [
+          snapshot.actors.length === 0
+            ? "No one is here to hear a legend now."
+            : `A legend is heard by everyone here now: ${snapshot.actors.map((actor) => actor.id).join(", ")}.`,
+        ]),
+    "Speak your report and legend words in the first person, to those who hear them, without using your own name.",
     `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
+    'You may keep one goal across turns: add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}. A new goal ends your old one.',
     'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");
@@ -655,6 +1018,7 @@ export function buildGodContext(
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
     ...describeRemembered(remembered),
+    ...describeSelf(snapshot, remembered),
     "Ways out:",
     ...(usableExits(snapshot).length === 0
       ? ["- none"]

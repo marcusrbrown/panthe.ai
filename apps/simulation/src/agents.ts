@@ -13,9 +13,14 @@
 import {
   type GodTurnDeps,
   type GodTurnResult,
+  OWN_EVENT_WINDOW,
   runGodTurn,
 } from "@panthea/agents";
-import { type EntityId, UNPLACED_EVENT_KINDS } from "@panthea/contracts";
+import {
+  type EntityId,
+  UNPLACED_EVENT_KINDS,
+  type WorldEvent,
+} from "@panthea/contracts";
 import {
   insertExternalProposal,
   listEvents,
@@ -62,6 +67,38 @@ export interface GodTurnRunner {
   idle(): Promise<void>;
   /** Abandons the turn in flight: nothing more is journaled. */
   stop(): void;
+}
+
+/**
+ * The newest `OWN_EVENT_WINDOW` events the god's own actions committed, up to
+ * `toSequence`, oldest first: moves, crossings, the reports and legends it told
+ * (which the frame window leaves out, being unplaced or newest-capped), and its
+ * strikes. Only committed events can be here, so a rejected or exhausted turn
+ * is never shown to the god, and replay reproduces exactly this. The SQL mirrors
+ * `authoredAction` in packages/agents, and a test holds the two together.
+ */
+export function readOwnEvents(
+  db: Store["db"],
+  god: EntityId,
+  toSequence: number,
+): WorldEvent[] {
+  const rows = db
+    .query(
+      `SELECT payload FROM events
+       WHERE sequence <= ?
+         AND (
+           (kind IN ('entity-moved', 'realm-transitioned', 'report-told', 'legend-recorded')
+             AND json_extract(payload, '$.entityId') = ?)
+           OR (kind = 'building-damaged' AND json_extract(payload, '$.actor') = ?)
+           OR (kind = 'building-ignited'
+             AND json_extract(payload, '$.cause.kind') = 'strike'
+             AND json_extract(payload, '$.cause.actor') = ?)
+         )
+       ORDER BY sequence DESC
+       LIMIT ?`,
+    )
+    .all(toSequence, god, god, god, OWN_EVENT_WINDOW) as { payload: string }[];
+  return rows.reverse().map((row) => JSON.parse(row.payload) as WorldEvent);
 }
 
 /** The actors with a pending journal entry: they have a proposal waiting and get no new turn. */
@@ -138,10 +175,12 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
         excludeKinds: UNPLACED_EVENT_KINDS,
         newest: RECENT_EVENT_CAP,
       });
+      const ownEvents = readOwnEvents(deps.store.db, god, state.lastSequence);
       const result = await runGodTurn(deps, {
         state,
         actorId: god,
         recentEvents,
+        ownEvents,
         signal,
       });
       if (result && !signal.aborted) conclude(result);

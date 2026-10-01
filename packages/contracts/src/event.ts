@@ -168,9 +168,20 @@ export interface LegendRecordedEvent extends EventEnvelope {
   readonly entityId: EntityId;
   readonly assertion: string;
   readonly linkedEventId?: EventId;
+  /** What the narrator asserts happened, in structure; it may be false and is never judged. It gives each hearer a consequence, as a report's claim does. */
+  readonly claim?: Consequence;
+  /** Who heard it: the living actors at the narrator's place when it committed, fixed by the rules at execution and recorded here, minus the narrator. Empty when no one was present. */
+  readonly hearers: readonly EntityId[];
 }
 
-/** Most characters of report text a proposal, an event, or a stored belief may hold. A D23 tunable (docs/product/defaults.md); a prompt-sized account, not a document. */
+/** Most characters of a goal's text, in a proposal and in the event that records it. A goal is a short aim in the god's own words. */
+export const MAX_GOAL_LENGTH = 140;
+
+/** How a god ends its goal: the god decides, the world never judges. */
+export const GOAL_OUTCOMES = ["achieved", "failed", "abandoned"] as const;
+export type GoalOutcome = (typeof GOAL_OUTCOMES)[number];
+
+/** Most characters of report text (and of a legend's assertion, which every hearer's belief holds) a proposal, an event, or a stored belief may hold. A D23 tunable (docs/product/defaults.md); a prompt-sized account, not a document. */
 export const MAX_REPORT_LENGTH = 280;
 
 /** What a happening did to someone, as a witness or a listener understands it. `target` is who or what suffered or was served, when someone was. */
@@ -197,11 +208,33 @@ export interface ReportToldEvent extends EventEnvelope {
   readonly linkedEventId?: EventId;
 }
 
-/** Kinds that happen at no place: a report is heard only by its listener, a memory and a feeling are inside someone's head. Nobody perceives them, so nobody witnesses them. */
+/**
+ * A god declared a goal: its own words and the one target it knows. A
+ * declaration, like a legend: the world never checks that the target is alive
+ * or reachable and never ends the goal itself. Private to the god.
+ */
+export interface GoalSetEvent extends EventEnvelope {
+  readonly kind: "goal-set";
+  readonly entityId: EntityId;
+  readonly text: string;
+  readonly target: EntityId;
+}
+
+/** A god's goal ended, by the god's own declaration, or because it set a new one (abandoned). `goalEventId` is the `goal-set` event it ends. */
+export interface GoalEndedEvent extends EventEnvelope {
+  readonly kind: "goal-ended";
+  readonly entityId: EntityId;
+  readonly outcome: GoalOutcome;
+  readonly goalEventId: EventId;
+}
+
+/** Kinds that happen at no place: a report is heard only by its listener, a memory and a feeling are inside someone's head, and a goal is the god's own. Nobody perceives them, so nobody witnesses them. */
 export const UNPLACED_EVENT_KINDS = [
   "report-told",
   "memory-recorded",
   "relationship-changed",
+  "goal-set",
+  "goal-ended",
 ] as const;
 
 /** The kinds an actor can witness. */
@@ -274,7 +307,9 @@ export type WorldEvent =
   | LegendRecordedEvent
   | ReportToldEvent
   | MemoryRecordedEvent
-  | RelationshipChangedEvent;
+  | RelationshipChangedEvent
+  | GoalSetEvent
+  | GoalEndedEvent;
 
 const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "entity-moved": true,
@@ -295,6 +330,8 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "report-told": true,
   "memory-recorded": true,
   "relationship-changed": true,
+  "goal-set": true,
+  "goal-ended": true,
 };
 
 /** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
@@ -332,6 +369,9 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
         return [event.entityId, event.listenerId];
       case "relationship-changed":
         return [event.entityId, event.toward];
+      case "goal-set":
+        return [event.entityId, event.target];
+      case "goal-ended":
       case "memory-recorded":
       case "resource-gathered":
       case "resource-produced":
@@ -353,7 +393,7 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
  * follows the ignition that started the fire; a spread follows the source
  * building's ignition; a memory follows the event it rests on; a report
  * follows the event it cites; a relationship change follows the memory that
- * caused it. A strike ignition, or any event a proposal committed with nothing
+ * caused it; a goal's end follows the goal it ends. A strike ignition, or any event a proposal committed with nothing
  * cited, is a root: its own proposal is its cause, and the trace holds that.
  */
 export function eventCause(event: WorldEvent): EventId | undefined {
@@ -369,6 +409,8 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.linkedEventId;
     case "relationship-changed":
       return event.memoryEventId;
+    case "goal-ended":
+      return event.goalEventId;
     default:
       return undefined;
   }
@@ -465,6 +507,20 @@ export function parseReportContent(
     return fail(path, `expected at most ${MAX_REPORT_LENGTH} characters`);
   }
   return content;
+}
+
+/** A goal's text: not blank and at most `MAX_GOAL_LENGTH` characters. */
+export function parseGoalText(
+  value: unknown,
+  path: string,
+): ParseResult<string> {
+  if (typeof value !== "string" || value.trim() === "") {
+    return fail(path, "expected a non-blank string");
+  }
+  if (value.length > MAX_GOAL_LENGTH) {
+    return fail(path, `expected at most ${MAX_GOAL_LENGTH} characters`);
+  }
+  return ok(value);
 }
 
 /** A memory's salience: a positive whole number. */
@@ -819,13 +875,17 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
     case "legend-recorded": {
       const entityId = parseEntityId(input.entityId, "entityId");
       if (!entityId.ok) return entityId;
-      const assertion = parseString(input.assertion, "assertion");
+      const assertion = parseReportContent(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       const linkedEventIdRaw = parseOptionalString(
         input.linkedEventId,
         "linkedEventId",
       );
       if (!linkedEventIdRaw.ok) return linkedEventIdRaw;
+      const claim = parseConsequence(input.claim, "claim");
+      if (!claim.ok) return claim;
+      const hearers = parseArray(input.hearers, "hearers", parseEntityId);
+      if (!hearers.ok) return hearers;
       return ok({
         ...envelope,
         kind: "legend-recorded",
@@ -834,6 +894,8 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         ...(linkedEventIdRaw.value === undefined
           ? {}
           : { linkedEventId: linkedEventIdRaw.value as EventId }),
+        ...(claim.value === undefined ? {} : { claim: claim.value }),
+        hearers: hearers.value,
       });
     }
     case "report-told": {
@@ -889,6 +951,36 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         grudgeDelta: grudgeDelta.value,
         ...(allied.value === undefined ? {} : { allied: allied.value }),
         memoryEventId: memoryEventId.value,
+      });
+    }
+    case "goal-set": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const text = parseGoalText(input.text, "text");
+      if (!text.ok) return text;
+      const target = parseEntityId(input.target, "target");
+      if (!target.ok) return target;
+      return ok({
+        ...envelope,
+        kind: "goal-set",
+        entityId: entityId.value,
+        text: text.value,
+        target: target.value,
+      });
+    }
+    case "goal-ended": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const outcome = parseEnum(input.outcome, "outcome", GOAL_OUTCOMES);
+      if (!outcome.ok) return outcome;
+      const goalEventId = parseEventId(input.goalEventId, "goalEventId");
+      if (!goalEventId.ok) return goalEventId;
+      return ok({
+        ...envelope,
+        kind: "goal-ended",
+        entityId: entityId.value,
+        outcome: outcome.value,
+        goalEventId: goalEventId.value,
       });
     }
     default:

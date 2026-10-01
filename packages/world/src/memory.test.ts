@@ -731,6 +731,237 @@ test("a report told with zero belief salience is recorded but forms no belief an
   }
 });
 
+// --- Legends are tellings: everyone present hears, and each hearer remembers it as told ---------------------
+
+const legend = (
+  actor: string,
+  assertion: string,
+  claim?: Claim,
+  linkedEventId?: string,
+) =>
+  propose({
+    actor,
+    kind: "legend",
+    assertion,
+    ...(claim === undefined ? {} : { claim }),
+    ...(linkedEventId === undefined ? {} : { linkedEventId }),
+  });
+
+const HARM_ON_HERA: Claim = { effect: "harm", agent: "zeus", target: "hera" };
+
+/** Hera and the woodcutter are in the square; Zeus walks over, so the audience is Zeus and the woodcutter. */
+function squareWithZeus() {
+  const world = new World();
+  world.tick(move("zeus", "square"));
+  return world;
+}
+
+test("Hera tells a legend with a claim: everyone present is recorded as a hearer and remembers it as told by her; the claim shifts a hearer's feeling; she remembers nothing of her own telling", () => {
+  const world = squareWithZeus();
+  const told = world.tick(legend("hera", "Zeus has wronged me.", HARM_ON_HERA));
+  expect(world.lastRejected).toEqual([]);
+  const recorded = ofKind(told.events, "legend-recorded")[0];
+  expect(recorded?.hearers.map(String)).toEqual(["woodcutter", "zeus"]);
+  expect(recorded?.claim as unknown).toEqual(HARM_ON_HERA);
+
+  for (const hearer of ["woodcutter", "zeus"]) {
+    const belief = world.memories(hearer).find((m) => m.kind === "told");
+    expect(belief).toMatchObject({
+      kind: "told",
+      teller: "hera",
+      content: "Zeus has wronged me.",
+      sourceEventId: recorded?.id,
+      consequence: HARM_ON_HERA,
+    });
+  }
+  // The woodcutter now feels worse about Zeus, with the belief as cause.
+  const change = ofKind(told.events, "relationship-changed").find(
+    (e) => e.entityId === id("woodcutter"),
+  );
+  expect(change).toMatchObject({ toward: "zeus", affinityDelta: -1 });
+  expect(
+    getRelationship(world.state, id("woodcutter"), id("zeus"))?.affinity,
+  ).toBe(-1);
+  // Zeus, the one accused, does not feel anything about himself.
+  expect(getRelationship(world.state, id("zeus"), id("zeus"))).toBeUndefined();
+  // The narrator is not her own hearer, and the bard (at the tavern) heard nothing.
+  expect(world.memories("hera")).toEqual([]);
+  expect(world.memories("bard")).toEqual([]);
+  // Every memory event of the legend rests on the legend event.
+  expect(
+    ofKind(told.events, "memory-recorded").every(
+      (e) => e.sourceEventId === recorded?.id,
+    ),
+  ).toBe(true);
+});
+
+test("a hearer remembers the legend once: no witnessed memory of it as well; the event itself stays placed and visible", () => {
+  const world = squareWithZeus();
+  const told = world.tick(legend("hera", "Zeus has wronged me.", HARM_ON_HERA));
+  const recorded = ofKind(told.events, "legend-recorded")[0];
+  const memories = ofKind(told.events, "memory-recorded");
+  expect(memories.map((m) => m.memoryKind)).toEqual(["told", "told"]);
+  expect(
+    memories.some(
+      (m) => m.memoryKind === "witnessed" && m.eventKind === "legend-recorded",
+    ),
+  ).toBe(false);
+  // Still perceived by those present, as before.
+  const seen = perceive(world.state, id("woodcutter"), told.events);
+  expect(seen?.events.map((e) => e.id)).toContain(recorded?.id);
+  // And not by someone elsewhere (control).
+  expect(
+    perceive(world.state, id("farmer"), told.events)?.events.map((e) => e.id) ??
+      [],
+  ).not.toContain(recorded?.id);
+});
+
+test("an actor who arrives in the same tick after the legend commits is not a hearer; one who is already there is", () => {
+  const world = new World();
+  const told = world.tick(
+    legend("hera", "I wait here."),
+    move("farmer", "square"),
+  );
+  const recorded = ofKind(told.events, "legend-recorded")[0];
+  expect(recorded?.hearers.map(String)).toEqual(["woodcutter"]);
+  expect(world.memories("farmer")).toEqual([]);
+  // Control: the farmer, there before the next legend, hears it.
+  const next = world.tick(legend("hera", "Now you are here."));
+  expect(
+    ofKind(next.events, "legend-recorded")[0]?.hearers.map(String),
+  ).toEqual(["farmer", "woodcutter"]);
+});
+
+test("a legend told with no one present commits with no hearers and forms no memory", () => {
+  const world = new World();
+  world.tick(move("woodcutter", "tavern"));
+  const told = world.tick(legend("hera", "To the empty square.", HARM_ON_HERA));
+  expect(world.lastRejected).toEqual([]);
+  const recorded = ofKind(told.events, "legend-recorded")[0];
+  expect(recorded?.hearers).toEqual([]);
+  expect(ofKind(told.events, "memory-recorded")).toEqual([]);
+  expect(ofKind(told.events, "relationship-changed")).toEqual([]);
+  // Control: with the woodcutter back, it has a hearer.
+  world.tick(move("woodcutter", "square"));
+  const heard = world.tick(legend("hera", "To the square.", HARM_ON_HERA));
+  expect(ofKind(heard.events, "legend-recorded")[0]?.hearers).toHaveLength(1);
+});
+
+test("the same claim told twice by the same narrator counts once per hearer; a different claim still counts", () => {
+  const world = new World();
+  world.tick(legend("hera", "Zeus has wronged me.", HARM_ON_HERA));
+  const after = getRelationship(world.state, id("woodcutter"), id("zeus"));
+  const again = world.tick(
+    legend("hera", "Zeus wronged me, I say.", HARM_ON_HERA),
+  );
+  expect(ofKind(again.events, "memory-recorded")).toEqual([]);
+  expect(ofKind(again.events, "relationship-changed")).toEqual([]);
+  expect(
+    getRelationship(world.state, id("woodcutter"), id("zeus"))?.affinity,
+  ).toBe(after?.affinity);
+  expect(world.memories("woodcutter")).toHaveLength(1);
+  // A different claim is a different account.
+  const other = world.tick(
+    legend("hera", "Zeus insulted the bard.", {
+      effect: "harm",
+      agent: "zeus",
+      target: "bard",
+    }),
+  );
+  expect(ofKind(other.events, "relationship-changed")).toHaveLength(1);
+  expect(world.memories("woodcutter")).toHaveLength(2);
+});
+
+test("a legend's claim naming someone who does not exist is refused; one naming a real actor or building commits", () => {
+  const world = new World();
+  world.tick(legend("hera", "x", { effect: "harm", agent: "nobody" }));
+  expect(world.lastRejected.map((r) => r.reason)).toEqual(["malformed"]);
+  world.tick(
+    legend("hera", "x", { effect: "harm", agent: "zeus", target: "nowhere" }),
+  );
+  expect(world.lastRejected.map((r) => r.reason)).toEqual(["malformed"]);
+  expect(world.memories("woodcutter")).toEqual([]);
+  world.tick(
+    legend("hera", "x", {
+      effect: "harm",
+      agent: "zeus",
+      target: "the-tavern",
+    }),
+  );
+  expect(world.lastRejected).toEqual([]);
+  expect(world.memories("woodcutter")).toHaveLength(1);
+});
+
+test("a legend does not spread by itself: the hearer's neighbours learn only when the hearer reports it onward, through the report path", () => {
+  const world = new World();
+  world.tick(legend("hera", "Zeus has wronged me.", HARM_ON_HERA));
+  // The bard, at the tavern, heard nothing, and nothing carries it to him.
+  world.tick();
+  expect(world.memories("bard")).toEqual([]);
+  // The woodcutter walks to the tavern and tells the bard in his own words.
+  world.tick(move("woodcutter", "tavern"));
+  expect(world.memories("bard")).toEqual([]);
+  const retold = world.tick(
+    report(
+      "woodcutter",
+      "bard",
+      "I heard Hera say Zeus wronged her.",
+      undefined,
+      HARM_ON_HERA,
+    ),
+  );
+  expect(world.lastRejected).toEqual([]);
+  const belief = world.memories("bard")[0];
+  expect(belief).toMatchObject({ kind: "told", teller: "woodcutter" });
+  expect(ofKind(retold.events, "report-told")).toHaveLength(1);
+  // A hearer may not cite the legend as something it witnessed.
+  const citing = world.tick(
+    report(
+      "woodcutter",
+      "farmer",
+      "I heard it.",
+      ofKind(world.log, "legend-recorded")[0]?.id,
+    ),
+  );
+  void citing;
+  expect(world.lastRejected.map((r) => r.reason)).toEqual([
+    "unauthorized-claim",
+  ]);
+});
+
+test("a legend changes no divinity, favor, or inventory", () => {
+  const world = squareWithZeus();
+  const before = world.state.actors;
+  world.tick(legend("hera", "Zeus has wronged me.", HARM_ON_HERA));
+  for (const actor of ["hera", "zeus", "woodcutter", "farmer", "bard"]) {
+    const was = before.get(id(actor));
+    const now = world.state.actors.get(id(actor));
+    expect(now?.inventory).toEqual(was?.inventory);
+    expect(now?.favors).toEqual(was?.favors);
+  }
+});
+
+test("legend text is bounded like a report's, since each hearer's belief holds it", () => {
+  const world = new World();
+  const long = "x".repeat(MAX_REPORT_LENGTH + 1);
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: "hera",
+    kind: "legend",
+    assertion: long,
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-long",
+  });
+  expect(submitted.ok).toBe(false);
+  // Control: exactly the limit commits and every hearer's belief decodes.
+  world.tick(legend("hera", "x".repeat(MAX_REPORT_LENGTH)));
+  expect(() =>
+    decode(JSON.parse(JSON.stringify(encode(world.state)))),
+  ).not.toThrow();
+});
+
 // --- Tunables the rules read ---------------------------------------------------------------
 
 test("a world that keeps no memories keeps none, and a nonsensical capacity cannot hang eviction", () => {

@@ -23,7 +23,7 @@
       "id": "pronouncement",
       "name": "Pronouncement",
       "action": "legend",
-      "description": "Declares a judgment or decree, recorded as a legend that other inhabitants can hear and repeat."
+      "description": "Declares a judgment or decree, told aloud to everyone present and recorded as a legend."
     }
   ],
   "relationships": [

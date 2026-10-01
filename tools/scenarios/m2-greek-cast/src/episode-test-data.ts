@@ -60,6 +60,14 @@ export function act(
           promptPayload: "prompt",
           steps: [{ mode: "native" }],
         };
+  const eventKind =
+    fields.kind === "report"
+      ? "report-told"
+      : fields.kind === "legend"
+        ? "legend-recorded"
+        : fields.kind === "goal"
+          ? "goal-set"
+          : "entity-moved";
   const event = {
     schemaVersion: 1,
     id: `evt-${sequence}-${sequence}`,
@@ -68,7 +76,7 @@ export function act(
     correlationId: observationId,
     causationId: observationId,
     approximate: false,
-    kind: fields.kind === "report" ? "report-told" : "entity-moved",
+    kind: eventKind,
     entityId: actor,
     ...(fields.kind === "report"
       ? {
@@ -78,7 +86,22 @@ export function act(
             ? {}
             : { linkedEventId: fields.linkedEventId }),
         }
-      : { from: "here", to: "there" }),
+      : fields.kind === "legend"
+        ? {
+            assertion: fields.assertion,
+            hearers: fields.hearers ?? [],
+            ...(fields.claim === undefined ? {} : { claim: fields.claim }),
+          }
+        : fields.kind === "goal"
+          ? {
+              text:
+                (fields.goal as { set?: { text: string } })?.set?.text ??
+                "A goal.",
+              target:
+                (fields.goal as { set?: { target: string } })?.set?.target ??
+                "zeus",
+            }
+          : { from: "here", to: "there" }),
   };
   return { proposal, request, event };
 }
@@ -116,4 +139,46 @@ export const memoryEvent = (
   subjects: [],
   salience: 4,
   ...fields,
+});
+
+/** A goal-set event by `actor`, as the log holds it. */
+export const goalSetEvent = (
+  id: string,
+  sequence: number,
+  actor: string,
+  text = "A goal.",
+  target = "zeus",
+) => ({
+  schemaVersion: 1,
+  id,
+  sequence,
+  simTime: 0,
+  correlationId: `obs-${id}`,
+  causationId: `obs-${id}`,
+  approximate: false,
+  kind: "goal-set",
+  entityId: actor,
+  text,
+  target,
+});
+
+/** A goal-ended event by `actor`, ending the goal set by `goalEventId`. */
+export const goalEndedEvent = (
+  id: string,
+  sequence: number,
+  actor: string,
+  goalEventId: string,
+  outcome = "achieved",
+) => ({
+  schemaVersion: 1,
+  id,
+  sequence,
+  simTime: 0,
+  correlationId: `obs-${id}`,
+  causationId: `obs-${id}`,
+  approximate: false,
+  kind: "goal-ended",
+  entityId: actor,
+  outcome,
+  goalEventId,
 });

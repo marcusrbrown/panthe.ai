@@ -74,6 +74,8 @@ export async function runGodTurn(
     readonly state: WorldState;
     readonly actorId: EntityId;
     readonly recentEvents?: readonly WorldEvent[];
+    /** The events this god's own actions committed, newest few: what it is shown it did. */
+    readonly ownEvents?: readonly WorldEvent[];
     readonly signal?: AbortSignal;
   },
 ): Promise<GodTurnResult | undefined> {
@@ -81,7 +83,7 @@ export async function runGodTurn(
   const snapshot = perceive(turn.state, turn.actorId, turn.recentEvents);
   if (!profile || !snapshot) return undefined;
 
-  const remembered = rememberedBy(turn.state, turn.actorId);
+  const remembered = rememberedBy(turn.state, turn.actorId, turn.ownEvents);
   const context = buildGodContext(profile, snapshot, remembered);
   const prompt = `${context.instructions}\n\n${context.prompt}`;
   const role = turn.actorId as string;
@@ -102,7 +104,12 @@ export async function runGodTurn(
     prompt,
     output: JSON.stringify(route.intent),
   };
-  const built = buildModelProposal(turn.actorId, snapshot, route.intent);
+  const built = buildModelProposal(
+    turn.actorId,
+    snapshot,
+    route.intent,
+    remembered,
+  );
   // The intent was parsed against this very snapshot, so its targets are in it
   // and the builder has nothing to refuse.
   if (!built.ok) {

@@ -14,7 +14,10 @@
 
 import {
   type Consequence,
+  GOAL_OUTCOMES,
+  type GoalOutcome,
   parseConsequence,
+  parseGoalText,
   parseReportContent,
 } from "./event";
 import {
@@ -31,6 +34,7 @@ import {
   parseArray,
   parseEntityId,
   parseEntityRevision,
+  parseEnum,
   parseEventId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
@@ -127,6 +131,17 @@ const REMOVED_AUTHORITY_FIELDS = [
   "modelRequestId",
 ] as const;
 
+/**
+ * A god's change to its own goal, riding on a proposal. It may end the active
+ * goal (the god's declared outcome), set a new one (its own words and one
+ * target), or both; the end applies first. The world records it and never
+ * judges it: it commits whatever becomes of the proposal's action.
+ */
+export interface GoalChange {
+  readonly end?: { readonly outcome: GoalOutcome };
+  readonly set?: { readonly text: string; readonly target: EntityId };
+}
+
 export interface ProposalBase {
   readonly schemaVersion: number;
   readonly actor: EntityId;
@@ -134,6 +149,8 @@ export interface ProposalBase {
   readonly expectedRevisions: readonly EntityRevision[];
   readonly source: ProposalSource;
   readonly observationId: ObservationId;
+  /** A change to the actor's goal, committed with the proposal whatever its action's outcome. */
+  readonly goal?: GoalChange;
 }
 
 export interface MoveProposal extends ProposalBase {
@@ -208,6 +225,14 @@ export interface LegendProposal extends ProposalBase {
   readonly kind: "legend";
   readonly assertion: string;
   readonly linkedEventId?: EventId;
+  /** What the narrator asserts happened, in structure: checked for shape and that its ids exist, never for truth. It gives each hearer a consequence. */
+  readonly claim?: Consequence;
+}
+
+/** A turn that does nothing but change the god's goal: what a wait with a goal change becomes. */
+export interface GoalProposal extends ProposalBase {
+  readonly kind: "goal";
+  readonly goal: GoalChange;
 }
 
 /**
@@ -239,7 +264,8 @@ export type Proposal =
   | WorshipProposal
   | ClaimProposal
   | LegendProposal
-  | ReportProposal;
+  | ReportProposal
+  | GoalProposal;
 
 export type ProposalKind = Proposal["kind"];
 
@@ -259,11 +285,46 @@ const PROPOSAL_KIND_SET = {
   claim: true,
   legend: true,
   report: true,
+  goal: true,
 } as const satisfies Record<ProposalKind, true>;
 
 export const PROPOSAL_KINDS = Object.keys(
   PROPOSAL_KIND_SET,
 ) as readonly ProposalKind[];
+
+function parseGoalChange(
+  value: unknown,
+  path: string,
+): ParseResult<GoalChange> {
+  if (!isRecord(value)) return fail(path, "expected a goal change object");
+  let end: GoalChange["end"];
+  if (value.end !== undefined) {
+    if (!isRecord(value.end)) return fail(`${path}.end`, "expected an object");
+    const outcome = parseEnum(
+      value.end.outcome,
+      `${path}.end.outcome`,
+      GOAL_OUTCOMES,
+    );
+    if (!outcome.ok) return outcome;
+    end = { outcome: outcome.value };
+  }
+  let set: GoalChange["set"];
+  if (value.set !== undefined) {
+    if (!isRecord(value.set)) return fail(`${path}.set`, "expected an object");
+    const text = parseGoalText(value.set.text, `${path}.set.text`);
+    if (!text.ok) return text;
+    const target = parseEntityId(value.set.target, `${path}.set.target`);
+    if (!target.ok) return target;
+    set = { text: text.value, target: target.value };
+  }
+  if (end === undefined && set === undefined) {
+    return fail(path, "a goal change needs an end, a set, or both");
+  }
+  return ok({
+    ...(end === undefined ? {} : { end }),
+    ...(set === undefined ? {} : { set }),
+  });
+}
 
 export function parseProposal(input: unknown): ParseResult<Proposal> {
   if (!isRecord(input)) {
@@ -308,6 +369,12 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
   );
   if (!observationId.ok) return observationId;
 
+  const goal =
+    input.goal === undefined
+      ? ok<GoalChange | undefined>(undefined)
+      : parseGoalChange(input.goal, "goal");
+  if (!goal.ok) return goal;
+
   const base: ProposalBase = {
     schemaVersion: schemaVersion.value,
     actor: actor.value,
@@ -315,6 +382,7 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
     expectedRevisions: expectedRevisions.value,
     source: source.value,
     observationId: observationId.value,
+    ...(goal.value === undefined ? {} : { goal: goal.value }),
   };
 
   switch (input.kind) {
@@ -431,13 +499,15 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       return ok({ ...base, kind: "claim", assertion: assertion.value });
     }
     case "legend": {
-      const assertion = parseString(input.assertion, "assertion");
+      const assertion = parseReportContent(input.assertion, "assertion");
       if (!assertion.ok) return assertion;
       const linkedEventId =
         input.linkedEventId === undefined
           ? ok<EventId | undefined>(undefined)
           : parseEventId(input.linkedEventId, "linkedEventId");
       if (!linkedEventId.ok) return linkedEventId;
+      const claim = parseConsequence(input.claim, "claim");
+      if (!claim.ok) return claim;
       return ok({
         ...base,
         kind: "legend",
@@ -445,6 +515,7 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
         ...(linkedEventId.value === undefined
           ? {}
           : { linkedEventId: linkedEventId.value }),
+        ...(claim.value === undefined ? {} : { claim: claim.value }),
       });
     }
     case "report": {
@@ -469,6 +540,12 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
           ? {}
           : { linkedEventId: linkedEventId.value }),
       });
+    }
+    case "goal": {
+      if (base.goal === undefined) {
+        return fail("goal", "a goal proposal needs its goal change");
+      }
+      return ok({ ...base, kind: "goal", goal: base.goal });
     }
     default:
       return fail(

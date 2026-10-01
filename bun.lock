@@ -164,7 +164,9 @@
       "name": "@panthea/tools-scenarios",
       "version": "0.1.0",
       "dependencies": {
+        "@panthea/agents": "workspace:*",
         "@panthea/client": "workspace:*",
+        "@panthea/content": "workspace:*",
         "@panthea/contracts": "workspace:*",
         "@panthea/persistence": "workspace:*",
         "@panthea/telemetry": "workspace:*",

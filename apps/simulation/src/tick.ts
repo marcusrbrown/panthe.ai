@@ -155,8 +155,8 @@ export function readPendingExternalQueue(
  * actor takes that actor's slot and the actor's routine proposal yields:
  * it is dropped before the tick, never submitted, so nothing about it is
  * recorded (no observation, no rejection). This holds whether or not the
- * external proposal then commits. A claim never commits, so it does not
- * displace a routine.
+ * external proposal then commits. A claim never commits and a goal-only
+ * proposal has no action, so neither displaces a routine.
  *
  * The result is a pure function of the two queues, and nothing here reads a
  * clock. External proposals come from the durable journal in `input_order`,
@@ -169,7 +169,10 @@ export function mergeTickQueue(
 ): QueuedProposal[] {
   const claimed = new Set<EntityId>(
     external
-      .filter((queued) => queued.proposal.kind !== "claim")
+      .filter(
+        (queued) =>
+          queued.proposal.kind !== "claim" && queued.proposal.kind !== "goal",
+      )
       .map((queued) => queued.proposal.actor),
   );
   return [
@@ -187,6 +190,11 @@ export interface WorldTickOutcome {
   readonly result: ReturnType<typeof runTick>;
   readonly admitted: readonly QueuedProposal[];
   readonly overflow: readonly QueuedProposal[];
+  /** The goal events an over-limit action's goal change still committed: the action overflowed, the declaration did not. Keyed by the overflowed proposal. */
+  readonly overflowGoalEvents: ReadonlyMap<
+    QueuedProposal,
+    readonly WorldEvent[]
+  >;
   /** Proposals that cited an observation id already bound to different content. They never reached the world; each gets a terminal `observation-conflict` rejection. */
   readonly refused: readonly QueuedProposal[];
 }
@@ -225,31 +233,63 @@ export function screenObservations(
 
 /**
  * Splits `queue`, in order, into what one tick admits and what is over the
- * limit. Actions and claims are counted separately, each up to `cap`: a
- * claim never commits and never takes an actor's slot, so it must not use up
- * capacity a routine or another action needs, yet it still has to be bounded
- * so a flood of claims cannot make the tick do unbounded validation and
- * trace writes.
+ * limit. Actions, claims, and goal-only proposals are counted separately, each
+ * up to `cap`: a claim never commits and a goal-only proposal has no action, so
+ * neither may use up capacity a routine or another action needs (a full tick
+ * would otherwise lose a god's declared goal for good), yet each still has to be
+ * bounded so a flood cannot make the tick do unbounded validation and trace
+ * writes.
+ *
+ * An action over the action cap that carries a goal change keeps the change
+ * while goal capacity remains: the action overflows, the declaration is
+ * admitted through the goal bucket (`goalOnly`) and committed on its own.
  */
 function admitWithinCap(
   queue: readonly QueuedProposal[],
   cap: number,
-): { admitted: QueuedProposal[]; overflow: QueuedProposal[] } {
+): {
+  admitted: QueuedProposal[];
+  overflow: QueuedProposal[];
+  goalOnly: QueuedProposal[];
+} {
   const admitted: QueuedProposal[] = [];
   const overflow: QueuedProposal[] = [];
-  let actions = 0;
-  let claims = 0;
+  const goalOnly: QueuedProposal[] = [];
+  const counts = { action: 0, claim: 0, goal: 0 };
   for (const queued of queue) {
-    const isClaim = queued.proposal.kind === "claim";
-    if ((isClaim ? claims : actions) < cap) {
+    const bucket =
+      queued.proposal.kind === "claim"
+        ? "claim"
+        : queued.proposal.kind === "goal"
+          ? "goal"
+          : "action";
+    if (counts[bucket] < cap) {
       admitted.push(queued);
-      if (isClaim) claims += 1;
-      else actions += 1;
+      counts[bucket] += 1;
     } else {
       overflow.push(queued);
+      if (queued.proposal.goal !== undefined && counts.goal < cap) {
+        counts.goal += 1;
+        goalOnly.push(queued);
+      }
     }
   }
-  return { admitted, overflow };
+  return { admitted, overflow, goalOnly };
+}
+
+/** The goal change of an over-limit action as a goal-only proposal: no action, no revisions to go stale, the same actor and observation. */
+function goalOnlyOf(proposal: Proposal): Proposal {
+  if (proposal.goal === undefined) throw new Error("no goal change");
+  return {
+    schemaVersion: proposal.schemaVersion,
+    actor: proposal.actor,
+    targets: [],
+    expectedRevisions: [],
+    source: proposal.source,
+    observationId: proposal.observationId,
+    kind: "goal",
+    goal: proposal.goal,
+  };
 }
 
 /**
@@ -267,17 +307,34 @@ export function stepWorldTick(
   queue: readonly QueuedProposal[],
   options: StepOptions = {},
 ): WorldTickOutcome {
-  const { admitted, overflow } = admitWithinCap(
+  const { admitted, overflow, goalOnly } = admitWithinCap(
     queue,
     state.rules.maxProposalsPerTick,
   );
-  const result = runTick(
-    state,
-    prng,
-    admitted.map((queued) => queued.proposal),
-    { elapsedMs: options.elapsedMs, approximate: options.approximate },
+  const declarations = new Map(
+    goalOnly.map((queued) => [queued, goalOnlyOf(queued.proposal)] as const),
   );
-  return { result, admitted, overflow, refused: [] };
+  // The world engine runs the queue in its original order, a rescued goal
+  // declaration standing where its action stood: a later set must replace an
+  // earlier one, and a later end must end it.
+  const admittedSet = new Set(admitted);
+  const runQueue = queue.flatMap((queued) => {
+    if (admittedSet.has(queued)) return [queued.proposal];
+    const declaration = declarations.get(queued);
+    return declaration === undefined ? [] : [declaration];
+  });
+  const result = runTick(state, prng, runQueue, {
+    elapsedMs: options.elapsedMs,
+    approximate: options.approximate,
+  });
+  const overflowGoalEvents = new Map<QueuedProposal, readonly WorldEvent[]>();
+  for (const [queued, declaration] of declarations) {
+    const record = result.committed.find((c) => c.proposal === declaration);
+    if (record && record.events.length > 0) {
+      overflowGoalEvents.set(queued, record.events);
+    }
+  }
+  return { result, admitted, overflow, overflowGoalEvents, refused: [] };
 }
 
 export type CommitOutcome =
@@ -420,6 +477,10 @@ export function traceWorldTick(
       proposal: queued.proposal,
       outcome: "rejected",
       reason: "over-limit",
+      // The action was over the limit; a goal change it carried was not.
+      eventIds: (outcome.overflowGoalEvents.get(queued) ?? []).map(
+        (event) => event.id,
+      ),
     });
     terminal.set(queued.id, { status: "rejected", reason: "over-limit" });
   }
@@ -452,6 +513,9 @@ export function traceWorldTick(
       proposal: record.proposal,
       outcome: "rejected",
       reason: record.reason,
+      // The action was refused; a goal change it carried was not, and the
+      // trace row names the events that recorded it.
+      eventIds: record.goalEvents.map((event) => event.id),
     });
     terminal.set(queued.id, { status: "rejected", reason: record.reason });
   }

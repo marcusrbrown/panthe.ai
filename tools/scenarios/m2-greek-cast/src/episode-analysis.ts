@@ -40,7 +40,9 @@ export type CheckName =
   | "profile trace"
   | "repetition"
   | "minimum activity"
-  | "influence";
+  | "influence"
+  | "goal set"
+  | "goal ended";
 
 export interface EpisodeCheck {
   readonly name: CheckName;
@@ -60,6 +62,9 @@ export interface GodEpisode {
     | undefined;
   /** Caused told beliefs and relationship changes. */
   readonly influence: number;
+  /** Goals the god set, and goals it ended (by any outcome). */
+  readonly goalsSet: number;
+  readonly goalsEnded: number;
   readonly checks: readonly EpisodeCheck[];
 }
 
@@ -87,6 +92,10 @@ export function primaryTarget(proposal: Record<string, unknown>): string {
       return "";
   }
 }
+
+/** A turn that only changes the god's goal: a declaration, not an action. */
+export const isGoalOnly = (proposal: RealProposal): boolean =>
+  proposal.kind === "goal";
 
 export const choiceKey = (proposal: RealProposal): string =>
   `${proposal.kind}:${primaryTarget(proposal.proposal)}`;
@@ -119,7 +128,10 @@ function profileTrace(
         `${proposal.kind} ${proposal.proposalId} was requested for role ${request.role}`,
       );
     }
-    if (abilityActions.has(proposal.kind)) ability += 1;
+    if (isGoalOnly(proposal)) {
+      // Needs its request and role like any proposal, but is neither an
+      // ability nor a context action: it is not an action at all.
+    } else if (abilityActions.has(proposal.kind)) ability += 1;
     else if (CONTEXT_ACTIONS.includes(proposal.kind)) context += 1;
     else {
       problems.push(
@@ -136,7 +148,7 @@ function profileTrace(
       ok: problems.length === 0,
       detail:
         problems.length === 0
-          ? `${committed.length} actions: ${split}`
+          ? `${committed.filter((p) => !isGoalOnly(p)).length} actions: ${split}`
           : `${problems.join("; ")} (${split})`,
     },
   };
@@ -171,17 +183,21 @@ export function parseEvents(
 /**
  * The told beliefs and relationship changes the events in `caused` are the
  * immediate cause of, in event order. A told belief belongs to the action whose
- * `report-told` is its `sourceEventId`; a relationship change belongs to the
- * action that caused the belief its `memoryEventId` names. A witnessed memory
- * is not among them, and `report-told.linkedEventId` is never followed, so a
- * report that cites another god's event credits only its own teller.
+ * `report-told` or `legend-recorded` is its `sourceEventId` (a legend gives each
+ * hearer one, so it is the narrator's influence, never the hearer's); a
+ * relationship change belongs to the action that caused the belief its
+ * `memoryEventId` names. A witnessed memory is not among them, and
+ * `report-told.linkedEventId` is never followed, so a report that cites another
+ * god's event credits only its own teller.
  */
 export function influencedBy(
   caused: readonly StoredEvent[],
   parsed: ReadonlyMap<string, WorldEvent>,
 ): WorldEvent[] {
   const reportIds = new Set(
-    caused.filter((e) => e.kind === "report-told").map((e) => e.id),
+    caused
+      .filter((e) => e.kind === "report-told" || e.kind === "legend-recorded")
+      .map((e) => e.id),
   );
   const isReportedBelief = (event: WorldEvent | undefined): boolean =>
     event?.kind === "memory-recorded" &&
@@ -214,11 +230,22 @@ function analyzeGod(
   input: RealInput,
   identity: GodIdentity | undefined,
 ): GodEpisode {
-  const committed = input.proposals.filter(
+  const committedAll = input.proposals.filter(
     (p) => p.actor === god && p.outcome === "committed",
   );
-  const ordered = committedInOrder(god, input.proposals, input.events);
-  const trace = profileTrace(god, committed, input, identity);
+  // Goal-only turns are declarations: they are not actions to count or to repeat.
+  const committed = committedAll.filter((p) => !isGoalOnly(p));
+  const ordered = committedInOrder(god, input.proposals, input.events).filter(
+    (action) => !isGoalOnly(action.proposal),
+  );
+  const trace = profileTrace(god, committedAll, input, identity);
+  const goalsSet = input.events.filter(
+    (e) => e.kind === "goal-set" && e.entityId === god,
+  );
+  const goalsEnded = input.events.filter(
+    (e) => e.kind === "goal-ended" && e.entityId === god,
+  );
+  const outcomes = [...new Set(goalsEnded.map((e) => String(e.outcome)))];
   const run = longestRun(ordered);
   const influence = influenceOf(ordered, input.events);
   const kindsSeen = [...new Set(influence.kinds)].join(", ");
@@ -229,6 +256,8 @@ function analyzeGod(
     contextBacked: trace.context,
     longestRun: run,
     influence: influence.count,
+    goalsSet: goalsSet.length,
+    goalsEnded: goalsEnded.length,
     checks: [
       trace.check,
       {
@@ -251,6 +280,19 @@ function analyzeGod(
           influence.count > 0
             ? `${influence.count} caused (${kindsSeen})`
             : "no told belief or relationship change traces to this god's proposals",
+      },
+      {
+        name: "goal set",
+        ok: goalsSet.length > 0,
+        detail: `${goalsSet.length} goals set (at least 1)`,
+      },
+      {
+        name: "goal ended",
+        ok: goalsEnded.length > 0,
+        detail:
+          goalsEnded.length > 0
+            ? `${goalsEnded.length} goals ended (${outcomes.join(", ")}); at least 1, any outcome`
+            : "no goal ended (at least 1, any outcome)",
       },
     ],
   };

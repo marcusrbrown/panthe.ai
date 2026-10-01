@@ -19,20 +19,27 @@ export {
   planRoute,
 } from "./config";
 export type {
+  GoalHistoryEntry,
   GodIntent,
   GodIntentAction,
   ParsedGodIntent,
   Remembered,
 } from "./context";
 export {
+  authoredAction,
   buildGodContext,
   GOD_INTENT_ACTIONS,
   godAvailableActions,
   godIntentSchema,
   MAX_ASSERTION_LENGTH,
   MAX_FEELINGS,
+  MAX_GOAL_HISTORY,
+  MAX_OWN_ACTIONS,
   MAX_REMEMBERED,
+  NOTHING_REMEMBERED,
+  OWN_EVENT_WINDOW,
   rememberedBy,
+  shownIds,
 } from "./context";
 export type { ModelProposalResult } from "./observation";
 export { buildModelProposal, snapshotFacts } from "./observation";

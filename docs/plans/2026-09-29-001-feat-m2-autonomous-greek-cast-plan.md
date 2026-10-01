@@ -487,6 +487,8 @@ Gate parameters and checks (owner, 2026-09-30):
 
 Gate result (owner, 2026-09-30): replan. The owner rated all three llama3.2 3B episodes replan. The automated checks failed only on repetition, in 5 of 6 god-episodes, each a report run between Zeus and Hera of 4 to 10; profile trace, minimum activity, influence, and the four real-run properties held. The transcripts are in `tools/scenarios/m2-greek-cast/episodes/2026-09-30T15-22-36/`. Before the replan the owner wants Gemma 4 compared on the same gate (`--model=gemma4-e4b-4k --reasoning-effort=none`).
 
+Replan (2026-10-01): the gate's replan is carried by `docs/plans/2026-10-01-001-feat-god-goals-plan.md` (origin `docs/brainstorms/2026-10-01-god-goals-requirements.md`): gods keep one private goal across turns and see their own recent actions, legends become public tellings that give every hearer a told memory, and the gate is rerun on llama3.2 3B and on Gemma 4 E4B with reasoning off, with per-god goal checks and a goal-privacy property added. Unit 9 starts only after that rerun earns an owner rating with no 0 in any episode and the decision continue.
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**
@@ -495,7 +497,7 @@ Gate result (owner, 2026-09-30): replan. The owner rated all three llama3.2 3B e
 
 **Requirements:** R1, R3
 
-**Dependencies:** Unit 4 and the experience gate
+**Dependencies:** Unit 4 and the experience gate, which the god-goals replan (`docs/plans/2026-10-01-001-feat-god-goals-plan.md`) reruns: Unit 9 waits for that gate to earn a continue
 
 **Files:** `content/greek/gods/*.json`, `content/greek/lore/`, `content/greek/world/inhabitants.json`, `content/greek/world/locations.json` as needed.
 

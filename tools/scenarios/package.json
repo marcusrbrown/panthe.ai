@@ -10,7 +10,9 @@
     "scenario:m2": "bun run m2-greek-cast/src/run.ts"
   },
   "dependencies": {
+    "@panthea/agents": "workspace:*",
     "@panthea/client": "workspace:*",
+    "@panthea/content": "workspace:*",
     "@panthea/contracts": "workspace:*",
     "@panthea/persistence": "workspace:*",
     "@panthea/telemetry": "workspace:*",

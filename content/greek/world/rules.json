@@ -54,6 +54,16 @@
       "affinityLimit": 10,
       "grudgeLimit": 10,
       "allianceAffinity": 5
+    },
+    "petitionBalance": {
+      "answerWindowTicks": 250,
+      "causePrayableTicks": 150,
+      "prayerCooldownTicks": 20,
+      "blessDivinityCost": 2,
+      "blessPlanks": 3,
+      "blessResourceAmount": 2,
+      "directorQuietTicks": 120,
+      "goalLockTicks": 40
     }
   }
 }

@@ -263,7 +263,10 @@ function consequenceOf(
     case "building-damaged":
       return harm(event.actor, event.entityId);
     case "building-ignited":
-      return harm(event.cause.actor, event.entityId);
+      return harm(
+        event.cause.kind === "director" ? undefined : event.cause.actor,
+        event.entityId,
+      );
     case "building-destroyed":
       return harm(
         before.buildings.get(event.entityId)?.ignition?.actor,

@@ -8,7 +8,15 @@
 // endpoints declare.
 
 import type { EntityId, LocationEdge, Realm } from "@panthea/contracts";
-import { getLocation, type LocationState, type WorldState } from "./state";
+import {
+  getLocation,
+  type LocationState,
+  toEntityId,
+  type WorldState,
+} from "./state";
+
+/** Where mortals pray: the altar location of the authored map. A prayer is placed here, so anyone standing here saw it. */
+export const ALTAR = toEntityId("altar");
 
 /**
  * Every edge usable from `locationId`, including the synthetic reverse of

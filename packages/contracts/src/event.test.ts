@@ -554,7 +554,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(20);
+  expect(WORLD_EVENT_KINDS).toHaveLength(27);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -986,7 +986,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 5);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 9);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -1172,4 +1172,258 @@ test("a goal-ended event follows the goal it ends; a goal-set is a root; subject
   expect(String(eventCause(ended))).toBe("evt-1");
   expect(subjectsOf(set)).toEqual(["hera", "farmer"]);
   expect(subjectsOf(ended)).toEqual(["hera"]);
+});
+
+// --- Petitions, needs, trouble, and refused goal changes ---------------------------------------
+
+const OPENED = {
+  kind: "petition-opened",
+  entityId: "farmer",
+  god: "hera",
+  cause: "evt-3",
+  request: { kind: "help", need: { kind: "building", building: "the-tavern" } },
+};
+
+test("a petition-opened event names the petitioner, the god, the cause, and one request: help for a building or a resource, or punishment of an offender who owns buildings", () => {
+  for (const request of [
+    { kind: "help", need: { kind: "building", building: "the-tavern" } },
+    { kind: "help", need: { kind: "resource", resource: "planks" } },
+    { kind: "punish", offender: "woodcutter", buildings: ["woodshed"] },
+  ]) {
+    const result = parseEvent(envelope({ ...OPENED, request }));
+    expect(result.ok).toBe(true);
+    if (result.ok && result.value.kind === "petition-opened") {
+      expect(String(result.value.god)).toBe("hera");
+      expect(String(result.value.cause)).toBe("evt-3");
+      expect(result.value.request as unknown).toEqual(request);
+    }
+  }
+});
+
+test("a petition is refused with no god, no cause, a punish request with no offender buildings or offender, or a malformed request", () => {
+  for (const overrides of [
+    { god: undefined },
+    { cause: undefined },
+    { request: undefined },
+    { request: { kind: "punish", offender: "woodcutter", buildings: [] } },
+    { request: { kind: "punish", buildings: ["woodshed"] } },
+    { request: { kind: "help" } },
+    { request: { kind: "help", need: { kind: "building" } } },
+    { request: { kind: "help", need: { kind: "wishes", wish: "x" } } },
+    { request: { kind: "pray" } },
+  ]) {
+    expect(parseEvent(envelope({ ...OPENED, ...overrides })).ok).toBe(false);
+  }
+});
+
+test("answers, lapses, and refused goal changes parse, and are private: unplaced, never witnessed", () => {
+  const answered = parseEvent(
+    envelope({
+      kind: "petition-answered",
+      entityId: "farmer",
+      god: "hera",
+      petitionId: "evt-4",
+      answeredBy: "evt-9",
+    }),
+  );
+  expect(answered.ok).toBe(true);
+  const lapsed = parseEvent(
+    envelope({
+      kind: "petition-lapsed",
+      entityId: "farmer",
+      god: "hera",
+      petitionId: "evt-4",
+    }),
+  );
+  expect(lapsed.ok).toBe(true);
+  const refused = parseEvent(
+    envelope({
+      kind: "goal-change-refused",
+      entityId: "zeus",
+      reason: "locked",
+      attempted: "replace",
+      unlocksInTicks: 38,
+    }),
+  );
+  expect(refused.ok).toBe(true);
+  for (const kind of [
+    "petition-answered",
+    "petition-lapsed",
+    "goal-change-refused",
+    "unmet-need",
+  ]) {
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+  }
+  // Control: a prayer, a theft, and spoiled stock happen at a place, so they are witnessable.
+  for (const kind of ["petition-opened", "theft", "stock-spoiled"]) {
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).toContain(kind);
+  }
+  for (const bad of [
+    {
+      kind: "petition-answered",
+      entityId: "farmer",
+      god: "hera",
+      petitionId: "evt-4",
+    },
+    { kind: "petition-lapsed", entityId: "farmer", petitionId: "evt-4" },
+    {
+      kind: "goal-change-refused",
+      entityId: "zeus",
+      reason: "bored",
+      attempted: "replace",
+      unlocksInTicks: 1,
+    },
+    {
+      kind: "goal-change-refused",
+      entityId: "zeus",
+      reason: "locked",
+      attempted: "end",
+      unlocksInTicks: 1,
+    },
+    {
+      kind: "goal-change-refused",
+      entityId: "zeus",
+      reason: "locked",
+      attempted: "replace",
+      unlocksInTicks: -1,
+    },
+  ]) {
+    expect(parseEvent(envelope(bad)).ok).toBe(false);
+  }
+});
+
+test("unmet needs, theft, and spoiled stock parse; trouble records the director as its cause and a theft names its offender", () => {
+  expect(
+    parseEvent(
+      envelope({
+        kind: "unmet-need",
+        entityId: "farmer",
+        resource: "planks",
+        reason: "no-seller",
+      }),
+    ).ok,
+  ).toBe(true);
+  for (const reason of ["no-seller", "no-funds", "no-buyer"]) {
+    expect(
+      parseEvent(
+        envelope({
+          kind: "unmet-need",
+          entityId: "farmer",
+          resource: "food",
+          reason,
+        }),
+      ).ok,
+    ).toBe(true);
+  }
+  expect(
+    parseEvent(
+      envelope({
+        kind: "unmet-need",
+        entityId: "farmer",
+        resource: "food",
+        reason: "bored",
+      }),
+    ).ok,
+  ).toBe(false);
+  const theft = {
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 3,
+    cause: "director",
+  };
+  expect(parseEvent(envelope(theft)).ok).toBe(true);
+  const spoiled = {
+    kind: "stock-spoiled",
+    entityId: "farmer",
+    resource: "food",
+    amount: 2,
+    cause: "director",
+  };
+  expect(parseEvent(envelope(spoiled)).ok).toBe(true);
+  for (const bad of [
+    { ...theft, cause: undefined },
+    { ...theft, cause: "nobody" },
+    { ...theft, victim: undefined },
+    { ...theft, amount: 0 },
+    { ...theft, amount: 1.5 },
+    { ...spoiled, cause: undefined },
+    { ...spoiled, amount: -1 },
+  ]) {
+    expect(parseEvent(envelope(bad)).ok).toBe(false);
+  }
+});
+
+test("a fire the director started has no actor; a spread from it carries none forward; a strike's still names one", () => {
+  const ignited = (cause: unknown) =>
+    parseEvent(
+      envelope({ kind: "building-ignited", entityId: "the-tavern", cause }),
+    );
+  expect(ignited({ kind: "director" }).ok).toBe(true);
+  expect(ignited({ kind: "spread", from: "evt-2" }).ok).toBe(true);
+  expect(ignited({ kind: "spread", from: "evt-2", actor: "zeus" }).ok).toBe(
+    true,
+  );
+  expect(ignited({ kind: "strike", actor: "zeus" }).ok).toBe(true);
+  expect(ignited({ kind: "strike" }).ok).toBe(false);
+  expect(ignited({ kind: "director", actor: "zeus" }).ok).toBe(true);
+});
+
+test("eventCause and subjects follow the new events: an answer and a lapse follow their petition, a petition its cause, and who is named is who is touched", () => {
+  const events = new Map<string, WorldEvent>();
+  for (const [index, overrides] of [
+    {
+      kind: "theft",
+      entityId: "woodcutter",
+      victim: "farmer",
+      resource: "currency",
+      amount: 3,
+      cause: "director",
+    },
+    {
+      ...OPENED,
+      cause: "evt-1",
+      request: {
+        kind: "punish",
+        offender: "woodcutter",
+        buildings: ["woodshed"],
+      },
+    },
+    {
+      kind: "petition-answered",
+      entityId: "farmer",
+      god: "hera",
+      petitionId: "evt-2",
+      answeredBy: "evt-9",
+    },
+    {
+      kind: "petition-lapsed",
+      entityId: "farmer",
+      god: "hera",
+      petitionId: "evt-2",
+    },
+  ].entries()) {
+    const event = parsedEvent({
+      id: `evt-${index + 1}`,
+      sequence: index + 1,
+      ...overrides,
+    });
+    events.set(event.id, event);
+  }
+  const get = (n: number) => events.get(`evt-${n}`) as WorldEvent;
+  expect(eventCause(get(1))).toBeUndefined();
+  expect(String(eventCause(get(2)))).toBe("evt-1");
+  expect(String(eventCause(get(3)))).toBe("evt-2");
+  expect(String(eventCause(get(4)))).toBe("evt-2");
+  expect(subjectsOf(get(1))).toEqual(["woodcutter", "farmer"]);
+  expect(subjectsOf(get(2))).toEqual([
+    "farmer",
+    "hera",
+    "woodcutter",
+    "woodshed",
+  ]);
+  expect(subjectsOf(get(3))).toEqual(["farmer", "hera"]);
 });

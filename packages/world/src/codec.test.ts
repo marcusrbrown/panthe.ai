@@ -459,3 +459,21 @@ test("decode rejects a legend whose linkedEventId is not a string", () => {
     }),
   ).toThrow();
 });
+
+test("decode holds a stored world's petition tunables to the same strict rule as content", () => {
+  const state = createInitialWorldState(walkPack());
+  const encoded = JSON.parse(JSON.stringify(encode(state)));
+  expect(() => decode(encoded)).not.toThrow();
+  const withBalance = (petitionBalance: unknown) => ({
+    ...encoded,
+    rules: { ...encoded.rules, petitionBalance },
+  });
+  expect(() => decode(withBalance({ answerWindowTicks: 250 }))).not.toThrow();
+  for (const bad of [
+    { answerWindowTicks: 0 },
+    { goalLockTicks: 1.5 },
+    { typo: 3 },
+  ]) {
+    expect(() => decode(withBalance(bad))).toThrow();
+  }
+});

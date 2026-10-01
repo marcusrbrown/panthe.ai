@@ -146,7 +146,11 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "building-ignited":
       next = applyBuildingIgnited(state, event.entityId, {
         eventId: event.id,
-        actor: event.cause.actor,
+        ...(event.cause.kind === "director"
+          ? {}
+          : event.cause.actor === undefined
+            ? {}
+            : { actor: event.cause.actor }),
       });
       break;
     case "building-burn-ticked":
@@ -215,6 +219,16 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "goal-ended":
       next = applyGoalEnded(state, event);
+      break;
+    case "unmet-need":
+    case "theft":
+    case "stock-spoiled":
+    case "petition-opened":
+    case "petition-answered":
+    case "petition-lapsed":
+    case "goal-change-refused":
+      // Their world state arrives with the units that produce them.
+      next = state;
       break;
     default: {
       const exhaustiveCheck: never = event;

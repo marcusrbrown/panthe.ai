@@ -65,3 +65,30 @@ test("the Greek pack states the memory tunables the world rules default to, so a
   if (!pack.ok) throw new Error(pack.message);
   expect(pack.value.rules.memoryBalance).toEqual(DEFAULT_MEMORY_BALANCE);
 });
+
+test("the Greek pack gives the woodcutter a woodshed at the square, so a theft by him can be punished, and carries strict petition tunables", () => {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+  const shed = pack.value.buildings.find((b) => b.id === "woodshed");
+  expect(shed).toMatchObject({
+    owner: "woodcutter",
+    locationId: "town-square",
+    combustible: true,
+  });
+  // The woodcutter is the only owner of it, and the farmer's buildings are unchanged.
+  expect(
+    pack.value.buildings.filter((b) => b.owner === "farmer").map((b) => b.id),
+  ).toEqual(["agora-shop", "the-tavern"]);
+  expect(Object.keys(pack.value.rules.petitionBalance ?? {}).sort()).toEqual(
+    [
+      "answerWindowTicks",
+      "blessDivinityCost",
+      "blessPlanks",
+      "blessResourceAmount",
+      "causePrayableTicks",
+      "directorQuietTicks",
+      "goalLockTicks",
+      "prayerCooldownTicks",
+    ].sort(),
+  );
+});

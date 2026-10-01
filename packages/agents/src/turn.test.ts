@@ -13,7 +13,12 @@ import {
 } from "@panthea/world";
 import { parseRoutingConfig } from "./config";
 import { createRouter } from "./router";
-import { actorAt, godProfile, greekState } from "./test-fixtures";
+import {
+  actorAt,
+  godProfile,
+  greekState,
+  withoutFireSpread,
+} from "./test-fixtures";
 import { runGodTurn } from "./turn";
 
 interface Stub {
@@ -179,10 +184,8 @@ test("a dead or unknown actor has no turn and asks no model; a god with no profi
 });
 
 function struck(): WorldState {
-  const state = actorAt(
-    actorAt(zeusAtTavern(), "farmer", "tavern"),
-    "hera",
-    "town-square",
+  const state = withoutFireSpread(
+    actorAt(actorAt(zeusAtTavern(), "farmer", "tavern"), "hera", "town-square"),
   );
   const submitted = submitProposal({
     schemaVersion: 1,

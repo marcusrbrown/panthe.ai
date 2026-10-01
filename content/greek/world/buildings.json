@@ -28,6 +28,16 @@
       "combustible": true,
       "services": [],
       "inventory": []
+    },
+    {
+      "id": "woodshed",
+      "locationId": "town-square",
+      "name": "The Woodshed",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [{ "resource": "wood", "amount": 4 }],
+      "owner": "woodcutter"
     }
   ]
 }

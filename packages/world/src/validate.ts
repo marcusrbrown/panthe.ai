@@ -684,6 +684,13 @@ export function validateProposal(
     case "goal":
       // A goal-only proposal has no action; its goal events are recorded by the tick.
       return commit([]);
+    case "pray":
+    case "bless":
+      // Their rules arrive with the units that produce them.
+      return reject(
+        "malformed",
+        `no rule yet for proposal kind: ${proposal.kind}`,
+      );
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

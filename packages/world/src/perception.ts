@@ -18,7 +18,7 @@ import {
   type ResourceAmount,
   type WorldEvent,
 } from "@panthea/contracts";
-import { outgoingEdges } from "./geography";
+import { ALTAR, outgoingEdges } from "./geography";
 import {
   type ActorState,
   type BuildingState,
@@ -192,7 +192,12 @@ function eventLocation(
     case "resource-traded":
     case "worship-performed":
     case "legend-recorded":
+    case "theft":
+    case "stock-spoiled":
       return actorLocationAt(state, event.entityId, event, window);
+    // A prayer is made at the altar, wherever else its named god is.
+    case "petition-opened":
+      return getLocation(state, ALTAR)?.id;
     // Private: a report is heard only by its listener, and memories and
     // feelings are inside someone's head. None happens "in" a place, so no
     // one perceives them.
@@ -201,6 +206,10 @@ function eventLocation(
     case "relationship-changed":
     case "goal-set":
     case "goal-ended":
+    case "unmet-need":
+    case "petition-answered":
+    case "petition-lapsed":
+    case "goal-change-refused":
       return undefined;
   }
 }

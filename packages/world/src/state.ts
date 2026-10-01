@@ -98,7 +98,8 @@ export type BuildingStatus = (typeof BUILDING_STATUSES)[number];
 /** What started a building's current fire, stored when it ignites and never inferred later: the ignition event, and the actor whose strike began the fire (carried through any spread). */
 export interface BuildingIgnition {
   readonly eventId: EventId;
-  readonly actor: EntityId;
+  /** The actor whose strike began the fire; absent when the quiet-world director did. */
+  readonly actor?: EntityId;
 }
 
 /** What every building has, whatever its status. */

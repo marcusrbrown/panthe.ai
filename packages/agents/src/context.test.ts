@@ -30,6 +30,7 @@ import {
   committedEvent,
   godProfile,
   greekState,
+  withoutFireSpread,
 } from "./test-fixtures";
 
 const zeus = godProfile("zeus");
@@ -538,7 +539,7 @@ function tavernWorld() {
     "hera",
     "town-square",
   );
-  return state;
+  return withoutFireSpread(state);
 }
 
 function tick(state: WorldState, ...raws: Record<string, unknown>[]) {

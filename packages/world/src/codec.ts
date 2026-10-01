@@ -36,6 +36,7 @@ import {
   parseNonNegativeNumber,
   parseOptionalBoolean,
   parseOptionalString,
+  parsePetitionBalance,
   parseRecipes,
   parseReportContent,
   parseSalience,
@@ -493,9 +494,15 @@ function parseIgnition(
   if (!isRecord(value)) return fail(path, "expected an ignition object");
   const eventId = parseEventId(value.eventId, `${path}.eventId`);
   if (!eventId.ok) return eventId;
-  const actor = parseEntityId(value.actor, `${path}.actor`);
+  const actor =
+    value.actor === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.actor, `${path}.actor`);
   if (!actor.ok) return actor;
-  return ok({ eventId: eventId.value, actor: actor.value });
+  return ok({
+    eventId: eventId.value,
+    ...(actor.value === undefined ? {} : { actor: actor.value }),
+  });
 }
 
 function parseBuildingEntry(
@@ -579,6 +586,11 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parseMemoryBalance(value.memoryBalance, `${path}.memoryBalance`);
   if (!memoryBalance.ok) return memoryBalance;
+  const petitionBalance =
+    value.petitionBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parsePetitionBalance(value.petitionBalance, `${path}.petitionBalance`);
+  if (!petitionBalance.ok) return petitionBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -589,6 +601,9 @@ function parseWorldRules(
     ...(memoryBalance.value === undefined
       ? {}
       : { memoryBalance: memoryBalance.value }),
+    ...(petitionBalance.value === undefined
+      ? {}
+      : { petitionBalance: petitionBalance.value }),
   });
 }
 

@@ -6,42 +6,101 @@
       "title": "Theogony",
       "author": "Hesiod",
       "translator": "Hugh G. Evelyn-White",
-      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), Perseus Digital Library; locators are Greek line numbers",
-      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg001.perseus-grc2/"
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers",
+      "url": "https://www.theoi.com/Text/HesiodTheogony.html",
+      "accessed": "2026-10-02"
     },
     {
       "id": "works-and-days",
       "title": "Works and Days",
       "author": "Hesiod",
-      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
-      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg002.perseus-grc2/"
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers",
+      "url": "https://www.theoi.com/Text/HesiodWorksDays.html",
+      "accessed": "2026-10-02"
     },
     {
-      "id": "iliad",
-      "title": "Iliad",
+      "id": "iliad-1",
+      "title": "Iliad, book 1",
       "author": "Homer",
-      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
-      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg001.perseus-grc2/"
+      "edition": "Theoi.com text and translation of Iliad 1; locators are book and Greek line numbers",
+      "url": "https://www.theoi.com/Text/HomerIliad1.html",
+      "accessed": "2026-10-02"
     },
     {
-      "id": "odyssey",
-      "title": "Odyssey",
+      "id": "iliad-9",
+      "title": "Iliad, book 9",
       "author": "Homer",
-      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
-      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg002.perseus-grc2/"
+      "edition": "Theoi.com text and translation of Iliad 9; locators are book and Greek line numbers",
+      "url": "https://www.theoi.com/Text/HomerIliad9.html",
+      "accessed": "2026-10-02"
     },
     {
-      "id": "apollodorus",
-      "title": "Library (Bibliotheca)",
+      "id": "iliad-15",
+      "title": "Iliad, book 15",
+      "author": "Homer",
+      "edition": "Theoi.com text and translation of Iliad 15; locators are book and Greek line numbers",
+      "url": "https://www.theoi.com/Text/HomerIliad15.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-8",
+      "title": "Odyssey, book 8",
+      "author": "Homer",
+      "edition": "Theoi.com text and translation of Odyssey 8; locators are book and Greek line numbers",
+      "url": "https://www.theoi.com/Text/HomerOdyssey08.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-13",
+      "title": "Odyssey, book 13",
+      "author": "Homer",
+      "edition": "Theoi.com text and translation of Odyssey 13; locators are book and Greek line numbers",
+      "url": "https://www.theoi.com/Text/HomerOdyssey13.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "apollodorus-3",
+      "title": "Library (Bibliotheca), book 3",
       "author": "Apollodorus",
       "translator": "J. G. Frazer",
-      "edition": "Loeb Classical Library, 1921; locators are book.chapter.section"
+      "edition": "Frazer translation (Loeb Classical Library, 1921), as hosted by Theoi.com; locators are book.chapter.section in Frazer's numbering",
+      "url": "https://www.theoi.com/Text/Apollodorus3.html",
+      "accessed": "2026-10-02"
     },
     {
-      "id": "ovid-metamorphoses",
-      "title": "Metamorphoses",
+      "id": "pausanias-2",
+      "title": "Description of Greece, book 2",
+      "author": "Pausanias",
+      "edition": "Theoi.com text and translation of Pausanias 2 (Corinth, including Argos); locators are book.chapter.section",
+      "url": "https://www.theoi.com/Text/Pausanias2B.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "ovid-met-1",
+      "title": "Metamorphoses, book 1",
       "author": "Ovid",
-      "edition": "Latin text; locators are book and line. A Roman retelling of the Augustan age, long after the Greek sources above",
+      "edition": "Theoi.com text and translation of Metamorphoses 1; locators are book and line. A Roman retelling of the Augustan age, long after the Greek sources above",
+      "url": "https://www.theoi.com/Text/OvidMetamorphoses1.html",
+      "accessed": "2026-10-02",
+      "label": "late-roman"
+    },
+    {
+      "id": "ovid-met-2",
+      "title": "Metamorphoses, book 2",
+      "author": "Ovid",
+      "edition": "Theoi.com text and translation of Metamorphoses 2; locators are book and line. A Roman retelling of the Augustan age, long after the Greek sources above",
+      "url": "https://www.theoi.com/Text/OvidMetamorphoses2.html",
+      "accessed": "2026-10-02",
+      "label": "late-roman"
+    },
+    {
+      "id": "ovid-met-6",
+      "title": "Metamorphoses, book 6",
+      "author": "Ovid",
+      "edition": "Theoi.com text and translation of Metamorphoses 6; locators are book and line. A Roman retelling of the Augustan age, long after the Greek sources above",
+      "url": "https://www.theoi.com/Text/OvidMetamorphoses6.html",
+      "accessed": "2026-10-02",
       "label": "late-roman"
     }
   ],
@@ -51,16 +110,28 @@
       "name": "A boon for an offering",
       "summary": "A god who has been honoured with offerings answers a prayer by granting what was asked. Chryses reminds Apollo of the temple he roofed and the offerings he burned, and the god lifts the plague.",
       "cites": [
-        { "source": "iliad", "locator": "1.37-42" },
-        { "source": "iliad", "locator": "1.451-457" }
+        {
+          "source": "iliad-1",
+          "locator": "1.37-42"
+        },
+        {
+          "source": "iliad-1",
+          "locator": "1.451-457"
+        }
       ],
       "variants": [
         {
           "id": "offering-order",
-          "note": "In Iliad 1 the offerings were made long before the prayer is answered. Works and Days advises making them first so that the god keeps a kindly heart. The game keeps the offering before the boon.",
+          "note": "In Iliad 1 the offerings were made long before the prayer is answered. Works and Days advises sacrificing to the gods as one's means allow, with libations and burnt offerings morning and evening, so that they are gracious to you. The game keeps the offering before the boon.",
           "cites": [
-            { "source": "iliad", "locator": "1.37-42" },
-            { "source": "works-and-days", "locator": "lines 336-341" }
+            {
+              "source": "iliad-1",
+              "locator": "1.37-42"
+            },
+            {
+              "source": "works-and-days",
+              "locator": "lines 336-341"
+            }
           ]
         }
       ],
@@ -83,16 +154,32 @@
       "name": "Compensation for a wrong",
       "summary": "A wrong is answered with a payment, not only with anger. Agamemnon offers Achilles gifts for the insult, and in the song of Ares and Aphrodite a god stands surety that the wronged husband will be paid.",
       "cites": [
-        { "source": "iliad", "locator": "9.115-161" },
-        { "source": "odyssey", "locator": "8.344-358" }
+        {
+          "source": "iliad-9",
+          "locator": "9.115-161"
+        },
+        {
+          "source": "odyssey-8",
+          "locator": "8.344-358"
+        }
       ],
       "variants": [
         {
           "id": "payment-refused",
-          "note": "In the Iliad the offered compensation is refused and the quarrel goes on. In the Odyssey the surety is accepted and the matter ends. The game lets either happen: a payment is only an ending when it is accepted.",
+          "note": "In the Iliad Agamemnon's offered gifts are refused, as Achilles answers that no gifts will move him, and the quarrel goes on. In the Odyssey a god's pledge to pay is accepted and the matter ends. The game lets either happen: a payment is only an ending when it is accepted.",
           "cites": [
-            { "source": "iliad", "locator": "9.115-161" },
-            { "source": "odyssey", "locator": "8.344-358" }
+            {
+              "source": "iliad-9",
+              "locator": "9.115-161"
+            },
+            {
+              "source": "iliad-9",
+              "locator": "9.307-429"
+            },
+            {
+              "source": "odyssey-8",
+              "locator": "8.344-358"
+            }
           ]
         }
       ],
@@ -114,14 +201,25 @@
       "id": "standing-won",
       "name": "Honour won",
       "summary": "A god who takes the right side, or serves well, is honoured for it. Styx comes first to Zeus's side in the war with the Titans, and Zeus gives her great honours and makes her the gods' great oath.",
-      "cites": [{ "source": "theogony", "locator": "lines 389-403" }],
+      "cites": [
+        {
+          "source": "theogony",
+          "locator": "lines 389-403"
+        }
+      ],
       "variants": [
         {
           "id": "who-gives-honour",
-          "note": "In the Theogony Zeus apportions honours among the gods. In the Iliad Achilles treats honour as owed for service, whether or not a god grants it. The game records honour won by deeds at a place and leaves the granting to the world.",
+          "note": "In the Theogony Zeus apportions honours among the gods. In Iliad 1 a god's honour for a mortal is granted on request: Thetis supplicates Zeus to honour Achilles, and Zeus nods assent. The game records honour won by deeds at a place and leaves the granting to the world.",
           "cites": [
-            { "source": "theogony", "locator": "lines 881-885" },
-            { "source": "iliad", "locator": "1.352-356" }
+            {
+              "source": "theogony",
+              "locator": "lines 881-885"
+            },
+            {
+              "source": "iliad-1",
+              "locator": "1.493-530"
+            }
           ]
         }
       ],
@@ -142,15 +240,34 @@
     {
       "id": "standing-lost",
       "name": "Honour lost",
-      "summary": "A god who is slighted, or who fails what it owed, loses honour. Achilles says Zeus owes him honour and that Agamemnon has dishonoured him by taking his prize.",
-      "cites": [{ "source": "iliad", "locator": "1.352-356" }],
+      "summary": "A god can lose its honour at a place to a rival. Poseidon contends with Athena for Athens and loses, and contends with Hera for Argos and loses.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        },
+        {
+          "source": "pausanias-2",
+          "locator": "2.15.5"
+        }
+      ],
       "variants": [
         {
-          "id": "who-takes-honour",
-          "note": "Achilles blames a mortal king for taking his honour; the Theogony has Zeus apportion honours among the gods. The game has the world record the loss when a term is broken, and no god takes it.",
+          "id": "losing-patron",
+          "note": "Accounts differ on how the loser answers. In Apollodorus Poseidon floods Attica in anger at losing it to Athena. In Pausanias he dries up the springs of Argos after Hera wins it, as judged by the river gods. The Theogony has Zeus apportion honours among the gods, which is the background to both. The game has the world record the loss when a term is broken, and no god retaliates by it.",
           "cites": [
-            { "source": "iliad", "locator": "1.352-356" },
-            { "source": "theogony", "locator": "lines 881-885" }
+            {
+              "source": "apollodorus-3",
+              "locator": "3.14.1"
+            },
+            {
+              "source": "pausanias-2",
+              "locator": "2.15.5"
+            },
+            {
+              "source": "theogony",
+              "locator": "lines 881-885"
+            }
           ]
         }
       ],
@@ -171,19 +288,30 @@
     {
       "id": "transformation-punishment",
       "name": "Changed in form as punishment",
-      "summary": "A god punishes by changing the offender's shape. Circe turns Odysseus's men into swine, though their minds stay as they were; Athena turns the boastful weaver Arachne into a spider; Poseidon turns a ship to stone.",
+      "summary": "A god punishes by changing the offender's shape. Athena turns the boastful weaver Arachne into a spider, and Poseidon turns the Phaeacian ship that carried Odysseus home to stone.",
       "cites": [
-        { "source": "odyssey", "locator": "10.233-243" },
-        { "source": "odyssey", "locator": "13.152-164" },
-        { "source": "ovid-metamorphoses", "locator": "6.1-145" }
+        {
+          "source": "odyssey-13",
+          "locator": "13.152-164"
+        },
+        {
+          "source": "ovid-met-6",
+          "locator": "6.1-145"
+        }
       ],
       "variants": [
         {
           "id": "lycaon",
-          "note": "Ovid has Zeus turn the impious Lycaon into a wolf. Apollodorus has Zeus strike Lycaon and his sons with lightning and no change of form. The game keeps the change of form, with the mind kept as in the Odyssey.",
+          "note": "Ovid has Zeus turn the impious Lycaon into a wolf. Apollodorus has Zeus strike Lycaon and his sons with lightning and no change of form. The game keeps the change of form.",
           "cites": [
-            { "source": "ovid-metamorphoses", "locator": "1.209-243" },
-            { "source": "apollodorus", "locator": "3.8.1" }
+            {
+              "source": "ovid-met-1",
+              "locator": "1.209-243"
+            },
+            {
+              "source": "apollodorus-3",
+              "locator": "3.8.1"
+            }
           ]
         }
       ],
@@ -192,6 +320,11 @@
           "id": "capability-mapping",
           "statement": "A form changes named capabilities, such as losing access to Olympus or gaining a beast's.",
           "reason": "The sources describe the shape taken, not what the world should let it do. The world only has capabilities, so each form maps to the ones it gains and loses."
+        },
+        {
+          "id": "mind-kept",
+          "statement": "The changed actor keeps its identity, memories, and relationships.",
+          "reason": "Requirement W09 and R18 fix this; the sources cited do not say what the changed keep."
         }
       ],
       "labels": ["late-roman", "game-invention"],
@@ -206,16 +339,28 @@
       "name": "Changed in form as mercy",
       "summary": "A god changes someone's shape to save them. Daphne, pursued by Apollo, prays to her father the river Peneus and is changed into a laurel, and in one account Zeus turns Callisto into a bear to hide her from Hera.",
       "cites": [
-        { "source": "ovid-metamorphoses", "locator": "1.452-567" },
-        { "source": "apollodorus", "locator": "3.8.2" }
+        {
+          "source": "ovid-met-1",
+          "locator": "1.452-567"
+        },
+        {
+          "source": "apollodorus-3",
+          "locator": "3.8.2"
+        }
       ],
       "variants": [
         {
           "id": "callisto",
-          "note": "Accounts differ on why Callisto becomes a bear and who does it. Apollodorus gives Zeus hiding her from Hera in one account and her punishment for losing her virginity in another. Ovid has Juno change her out of jealousy. Whether one change is mercy or punishment depends on the teller; the game labels the intent on the record.",
+          "note": "Accounts differ on why Callisto becomes a bear and who does it. Apollodorus 3.8.2 gives Zeus changing her to hide her from Hera in one account, and Artemis shooting her for losing her virginity in another. Ovid, Metamorphoses 2.401-507, has Juno transform her in anger, which is not mercy. Whether a change is mercy or punishment depends on the teller; the game labels the intent on the record.",
           "cites": [
-            { "source": "apollodorus", "locator": "3.8.2" },
-            { "source": "ovid-metamorphoses", "locator": "2.401-507" }
+            {
+              "source": "apollodorus-3",
+              "locator": "3.8.2"
+            },
+            {
+              "source": "ovid-met-2",
+              "locator": "2.401-507"
+            }
           ]
         }
       ],
@@ -224,6 +369,11 @@
           "id": "capability-mapping",
           "statement": "A form changes named capabilities, such as losing access to Olympus or gaining a beast's.",
           "reason": "The sources describe the shape taken, not what the world should let it do. The world only has capabilities, so each form maps to the ones it gains and loses."
+        },
+        {
+          "id": "mind-kept",
+          "statement": "The changed actor keeps its identity, memories, and relationships.",
+          "reason": "Requirement W09 and R18 fix this; the sources cited do not say what the changed keep."
         }
       ],
       "labels": ["late-roman", "game-invention"],
@@ -236,10 +386,16 @@
     {
       "id": "oath-penalty",
       "name": "The Styx oath and its penalty",
-      "summary": "The gods swear their greatest oath by the water of Styx. A god who swears falsely lies breathless for a year, is shut out from nectar and ambrosia, and is then barred for nine years from the gods' councils and feasts.",
+      "summary": "The Styx is the gods' greatest and most dreaded oath, and Hera swears by it in Iliad 15. Hesiod's Theogony gives the penalty: a god who swears falsely lies breathless for a year, is shut out from nectar and ambrosia, and is then barred for nine years from the gods' councils and feasts.",
       "cites": [
-        { "source": "theogony", "locator": "lines 775-806" },
-        { "source": "iliad", "locator": "15.36-38" }
+        {
+          "source": "theogony",
+          "locator": "lines 775-806"
+        },
+        {
+          "source": "iliad-15",
+          "locator": "15.36-38"
+        }
       ],
       "variants": [],
       "inventions": [

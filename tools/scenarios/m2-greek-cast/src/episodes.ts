@@ -7,9 +7,15 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../m1-living-world/src/sidecar";
 import { analyzeEpisode, type GodIdentity } from "./episode-analysis";
-import { collectRun, prepareOllama, type RealOptions } from "./real";
+import {
+  collectRun,
+  isHostedRun,
+  prepareOllama,
+  type RealOptions,
+} from "./real";
 import {
   type EpisodeRecord,
+  type EpisodeSettings,
   renderSummary,
   renderTranscript,
 } from "./transcript";
@@ -53,6 +59,24 @@ export function defaultOutDir(now: Date = new Date()): string {
   return join(REPO_ROOT, "tools/scenarios/m2-greek-cast/episodes", stamp);
 }
 
+/** What an episode's transcript records about its run: that it was hosted when it was, never the endpoint's host or a key. */
+export function episodeSettings(
+  options: RealOptions,
+  run: { ranAt: string; ticks: number; hardware: string },
+): EpisodeSettings {
+  return {
+    model: options.model,
+    ...(options.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: options.reasoningEffort }),
+    ...(isHostedRun(options) ? { hosted: true as const } : {}),
+    seconds: options.durationMs / 1000,
+    ranAt: run.ranAt,
+    ticks: run.ticks,
+    hardware: run.hardware,
+  };
+}
+
 export interface EpisodesOptions extends RealOptions {
   readonly episodes: number;
   readonly outDir: string;
@@ -74,16 +98,7 @@ export async function runEpisodes(
       const record: EpisodeRecord = {
         index,
         total: options.episodes,
-        settings: {
-          model: options.model,
-          ...(options.reasoningEffort === undefined
-            ? {}
-            : { reasoningEffort: options.reasoningEffort }),
-          seconds: options.durationMs / 1000,
-          ranAt: run.record.ranAt,
-          ticks: run.record.ticks,
-          hardware: run.record.hardware,
-        },
+        settings: episodeSettings(options, run.record),
         identities: GODS.flatMap((god) => {
           const identity = identities.get(god);
           return identity ? [identity] : [];
@@ -107,6 +122,7 @@ export async function runEpisodes(
       ...(options.reasoningEffort === undefined
         ? {}
         : { reasoningEffort: options.reasoningEffort }),
+      ...(isHostedRun(options) ? { hosted: true as const } : {}),
       files: records.map((r) => `episode-${r.index}.md`),
     }),
   );

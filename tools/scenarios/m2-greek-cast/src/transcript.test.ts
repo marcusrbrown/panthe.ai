@@ -20,6 +20,7 @@ import {
   petitionLapsedEvent,
   petitionOpenedEvent,
 } from "./episode-test-data";
+import { episodeSettings } from "./episodes";
 import { analyzeReal, type RealInput } from "./real-analysis";
 import {
   buildActions,
@@ -1019,4 +1020,46 @@ test("a transcript with none of these says so, and the summary shows each god's 
   expect(text).toContain("Petitions heard / answered");
   expect(text).toMatch(/\| 1 \| Zeus \|[^\n]*\| 1 \/ 1 \|/);
   expect(text).toContain("Goal changes refused");
+});
+
+test("a hosted run's transcript and summary say a hosted OpenAI-compatible endpoint, never the endpoint's host or a key", () => {
+  const SECRET_KEY = "sk-sentinel-DO-NOT-LEAK-0123456789";
+  const base = record([move("zeus", "olympus-gate", 2)]);
+  // The run configuration as the harness is given it, rendered the way the gate renders it.
+  const options = {
+    binary: "/b",
+    durationMs: 300_000,
+    ollama: "http://127.0.0.1:11434",
+    model: "gpt-x",
+    baseUrl: "https://private-host.example/v1",
+    keyRef: "private-key-ref",
+    keys: { "private-key-ref": SECRET_KEY },
+    episodes: 1,
+    outDir: "/tmp/out",
+  };
+  const hosted: EpisodeRecord = {
+    ...base,
+    settings: episodeSettings(options, {
+      ranAt: "2026-10-02T00:00:00.000Z",
+      ticks: 300,
+      hardware: "Apple M1 Pro",
+    }),
+  };
+  const transcript = renderTranscript(hosted);
+  const summary = renderSummary([hosted], {
+    seconds: 300,
+    model: "gpt-x",
+    hosted: true,
+    files: ["episode-1.md"],
+  });
+  for (const text of [transcript, summary]) {
+    expect(text).toContain("through a hosted OpenAI-compatible endpoint");
+    expect(text).not.toContain("private-host.example");
+    expect(text).not.toContain("private-key-ref");
+    expect(text).not.toContain(SECRET_KEY);
+    expect(text).not.toContain("local Ollama");
+    expect(text).not.toContain("4K context");
+  }
+  // Control: a local run still says so.
+  expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
 });

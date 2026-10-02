@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { REPO_ROOT } from "../../m1-living-world/src/sidecar";
-import { defaultOutDir, loadGodIdentities } from "./episodes";
+import { defaultOutDir, episodeSettings, loadGodIdentities } from "./episodes";
 
 test("the god identities come from the authored profiles: drives, powers, and domains", () => {
   const gods = loadGodIdentities(join(REPO_ROOT, "content/greek/gods"), [
@@ -26,4 +26,47 @@ test("the default output directory is a timestamped folder under the scenario, s
   const dir = defaultOutDir(new Date("2026-09-30T12:34:56.789Z"));
   expect(dir).toMatch(/m2-greek-cast\/episodes\/2026-09-30T12-34-56/);
   expect(dir).not.toContain(":");
+});
+
+const SENTINEL = "sk-sentinel-DO-NOT-LEAK-0123456789";
+const run = {
+  ranAt: "2026-10-02T00:00:00.000Z",
+  ticks: 12,
+  hardware: "Apple M1 Pro",
+};
+const base = {
+  binary: "/b",
+  durationMs: 60_000,
+  ollama: "http://127.0.0.1:11434",
+  model: "gpt-x",
+  episodes: 1,
+  outDir: "/tmp/out",
+};
+
+test("a hosted run's settings say it was hosted and carry no host, key, key reference, path, or credentials", () => {
+  const settings = episodeSettings(
+    {
+      ...base,
+      baseUrl: "https://private-host.example:8443/v1",
+      keyRef: "private-key-ref",
+      keys: { "private-key-ref": SENTINEL },
+    },
+    run,
+  );
+  expect(settings.hosted).toBe(true);
+  const text = JSON.stringify(settings);
+  for (const secret of [
+    SENTINEL,
+    "private-host.example",
+    "private-key-ref",
+    "/v1",
+  ]) {
+    expect(text).not.toContain(secret);
+  }
+  // Controls: a local run, and a local base URL, are not hosted.
+  expect(episodeSettings(base, run).hosted).toBeUndefined();
+  expect(
+    episodeSettings({ ...base, baseUrl: "http://127.0.0.1:8080/v1" }, run)
+      .hosted,
+  ).toBeUndefined();
 });

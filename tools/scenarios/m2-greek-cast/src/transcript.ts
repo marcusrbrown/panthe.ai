@@ -28,6 +28,8 @@ import {
 export interface EpisodeSettings {
   readonly model: string;
   readonly reasoningEffort?: "none";
+  /** True when the model ran on a hosted endpoint. The host is never recorded. */
+  readonly hosted?: boolean;
   readonly seconds: number;
   readonly ranAt: string;
   readonly ticks: number;
@@ -470,6 +472,18 @@ const RUBRIC = [
   "Inspectability",
 ];
 
+/** Where the model ran: local Ollama at its 4K context, or a hosted OpenAI-compatible endpoint (never named). */
+function modelLine(settings: {
+  readonly model: string;
+  readonly reasoningEffort?: "none";
+  readonly hosted?: boolean;
+}): string {
+  const where = settings.hosted
+    ? "a hosted OpenAI-compatible endpoint"
+    : "local Ollama, 4K context";
+  return `${settings.model} through ${where}, ${reasoningText(settings.reasoningEffort)}`;
+}
+
 export function renderTranscript(record: EpisodeRecord): string {
   const { settings } = record;
   const actions = buildActions(record);
@@ -479,7 +493,7 @@ export function renderTranscript(record: EpisodeRecord): string {
     "## Settings",
     "",
     `- Recorded: ${settings.ranAt}`,
-    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
+    `- Model: ${modelLine(settings)}`,
     `- Length: ${settings.seconds} s (${settings.ticks} ticks)`,
     "- World: a fresh world from the initial authored Greek state; no fixtures, no seeds",
     `- Machine: ${settings.hardware}`,
@@ -527,6 +541,8 @@ export interface SummarySettings {
   readonly seconds: number;
   readonly model: string;
   readonly reasoningEffort?: "none";
+  /** True when the model ran on a hosted endpoint. The host is never recorded. */
+  readonly hosted?: boolean;
   /** Transcript file names, in episode order. */
   readonly files: readonly string[];
 }
@@ -562,7 +578,7 @@ export function renderSummary(
   return [
     "# M2 experience gate",
     "",
-    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
+    `- Model: ${modelLine(settings)}`,
     `- ${records.length} episodes of ${settings.seconds} s, each a fresh world from the initial authored Greek state; no fixtures, no seeds`,
     "",
     "## Automated checks",

@@ -676,3 +676,56 @@ test("repeated told memories from the same teller collapse to the newest few, so
     "Hera's word number 5.",
   ]);
 });
+
+// --- Goals a god can finish -----------------------------------------------------------------
+
+test("the goal guidance asks for a goal the god can finish or fail within a few turns, and the schema and parser are unchanged", () => {
+  for (const run of [tavernRun(), new Run(greekState())]) {
+    const text = run.text("zeus");
+    expect(text).toContain("within a few turns");
+    // A goal still takes only the shapes it always did.
+    const schema = run.schema("zeus");
+    const goal = (
+      schema.jsonSchema as {
+        properties: { goal: { properties: Record<string, unknown> } };
+      }
+    ).properties.goal;
+    expect(Object.keys(goal.properties)).toEqual(["set"]);
+  }
+});
+
+test("a god with an active goal is told to judge it each turn and end it if achieved or failed; one without is not, and ending is still offered and parsed as before", () => {
+  const run = tavernRun();
+  const without = section(run.text("zeus"), "You have no goal", "Ways out");
+  expect(without).not.toContain("achieved or failed");
+
+  run.tick({ actor: "zeus", kind: "goal", goal: GOAL });
+  const goal = section(run.text("zeus"), "Your goal", "Ways out");
+  expect(goal).toContain("achieved or failed");
+  expect(goal).toContain("end it");
+
+  // Nothing about ending changed: it is offered, and it parses.
+  const schema = run.schema("zeus");
+  const end = (
+    schema.jsonSchema as {
+      properties: {
+        goal: {
+          properties: {
+            end: { properties: { outcome: { enum: string[] } } };
+          };
+        };
+      };
+    }
+  ).properties.goal.properties.end;
+  expect(end.properties.outcome.enum).toEqual([
+    "achieved",
+    "failed",
+    "abandoned",
+  ]);
+  expect(
+    schema.parse({
+      action: "wait",
+      goal: { end: { outcome: "achieved" } },
+    }).ok,
+  ).toBe(true);
+});

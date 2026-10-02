@@ -264,12 +264,14 @@ function citationGuidance(
 }
 
 function goalInstruction(remembered: Remembered): string {
+  const finite =
+    "Set a goal you can finish or fail within a few turns: something concrete with its target that you could see happen.";
   const shape =
     'add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}.';
   if (remembered.goalLockTicks === undefined) {
-    return `You may keep one goal across turns: ${shape} A new goal ends your old one. A goal change goes with any action in the same turn (a move, a strike, a bless, a report); it never needs a turn of its own.`;
+    return `You may keep one goal across turns: ${shape} ${finite} A new goal ends your old one. A goal change goes with any action in the same turn (a move, a strike, a bless, a report); it never needs a turn of its own.`;
   }
-  return `You may keep one goal across turns: ${shape} A goal holds: you may end it as achieved or failed any time, but you may replace or abandon it only after ${remembered.goalLockTicks} ticks, or once news of its target or a prayer to you gives you cause. A goal change goes with any action in the same turn; it never needs a turn of its own.`;
+  return `You may keep one goal across turns: ${shape} ${finite} A goal holds: you may end it as achieved or failed any time, but you may replace or abandon it only after ${remembered.goalLockTicks} ticks, or once news of its target or a prayer to you gives you cause. A goal change goes with any action in the same turn; it never needs a turn of its own.`;
 }
 
 /** What prayers are and how a god may answer one; empty when none are addressed to it. */
@@ -1299,6 +1301,7 @@ function describeSelf(
     lines.push(
       `Your goal: "${goal.text}" (target ${goal.target}, ${targetIsHere(snapshot, goal.target) ? "here" : "not here"}).`,
     );
+    lines.push("Judge it now: if it is achieved or failed, end it this turn.");
     if (remembered.goalHistory.length > 0) {
       lines.push(
         "Since you set it:",

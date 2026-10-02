@@ -3,7 +3,9 @@
 // journaled god proposals, and the event log. Properties, not exact facts: a
 // real model varies, so each check says what must hold whatever it chose.
 
+import { PRAYERS_HEADING } from "@panthea/agents";
 import { p50, p95 } from "@panthea/tools-probes-shared";
+import { ALTAR } from "@panthea/world";
 import { explainChain, type StoredEvent } from "./checks";
 
 export interface RealStep {
@@ -246,9 +248,58 @@ function goalPrivacy(
 }
 
 /**
- * No god's prompt may list a petition addressed to another god (R7): the divine
- * sense is the named god's alone. Every petition's id is searched for in the
- * prompt of each other god.
+ * The prayers-to-you section of a prompt: each `PRAYERS_HEADING` and the dashed
+ * or indented lines under it, up to the next heading. Empty when there is none.
+ */
+export function prayersSection(prompt: string): string {
+  const lines = prompt.split("\n");
+  const sections: string[] = [];
+  for (let at = 0; at < lines.length; at += 1) {
+    if (lines[at] !== PRAYERS_HEADING) continue;
+    let end = at + 1;
+    while (end < lines.length && /^( {2}|- )/.test(lines[end] ?? "")) end += 1;
+    sections.push(lines.slice(at, end).join("\n"));
+    at = end - 1;
+  }
+  return sections.join("\n");
+}
+
+/**
+ * Whether `god` stood at the altar when the petition event was committed: the
+ * place a prayer is made, and so the only place anyone perceives it (the
+ * world's own rule, `perceivesEvent`). Its place is the destination of its
+ * latest move or crossing before the event in sequence; with none in the log
+ * the answer is no, as in the world when a window cannot say where an observer
+ * was.
+ */
+function atAltarWhenPrayed(
+  events: readonly StoredEvent[],
+  god: string,
+  prayerSequence: number,
+): boolean {
+  let at: unknown;
+  let latest = -1;
+  for (const e of events) {
+    if (
+      (e.kind === "entity-moved" || e.kind === "realm-transitioned") &&
+      e.entityId === god &&
+      typeof e.sequence === "number" &&
+      e.sequence < prayerSequence &&
+      e.sequence > latest
+    ) {
+      latest = e.sequence;
+      at = e.to;
+    }
+  }
+  return at === ALTAR;
+}
+
+/**
+ * No god's prayers section may list a petition addressed to another god (R7):
+ * the divine sense is the named god's alone. Elsewhere in a prompt (the scene's
+ * recent events, a citation's guidance) another god's petition id is allowed
+ * only when this god stood at the altar when the prayer was made, since anyone
+ * there witnessed it; otherwise it is a leak too.
  */
 function petitionPrivacy(
   requests: readonly RealRequest[],
@@ -258,8 +309,9 @@ function petitionPrivacy(
   const petitions = events.flatMap((e) =>
     e.kind === "petition-opened" &&
     typeof e.god === "string" &&
-    typeof e.id === "string"
-      ? [{ id: e.id, god: e.god }]
+    typeof e.id === "string" &&
+    typeof e.sequence === "number"
+      ? [{ id: e.id, god: e.god, sequence: e.sequence }]
       : [],
   );
   const leaks: string[] = [];
@@ -267,13 +319,20 @@ function petitionPrivacy(
   for (const request of requests) {
     if (request.promptPayload === undefined) continue;
     checked += 1;
+    const prayers = prayersSection(request.promptPayload);
     for (const petition of petitions) {
-      if (
-        petition.god !== request.role &&
-        new RegExp(`${petition.id}(?![0-9])`).test(request.promptPayload)
+      if (petition.god === request.role) continue;
+      const named = new RegExp(`${petition.id}(?![0-9])`);
+      if (named.test(prayers)) {
+        leaks.push(
+          `${request.role}'s prayers section lists ${petition.id}, addressed to ${petition.god}`,
+        );
+      } else if (
+        named.test(request.promptPayload) &&
+        !atAltarWhenPrayed(events, request.role, petition.sequence)
       ) {
         leaks.push(
-          `${request.role}'s prompt lists ${petition.id}, addressed to ${petition.god}`,
+          `${request.role}'s prompt carries ${petition.id}, addressed to ${petition.god}, though ${request.role} was not at the altar when it was prayed`,
         );
       }
     }
@@ -290,7 +349,7 @@ function petitionPrivacy(
     ok: leaks.length === 0,
     detail:
       leaks.length === 0
-        ? `${checked} prompts checked against ${petitions.length} petitions: none listed a petition addressed to another god`
+        ? `${checked} prompts checked against ${petitions.length} petitions: none listed a petition addressed to another god, and none carried one the god did not witness`
         : leaks.join("; "),
   };
 }

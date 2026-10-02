@@ -32,6 +32,9 @@ import { stepStale } from "./steps/s09-stale";
 import { stepCatchUp } from "./steps/s10-catch-up";
 import { stepRestore } from "./steps/s11-restore";
 import { stepPetitionPrivacy } from "./steps/s12-petition-privacy";
+import { stepOath, stepRefusal, stepSuccessor } from "./steps/s13-settlement";
+import { stepSupplication } from "./steps/s14-supplication";
+import { stepPracticeProperties } from "./steps/s15-practice-properties";
 
 export {
   CONTROL_NAMES,
@@ -103,6 +106,11 @@ export async function runStory(
     await stepStale(recorder, running);
     await stepCatchUp(recorder, running);
     await stepRestore(recorder, running, report);
+    const refusal = await stepRefusal(recorder, running);
+    await stepSuccessor(recorder, running, refusal);
+    await stepOath(recorder, running);
+    await stepSupplication(recorder, running);
+    await stepPracticeProperties(recorder, running);
     return { steps: recorder.results, binaryBytes };
   } finally {
     await story?.sidecar.stop("SIGTERM").catch(() => undefined);

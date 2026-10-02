@@ -7,6 +7,7 @@ import { PRAYERS_HEADING } from "@panthea/agents";
 import { p50, p95 } from "@panthea/tools-probes-shared";
 import { ALTAR } from "@panthea/world";
 import { explainChain, type StoredEvent } from "./checks";
+import { analyzePractices } from "./practice-analysis";
 
 export interface RealStep {
   readonly mode?: string;
@@ -512,6 +513,7 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       changedNextAction(proposals, events),
       goalPrivacy(requests, events),
       petitionPrivacy(requests, events),
+      ...analyzePractices(input).properties,
     ],
   };
 }

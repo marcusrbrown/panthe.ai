@@ -24,6 +24,7 @@ import {
   primaryTarget,
   REPETITION_CAP,
 } from "./episode-analysis";
+import { analyzePractices, type ThreadRecord } from "./practice-analysis";
 import {
   committedInOrder,
   type RealAnalysis,
@@ -437,6 +438,113 @@ function renderWorldNotes(record: EpisodeRecord): string {
     : notes.map((n) => `- tick ${n.tick}: ${n.line}`).join("\n");
 }
 
+/** One thread: its cause, who was in it, each move, how it ended, and what the ending changed. */
+function renderThread(thread: ThreadRecord, record: EpisodeRecord): string {
+  const name = (god: string) => nameOf(record, god);
+  const lines = [
+    `### ${thread.practice} [${thread.id}]: ${thread.demander} → ${thread.obligated}, ${thread.ending?.outcome ?? "still open"}`,
+    "",
+    `- Opened at tick ${thread.openedTick}`,
+    `- Cause: ${thread.cause}`,
+    ...(thread.subject === undefined
+      ? []
+      : [
+          `- About: ${thread.subject.agent}${thread.subject.target === undefined ? "" : ` and ${thread.subject.target}`}`,
+        ]),
+    ...(thread.petition === undefined
+      ? []
+      : [`- Answers the prayer [${thread.petition}]`]),
+    ...(thread.succeeds === undefined
+      ? []
+      : [`- Succeeds: [${thread.succeeds}]`]),
+    ...(thread.successor === undefined
+      ? []
+      : [`- Reopened as: [${thread.successor}]`]),
+    ...(thread.stake === undefined ? [] : [`- Stake: ${thread.stake}`]),
+    "- Moves:",
+    ...thread.moves.map(
+      (move, index) =>
+        `  ${index + 1}. tick ${move.tick}, ${name(move.actor)}: ${move.move}${move.terms === undefined ? "" : ` — ${move.terms}`}${move.sworn ? ", sworn by the Styx" : ""}`,
+    ),
+  ];
+  if (thread.practice === "supplication") {
+    lines.push(
+      `- Boon: ${thread.progress.boon === undefined ? "not seen" : `seen given (${thread.progress.boon})`}`,
+      `- Offering: ${thread.progress.offering === undefined ? "not seen" : `seen made (${thread.progress.offering})`}`,
+    );
+  }
+  const { ending } = thread;
+  if (ending !== undefined) {
+    lines.push(
+      `- Ending: ${ending.outcome} at tick ${ending.tick}${ending.by === undefined ? ` (${ending.reason.replaceAll("-", " ")})` : `, by ${ending.by}${ending.sworn ? " (sworn)" : ""}${ending.sealed ? ", sealing an alliance" : ""}`}; remembered by ${thread.rememberedBy.join(", ") || "no one"}`,
+    );
+  }
+  for (const change of thread.changes) lines.push(`- Changed: ${change.line}`);
+  if (ending !== undefined && thread.changes.length === 0) {
+    lines.push("- Changed: nothing beyond the memory of it");
+  }
+  return lines.join("\n");
+}
+
+function renderPracticeThreads(record: EpisodeRecord): string {
+  const { threads } = analyzePractices(record.input);
+  return threads.length === 0
+    ? "No practice thread was opened."
+    : threads.map((thread) => renderThread(thread, record)).join("\n\n");
+}
+
+function renderOpenThreads(record: EpisodeRecord): string {
+  const { open } = analyzePractices(record.input);
+  return open.length === 0
+    ? "No thread was open at the end."
+    : open
+        .map(
+          ({ thread, ageTicks, waitsOn, endsBy }) =>
+            `- [${thread.id}] ${thread.practice} ${thread.demander} → ${thread.obligated}, open ${ageTicks} ticks (since tick ${thread.openedTick}): waits on ${waitsOn}; ends by tick ${endsBy}`,
+        )
+        .join("\n");
+}
+
+function renderNoProgress(record: EpisodeRecord): string {
+  const { noProgress } = analyzePractices(record.input);
+  return noProgress.length === 0
+    ? "No move was judged no progress."
+    : noProgress
+        .map(
+          (move) =>
+            `- tick ${move.tick ?? "?"}, ${move.actor}: ${move.attempted}${move.thread === undefined ? "" : ` [${move.thread}]`} — ${move.why ?? "(no reason recorded)"}`,
+        )
+        .join("\n");
+}
+
+/** The R12 record: each turn an obligated god took while its obligation was open, what it chose, and how that is classified. */
+function renderObligatedTurns(record: EpisodeRecord): string {
+  const { obligated } = analyzePractices(record.input);
+  const rule =
+    "Each turn is classified from the god's prompt and its proposal: a practice move on the thread (or a fresh demand of the other god) is renegotiated; the action the term calls for, committed, is performed; a turn that did something else is waited for a named event when its prompt shows what stops it (the digest's UNPERFORMABLE obstacle, or no mortal at the place a legend is to be told); every other turn is knowingly risked breach, since the obligation led the prompt.";
+  if (obligated.turns.length === 0 && obligated.unrecorded.length === 0) {
+    return `No obligation led a prompt, so no obligated turn was taken.\n\n${rule}`;
+  }
+  return [
+    "A turn is performed, renegotiated, waited for a named event, or knowingly risked breach (R12).",
+    "",
+    rule,
+    "",
+    "| God | Tick | Thread | Deadline | Chose | Classified | Waiting for |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...obligated.turns.map(
+      (turn) =>
+        `| ${turn.god} | ${turn.tick ?? "?"} | ${turn.thread} | ${turn.deadline} | ${turn.choice} | ${turn.class} | ${turn.named ?? ""} |`,
+    ),
+    ...(obligated.unrecorded.length === 0
+      ? []
+      : [
+          "",
+          `Not recorded: ${obligated.unrecorded.map((u) => `${u.god} on ${u.thread} (${u.why})`).join("; ")}`,
+        ]),
+  ].join("\n");
+}
+
 function renderRepetition(record: EpisodeRecord): string {
   return record.episode.gods
     .map((g) => {
@@ -564,6 +672,22 @@ export function renderTranscript(record: EpisodeRecord): string {
     "",
     renderWorldNotes(record),
     "",
+    "## Practice threads",
+    "",
+    renderPracticeThreads(record),
+    "",
+    "## Open threads at the end",
+    "",
+    renderOpenThreads(record),
+    "",
+    "## Moves judged no progress",
+    "",
+    renderNoProgress(record),
+    "",
+    "## Turns while an obligation was open",
+    "",
+    renderObligatedTurns(record),
+    "",
     "## Repetition",
     "",
     renderRepetition(record),
@@ -622,6 +746,15 @@ export function renderSummary(
       .filter((p) => !p.ok)
       .map((p) => `episode ${record.index}, property ${p.name} (${p.detail})`),
   ]);
+  const practiceRows = records.map((record) => {
+    const practice = analyzePractices(record.input);
+    const ended = practice.threads.filter((t) => t.ending !== undefined);
+    const hard = ended.filter(
+      (t) =>
+        t.ending?.outcome === "refused" || t.ending?.outcome === "breached",
+    );
+    return `| ${record.index} | ${practice.threads.length} | ${ended.length} | ${practice.open.length} | ${hard.length} | ${practice.noProgress.length} | ${practice.obligated.turns.length} |`;
+  });
   const runRows = records.map((record) => {
     const a = record.analysis;
     const held = a.properties.filter((p) => p.ok).length;
@@ -644,6 +777,12 @@ export function renderSummary(
     failures.length === 0
       ? "All automated checks and real-run properties held."
       : `Automated checks failed:\n\n${failures.map((f) => `- ${f}`).join("\n")}`,
+    "",
+    "## Practices",
+    "",
+    "| Episode | Threads | Ended | Open | Refused or breached | No progress | Obligated turns |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...practiceRows,
     "",
     "## Model runs",
     "",

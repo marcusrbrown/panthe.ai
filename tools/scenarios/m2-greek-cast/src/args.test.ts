@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { parseArgs } from "./args";
 import { endpointOptions } from "./real";
 
-test("the model defaults to llama3.2 3B at 4K and reasoning is unset", () => {
+test("the model defaults to the M2 local baseline, qwen3 8B at 4K, and reasoning is unset", () => {
   const args = parseArgs(["--real"]);
-  expect(args.model).toBe("llama3.2-3b-4k");
+  expect(args.model).toBe("qwen3-8b-4k");
   expect(args.reasoningEffort).toBeUndefined();
 });
 

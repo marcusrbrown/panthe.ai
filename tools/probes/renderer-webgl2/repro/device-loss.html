@@ -325,7 +325,7 @@
         logDeviceLost("before loseContext()");
 
         const gl = renderer.getContext();
-        const ext = gl && gl.getExtension && gl.getExtension("WEBGL_lose_context");
+        const ext = gl?.getExtension?.("WEBGL_lose_context");
         if (!ext) {
           log(
             "WEBGL_lose_context unavailable on this context (not a WebGL2 backend?) — aborting",

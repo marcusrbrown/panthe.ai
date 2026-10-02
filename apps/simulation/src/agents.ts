@@ -28,7 +28,11 @@ import {
   readPendingExternalProposals,
   type Store,
 } from "@panthea/persistence";
-import { createProposalId, recordModelRequest } from "@panthea/telemetry";
+import {
+  createProposalId,
+  createRedactor,
+  recordModelRequest,
+} from "@panthea/telemetry";
 import type { WorldState } from "@panthea/world";
 import {
   RECENT_EVENT_CAP,
@@ -58,6 +62,8 @@ export interface GodTurnRunnerDeps extends GodTurnDeps {
   readonly lifecycle: Lifecycle;
   readonly statusRef: ServiceStatusRef;
   readonly onLog?: (message: string) => void;
+  /** Every loaded endpoint key. Replaced before a trace row is stored or a line is logged, and an answer that holds one is never journaled. */
+  readonly secrets?: Iterable<string>;
 }
 
 export interface GodTurnRunner {
@@ -140,7 +146,15 @@ function actorsWithPendingProposals(store: Store): ReadonlySet<string> {
 }
 
 export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
-  const log = deps.onLog ?? (() => {});
+  const redact = createRedactor(deps.secrets ?? []);
+  const emit = deps.onLog ?? (() => {});
+  const log = (message: string): void => emit(redact(message));
+  const record = (
+    db: Store["db"],
+    request: Parameters<typeof recordModelRequest>[1],
+  ): void => {
+    recordModelRequest(db, request, Date.now(), redact);
+  };
   let running: Promise<void> | undefined;
   let abort: AbortController | undefined;
   /** The god served last: the next turn goes to the next eligible god after it. */
@@ -169,17 +183,29 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
     reportModelOutcome(deps.statusRef, result.request.route);
     const db = deps.store.db;
     if (result.kind !== "proposal") {
-      recordModelRequest(db, result.request);
+      record(db, result.request);
+      return;
+    }
+    // A key can only reach an answer if an endpoint echoed it back; the answer
+    // would become world content, so it goes no further than its trace row.
+    if (
+      redact(JSON.stringify(result.proposal)) !==
+      JSON.stringify(result.proposal)
+    ) {
+      record(db, result.request);
+      log(
+        `god turn for ${result.proposal.actor} refused: the answer contained a key and was not journaled`,
+      );
       return;
     }
     const intake = intakeProposal(db, result.proposal);
     if (!intake.ok) {
-      recordModelRequest(db, result.request);
+      record(db, result.request);
       log(`god turn refused at intake: ${intake.rejection.message}`);
       return;
     }
     const proposalId = createProposalId();
-    recordModelRequest(db, { ...result.request, proposalId });
+    record(db, { ...result.request, proposalId });
     insertExternalProposal(db, {
       proposalId,
       proposal: intake.proposal,

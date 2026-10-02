@@ -70,6 +70,14 @@ fn generate_token() -> std::io::Result<String> {
     Ok(buf.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// Runs `task` on its own thread and returns at once. Spawning a launch reads
+/// endpoint keys from the Keychain, which can block on an access prompt, so
+/// callers on the main thread (app setup, the tray's Restart) hand the spawn
+/// off instead of running it inline.
+fn run_off_caller_thread(task: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(task);
+}
+
 /// Starts the initial launch (app startup) or an operator-triggered
 /// restart from Stop/Unavailable. Refuses (does nothing) only if the
 /// operator has explicitly stopped the sidecar since.
@@ -85,7 +93,7 @@ pub fn spawn_sidecar(app: AppHandle) {
     let Some(launch_id) = launch_id else {
         return;
     };
-    spawn_with_id(app, launch_id);
+    run_off_caller_thread(move || spawn_with_id(app, launch_id));
 }
 
 /// Applies a settings change (saved settings, a set or deleted key, the
@@ -139,7 +147,7 @@ fn spawn_retry(app: AppHandle, retry_launch_id: u64) {
     let Some(launch_id) = launch_id else {
         return;
     };
-    spawn_with_id(app, launch_id);
+    run_off_caller_thread(move || spawn_with_id(app, launch_id));
 }
 
 /// Restarts from a stopped or exhausted state: clears the operator/
@@ -391,6 +399,29 @@ pub fn stop_sidecar(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_work_runs_on_another_thread_and_the_caller_returns_without_waiting_for_it() {
+        // The spawn path reads endpoint keys from the Keychain, which can wait
+        // on an access prompt. Callers on the main thread (setup, the tray)
+        // must come straight back.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let caller = std::thread::current().id();
+
+        run_off_caller_thread(move || {
+            started_tx.send(std::thread::current().id()).unwrap();
+            // Held open: the "Keychain prompt" nobody has answered yet.
+            let _ = release_rx.recv();
+        });
+
+        // If the work ran inline we would never reach this line.
+        let worker = started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the work started");
+        assert_ne!(worker, caller);
+        release_tx.send(()).unwrap();
+    }
 
     #[test]
     fn parses_the_port_from_a_well_formed_line() {

@@ -14,6 +14,11 @@
 import type { Database } from "bun:sqlite";
 import { timingSafeEqual } from "node:crypto";
 import {
+  type EndpointStatus,
+  type RouteOutcome,
+  recordRouteOutcome,
+} from "@panthea/agents";
+import {
   type ArchiveManifest,
   type CatchUpSummary,
   canonicalJson,
@@ -186,6 +191,8 @@ export interface ServiceStatusRef {
   degradedReason?: DegradedReason;
   /** Every model endpoint failed on the last request. Shown on frames, but the tick loop ignores it. */
   modelDegraded?: boolean;
+  /** How each configured endpoint's last request went; absent when no models are configured. Updated only by `reportModelOutcome`. */
+  modelEndpoints?: readonly EndpointStatus[];
   sequence: number;
   /** The tick of the state `sequence` and `encodedState` describe; the recent-event window is measured back from it. */
   tick: number;
@@ -224,9 +231,15 @@ export function isHalted(ref: ServiceStatusRef): boolean {
  */
 export function reportModelOutcome(
   ref: ServiceStatusRef,
-  result: { readonly kind: "intent" | "exhausted" },
+  result: { readonly kind: "intent" | "exhausted" } | RouteOutcome,
 ): void {
   ref.modelDegraded = result.kind === "exhausted";
+  if (
+    ref.modelEndpoints !== undefined &&
+    ("step" in result || "steps" in result)
+  ) {
+    ref.modelEndpoints = recordRouteOutcome(ref.modelEndpoints, result);
+  }
 }
 
 /**
@@ -340,6 +353,7 @@ function buildFrame(
     sessionId,
     ...displayedStatus(ref),
     ...(ref.catchUpSummary ? { catchUpSummary: ref.catchUpSummary } : {}),
+    ...(ref.modelEndpoints ? { modelEndpoints: ref.modelEndpoints } : {}),
     recentEvents: readRecentEvents(db, ref.sequence, ref.tick),
     state: ref.encodedState,
   };

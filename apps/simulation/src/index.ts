@@ -7,7 +7,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createRouter } from "@panthea/agents";
+import { createRouter, initialEndpointStatus } from "@panthea/agents";
 import type { GodProfile } from "@panthea/content";
 import type { EntityId } from "@panthea/contracts";
 import {
@@ -221,6 +221,9 @@ export function startService(options: StartOptions): ServiceHandle {
   if (launch.problem !== undefined) {
     statusRef.modelDegraded = true;
   }
+  if (routing) {
+    statusRef.modelEndpoints = initialEndpointStatus(routing);
+  }
 
   // Set synchronously at the start of every `runCatchUpNow` call, before
   // that call's first `await` -- so by the time any other code in this
@@ -263,14 +266,21 @@ export function startService(options: StartOptions): ServiceHandle {
   let queue: QueuedProposal[] = [];
 
   // The gods take turns only when the operator has configured model routing.
-  // Keys (`launch.keys`) arrive with the config and are held for the router's
-  // `getKey`, which a later unit wires; nothing reads them yet.
+  // Keys (`launch.keys`) arrive with the config and live only in this
+  // process's memory: the router reads one when it builds an endpoint's
+  // adapter, and the runner redacts every one from the trace and the log.
   // What may start a turn is stated here, once, and read by the runner; it is
   // not inferred from where the runner is called.
   let startupCatchUpComplete = false;
   const turns = routing
     ? createGodTurnRunner({
-        router: createRouter({ config: routing, offline: launch.offline }),
+        router: createRouter({
+          config: routing,
+          offline: launch.offline,
+          // Read on demand, only for an endpoint offline mode kept.
+          getKey: (keyRef) => launch.keys.get(keyRef),
+        }),
+        secrets: [...launch.keys.values()],
         profiles: loadGodProfiles(),
         store,
         getState: () => state,

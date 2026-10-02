@@ -452,7 +452,33 @@ const digest = (text: string): string =>
 
 const bounded = (text: string): string => text.slice(0, MODEL_PAYLOAD_LIMIT);
 
-function stepsOf(route: ModelRouteResult): ModelRequestStep[] {
+/** Marker a redacted secret leaves behind. */
+export const REDACTED = "[redacted]";
+
+/** Rewrites text before it is stored. */
+export type Redactor = (text: string) => string;
+
+/**
+ * A redactor that replaces every occurrence of each given secret (a loaded
+ * endpoint key) with `[redacted]`. Longer secrets go first, so one that holds
+ * another is replaced whole; empty strings are ignored.
+ */
+export function createRedactor(secrets: Iterable<string>): Redactor {
+  const ordered = [...new Set(secrets)]
+    .filter((secret) => secret !== "")
+    .sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return (text) => text;
+  return (text) => {
+    let clean = text;
+    for (const secret of ordered) clean = clean.split(secret).join(REDACTED);
+    return clean;
+  };
+}
+
+function stepsOf(
+  route: ModelRouteResult,
+  redact: Redactor,
+): ModelRequestStep[] {
   const failed = route.kind === "intent" ? route.failed : route.steps;
   const steps: ModelRequestStep[] = failed.map((step) => ({
     endpoint: step.endpoint,
@@ -460,7 +486,7 @@ function stepsOf(route: ModelRouteResult): ModelRequestStep[] {
     attempts: step.attempts,
     elapsedMs: Math.round(step.elapsedMs),
     reason: step.reason,
-    ...(step.detail === undefined ? {} : { detail: step.detail }),
+    ...(step.detail === undefined ? {} : { detail: redact(step.detail) }),
   }));
   if (route.kind === "intent") {
     steps.push({
@@ -485,13 +511,21 @@ function stepsOf(route: ModelRouteResult): ModelRequestStep[] {
  * is ignored, never thrown, because this runs inside a tick where a throw
  * would roll the tick back to be repeated; it returns the id of the row that
  * already holds the proposal.
+ *
+ * `redact` is applied to every text the row stores (prompt, output, each step's
+ * detail) before anything is written, and the digests cover the redacted text:
+ * this is the write boundary ADR-0006 asks for before a credential-bearing
+ * producer exists. Pass one built from every loaded key.
  */
 export function recordModelRequest(
   db: Database,
   input: ModelRequestInput,
   now: number = Date.now(),
+  redact: Redactor = (text) => text,
 ): ModelRequestId {
   const id = createModelRequestId();
+  const prompt = redact(input.prompt);
+  const output = input.output === undefined ? undefined : redact(input.output);
   const result = db.run(
     // Only a repeat of the proposal is ignored; a CHECK violation still throws.
     `INSERT INTO trace_model_requests
@@ -503,12 +537,12 @@ export function recordModelRequest(
       input.proposalId ?? null,
       input.role,
       input.route.kind,
-      JSON.stringify(stepsOf(input.route)),
+      JSON.stringify(stepsOf(input.route, redact)),
       Math.round(input.route.elapsedMs),
-      digest(input.prompt),
-      input.output === undefined ? null : digest(input.output),
-      bounded(input.prompt),
-      input.output === undefined ? null : bounded(input.output),
+      digest(prompt),
+      output === undefined ? null : digest(output),
+      bounded(prompt),
+      output === undefined ? null : bounded(output),
       now,
     ],
   );

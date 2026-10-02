@@ -319,3 +319,68 @@ test("an unknown status is rejected", () => {
   const result = parseSyncFrame(frame({ status: "crashed" }));
   expect(result.ok).toBe(false);
 });
+
+// --- Endpoint status: how each model endpoint's last request went ----------------------
+
+test("a frame without endpoint status still parses, and has none", () => {
+  const result = parseSyncFrame(frame());
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.modelEndpoints).toBeUndefined();
+});
+
+test("a frame carries each endpoint's last outcome through the parser: ok, failed with a reason and detail, untried", () => {
+  const modelEndpoints = [
+    { endpoint: "ollama", state: "ok" },
+    {
+      endpoint: "go",
+      state: "failed",
+      reason: "key-missing",
+      detail: "key not set (opencode-go)",
+    },
+    { endpoint: "spare", state: "untried" },
+  ];
+  const result = parseSyncFrame(frame({ modelEndpoints }));
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.modelEndpoints).toEqual(
+      modelEndpoints as unknown as typeof result.value.modelEndpoints,
+    );
+  }
+});
+
+test("an empty endpoint list parses and is kept", () => {
+  const result = parseSyncFrame(frame({ modelEndpoints: [] }));
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.modelEndpoints).toEqual([]);
+});
+
+test("endpoint status rides a model-degraded frame without disturbing it", () => {
+  const result = parseSyncFrame(
+    frame({
+      status: "degraded",
+      degradedReason: "model-degraded",
+      modelEndpoints: [
+        { endpoint: "go", state: "failed", reason: "network", detail: "down" },
+      ],
+    }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.degradedReason).toBe("model-degraded");
+    expect(result.value.modelEndpoints?.[0]?.state).toBe("failed");
+  }
+});
+
+test("malformed endpoint status is rejected, naming the path", () => {
+  for (const bad of [
+    "nope",
+    [{ endpoint: "x", state: "gremlins" }],
+    [{ state: "ok" }],
+    [{ endpoint: "x", state: "failed" }],
+    [{ endpoint: "x", state: "failed", reason: 3, detail: "d" }],
+  ]) {
+    const result = parseSyncFrame(frame({ modelEndpoints: bad }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.path).toContain("modelEndpoints");
+  }
+});

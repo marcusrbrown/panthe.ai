@@ -15,6 +15,7 @@ import {
 import {
   createModelRequestId,
   createProposalId,
+  createRedactor,
   type EventSource,
   ensureTraceSchema,
   getModelRequest,
@@ -544,6 +545,141 @@ describe("recordModelRequest", () => {
   test("an unknown id and a proposal with no request resolve to nothing", () => {
     expect(getModelRequest(db, createModelRequestId())).toBeUndefined();
     expect(getModelRequestByProposalId(db, createProposalId())).toBeUndefined();
+  });
+});
+
+describe("redaction at the write boundary (ADR-0006)", () => {
+  const KEY = "sk-sentinel-DO-NOT-LEAK-0123456789";
+
+  /** Every column of every trace table as text, the way a leak would be found. */
+  function everythingStored(): string {
+    const tables = db
+      .query("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[];
+    return tables
+      .map(({ name }) =>
+        JSON.stringify(db.query(`SELECT * FROM "${name}"`).all()),
+      )
+      .join("\n");
+  }
+
+  const leakyRoute: ModelRouteResult = {
+    kind: "exhausted",
+    steps: [
+      {
+        endpoint: "go",
+        model: "big",
+        attempts: 1,
+        elapsedMs: 5,
+        reason: "http-4xx",
+        detail: `401 bad key ${KEY} rejected`,
+      },
+    ],
+    elapsedMs: 6,
+  };
+
+  test("positive control: without a redactor the same request stores the key, so the scan can see it", () => {
+    recordModelRequest(db, {
+      role: "zeus",
+      route: leakyRoute,
+      prompt: `prompt with ${KEY}`,
+    });
+    expect(everythingStored()).toContain(KEY);
+  });
+
+  test("a loaded key is replaced in the prompt, the output, and every step's detail before the row is stored", () => {
+    const redact = createRedactor([KEY]);
+    const proposalId = createProposalId();
+    recordModelRequest(
+      db,
+      {
+        proposalId,
+        role: "zeus",
+        route: {
+          kind: "intent",
+          step: { ...OLLAMA_STEP, elapsedMs: 5, mode: "native" },
+          failed: leakyRoute.steps,
+          elapsedMs: 9,
+        },
+        prompt: `the prompt echoes ${KEY}`,
+        output: `{"text":"${KEY}"}`,
+      },
+      1_000,
+      redact,
+    );
+
+    expect(everythingStored()).not.toContain(KEY);
+    const row = getModelRequestByProposalId(db, proposalId);
+    expect(row?.promptPayload).toBe("the prompt echoes [redacted]");
+    expect(row?.outputPayload).toBe('{"text":"[redacted]"}');
+    expect(row?.steps[0]?.detail).toBe("401 bad key [redacted] rejected");
+  });
+
+  test("the digests cover the redacted text, so a stored digest is never a hash of text holding a key", () => {
+    const redact = createRedactor([KEY]);
+    const proposalId = createProposalId();
+    recordModelRequest(
+      db,
+      {
+        proposalId,
+        role: "zeus",
+        route: intentRoute,
+        prompt: `p ${KEY}`,
+        output: `o ${KEY}`,
+      },
+      1_000,
+      redact,
+    );
+    const row = getModelRequestByProposalId(db, proposalId);
+    expect(row?.promptDigest).toBe(sha256("p [redacted]"));
+    expect(row?.outputDigest).toBe(sha256("o [redacted]"));
+  });
+
+  test("every loaded key is replaced, a longer key that holds a shorter one is replaced whole, and an empty key is ignored", () => {
+    const redact = createRedactor(["abcdefgh", "abcdefghij", ""]);
+    expect(redact("x abcdefghij y abcdefgh z")).toBe(
+      "x [redacted] y [redacted] z",
+    );
+    expect(createRedactor([])("nothing to hide")).toBe("nothing to hide");
+  });
+
+  test("text with no key is stored unchanged", () => {
+    const redact = createRedactor([KEY]);
+    const proposalId = createProposalId();
+    recordModelRequest(
+      db,
+      {
+        proposalId,
+        role: "zeus",
+        route: intentRoute,
+        prompt: "plain",
+        output: "plain out",
+      },
+      1_000,
+      redact,
+    );
+    expect(getModelRequestByProposalId(db, proposalId)?.promptPayload).toBe(
+      "plain",
+    );
+  });
+
+  test("a bypass that writes a row without the writer is caught by the scan", () => {
+    const redact = createRedactor([KEY]);
+    recordModelRequest(
+      db,
+      { role: "zeus", route: leakyRoute, prompt: "p" },
+      1_000,
+      redact,
+    );
+    expect(everythingStored()).not.toContain(KEY);
+    // A producer that inserts directly, skipping the writer, leaves the key.
+    db.run(
+      `INSERT INTO trace_model_requests
+         (id, proposal_id, role, outcome, steps, elapsed_ms, prompt_digest, output_digest, prompt_payload, output_payload, recorded_at)
+       VALUES (?, NULL, 'zeus', 'exhausted', '[]', 1, 'd', NULL, ?, NULL, 1)`,
+      [createModelRequestId(), `bypassed ${KEY}`],
+    );
+    expect(everythingStored()).toContain(KEY);
   });
 });
 

@@ -165,7 +165,7 @@ pub fn restart_sidecar(app: AppHandle) {
     let Some(launch_id) = launch_id else {
         return;
     };
-    spawn_with_id(app, launch_id);
+    run_off_caller_thread(move || spawn_with_id(app, launch_id));
 }
 
 /// Does the actual OS-level work for `launch_id`, already minted by the

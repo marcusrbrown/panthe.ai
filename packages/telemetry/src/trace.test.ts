@@ -663,6 +663,96 @@ describe("redaction at the write boundary (ADR-0006)", () => {
     );
   });
 
+  describe("a key with characters JSON escapes", () => {
+    // A quote, a backslash, and a newline: each is written differently inside
+    // a JSON string, and the runner serializes proposals and outputs as JSON.
+    const TRICKY = 'sk-"quo\\te\nnl-0123456789';
+    const ESCAPED = JSON.stringify(TRICKY).slice(1, -1);
+
+    test("sanity: the escaped form really differs from the raw key", () => {
+      expect(ESCAPED).not.toBe(TRICKY);
+    });
+
+    test("the redactor replaces the raw key and its JSON-escaped form", () => {
+      const redact = createRedactor([TRICKY]);
+      expect(redact(`raw ${TRICKY} and escaped ${ESCAPED}`)).toBe(
+        "raw [redacted] and escaped [redacted]",
+      );
+      expect(redact(JSON.stringify({ text: TRICKY }))).toBe(
+        '{"text":"[redacted]"}',
+      );
+    });
+
+    test("a key echoed in a JSON-serialized answer and in an error detail is redacted in the stored row", () => {
+      const redact = createRedactor([TRICKY]);
+      const proposalId = createProposalId();
+      recordModelRequest(
+        db,
+        {
+          proposalId,
+          role: "zeus",
+          route: {
+            kind: "intent",
+            step: { ...OLLAMA_STEP, elapsedMs: 5, mode: "native" },
+            failed: [
+              {
+                endpoint: "go",
+                model: "big",
+                attempts: 1,
+                elapsedMs: 5,
+                reason: "http-4xx",
+                detail: `{"error":"bad key ${ESCAPED}"}`,
+              },
+            ],
+            elapsedMs: 9,
+          },
+          prompt: "p",
+          output: JSON.stringify({ assertion: `speaks ${TRICKY}` }),
+        },
+        1_000,
+        redact,
+      );
+
+      const stored = everythingStored();
+      expect(stored).not.toContain(TRICKY);
+      expect(stored).not.toContain(ESCAPED);
+      expect(stored).not.toContain(JSON.stringify(ESCAPED).slice(1, -1));
+      expect(getModelRequestByProposalId(db, proposalId)?.outputPayload).toBe(
+        '{"assertion":"speaks [redacted]"}',
+      );
+    });
+
+    test("positive control: without the escaped form the same row would still hold the key", () => {
+      const rawOnly = (text: string) => text.split(TRICKY).join("[redacted]");
+      recordModelRequest(
+        db,
+        {
+          role: "zeus",
+          route: {
+            kind: "intent",
+            step: { ...OLLAMA_STEP, elapsedMs: 5, mode: "native" },
+            failed: [],
+            elapsedMs: 9,
+          },
+          prompt: "p",
+          output: JSON.stringify({ assertion: `speaks ${TRICKY}` }),
+        },
+        1_000,
+        rawOnly,
+      );
+      const row = db
+        .query("SELECT output_payload FROM trace_model_requests")
+        .get() as { output_payload: string };
+      expect(row.output_payload).toContain(ESCAPED);
+    });
+
+    test("a key with nothing to escape is replaced once, not twice", () => {
+      expect(createRedactor(["plainkey123"])("a plainkey123 b")).toBe(
+        "a [redacted] b",
+      );
+    });
+  });
+
   test("a bypass that writes a row without the writer is caught by the scan", () => {
     const redact = createRedactor([KEY]);
     recordModelRequest(

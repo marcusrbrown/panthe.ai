@@ -21,6 +21,9 @@ import { listExternalProposals } from "@panthea/persistence";
 const INDEX_ENTRY = join(import.meta.dir, "index.ts");
 const TOKEN = "provider-settings-token";
 const SENTINEL = "sk-sentinel-DO-NOT-LEAK-0123456789";
+/** A key with a quote and a backslash: JSON writes both escaped, so a raw-only redactor misses them. */
+const TRICKY = 'sk-"sentinel\\DO-NOT-LEAK-0123456789';
+const TRICKY_ESCAPED = JSON.stringify(TRICKY).slice(1, -1);
 
 // --- A scripted OpenAI-compatible provider that records what it was sent ----------------
 
@@ -532,4 +535,94 @@ describe("a key reaches only the request (sentinel)", () => {
     expect(service.output()).not.toContain(SENTINEL);
     expect(filesHolding(service.appDataDir, SENTINEL)).toEqual([]);
   }, 60_000);
+
+  describe("a key JSON escapes", () => {
+    test("positive control: the key and its escaped form differ, and the key still reaches the request as the bearer", async () => {
+      expect(TRICKY_ESCAPED).not.toBe(TRICKY);
+      const provider = startProvider();
+      const service = await spawnService({
+        models: keyed(provider),
+        keys: { sk: TRICKY },
+      });
+      await until("a request", () =>
+        provider.requests.length > 0 ? true : undefined,
+      );
+      expect(provider.requests[0]?.authorization).toBe(`Bearer ${TRICKY}`);
+      expect(await service.stop()).toBe(0);
+    }, 60_000);
+
+    test("an endpoint that echoes the key in a JSON error body is redacted in the frame, the trace row, and the logs", async () => {
+      const provider = startProvider((request) => ({
+        status: 401,
+        body: JSON.stringify({
+          error: `Incorrect key ${request.authorization?.replace("Bearer ", "")}`,
+        }),
+      }));
+      const service = await spawnService({
+        models: keyed(provider),
+        keys: { sk: TRICKY },
+      });
+      const frame = await until("the failure to be reported", async () => {
+        const current = await frameOf(service);
+        return statusOf(current, "local")?.state === "failed"
+          ? current
+          : undefined;
+      });
+      expect(JSON.stringify(frame)).not.toContain(TRICKY_ESCAPED);
+      expect(JSON.stringify(frame)).not.toContain(TRICKY);
+      const steps = await until("the trace row", () => {
+        const db = new Database(
+          join(service.appDataDir, "active", "world.sqlite"),
+          { readonly: true },
+        );
+        try {
+          const row = db
+            .query("SELECT steps FROM trace_model_requests LIMIT 1")
+            .get() as { steps: string } | null;
+          return row?.steps;
+        } finally {
+          db.close();
+        }
+      });
+      expect(steps).toContain("[redacted]");
+      expect(await service.stop()).toBe(0);
+      expect(service.output()).not.toContain(TRICKY);
+      expect(service.output()).not.toContain(TRICKY_ESCAPED);
+      expect(filesHolding(service.appDataDir, TRICKY)).toEqual([]);
+      expect(filesHolding(service.appDataDir, TRICKY_ESCAPED)).toEqual([]);
+    }, 60_000);
+
+    test("a model that puts the key in its answer is refused before the journal even though the proposal holds it escaped", async () => {
+      const provider = startProvider((request) =>
+        LEGEND(`Zeus speaks ${request.authorization?.replace("Bearer ", "")}`),
+      );
+      const service = await spawnService({
+        models: keyed(provider),
+        keys: { sk: TRICKY },
+      });
+      await until("a god turn that echoed the key", () =>
+        service.output().includes("contained a key") ? true : undefined,
+      );
+      const db = new Database(
+        join(service.appDataDir, "active", "world.sqlite"),
+        { readonly: true },
+      );
+      try {
+        expect(listExternalProposals(db)).toEqual([]);
+        const rows = db
+          .query("SELECT output_payload FROM trace_model_requests")
+          .all() as { output_payload: string | null }[];
+        expect(
+          rows.some((row) => row.output_payload?.includes("[redacted]")),
+        ).toBe(true);
+      } finally {
+        db.close();
+      }
+      expect(await service.stop()).toBe(0);
+      expect(service.output()).not.toContain(TRICKY);
+      expect(service.output()).not.toContain(TRICKY_ESCAPED);
+      expect(filesHolding(service.appDataDir, TRICKY)).toEqual([]);
+      expect(filesHolding(service.appDataDir, TRICKY_ESCAPED)).toEqual([]);
+    }, 60_000);
+  });
 });

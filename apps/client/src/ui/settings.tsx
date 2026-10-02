@@ -51,29 +51,37 @@ type Validation =
   | { readonly ok: true; readonly value: SettingsShape }
   | { readonly ok: false; readonly errors: Readonly<Record<string, string>> };
 
-const ROLE_NAMES = ["Zeus", "Hera"] as const;
+/** The gods an operator can assign. The id is the role key the router looks up (the lowercase actor id) and the only form ever saved; the label is for display. */
+const ROLES = [
+  { id: "zeus", label: "Zeus" },
+  { id: "hera", label: "Hera" },
+] as const;
+
+function roleLabel(id: string): string {
+  return ROLES.find((role) => role.id === id)?.label ?? id;
+}
 
 function emptyForm(): MutableSettings {
   return {
     endpoints: [],
     roles: Object.fromEntries(
-      ROLE_NAMES.map((role) => [
-        role,
-        { endpoint: "", model: "", fallback: "" },
-      ]),
+      ROLES.map((role) => [role.id, { endpoint: "", model: "", fallback: "" }]),
     ),
     fallback: "",
     offline: false,
   };
 }
 
-function asForm(value: SettingsShape | undefined): MutableSettings {
+/** The form for saved settings (or an empty one): each saved role lands on the row of its id. */
+export function settingsToForm(
+  value: SettingsShape | undefined,
+): MutableSettings {
   if (!value) return emptyForm();
   const roles = Object.fromEntries(
-    ROLE_NAMES.map((name) => {
-      const assignment = value.models.roles[name];
+    ROLES.map(({ id }) => {
+      const assignment = value.models.roles[id];
       return [
-        name,
+        id,
         {
           endpoint: assignment?.endpoint ?? "",
           model: assignment?.model ?? "",
@@ -115,12 +123,15 @@ function list(value: string): string[] {
     .filter(Boolean);
 }
 
-function toSettings(form: MutableSettings): unknown {
+/** The settings a form saves: roles keyed by id, a key reference trimmed. */
+export function formToSettings(form: MutableSettings): SettingsShape {
   const endpoints = form.endpoints.map((endpoint) => ({
     id: endpoint.id,
     baseUrl: endpoint.baseUrl,
     model: endpoint.model,
-    ...(endpoint.keyRef.trim() ? { keyRef: endpoint.keyRef.trim() } : {}),
+    ...(normalizeKeyRef(endpoint.keyRef)
+      ? { keyRef: normalizeKeyRef(endpoint.keyRef) }
+      : {}),
     ...(endpoint.reasoningEffort
       ? { reasoningEffort: endpoint.reasoningEffort }
       : {}),
@@ -200,13 +211,38 @@ export async function persistModelSettings(
   return { ok: true };
 }
 
+/** Sets one role field, leaving every other row as it was. */
+export function updateRoleField(
+  form: MutableSettings,
+  roleId: string,
+  patch: Partial<MutableSettings["roles"][string]>,
+): MutableSettings {
+  const role = form.roles[roleId] ?? { endpoint: "", model: "", fallback: "" };
+  return { ...form, roles: { ...form.roles, [roleId]: { ...role, ...patch } } };
+}
+
+/** A key reference is trimmed once, here: the settings, every key operation, and every lookup use this name. */
+export function normalizeKeyRef(keyRef: string): string {
+  return keyRef.trim();
+}
+
 export async function saveEndpointKey(
   keyRef: string,
   key: string,
   transport: ModelSettingsTransport,
 ): Promise<Record<string, KeyStatus>> {
-  await transport.setEndpointKey(keyRef, key);
-  return transport.endpointKeyStatus([keyRef]);
+  const name = normalizeKeyRef(keyRef);
+  await transport.setEndpointKey(name, key);
+  return transport.endpointKeyStatus([name]);
+}
+
+export async function deleteEndpointKey(
+  keyRef: string,
+  transport: ModelSettingsTransport,
+): Promise<Record<string, KeyStatus>> {
+  const name = normalizeKeyRef(keyRef);
+  await transport.deleteEndpointKey(name);
+  return transport.endpointKeyStatus([name]);
 }
 
 function parseStoredSettings(
@@ -234,7 +270,7 @@ export function SettingsView({
   readonly initialError?: string;
   readonly endpointStatuses?: readonly EndpointFrameStatus[];
 }) {
-  const [form, setForm] = useState(() => asForm(initialSettings));
+  const [form, setForm] = useState(() => settingsToForm(initialSettings));
   const [keyStatus, setKeyStatus] = useState<Record<string, KeyStatus>>({
     ...initialKeyStatus,
   });
@@ -253,7 +289,7 @@ export function SettingsView({
       .then((serialized) => {
         if (!current) return;
         const settings = parseStoredSettings(serialized);
-        setForm(asForm(settings));
+        setForm(settingsToForm(settings));
       })
       .catch((error: unknown) => {
         if (current)
@@ -268,7 +304,7 @@ export function SettingsView({
     () => [
       ...new Set(
         form.endpoints
-          .map((endpoint) => endpoint.keyRef.trim())
+          .map((endpoint) => normalizeKeyRef(endpoint.keyRef))
           .filter(Boolean),
       ),
     ],
@@ -293,8 +329,10 @@ export function SettingsView({
     };
   }, [keyRefs, transport]);
 
-  const roles = [...new Set([...ROLE_NAMES, ...Object.keys(form.roles)])];
-  const normalized = toSettings(form) as SettingsShape;
+  const roles = [
+    ...new Set([...ROLES.map((role) => role.id), ...Object.keys(form.roles)]),
+  ];
+  const normalized = formToSettings(form);
   const parsedForOffline = validateSettings(normalized);
   const dropped =
     parsedForOffline.ok && form.offline
@@ -321,7 +359,7 @@ export function SettingsView({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const result = validateSettings(toSettings(form));
+    const result = validateSettings(formToSettings(form));
     if (!result.ok) {
       setErrors(result.errors);
       setMessage("Fix the marked fields before saving.");
@@ -370,8 +408,7 @@ export function SettingsView({
     setIsError(false);
     setMessage("Removing key. The world service will restart.");
     try {
-      await transport.deleteEndpointKey(keyRef);
-      const status = await transport.endpointKeyStatus([keyRef]);
+      const status = await deleteEndpointKey(keyRef, transport);
       setKeyStatus((prior) => ({ ...prior, ...status }));
       setMessage("Key removed. The world service is restarting.");
     } catch (error) {
@@ -537,12 +574,13 @@ export function SettingsView({
                           />
                         </label>
                       </div>
-                      {endpoint.keyRef.trim() && (
+                      {normalizeKeyRef(endpoint.keyRef) && (
                         <div className="key-row">
                           <div className="key-state">
                             <span>Key</span>
                             <strong>
-                              {keyStatus[endpoint.keyRef] === "set"
+                              {keyStatus[normalizeKeyRef(endpoint.keyRef)] ===
+                              "set"
                                 ? "Set"
                                 : "Missing"}
                             </strong>
@@ -552,11 +590,15 @@ export function SettingsView({
                             <input
                               type="password"
                               autoComplete="new-password"
-                              value={keyInputs[endpoint.keyRef] ?? ""}
+                              value={
+                                keyInputs[normalizeKeyRef(endpoint.keyRef)] ??
+                                ""
+                              }
                               onChange={(event) =>
                                 setKeyInputs((prior) => ({
                                   ...prior,
-                                  [endpoint.keyRef]: event.target.value,
+                                  [normalizeKeyRef(endpoint.keyRef)]:
+                                    event.target.value,
                                 }))
                               }
                             />
@@ -565,16 +607,21 @@ export function SettingsView({
                             className="quiet-button"
                             type="button"
                             disabled={busy}
-                            onClick={() => void storeKey(endpoint.keyRef)}
+                            onClick={() =>
+                              void storeKey(normalizeKeyRef(endpoint.keyRef))
+                            }
                           >
                             Save key
                           </button>
-                          {keyStatus[endpoint.keyRef] === "set" && (
+                          {keyStatus[normalizeKeyRef(endpoint.keyRef)] ===
+                            "set" && (
                             <button
                               className="text-button"
                               type="button"
                               disabled={busy}
-                              onClick={() => void removeKey(endpoint.keyRef)}
+                              onClick={() =>
+                                void removeKey(normalizeKeyRef(endpoint.keyRef))
+                              }
                             >
                               Remove key
                             </button>
@@ -608,22 +655,17 @@ export function SettingsView({
                 };
                 return (
                   <fieldset className="role-row" key={roleName}>
-                    <legend>{roleName}</legend>
+                    <legend>{roleLabel(roleName)}</legend>
                     <label>
                       Endpoint
                       <select
                         value={role.endpoint}
                         onChange={(event) =>
-                          setForm((prior) => ({
-                            ...prior,
-                            roles: {
-                              ...prior.roles,
-                              [roleName]: {
-                                ...role,
-                                endpoint: event.target.value,
-                              },
-                            },
-                          }))
+                          setForm((prior) =>
+                            updateRoleField(prior, roleName, {
+                              endpoint: event.target.value,
+                            }),
+                          )
                         }
                         aria-invalid={Boolean(
                           errors[`roles.${roleName}.endpoint`],
@@ -647,16 +689,11 @@ export function SettingsView({
                         value={role.model}
                         placeholder="Use endpoint model"
                         onChange={(event) =>
-                          setForm((prior) => ({
-                            ...prior,
-                            roles: {
-                              ...prior.roles,
-                              [roleName]: {
-                                ...role,
-                                model: event.target.value,
-                              },
-                            },
-                          }))
+                          setForm((prior) =>
+                            updateRoleField(prior, roleName, {
+                              model: event.target.value,
+                            }),
+                          )
                         }
                       />
                       {role.model && (
@@ -671,16 +708,11 @@ export function SettingsView({
                         value={role.fallback}
                         placeholder="endpoint-a, endpoint-b"
                         onChange={(event) =>
-                          setForm((prior) => ({
-                            ...prior,
-                            roles: {
-                              ...prior.roles,
-                              [roleName]: {
-                                ...role,
-                                fallback: event.target.value,
-                              },
-                            },
-                          }))
+                          setForm((prior) =>
+                            updateRoleField(prior, roleName, {
+                              fallback: event.target.value,
+                            }),
+                          )
                         }
                         aria-invalid={Boolean(
                           errors[`roles.${roleName}.fallback`],

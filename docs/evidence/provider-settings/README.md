@@ -1,5 +1,7 @@
 # Provider settings evidence
 
+Requirements: P06, P07.
+
 Captured from the packaged macOS `.app` with `screencapture -l` (window only).
 
 - `empty-settings.png`: initial settings with no endpoints.

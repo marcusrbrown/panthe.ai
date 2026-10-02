@@ -373,10 +373,15 @@ export function createRouter(options: RouterOptions): Router {
     const startedAt = performance.now();
     const endpoint = step.endpoint.id;
     const redact = (text: string, apiKey: string | undefined): string => {
-      const clean =
-        apiKey === undefined || apiKey === ""
-          ? text
-          : text.split(apiKey).join("[redacted]");
+      let clean = text;
+      if (apiKey !== undefined && apiKey !== "") {
+        // The key as sent, and as JSON writes it inside a string: an error
+        // body that is JSON echoes a key holding a quote or backslash escaped.
+        const escaped = JSON.stringify(apiKey).slice(1, -1);
+        for (const form of escaped === apiKey ? [apiKey] : [escaped, apiKey]) {
+          clean = clean.split(form).join("[redacted]");
+        }
+      }
       return clean.slice(0, DETAIL_LIMIT);
     };
 

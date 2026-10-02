@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
+import { parseRoutingConfig, planRoute } from "@panthea/agents/config";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ModelSettingsTransport } from "../connection";
 import {
+  deleteEndpointKey,
+  formToSettings,
   persistModelSettings,
   SettingsView,
   saveEndpointKey,
+  settingsToForm,
+  updateRoleField,
   validateSettings,
 } from "./settings";
 
@@ -23,7 +28,7 @@ const models = {
       model: "reasoner",
     },
   ],
-  roles: { Zeus: { endpoint: "local", fallback: ["hosted"] } },
+  roles: { zeus: { endpoint: "local", fallback: ["hosted"] } },
   fallback: ["hosted"],
 };
 
@@ -194,4 +199,123 @@ test("Keychain failures are shown without hiding the command error", async () =>
   );
   expect(html).toContain('role="alert"');
   expect(html).toContain("Keychain access was denied");
+});
+
+// --- Roles are saved under the id the router looks up ----------------------------------------
+
+const localEndpoint = {
+  uiKey: "local",
+  id: "local",
+  baseUrl: "http://127.0.0.1:11434/v1",
+  model: "llama",
+  keyRef: "",
+};
+
+test("a Zeus assignment made in the form is saved as roles.zeus and routes to the assigned endpoint", async () => {
+  const fake = fakeTransport();
+  // The form the operator starts from, one endpoint added, Zeus assigned to it.
+  let form = settingsToForm(undefined);
+  form = { ...form, endpoints: [localEndpoint] };
+  form = updateRoleField(form, "zeus", { endpoint: "local" });
+
+  const result = await persistModelSettings(
+    formToSettings(form),
+    fake.transport,
+  );
+
+  expect(result).toEqual({ ok: true });
+  const saved = JSON.parse(String(fake.calls[0]?.value)) as {
+    models: { roles: Record<string, unknown> };
+  };
+  expect(Object.keys(saved.models.roles)).toEqual(["zeus"]);
+  const config = parseRoutingConfig(saved.models);
+  if (!config.ok) throw new Error(`${config.path}: ${config.message}`);
+  // The router looks a role up by the lowercase actor id.
+  expect(
+    planRoute(config.value, "zeus", { offline: false }).steps.map(
+      (step) => step.endpoint.id,
+    ),
+  ).toEqual(["local"]);
+  expect(planRoute(config.value, "hera", { offline: false }).steps).toEqual([]);
+});
+
+test("Hera is a row of her own, and the rows show names while the settings hold ids", () => {
+  let form = settingsToForm(undefined);
+  expect(Object.keys(form.roles)).toEqual(["zeus", "hera"]);
+  form = { ...form, endpoints: [localEndpoint] };
+  form = updateRoleField(form, "hera", { endpoint: "local", model: "other" });
+  expect(Object.keys(formToSettings(form).models.roles)).toEqual(["hera"]);
+
+  const html = renderToStaticMarkup(
+    <SettingsView
+      transport={fakeTransport().transport}
+      initialSettings={{ models, offline: false }}
+    />,
+  );
+  expect(html).toContain("<legend>Zeus</legend>");
+  expect(html).toContain("<legend>Hera</legend>");
+});
+
+test("settings loaded keyed by id fill the matching rows and add no duplicate row", () => {
+  const form = settingsToForm({
+    models: {
+      ...models,
+      roles: { zeus: { endpoint: "local", model: "x", fallback: ["hosted"] } },
+    },
+    offline: false,
+  });
+  expect(Object.keys(form.roles)).toEqual(["zeus", "hera"]);
+  expect(form.roles.zeus).toEqual({
+    endpoint: "local",
+    model: "x",
+    fallback: "hosted",
+  });
+  expect(form.roles.hera?.endpoint).toBe("");
+  // And back: a round trip keeps the id.
+  expect(Object.keys(formToSettings(form).models.roles)).toEqual(["zeus"]);
+});
+
+// --- A key reference is trimmed once, for the settings and every key operation ----------
+
+test("a key reference with spaces is stored, deleted, and checked under the trimmed name that the settings hold", async () => {
+  const fake = fakeTransport();
+  const status = await saveEndpointKey(
+    " openai ",
+    "not-a-real-key",
+    fake.transport,
+  );
+  await deleteEndpointKey(" openai ", fake.transport);
+
+  expect(fake.calls).toEqual([
+    { method: "set-key", value: { keyRef: "openai", key: "not-a-real-key" } },
+    { method: "key-status", value: ["openai"] },
+    { method: "delete-key", value: "openai" },
+    { method: "key-status", value: ["openai"] },
+  ]);
+  expect(status).toEqual({ openai: "set" });
+
+  const form = settingsToForm(undefined);
+  const settings = formToSettings({
+    ...form,
+    endpoints: [{ ...localEndpoint, keyRef: " openai " }],
+  });
+  expect(settings.models.endpoints[0]?.keyRef).toBe("openai");
+});
+
+test("the row looks its key status up by the trimmed reference, so a padded reference shows the status of the stored key", () => {
+  const html = renderToStaticMarkup(
+    <SettingsView
+      transport={fakeTransport().transport}
+      initialSettings={{
+        models: {
+          ...models,
+          endpoints: [{ ...models.endpoints[0], keyRef: " openai " }],
+        },
+        offline: false,
+      }}
+      initialKeyStatus={{ openai: "set" }}
+    />,
+  );
+  expect(html).toContain("<strong>Set</strong>");
+  expect(html).toContain("Remove key");
 });

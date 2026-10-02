@@ -460,17 +460,25 @@ export type Redactor = (text: string) => string;
 
 /**
  * A redactor that replaces every occurrence of each given secret (a loaded
- * endpoint key) with `[redacted]`. Longer secrets go first, so one that holds
- * another is replaced whole; empty strings are ignored.
+ * endpoint key) with `[redacted]`, in its raw form and in the form JSON writes
+ * it inside a string: the runner serializes proposals and outputs as JSON, and
+ * an endpoint's JSON error body echoes a key the same way, so a key holding a
+ * quote, a backslash, or a control character appears escaped there. Longer
+ * forms go first, so one that holds another is replaced whole; empty strings
+ * are ignored.
  */
 export function createRedactor(secrets: Iterable<string>): Redactor {
-  const ordered = [...new Set(secrets)]
-    .filter((secret) => secret !== "")
-    .sort((a, b) => b.length - a.length);
+  const forms = new Set<string>();
+  for (const secret of secrets) {
+    if (secret === "") continue;
+    forms.add(secret);
+    forms.add(JSON.stringify(secret).slice(1, -1));
+  }
+  const ordered = [...forms].sort((a, b) => b.length - a.length);
   if (ordered.length === 0) return (text) => text;
   return (text) => {
     let clean = text;
-    for (const secret of ordered) clean = clean.split(secret).join(REDACTED);
+    for (const form of ordered) clean = clean.split(form).join(REDACTED);
     return clean;
   };
 }

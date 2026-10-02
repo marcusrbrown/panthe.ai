@@ -205,6 +205,7 @@ pub(crate) mod testing {
         entries: Mutex<HashMap<String, String>>,
         failing: bool,
         failing_reads: bool,
+        reads: Mutex<Vec<String>>,
     }
 
     impl MemoryKeyStore {
@@ -213,6 +214,12 @@ pub(crate) mod testing {
                 failing: true,
                 ..Self::default()
             }
+        }
+
+        /// Every key reference `get` was called with, in order: the spy a
+        /// test uses to show a key was or was not read.
+        pub fn reads(&self) -> Vec<String> {
+            self.reads.lock().unwrap().clone()
         }
 
         pub fn failing_reads() -> Self {
@@ -238,6 +245,7 @@ pub(crate) mod testing {
         }
 
         fn get(&self, key_ref: &str) -> Result<Option<String>, KeyError> {
+            self.reads.lock().unwrap().push(key_ref.to_string());
             if self.failing_reads {
                 return Err(KeyError::new(format!(
                     "the Keychain is locked (while reading {key_ref})"

@@ -928,6 +928,44 @@ describe("a keyed endpoint whose key is not set", () => {
   });
 });
 
+describe("a key JSON escapes", () => {
+  // A quote and a backslash: an endpoint that answers with a JSON error body
+  // echoes the key with both escaped.
+  const key = 'sk-"quo\\te-0123456789';
+  const escaped = JSON.stringify(key).slice(1, -1);
+
+  test("is redacted from the failure detail whether the endpoint echoes it raw or JSON-escaped", async () => {
+    for (const body of [
+      `bad key ${key} rejected`,
+      JSON.stringify({ error: { message: `bad key ${key} rejected` } }),
+    ]) {
+      const hosted = scriptedHostedFetch(
+        () => new Response(body, { status: 401 }),
+      );
+      const router = routerFor(
+        configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+          roles: { zeus: { endpoint: "go" } },
+        }),
+        {
+          buildModel: spies(hosted.fetch).options.buildModel,
+          getKey: () => key,
+        },
+      );
+
+      const result = await router.route("zeus", context, sayIntent);
+
+      expect(result.kind).toBe("exhausted");
+      const text = JSON.stringify(result);
+      expect(text).not.toContain(key);
+      expect(text).not.toContain(escaped);
+      expect(text).not.toContain(JSON.stringify(escaped).slice(1, -1));
+      if (result.kind === "exhausted") {
+        expect(result.steps[0]?.detail).toContain("[redacted]");
+      }
+    }
+  });
+});
+
 describe("keys and the detail limit", () => {
   /** A hosted endpoint that answers 401 with `body`, and the router that asks it with `key`. */
   async function refusedWith(key: string, body: string) {

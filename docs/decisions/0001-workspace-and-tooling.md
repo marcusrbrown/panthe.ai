@@ -20,6 +20,8 @@ A fresh checkout has one Bun entry command set and one lockfile (P03). Rust and 
 
 **2026-09-28:** the M0 renderer probe app (`apps/probe-renderer`) was removed, so `apps/desktop` is the only Tauri app: one Rust crate, one `Cargo.lock` (`apps/desktop/src-tauri`), and one Rust CI target. The probe's source is at commit `ce9e5a4`; its evidence stays in [tools/probes/renderer-webgl2/README.md](../../tools/probes/renderer-webgl2/README.md).
 
+**2026-10-02, Tauri versions:** the Decision above records the 2.12.0 pin at adoption. The Rust crate `tauri` is now `=2.12.1` in `apps/desktop/src-tauri/Cargo.toml` (#70, 2026-09-30; `Cargo.lock` has `tauri`, `tauri-runtime`, and `tauri-runtime-wry` at 2.12.1), while `@tauri-apps/api` and `@tauri-apps/cli` stay at exactly 2.12.0. The minor versions still match, as the rule above requires; the patch versions differ by one.
+
 ## Evidence/links
 
 [architecture-options.md](../product/architecture-options.md) workspace layout; [stack-2026-09-26.md](../research/stack-2026-09-26.md) Bun/Tauri version research.

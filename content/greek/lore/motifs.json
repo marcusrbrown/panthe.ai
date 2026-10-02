@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg001.perseus-grc2/"
+    },
+    {
+      "id": "works-and-days",
+      "title": "Works and Days",
+      "author": "Hesiod",
+      "edition": "Greek text, Perseus Digital Library; locators are Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0020.tlg002.perseus-grc2/"
+    },
+    {
+      "id": "iliad",
+      "title": "Iliad",
+      "author": "Homer",
+      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg001.perseus-grc2/"
+    },
+    {
+      "id": "odyssey",
+      "title": "Odyssey",
+      "author": "Homer",
+      "edition": "Greek text, Perseus Digital Library; locators are book and Greek line numbers",
+      "url": "https://scaife.perseus.org/library/urn:cts:greekLit:tlg0012.tlg002.perseus-grc2/"
+    },
+    {
+      "id": "apollodorus",
+      "title": "Library (Bibliotheca)",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Loeb Classical Library, 1921; locators are book.chapter.section"
+    },
+    {
+      "id": "ovid-metamorphoses",
+      "title": "Metamorphoses",
+      "author": "Ovid",
+      "edition": "Latin text; locators are book and line. A Roman retelling of the Augustan age, long after the Greek sources above",
+      "label": "late-roman"
+    }
+  ],
+  "motifs": [
+    {
+      "id": "boon",
+      "name": "A boon for an offering",
+      "summary": "A god who has been honoured with offerings answers a prayer by granting what was asked. Chryses reminds Apollo of the temple he roofed and the offerings he burned, and the god lifts the plague.",
+      "cites": [
+        { "source": "iliad", "locator": "1.37-42" },
+        { "source": "iliad", "locator": "1.451-457" }
+      ],
+      "variants": [
+        {
+          "id": "offering-order",
+          "note": "In Iliad 1 the offerings were made long before the prayer is answered. Works and Days advises making them first so that the god keeps a kindly heart. The game keeps the offering before the boon.",
+          "cites": [
+            { "source": "iliad", "locator": "1.37-42" },
+            { "source": "works-and-days", "locator": "lines 336-341" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "resource-boon",
+          "statement": "A boon is a bounded grant of one resource.",
+          "reason": "The world has no weather, harvest, or plague to lift; a resource is the one blessing it can state and check."
+        }
+      ],
+      "labels": ["game-invention"],
+      "change": {
+        "kind": "resource-grant",
+        "description": "The supplicant receives a bounded amount of one resource when the god's term is kept. Applied by supplication terms.",
+        "tunables": []
+      }
+    },
+    {
+      "id": "compensation",
+      "name": "Compensation for a wrong",
+      "summary": "A wrong is answered with a payment, not only with anger. Agamemnon offers Achilles gifts for the insult, and in the song of Ares and Aphrodite a god stands surety that the wronged husband will be paid.",
+      "cites": [
+        { "source": "iliad", "locator": "9.115-161" },
+        { "source": "odyssey", "locator": "8.344-358" }
+      ],
+      "variants": [
+        {
+          "id": "payment-refused",
+          "note": "In the Iliad the offered compensation is refused and the quarrel goes on. In the Odyssey the surety is accepted and the matter ends. The game lets either happen: a payment is only an ending when it is accepted.",
+          "cites": [
+            { "source": "iliad", "locator": "9.115-161" },
+            { "source": "odyssey", "locator": "8.344-358" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "bounded-transfer",
+          "statement": "Compensation moves one resource from the breacher to the wronged party, never more than the breacher holds.",
+          "reason": "The sources name gifts and fines without amounts; the world needs a checkable, bounded sum."
+        }
+      ],
+      "labels": ["game-invention"],
+      "change": {
+        "kind": "resource-transfer",
+        "description": "A bounded amount of one resource passes from the party who broke a term to the one it wronged. Applied by supplication terms.",
+        "tunables": []
+      }
+    },
+    {
+      "id": "standing-won",
+      "name": "Honour won",
+      "summary": "A god who takes the right side, or serves well, is honoured for it. Styx comes first to Zeus's side in the war with the Titans, and Zeus gives her great honours and makes her the gods' great oath.",
+      "cites": [{ "source": "theogony", "locator": "lines 389-403" }],
+      "variants": [
+        {
+          "id": "who-gives-honour",
+          "note": "In the Theogony Zeus apportions honours among the gods. In the Iliad Achilles treats honour as owed for service, whether or not a god grants it. The game records honour won by deeds at a place and leaves the granting to the world.",
+          "cites": [
+            { "source": "theogony", "locator": "lines 881-885" },
+            { "source": "iliad", "locator": "1.352-356" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "place-standing",
+          "statement": "Standing is held at a place.",
+          "reason": "The sources honour a god by person and cult. The world's contests are for a place's people, so standing is recorded where a performance happened."
+        }
+      ],
+      "labels": ["game-invention"],
+      "change": {
+        "kind": "standing-record",
+        "description": "Records a gain of a god's standing at the place where it performed a term. Recorded only in this milestone; standing as state arrives with contests for favour.",
+        "tunables": ["standingDelta"]
+      }
+    },
+    {
+      "id": "standing-lost",
+      "name": "Honour lost",
+      "summary": "A god who is slighted, or who fails what it owed, loses honour. Achilles says Zeus owes him honour and that Agamemnon has dishonoured him by taking his prize.",
+      "cites": [{ "source": "iliad", "locator": "1.352-356" }],
+      "variants": [
+        {
+          "id": "who-takes-honour",
+          "note": "Achilles blames a mortal king for taking his honour; the Theogony has Zeus apportion honours among the gods. The game has the world record the loss when a term is broken, and no god takes it.",
+          "cites": [
+            { "source": "iliad", "locator": "1.352-356" },
+            { "source": "theogony", "locator": "lines 881-885" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "place-standing",
+          "statement": "Standing is held at a place.",
+          "reason": "The sources honour a god by person and cult. The world's contests are for a place's people, so standing is recorded where a performance was owed."
+        }
+      ],
+      "labels": ["game-invention"],
+      "change": {
+        "kind": "standing-record",
+        "description": "Records a loss of a god's standing at the place where it broke a term. Recorded only in this milestone; standing as state arrives with contests for favour.",
+        "tunables": ["standingDelta"]
+      }
+    },
+    {
+      "id": "transformation-punishment",
+      "name": "Changed in form as punishment",
+      "summary": "A god punishes by changing the offender's shape. Circe turns Odysseus's men into swine, though their minds stay as they were; Athena turns the boastful weaver Arachne into a spider; Poseidon turns a ship to stone.",
+      "cites": [
+        { "source": "odyssey", "locator": "10.233-243" },
+        { "source": "odyssey", "locator": "13.152-164" },
+        { "source": "ovid-metamorphoses", "locator": "6.1-145" }
+      ],
+      "variants": [
+        {
+          "id": "lycaon",
+          "note": "Ovid has Zeus turn the impious Lycaon into a wolf. Apollodorus has Zeus strike Lycaon and his sons with lightning and no change of form. The game keeps the change of form, with the mind kept as in the Odyssey.",
+          "cites": [
+            { "source": "ovid-metamorphoses", "locator": "1.209-243" },
+            { "source": "apollodorus", "locator": "3.8.1" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "capability-mapping",
+          "statement": "A form changes named capabilities, such as losing access to Olympus or gaining a beast's.",
+          "reason": "The sources describe the shape taken, not what the world should let it do. The world only has capabilities, so each form maps to the ones it gains and loses."
+        }
+      ],
+      "labels": ["late-roman", "game-invention"],
+      "change": {
+        "kind": "transformation",
+        "description": "The actor takes a new form and gains and loses named capabilities. Its identity, memories, and relationships stay, and the change records its cause.",
+        "tunables": []
+      }
+    },
+    {
+      "id": "transformation-mercy",
+      "name": "Changed in form as mercy",
+      "summary": "A god changes someone's shape to save them. Daphne, pursued by Apollo, prays to her father the river Peneus and is changed into a laurel, and in one account Zeus turns Callisto into a bear to hide her from Hera.",
+      "cites": [
+        { "source": "ovid-metamorphoses", "locator": "1.452-567" },
+        { "source": "apollodorus", "locator": "3.8.2" }
+      ],
+      "variants": [
+        {
+          "id": "callisto",
+          "note": "Accounts differ on why Callisto becomes a bear and who does it. Apollodorus gives Zeus hiding her from Hera in one account and her punishment for losing her virginity in another. Ovid has Juno change her out of jealousy. Whether one change is mercy or punishment depends on the teller; the game labels the intent on the record.",
+          "cites": [
+            { "source": "apollodorus", "locator": "3.8.2" },
+            { "source": "ovid-metamorphoses", "locator": "2.401-507" }
+          ]
+        }
+      ],
+      "inventions": [
+        {
+          "id": "capability-mapping",
+          "statement": "A form changes named capabilities, such as losing access to Olympus or gaining a beast's.",
+          "reason": "The sources describe the shape taken, not what the world should let it do. The world only has capabilities, so each form maps to the ones it gains and loses."
+        }
+      ],
+      "labels": ["late-roman", "game-invention"],
+      "change": {
+        "kind": "transformation",
+        "description": "The actor takes a new form to escape harm, with the same bounds as a punishing change: capabilities change, identity, memories, and relationships stay, and the cause is recorded.",
+        "tunables": []
+      }
+    },
+    {
+      "id": "oath-penalty",
+      "name": "The Styx oath and its penalty",
+      "summary": "The gods swear their greatest oath by the water of Styx. A god who swears falsely lies breathless for a year, is shut out from nectar and ambrosia, and is then barred for nine years from the gods' councils and feasts.",
+      "cites": [
+        { "source": "theogony", "locator": "lines 775-806" },
+        { "source": "iliad", "locator": "15.36-38" }
+      ],
+      "variants": [],
+      "inventions": [
+        {
+          "id": "bounded-penalty",
+          "statement": "The penalty is a loss of divinity and a period shut out of Olympus.",
+          "reason": "Hesiod's year and nine years of exile need banishment and a council, which the world does not have until M3. Divinity and realm access are capabilities it already has."
+        }
+      ],
+      "labels": ["game-invention"],
+      "change": {
+        "kind": "oath-penalty",
+        "description": "The god who swore a term and then broke it loses some divinity (never more than it holds) and loses the divine capability for a set number of ticks, which closes Olympus to it. An event restores the capability when the period ends.",
+        "tunables": ["oathDivinityLoss", "oathAccessTicks"]
+      }
+    }
+  ],
+  "omitted": [
+    {
+      "id": "curse",
+      "reason": "No bounded change to an existing capability expresses a curse that the oath penalty and transformation do not already express. A curse waits for a world rule it can change, such as the afterlife's (M3)."
+    }
+  ]
+}

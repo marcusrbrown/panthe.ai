@@ -16,6 +16,7 @@
 import type {
   Consequence,
   ContentPack,
+  EndingEventKind,
   EntityId,
   EventEnvelope,
   EventId,
@@ -29,6 +30,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  Transformation,
   UnmetNeedReason,
   WitnessedEventKind,
   WorldEvent,
@@ -89,8 +91,21 @@ export interface ActorState {
   readonly wants?: string;
   /** Worship effects currently in force, each checked against the current tick at read time -- an expired entry is never pruned by a mutation or an event, only ignored by `isFavorActive`. */
   readonly favors?: readonly FavorState[];
-  /** Bumped whenever this actor's location, realm, or inventory changes. */
+  /** What this actor has become, once a transformation changed it. Absent means its own form. Identity, memory, and relationships are never part of it. */
+  readonly form?: string;
+  /** Capabilities a penalty withheld, each with the world tick it returns at and the penalty event that took it. Absent means none. */
+  readonly withheld?: readonly WithheldCapability[];
+  /** Bumped whenever this actor's location, realm, inventory, capabilities, or form changes. */
   readonly revision: number;
+}
+
+/** A capability taken for a period: it returns at `restoreAt`, by an `access-restored` event. */
+export interface WithheldCapability {
+  readonly capability: string;
+  /** The first world tick the capability is back. */
+  readonly restoreAt: number;
+  /** The `motif-applied` event that took it. */
+  readonly eventId: EventId;
 }
 
 export const BUILDING_STATUSES = [
@@ -215,7 +230,11 @@ export type MemoryEntry = {
   readonly subjects: readonly EntityId[];
   readonly consequence?: Consequence;
 } & (
-  | { readonly kind: "witnessed"; readonly eventKind: WitnessedEventKind }
+  | {
+      readonly kind: "witnessed";
+      /** The event seen, or the ending of a thread its owner took part in. */
+      readonly eventKind: WitnessedEventKind | EndingEventKind;
+    }
   | {
       readonly kind: "told";
       readonly teller: EntityId;
@@ -345,6 +364,8 @@ export interface PracticeThread {
   /** The cause events the thread consumed: what the opener knew when it opened. A closed thread keeps them, so a successor can be told apart by a newer cause. */
   readonly causes: readonly EventId[];
   readonly term: PracticeTerm;
+  /** What the one who breaches the term becomes: a transformation the demand carried, applied by the world when it rules a breach. Absent when the demand named none. */
+  readonly stake?: Transformation;
   /** Whose offer `term` is: the other god may answer it. */
   readonly offeredBy: EntityId;
   readonly status: PracticeStatus;

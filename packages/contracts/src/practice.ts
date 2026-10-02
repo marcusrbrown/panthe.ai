@@ -65,6 +65,8 @@ export const PRACTICE_END_REASONS = [
   "budget-exhausted",
   "obligation-deadline",
   "party-died",
+  /** An alliance term needs no performance: the settlement is the seal. */
+  "sealed",
 ] as const;
 export type PracticeEndReason = (typeof PRACTICE_END_REASONS)[number];
 
@@ -76,6 +78,7 @@ export const PRACTICE_TERM_KINDS = [
   "give-resource",
   "bless-mortal",
   "make-offering",
+  "ally",
 ] as const;
 export type PracticeTermKind = (typeof PRACTICE_TERM_KINDS)[number];
 
@@ -120,6 +123,16 @@ export type PracticeTermSpec =
       readonly to: EntityId;
       readonly resource: string;
       readonly amount: number;
+    }
+  /**
+   * `party` and `to` are allies once the settlement is accepted: the term is
+   * sealed by agreement, which is the only way an alliance forms (R19). It binds
+   * the two gods of the thread and no one else.
+   */
+  | {
+      readonly kind: "ally";
+      readonly party: EntityId;
+      readonly to: EntityId;
     };
 
 /** A term as a committed event holds it: the world tick it must be performed by, inclusive. */
@@ -155,6 +168,11 @@ export function parsePracticeTermSpec(
       const place = parseEntityId(value.place, `${path}.place`);
       if (!place.ok) return place;
       return ok({ kind: value.kind, party: party.value, place: place.value });
+    }
+    case "ally": {
+      const to = parseEntityId(value.to, `${path}.to`);
+      if (!to.ok) return to;
+      return ok({ kind: "ally", party: party.value, to: to.value });
     }
     case "give-resource":
     case "make-offering": {
@@ -217,4 +235,87 @@ export function parsePracticeTermOffer(
   );
   if (!deadlineTicks.ok) return deadlineTicks;
   return ok({ ...spec.value, deadlineTicks: deadlineTicks.value });
+}
+
+// --- Motifs: the sourced endings ------------------------------------------------------------------
+
+/**
+ * The motifs an ending can apply, each a sourced Greek story-shape with a
+ * bounded change the world can make (`content/greek/lore/motifs.json` cites
+ * them, and its parser requires every id here to be catalogued). Boon and
+ * compensation are applied by supplication terms; the rest by settlement
+ * endings. A curse is not listed: no bounded change to an existing capability
+ * expresses one that the oath penalty and transformation do not.
+ */
+export const PRACTICE_MOTIFS = [
+  "boon",
+  "compensation",
+  "standing-won",
+  "standing-lost",
+  "transformation-punishment",
+  "transformation-mercy",
+  "oath-penalty",
+] as const;
+export type PracticeMotif = (typeof PRACTICE_MOTIFS)[number];
+
+/** The kind of bounded change each motif applies. One table for the catalogue and the world. */
+export const PRACTICE_MOTIF_CHANGES = {
+  boon: "resource-grant",
+  compensation: "resource-transfer",
+  "standing-won": "standing-record",
+  "standing-lost": "standing-record",
+  "transformation-punishment": "transformation",
+  "transformation-mercy": "transformation",
+  "oath-penalty": "oath-penalty",
+} as const satisfies Record<PracticeMotif, string>;
+export type PracticeMotifChange =
+  (typeof PRACTICE_MOTIF_CHANGES)[PracticeMotif];
+
+/**
+ * A change of form and capabilities: what an actor becomes, the capabilities
+ * it gains, and the ones it loses. Identity, memory, and relationships are not
+ * in it because nothing here touches them (R18).
+ */
+export interface Transformation {
+  readonly form: string;
+  readonly capabilitiesGained: readonly string[];
+  readonly capabilitiesLost: readonly string[];
+}
+
+export function parseTransformation(
+  value: unknown,
+  path: string,
+): ParseResult<Transformation> {
+  if (!isRecord(value)) return fail(path, "expected a transformation object");
+  const form = parseString(value.form, `${path}.form`);
+  if (!form.ok) return form;
+  const gained = parseStringList(
+    value.capabilitiesGained,
+    `${path}.capabilitiesGained`,
+  );
+  if (!gained.ok) return gained;
+  const lost = parseStringList(
+    value.capabilitiesLost,
+    `${path}.capabilitiesLost`,
+  );
+  if (!lost.ok) return lost;
+  return ok({
+    form: form.value,
+    capabilitiesGained: gained.value,
+    capabilitiesLost: lost.value,
+  });
+}
+
+function parseStringList(
+  value: unknown,
+  path: string,
+): ParseResult<readonly string[]> {
+  if (!Array.isArray(value)) return fail(path, "expected an array");
+  const items: string[] = [];
+  for (const [index, item] of value.entries()) {
+    const parsed = parseString(item, `${path}[${index}]`);
+    if (!parsed.ok) return parsed;
+    items.push(parsed.value);
+  }
+  return ok(items);
 }

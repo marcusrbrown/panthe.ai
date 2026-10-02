@@ -315,7 +315,10 @@ const MEMORY_COUNT_KEYS: ReadonlySet<string> = new Set([
   "kindnessAffinity",
   "affinityLimit",
   "grudgeLimit",
+  // Retired: affinity no longer makes an alliance, so this changes nothing. Kept so a stored world's rules and an older pack still parse.
   "allianceAffinity",
+  "refusalAffinity",
+  "salience_practice-ended",
   "salience_told",
   "salience_sign",
   "salience_noticed",
@@ -398,6 +401,9 @@ export const PRACTICE_BALANCE_KEYS = [
   "counterBudget",
   "minTermTicks",
   "maxTermTicks",
+  "oathDivinityLoss",
+  "oathAccessTicks",
+  "standingDelta",
 ] as const;
 
 /**

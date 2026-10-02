@@ -17,8 +17,10 @@
 // Deadlines are world ticks, judged identically in live play and catch-up.
 
 import type {
+  AccessRestoredEvent,
   EntityId,
   EventId,
+  MotifAppliedEvent,
   PracticeEndedEvent,
   PracticeEndReason,
   PracticeMovedEvent,
@@ -32,11 +34,13 @@ import type {
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
-import { getResourceAmount } from "./economy";
+import { debitActorInventory, getResourceAmount } from "./economy";
 import { routeLength } from "./geography";
 import { getMemories } from "./memory";
 import { inAnswerWindow, petitionBalanceOf } from "./petitions";
 import {
+  type ActorState,
+  DIVINE_CAPABILITY,
   getActor,
   getLocation,
   isThreadOpen,
@@ -56,6 +60,12 @@ export const DEFAULT_PRACTICE_BALANCE: Readonly<Record<string, number>> = {
   minTermTicks: 25,
   /** Most ticks a term may allow. */
   maxTermTicks: 500,
+  /** Divinity a sworn breach costs. Hesiod's penalty is a year without nectar and ambrosia, so it is a loss of the god's own substance; bounded by what the god holds. */
+  oathDivinityLoss: 3,
+  /** Ticks a sworn breacher is shut out of Olympus: four decisions at the slowest god pace measured. Banishment is M3 (M08). */
+  oathAccessTicks: 100,
+  /** What a recorded gain or loss of standing at a place weighs. Standing itself is a later unit's state. */
+  standingDelta: 1,
 };
 
 /** A practice tunable from `rules`, or its default. */
@@ -83,6 +93,7 @@ export function applyPracticeOpened(
     causes: event.causes,
     term: event.term,
     offeredBy: event.entityId,
+    ...(event.stake === undefined ? {} : { stake: event.stake }),
     status: "open",
     openedTick: event.tick,
     openedSequence: event.sequence,
@@ -165,6 +176,103 @@ export function applyPracticeEnded(
   });
 }
 
+/**
+ * A motif's change, applied. An oath penalty takes divinity (never more than
+ * the god holds) and withholds a capability until its period ends; a
+ * transformation changes form and capabilities and nothing else, so identity,
+ * memory, and relationships stay with the actor. Both bump the actor's
+ * revision, so a proposal it made before the change goes stale. A standing
+ * record changes no state: standing itself is a later unit's.
+ */
+export function applyMotifApplied(
+  state: WorldState,
+  event: MotifAppliedEvent,
+): WorldState {
+  const actor = getActor(state, event.entityId);
+  if (actor === undefined) return state;
+  switch (event.effect) {
+    case "oath-penalty": {
+      const paid = debitActorInventory(
+        state,
+        event.entityId,
+        DIVINE_CAPACITY_RESOURCE,
+        Math.min(
+          event.divinityLost,
+          getResourceAmount(actor.inventory, DIVINE_CAPACITY_RESOURCE),
+        ),
+      );
+      const paidActor = getActor(paid, event.entityId) as typeof actor;
+      const withheld = [
+        ...(paidActor.withheld ?? []).filter(
+          (held) => held.capability !== event.capability,
+        ),
+        {
+          capability: event.capability,
+          restoreAt: event.accessRestoredAt,
+          eventId: event.id,
+        },
+      ];
+      return withActorState(paid, {
+        ...paidActor,
+        capabilities: paidActor.capabilities.filter(
+          (capability) => capability !== event.capability,
+        ),
+        withheld,
+        revision: paidActor.revision + 1,
+      });
+    }
+    case "transformation": {
+      const kept = actor.capabilities.filter(
+        (capability) => !event.capabilitiesLost.includes(capability),
+      );
+      return withActorState(state, {
+        ...actor,
+        form: event.form,
+        capabilities: [
+          ...kept,
+          ...event.capabilitiesGained.filter(
+            (capability) => !kept.includes(capability),
+          ),
+        ],
+        revision: actor.revision + 1,
+      });
+    }
+    case "standing":
+      return state;
+  }
+}
+
+/** A withheld capability comes back: the penalty's period is over. */
+export function applyAccessRestored(
+  state: WorldState,
+  event: AccessRestoredEvent,
+): WorldState {
+  const actor = getActor(state, event.entityId);
+  if (actor === undefined) return state;
+  const { withheld = [], ...rest } = actor;
+  const remaining = withheld.filter(
+    (held) =>
+      !(
+        held.capability === event.capability &&
+        held.eventId === event.motifEventId
+      ),
+  );
+  return withActorState(state, {
+    ...rest,
+    capabilities: actor.capabilities.includes(event.capability)
+      ? actor.capabilities
+      : [...actor.capabilities, event.capability],
+    ...(remaining.length === 0 ? {} : { withheld: remaining }),
+    revision: actor.revision + 1,
+  });
+}
+
+function withActorState(state: WorldState, actor: ActorState): WorldState {
+  const actors = new Map(state.actors);
+  actors.set(actor.id, actor);
+  return { ...state, actors };
+}
+
 // --- Terms: what can be offered ---------------------------------------------------------------
 
 /** What stands in the way of a term, in the rejection vocabulary the validator uses. */
@@ -206,6 +314,7 @@ function ticksNeeded(
     case "be-at":
       return hopsToPlace(term.place);
     case "stay-away":
+    case "ally":
       return 0;
     case "give-resource": {
       const length = hops(term.to);
@@ -270,6 +379,15 @@ export function termObstacle(
         "insufficient-resources",
         `${term.party} cannot have ${term.amount} ${term.resource} by the deadline`,
       );
+    }
+  }
+  if (term.kind === "ally") {
+    const to = getActor(state, term.to);
+    if (!to?.alive) {
+      return obstacle("dead-actor", `${term.to} is not a living actor`);
+    }
+    if (!party.isDeity || !to.isDeity) {
+      return obstacle("unauthorized-claim", "only gods ally");
     }
   }
   if (term.kind === "make-offering") {
@@ -421,7 +539,7 @@ function bindsOutsiders(
 ): boolean {
   return (
     !participants.includes(term.party) ||
-    (term.kind === "give-resource" &&
+    ((term.kind === "give-resource" || term.kind === "ally") &&
       (!participants.includes(term.to) || term.to === term.party))
   );
 }
@@ -557,6 +675,12 @@ function answer(
         ],
       };
     case "accept": {
+      if (proposal.swear === true && proposal.actor !== thread.term.party) {
+        return deny(
+          "unauthorized-claim",
+          "only the god who must perform the term may swear it",
+        );
+      }
       const stopped = termObstacle(
         state,
         thread.term,
@@ -682,6 +806,9 @@ function observe(
     case "be-at":
       // Judged from where the party stands once the tick's events are in.
       return undefined;
+    case "ally":
+      // Sealed by agreement, ruled below.
+      return undefined;
   }
 }
 
@@ -735,6 +862,13 @@ export function judgePractices(
       if (seen !== undefined) rule(thread, seen.outcome, seen.reason, event.id);
     }
     running = apply(running, event);
+  }
+  // An alliance is sealed by agreement: accepted, it needs no performance, if both gods live.
+  for (const thread of accepted.filter(unfinished)) {
+    const { term } = thread;
+    if (term.kind === "ally" && !isDead(term.party) && !isDead(term.to)) {
+      rule(thread, "fulfilled", "sealed");
+    }
   }
   // Being at a place is read from where the party stands now.
   for (const thread of accepted.filter(unfinished)) {
@@ -821,4 +955,117 @@ export function judgePractices(
     };
     return [draft];
   });
+}
+
+// --- Consequences ----------------------------------------------------------------------------
+
+/**
+ * What the world does to the gods because threads ended, as primary events
+ * citing the ending that called for each (`endings`, already committed and
+ * applied in `after`). A breach costs the one who breached: the bounded oath
+ * penalty when it swore, the transformation the demand staked, and standing at
+ * the term's place; a performance at a place earns standing there. Only an
+ * accepted thread has a breacher or a performer, so a refusal, a lapse, and a
+ * death change no one but through the feelings the memories of them give.
+ */
+export function planConsequences(
+  after: WorldState,
+  endings: readonly PracticeEndedEvent[],
+): readonly WorldEventDraft[] {
+  const drafts: WorldEventDraft[] = [];
+  const standing = practiceBalanceOf(after.rules, "standingDelta");
+  for (const ending of endings) {
+    const thread = after.threads.get(ending.threadId);
+    if (thread?.acceptance === undefined) continue;
+    const { term } = thread;
+    const party = after.actors.get(term.party);
+    const about = {
+      threadId: thread.id,
+      cause: ending.id,
+      entityId: term.party,
+    };
+    const place =
+      term.kind === "tell-legend" ||
+      term.kind === "be-at" ||
+      term.kind === "stay-away"
+        ? term.place
+        : undefined;
+    if (ending.outcome === "breached") {
+      if (party?.alive) {
+        if (thread.acceptance.sworn && party.isDeity) {
+          drafts.push({
+            kind: "motif-applied",
+            ...about,
+            motif: "oath-penalty",
+            effect: "oath-penalty",
+            divinityLost: Math.min(
+              practiceBalanceOf(after.rules, "oathDivinityLoss"),
+              getResourceAmount(party.inventory, DIVINE_CAPACITY_RESOURCE),
+            ),
+            capability: DIVINE_CAPABILITY,
+            accessRestoredAt:
+              after.tick + practiceBalanceOf(after.rules, "oathAccessTicks"),
+          });
+        }
+        if (thread.stake !== undefined) {
+          drafts.push({
+            kind: "motif-applied",
+            ...about,
+            motif: "transformation-punishment",
+            effect: "transformation",
+            intent: "punishment",
+            ...thread.stake,
+          });
+        }
+      }
+      if (place !== undefined && standing > 0) {
+        drafts.push({
+          kind: "motif-applied",
+          ...about,
+          motif: "standing-lost",
+          effect: "standing",
+          place,
+          delta: -standing,
+        });
+      }
+    } else if (
+      ending.outcome === "fulfilled" &&
+      place !== undefined &&
+      term.kind !== "stay-away" &&
+      standing > 0
+    ) {
+      drafts.push({
+        kind: "motif-applied",
+        ...about,
+        motif: "standing-won",
+        effect: "standing",
+        place,
+        delta: standing,
+      });
+    }
+  }
+  return drafts;
+}
+
+/** The capabilities whose withheld period is over at `state.tick`, each returning by an event the world records. */
+export function planAccessRestorations(
+  state: WorldState,
+): readonly WorldEventDraft[] {
+  const drafts: WorldEventDraft[] = [];
+  const actors = [...state.actors.values()].sort((a, b) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  );
+  for (const actor of actors) {
+    for (const held of actor.withheld ?? []) {
+      if (state.tick >= held.restoreAt) {
+        drafts.push({
+          kind: "access-restored",
+          entityId: actor.id,
+          capability: held.capability,
+          motifEventId: held.eventId,
+        });
+      }
+    }
+  }
+  return drafts;
 }

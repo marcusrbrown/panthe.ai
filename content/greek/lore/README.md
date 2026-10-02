@@ -15,3 +15,12 @@ The loader rejects a profile that breaks these rules.
 - **Attribution.** Profiles paraphrase. They reproduce no translation text. Cite the translation used when a translator is named.
 
 Requirements: W01 (sourced profiles and variant notes). The lore-sources decision is in [open-decisions.md](../../../docs/product/open-decisions.md).
+
+## Motif catalogue
+
+[`motifs.json`](motifs.json) sources the endings a practice thread can draw on (R17): boon, compensation, standing won and lost, transformation as punishment or mercy, and the Styx oath penalty. It follows the same rules as a profile, with two additions.
+
+- **Late Roman accounts are labeled.** A source marked `late-roman` (Ovid) puts that label on every motif that cites it. A motif with a game invention carries `game-invention`. The parser checks both labels against what the motif cites and lists.
+- **The world and the catalogue agree.** Every motif the world can apply must be catalogued with the change the world makes, and a motif with no source fails to parse. A motif left out on purpose (the curse) is listed in `omitted` with its reason.
+
+The catalogue records no `accessed` date: its locators have not yet been checked against the cited editions. A reviewer who checks them adds the date.

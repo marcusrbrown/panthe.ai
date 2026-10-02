@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(33);
+  expect(WORLD_EVENT_KINDS).toHaveLength(35);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -987,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 14);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 16);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -1808,4 +1808,239 @@ test("practice events are private (unplaced, never witnessed), list their partie
   expect(String(eventCause(moved))).toBe("evt-9");
   expect(String(eventCause(fulfilled))).toBe("evt-12");
   expect(String(eventCause(expired))).toBe("evt-9");
+});
+
+// --- Motifs, restored access, and memories of endings ---------------------------------------
+
+const MOTIF_BASE = {
+  kind: "motif-applied",
+  entityId: "zeus",
+  threadId: "evt-9",
+  cause: "evt-12",
+};
+const OATH = {
+  ...MOTIF_BASE,
+  motif: "oath-penalty",
+  effect: "oath-penalty",
+  divinityLost: 3,
+  capability: "divine",
+  accessRestoredAt: 250,
+};
+const TRANSFORMATION = {
+  ...MOTIF_BASE,
+  motif: "transformation-punishment",
+  effect: "transformation",
+  intent: "punishment",
+  form: "stag",
+  capabilitiesGained: ["beast"],
+  capabilitiesLost: ["divine"],
+};
+const STANDING = {
+  ...MOTIF_BASE,
+  motif: "standing-lost",
+  effect: "standing",
+  place: "altar",
+  delta: -1,
+};
+
+test("a motif-applied event records the motif and what it changed, by effect: an oath penalty, a transformation, or a standing record", () => {
+  const oath = parseEvent(envelope(OATH));
+  expect(oath.ok).toBe(true);
+  if (oath.ok && oath.value.kind === "motif-applied") {
+    expect(oath.value).toMatchObject({
+      motif: "oath-penalty",
+      effect: "oath-penalty",
+      divinityLost: 3,
+      capability: "divine",
+      accessRestoredAt: 250,
+    });
+    expect(String(oath.value.cause)).toBe("evt-12");
+  }
+  const form = parseEvent(envelope(TRANSFORMATION));
+  expect(form.ok).toBe(true);
+  if (form.ok && form.value.kind === "motif-applied") {
+    expect(form.value).toMatchObject({
+      effect: "transformation",
+      intent: "punishment",
+      form: "stag",
+      capabilitiesGained: ["beast"],
+      capabilitiesLost: ["divine"],
+    });
+  }
+  expect(parseEvent(envelope(STANDING)).ok).toBe(true);
+  expect(
+    parseEvent(
+      envelope({
+        ...TRANSFORMATION,
+        motif: "transformation-mercy",
+        intent: "mercy",
+      }),
+    ).ok,
+  ).toBe(true);
+  expect(
+    parseEvent(
+      envelope({
+        ...STANDING,
+        motif: "standing-won",
+        delta: 1,
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a motif-applied event cannot say a motif did something other than its catalogued change, or move standing the wrong way", () => {
+  for (const bad of [
+    { ...OATH, motif: "boon" },
+    { ...OATH, motif: "standing-lost" },
+    { ...OATH, motif: "curse" },
+    { ...OATH, divinityLost: -1 },
+    { ...OATH, capability: undefined },
+    { ...OATH, accessRestoredAt: 1.5 },
+    { ...TRANSFORMATION, motif: "oath-penalty" },
+    { ...TRANSFORMATION, intent: "mercy" },
+    { ...TRANSFORMATION, intent: "curse" },
+    { ...TRANSFORMATION, form: undefined },
+    { ...TRANSFORMATION, capabilitiesGained: undefined },
+    { ...TRANSFORMATION, capabilitiesLost: [7] },
+    { ...STANDING, motif: "standing-won" },
+    { ...STANDING, delta: 0 },
+    { ...STANDING, delta: 1 },
+    { ...STANDING, place: undefined },
+    { ...STANDING, motif: "transformation-mercy" },
+    { ...OATH, effect: "banishment" },
+    { ...OATH, effect: undefined },
+    { ...OATH, threadId: undefined },
+    { ...OATH, cause: undefined },
+    { ...OATH, entityId: undefined },
+  ]) {
+    expect(parseEvent(envelope(bad)).ok).toBe(false);
+  }
+});
+
+test("an access-restored event names the actor, the capability, and the penalty it ends", () => {
+  const restored = {
+    kind: "access-restored",
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: "evt-13",
+  };
+  expect(parseEvent(envelope(restored)).ok).toBe(true);
+  for (const bad of [
+    { capability: undefined },
+    { motifEventId: undefined },
+    { entityId: undefined },
+    { capability: 7 },
+  ]) {
+    expect(parseEvent(envelope({ ...restored, ...bad })).ok).toBe(false);
+  }
+});
+
+test("motifs and restored access are private events with traceable causes: a motif follows the ending that called for it, a restoration the penalty it ends", () => {
+  const oath = parsedEvent(OATH);
+  const restored = parsedEvent({
+    kind: "access-restored",
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: "evt-13",
+  });
+  for (const kind of ["motif-applied", "access-restored"]) {
+    expect(WORLD_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+  }
+  expect(subjectsOf(oath)).toEqual(["zeus"]);
+  expect(subjectsOf(restored)).toEqual(["zeus"]);
+  expect(String(eventCause(oath))).toBe("evt-12");
+  expect(String(eventCause(restored))).toBe("evt-13");
+});
+
+test("a practice-opened event may carry the transformation its breacher faces, and a malformed stake is refused", () => {
+  const stake = {
+    form: "stag",
+    capabilitiesGained: ["beast"],
+    capabilitiesLost: [],
+  };
+  const result = parseEvent(envelope({ ...PRACTICE_OPENED, stake }));
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "practice-opened") {
+    expect(result.value.stake).toEqual(stake);
+  }
+  const plain = parseEvent(envelope(PRACTICE_OPENED));
+  if (plain.ok && plain.value.kind === "practice-opened") {
+    expect(plain.value.stake).toBeUndefined();
+  }
+  for (const bad of [
+    { stake: "stag" },
+    { stake: { ...stake, form: "" } },
+    { stake: { ...stake, capabilitiesGained: "beast" } },
+    { stake: { form: "stag" } },
+  ]) {
+    expect(parseEvent(envelope({ ...PRACTICE_OPENED, ...bad })).ok).toBe(false);
+  }
+});
+
+test("an ally term parses with its other god, and a sealed ending is a reason the world may give", () => {
+  const ally = { kind: "ally", party: "zeus", to: "hera", deadline: 150 };
+  const opened = parseEvent(envelope({ ...PRACTICE_OPENED, term: ally }));
+  expect(opened.ok).toBe(true);
+  if (opened.ok && opened.value.kind === "practice-opened") {
+    expect(opened.value.term).toEqual(ally as never);
+  }
+  expect(
+    parseEvent(
+      envelope({ ...PRACTICE_OPENED, term: { ...ally, to: undefined } }),
+    ).ok,
+  ).toBe(false);
+  expect(
+    parseEvent(
+      envelope({
+        kind: "practice-ended",
+        entityId: "hera",
+        counterparty: "zeus",
+        threadId: "evt-9",
+        outcome: "fulfilled",
+        reason: "sealed",
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a witnessed memory of a thread ending says how it ended, and no other witnessed memory does", () => {
+  const ending = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        ...WITNESSED,
+        eventKind: "practice-ended",
+        ending: { outcome: "breached", agent: "zeus" },
+        ...overrides,
+      }),
+    );
+  const breached = ending({});
+  expect(breached.ok).toBe(true);
+  if (
+    breached.ok &&
+    breached.value.kind === "memory-recorded" &&
+    breached.value.memoryKind === "witnessed"
+  ) {
+    expect(breached.value.ending).toMatchObject({
+      outcome: "breached",
+      agent: "zeus",
+    });
+  }
+  expect(ending({ eventKind: "practice-moved" }).ok).toBe(true);
+  expect(ending({ ending: { outcome: "fulfilled", sealed: true } }).ok).toBe(
+    true,
+  );
+  expect(ending({ ending: { outcome: "expired" } }).ok).toBe(true);
+  for (const bad of [
+    { ending: undefined },
+    { ending: { outcome: "accepted" } },
+    { ending: { outcome: "breached", agent: 7 } },
+    { ending: { outcome: "breached", sealed: false } },
+    { ending: "breached" },
+    { eventKind: "entity-moved" },
+    { eventKind: "practice-opened" },
+  ]) {
+    expect(ending(bad).ok).toBe(false);
+  }
 });

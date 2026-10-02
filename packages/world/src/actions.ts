@@ -23,6 +23,7 @@ import {
   type EntityId,
   type EventId,
   LATEST_EVENT_SCHEMA_VERSION,
+  type PracticeEndedEvent,
   type Proposal,
   parseProposal,
   type RejectionReasonCode,
@@ -47,6 +48,7 @@ import {
   applyMemoryRecorded,
   applyRelationshipChanged,
   type DerivedDraft,
+  endingMemories,
   legendTellings,
   noticedMemory,
   planRelationships,
@@ -74,10 +76,14 @@ import {
   recordCauses,
 } from "./petitions";
 import {
+  applyAccessRestored,
+  applyMotifApplied,
   applyPracticeEnded,
   applyPracticeMoved,
   applyPracticeOpened,
   judgePractices,
+  planAccessRestorations,
+  planConsequences,
 } from "./practices";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
@@ -288,6 +294,12 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "practice-ended":
       next = applyPracticeEnded(state, event);
       break;
+    case "motif-applied":
+      next = applyMotifApplied(state, event);
+      break;
+    case "access-restored":
+      next = applyAccessRestored(state, event);
+      break;
     case "goal-change-refused":
       // Their world state arrives with the units that produce them.
       next = state;
@@ -449,6 +461,8 @@ function planMemories(
   let running = before;
   for (const event of primary) {
     drafts.push(...witnessMemories(running, event));
+    // The parties to a thread remember how it ended, though no one stood at it.
+    drafts.push(...endingMemories(running, event));
     // A report gives its listener a belief; a legend gives each hearer one.
     const tellings =
       event.kind === "report-told"
@@ -668,6 +682,20 @@ export function runTick(
   ).map((draft) => completePrimary(draft, environmentCause));
   working = applyEvents(working, practiceEvents);
 
+  // What the rulings do to the gods: penalties, forms, and standing from the
+  // endings just recorded, and the access an earlier penalty withheld coming
+  // back. Primary events too, so the same tick's memories see them.
+  const consequenceEvents = [
+    ...planAccessRestorations(working),
+    ...planConsequences(
+      working,
+      practiceEvents.filter(
+        (event): event is PracticeEndedEvent => event.kind === "practice-ended",
+      ),
+    ),
+  ].map((draft) => completePrimary(draft, environmentCause));
+  working = applyEvents(working, consequenceEvents);
+
   const environmentEvents = [
     ...incomeEvents,
     ...fireEvents,
@@ -675,6 +703,7 @@ export function runTick(
     ...directorEvents,
     ...noticeEvents,
     ...practiceEvents,
+    ...consequenceEvents,
   ];
 
   // Derivation phase: with the primary events numbered and applied, memories

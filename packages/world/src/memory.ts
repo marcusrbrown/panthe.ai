@@ -25,11 +25,14 @@
 
 import type {
   Consequence,
+  EndingEventKind,
   EntityId,
   EventId,
   LegendRecordedEvent,
   LossNoticedEvent,
+  MemoryEnding,
   MemoryRecordedEvent,
+  PracticeOutcome,
   ReportToldEvent,
   WitnessedEventKind,
   WorldEvent,
@@ -60,20 +63,22 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   salience_theft: 6,
   /** A mortal's memory of a god's answer or silence. */
   salience_sign: 6,
+  /** A party's memory of how a thread ended: a bargain kept, refused, or broken is not forgotten with idle talk. */
+  "salience_practice-ended": 7,
   /** A loss the mortal noticed. */
   salience_noticed: 5,
   /** Affinity lost toward whoever did harm one witnessed. */
   harmAffinity: 2,
   /** Affinity gained toward whoever did one a kindness. */
   kindnessAffinity: 1,
+  /** Affinity lost toward whoever refused one's demand: a refusal is a cooling, not a wrong, so it leaves no grudge. */
+  refusalAffinity: 1,
   /** What a belief moves affinity by, as a share of what witnessing it would. */
   toldShare: 0.5,
   /** Affinity never goes beyond plus or minus this. */
   affinityLimit: 10,
   /** A grudge never goes beyond this. */
   grudgeLimit: 10,
-  /** Affinity at which two actors count as allied. */
-  allianceAffinity: 5,
 };
 
 /** A memory tunable from `rules`, or its default. */
@@ -303,6 +308,82 @@ function consequenceOf(
 }
 
 /**
+ * The memories a thread's ending gives its parties: each living party
+ * remembers how it ended. The ending events are private (unplaced), so no one
+ * stands at them; the parties are participants, and they alone remember. A
+ * performance or a breach is a kindness or a harm by the one who was to
+ * perform, to the other; a refusal or a withdrawal names who refused. `before`
+ * is the world just before the event, with the thread still open.
+ */
+export function endingMemories(
+  before: WorldState,
+  event: WorldEvent,
+): readonly DerivedDraft[] {
+  let kind: EndingEventKind;
+  let outcome: PracticeOutcome;
+  let agent: EntityId | undefined;
+  let sealed = false;
+  if (event.kind === "practice-ended") {
+    kind = "practice-ended";
+    outcome = event.outcome;
+    sealed = event.reason === "sealed";
+  } else if (
+    event.kind === "practice-moved" &&
+    (event.move === "refuse" || event.move === "withdraw")
+  ) {
+    kind = "practice-moved";
+    outcome = event.move === "refuse" ? "refused" : "withdrawn";
+    agent = event.entityId;
+  } else {
+    return [];
+  }
+  const thread = before.threads.get(event.threadId);
+  if (thread === undefined) return [];
+  const performer = thread.term.party;
+  const other =
+    performer === thread.demander ? thread.obligated : thread.demander;
+  if (
+    kind === "practice-ended" &&
+    thread.acceptance !== undefined &&
+    (outcome === "fulfilled" || outcome === "breached")
+  ) {
+    agent = performer;
+  }
+  const consequence: Consequence | undefined =
+    agent === undefined
+      ? undefined
+      : outcome === "fulfilled"
+        ? { effect: "kindness", agent, target: other }
+        : outcome === "breached"
+          ? { effect: "harm", agent, target: other }
+          : undefined;
+  const salience = balanceOf(before, "salience_practice-ended");
+  if (salience < 1) return [];
+  const ending: MemoryEnding = {
+    outcome,
+    ...(agent === undefined ? {} : { agent }),
+    ...(sealed ? { sealed: true as const } : {}),
+  };
+  return [thread.demander, thread.obligated]
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+    .filter((party) => before.actors.get(party)?.alive === true)
+    .map((party) => ({
+      cause: event,
+      draft: {
+        kind: "memory-recorded" as const,
+        memoryKind: "witnessed" as const,
+        entityId: party,
+        sourceEventId: event.id,
+        eventKind: kind,
+        subjects: [thread.demander, thread.obligated],
+        salience,
+        ...(consequence === undefined ? {} : { consequence }),
+        ending,
+      },
+    }));
+}
+
+/**
  * The memories one primary event gives. `before` is the world just before the
  * event, so who was there is exact even when actors move within the tick, and
  * presence is judged by the same rule perception uses (`perceivesEvent`), not
@@ -525,35 +606,57 @@ export function planRelationships(
 ): readonly DerivedDraft[] {
   const harm = balanceOf(state, "harmAffinity");
   const kindness = balanceOf(state, "kindnessAffinity");
+  const refusal = balanceOf(state, "refusalAffinity");
   const toldShare = balanceOf(state, "toldShare");
-  const allianceAffinity = balanceOf(state, "allianceAffinity");
 
   const running = new Map<string, RelationshipState>();
   const drafts: DerivedDraft[] = [];
   for (const memory of memories) {
     const c = memory.consequence;
     const owner = memory.entityId;
-    if (c === undefined || c.agent === owner) continue;
-    if (c.effect === "kindness" && c.target !== owner) continue;
+    const ending =
+      memory.memoryKind === "witnessed" ? memory.ending : undefined;
+    let toward: EntityId | undefined;
+    let affinityDelta = 0;
+    let grudgeDelta = 0;
+    if (ending?.outcome === "refused") {
+      // A refusal cools the one refused toward the refuser; it wrongs no one.
+      if (ending.agent !== undefined && ending.agent !== owner) {
+        toward = ending.agent;
+        affinityDelta = -refusal;
+      }
+    } else if (
+      c !== undefined &&
+      c.agent !== owner &&
+      !(c.effect === "kindness" && c.target !== owner)
+    ) {
+      const strength = c.effect === "harm" ? harm : kindness;
+      const scaled =
+        memory.memoryKind === "told"
+          ? Math.max(1, Math.round(strength * toldShare))
+          : strength;
+      toward = c.agent;
+      affinityDelta = c.effect === "harm" ? -scaled : scaled;
+      grudgeDelta = c.effect === "harm" && c.target === owner ? 1 : 0;
+    }
+    // A sealed settlement is the only thing that makes an alliance (R19): each
+    // party allies with the other.
+    const sealed = ending?.sealed === true;
+    if (sealed) toward ??= memory.subjects.find((subject) => subject !== owner);
+    if (toward === undefined) continue;
 
-    const strength = c.effect === "harm" ? harm : kindness;
-    const scaled =
-      memory.memoryKind === "told"
-        ? Math.max(1, Math.round(strength * toldShare))
-        : strength;
-    const affinityDelta = c.effect === "harm" ? -scaled : scaled;
-    const grudgeDelta = c.effect === "harm" && c.target === owner ? 1 : 0;
-
-    const key = relationshipKey(owner, c.agent);
+    const key = relationshipKey(owner, toward);
     const held =
       running.get(key) ??
-      getRelationship(state, owner, c.agent) ??
-      freshRelationship(owner, c.agent);
-    const affinity = clampAffinity(state, held.affinity + affinityDelta);
-    const allied = affinity >= allianceAffinity;
+      getRelationship(state, owner, toward) ??
+      freshRelationship(owner, toward);
+    const allied = sealed ? true : held.allied;
+    if (affinityDelta === 0 && grudgeDelta === 0 && allied === held.allied) {
+      continue;
+    }
     running.set(key, {
       ...held,
-      affinity,
+      affinity: clampAffinity(state, held.affinity + affinityDelta),
       grudge: clampGrudge(state, held.grudge + grudgeDelta),
       allied,
     });
@@ -562,7 +665,7 @@ export function planRelationships(
       draft: {
         kind: "relationship-changed",
         entityId: owner,
-        toward: c.agent,
+        toward,
         affinityDelta,
         grudgeDelta,
         ...(allied === held.allied ? {} : { allied }),

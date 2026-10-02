@@ -213,6 +213,8 @@ function eventLocation(
     case "practice-opened":
     case "practice-moved":
     case "practice-ended":
+    case "motif-applied":
+    case "access-restored":
       return undefined;
   }
 }

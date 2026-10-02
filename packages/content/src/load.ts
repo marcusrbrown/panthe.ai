@@ -23,6 +23,7 @@ import {
   type LabeledProfileInput,
   parseGodProfiles,
 } from "./god-profile";
+import { type MotifCatalogue, parseMotifCatalogue } from "./motifs";
 
 function readJsonFile(path: string, label: string): ParseResult<unknown> {
   if (!existsSync(path)) {
@@ -130,4 +131,11 @@ export function loadGodProfiles(
     inputs.push({ label: file, value: raw.value });
   }
   return parseGodProfiles(inputs, pack.inhabitants);
+}
+
+/** Loads and parses the motif catalogue at `file` (e.g. `content/greek/lore/motifs.json`). */
+export function loadMotifCatalogue(file: string): ParseResult<MotifCatalogue> {
+  const raw = readJsonFile(file, "motifs.json");
+  if (!raw.ok) return raw;
+  return parseMotifCatalogue(raw.value, "motifs.json");
 }

@@ -9,6 +9,7 @@ import {
   type TickResult,
 } from "./actions";
 import { decode, encode } from "./codec";
+import { getMemories, getRelationship } from "./memory";
 import {
   createInitialWorldState,
   createPrng,
@@ -56,7 +57,16 @@ function pack(
           { to: "altar", transport: "path", bidirectional: true },
           { to: "tavern", transport: "path", bidirectional: true },
           { to: "hall", transport: "path", bidirectional: true },
+          { to: "gate", transport: "path", bidirectional: true },
         ],
+      },
+      // Stands in for Olympus: only the divine pass.
+      {
+        id: "gate",
+        realm: "mortal",
+        name: "Gate",
+        edges: [],
+        requiredCapability: "divine",
       },
       { id: "altar", realm: "mortal", name: "Altar", edges: [] },
       { id: "tavern", realm: "mortal", name: "Tavern", edges: [] },
@@ -1240,4 +1250,475 @@ test("a ruling joins its tick's events without a gap in the sequence, caused by 
     expect(String(event.causationId)).toBe(`tick-${event.tick}`);
     expect(String(event.correlationId)).toBe(`tick-${event.tick}`);
   }
+});
+
+// --- Endings change the gods ------------------------------------------------------------------
+//
+// Every ending leaves something behind that outlasts the thread: a feeling, a
+// penalty, a form, a record of standing, an alliance. They are primary events
+// of the tick that ended the thread, so the gods remember them that same tick.
+
+type MotifApplied = Extract<WorldEvent, { kind: "motif-applied" }>;
+
+const motifs = (world: World): MotifApplied[] =>
+  world.log.filter((e): e is MotifApplied => e.kind === "motif-applied");
+
+/** What `who` remembers of threads ending: a witnessed memory of a ruling or of a refusal or withdrawal. */
+const endingMemories = (world: World, who: string) =>
+  getMemories(world.state, id(who)).filter(
+    (m) =>
+      m.kind === "witnessed" &&
+      (m.eventKind === "practice-ended" || m.eventKind === "practice-moved"),
+  );
+
+const breached = (world: World) => world.thread().status === "breached";
+
+test("a sworn breach applies the bounded oath penalty to the one who swore, and records the motif, the breach, and the cause; the period without Olympus ends (AE2, R15)", () => {
+  const world = new World({ oathDivinityLoss: 3, oathAccessTicks: 50 });
+  const { thread } = opened(tell("zeus", "altar", 20), world);
+  world.tick(move(world, "zeus", "accept", { swear: true }));
+  world.until(() => breached(world));
+
+  const [ended] = world.ended();
+  expect(ended).toMatchObject({
+    outcome: "breached",
+    reason: "obligation-deadline",
+    threadId: thread.id,
+  });
+  const penalty = motifs(world).find((m) => m.effect === "oath-penalty");
+  expect(penalty).toMatchObject({
+    entityId: "zeus",
+    motif: "oath-penalty",
+    threadId: thread.id,
+    cause: ended?.id,
+    divinityLost: 3,
+    capability: "divine",
+    accessRestoredAt: (ended?.tick ?? 0) + 50,
+    tick: ended?.tick,
+  });
+  // A primary event of the breach's own tick, caused by the tick and not by a proposal.
+  expect(world.last?.environmentEvents.map((e) => e.id)).toContain(penalty?.id);
+  expect(String(penalty?.causationId)).toBe(`tick-${ended?.tick}`);
+
+  const zeus = getActor(world.state, id("zeus"));
+  expect(zeus?.inventory.get("divinity")).toBe(7);
+  expect(zeus?.capabilities).not.toContain("divine");
+  expect(zeus?.withheld).toMatchObject([
+    {
+      capability: "divine",
+      restoreAt: (ended?.tick ?? 0) + 50,
+      eventId: penalty?.id,
+    },
+  ]);
+  // Hera swore nothing and keeps hers.
+  expect(getActor(world.state, id("hera"))?.capabilities).toContain("divine");
+
+  // The period without Olympus: the gate is shut to him.
+  world.place("zeus", "square");
+  world.tick({ actor: "zeus", kind: "move", to: "gate" });
+  expect(world.rejected()).toEqual(["restricted-realm"]);
+  expect(getActor(world.state, id("zeus"))?.locationId).toBe(id("square"));
+
+  // And it ends, by an event the world records.
+  world.until(
+    () =>
+      getActor(world.state, id("zeus"))?.capabilities.includes("divine") ===
+      true,
+  );
+  const restored = world.log.find((e) => e.kind === "access-restored");
+  expect(restored).toMatchObject({
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: penalty?.id,
+    tick: (ended?.tick ?? 0) + 50,
+  });
+  expect(getActor(world.state, id("zeus"))?.withheld ?? []).toEqual([]);
+  world.tick({ actor: "zeus", kind: "move", to: "gate" });
+  expect(getActor(world.state, id("zeus"))?.locationId).toBe(id("gate"));
+});
+
+test("a breach not sworn costs a grudge and standing at the term's place, never the oath penalty; the breach is in both gods' memories the tick it happens", () => {
+  const world = new World({ oathDivinityLoss: 3 });
+  const { thread } = accepted(tell("zeus", "altar", 20), world);
+  expect(world.thread().acceptance?.sworn).toBe(false);
+  world.until(() => breached(world));
+  const [ended] = world.ended();
+  const breachTick = world.state.tick;
+
+  expect(motifs(world)).toMatchObject([
+    {
+      entityId: "zeus",
+      motif: "standing-lost",
+      effect: "standing",
+      place: "altar",
+      delta: -1,
+      threadId: thread.id,
+      cause: ended?.id,
+    },
+  ]);
+  const zeus = getActor(world.state, id("zeus"));
+  expect(zeus?.inventory.get("divinity")).toBe(10);
+  expect(zeus?.capabilities).toContain("divine");
+  expect(zeus?.withheld).toBeUndefined();
+
+  // Hera was wronged: affinity down, a grudge. Zeus feels nothing about his own act.
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toMatchObject({
+    affinity: -2,
+    grudge: 1,
+    allied: false,
+  });
+  expect(getRelationship(world.state, id("zeus"), id("hera"))).toBeUndefined();
+
+  // Both remember it, from events of the same tick.
+  const remembered = world.log.filter(
+    (e) => e.kind === "memory-recorded" && e.sourceEventId === ended?.id,
+  );
+  expect(remembered.map((e) => [String(e.entityId), e.tick])).toEqual([
+    ["hera", breachTick],
+    ["zeus", breachTick],
+  ]);
+  for (const who of ["hera", "zeus"]) {
+    expect(endingMemories(world, who).at(-1)).toMatchObject({
+      kind: "witnessed",
+      eventKind: "practice-ended",
+      sourceEventId: ended?.id,
+      subjects: ["hera", "zeus"],
+      consequence: { effect: "harm", agent: "zeus", target: "hera" },
+    });
+  }
+});
+
+test("a fulfilment raises the demander's affinity toward the one who performed, and records the performer's standing at the place", () => {
+  const { world, thread } = accepted();
+  world.tick(legend("zeus"));
+  expect(world.thread().status).toBe("fulfilled");
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toMatchObject({
+    affinity: 1,
+    grudge: 0,
+  });
+  expect(motifs(world)).toMatchObject([
+    {
+      entityId: "zeus",
+      motif: "standing-won",
+      effect: "standing",
+      place: "altar",
+      delta: 1,
+      threadId: thread.id,
+      cause: world.ended()[0]?.id,
+    },
+  ]);
+  for (const who of ["hera", "zeus"]) {
+    expect(endingMemories(world, who)).toHaveLength(1);
+  }
+});
+
+test("a refusal lowers the demander's affinity toward the refuser and leaves no grudge; both remember it, and the refuser who answers a counter is felt toward the same way (AE1)", () => {
+  const { world } = opened();
+  const refusal = world.tick(move(world, "zeus", "refuse"));
+  const refused = refusal.events.find((e) => e.kind === "practice-moved");
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toMatchObject({
+    affinity: -1,
+    grudge: 0,
+  });
+  expect(getRelationship(world.state, id("zeus"), id("hera"))).toBeUndefined();
+  for (const who of ["hera", "zeus"]) {
+    expect(endingMemories(world, who)).toMatchObject([
+      { eventKind: "practice-moved", sourceEventId: refused?.id },
+    ]);
+  }
+  expect(motifs(world)).toEqual([]);
+
+  // Hera refuses Zeus's counter instead: now Zeus is the one let down.
+  const counter = opened(tell("zeus", "altar"), new World());
+  counter.world.tick(
+    move(counter.world, "zeus", "counter", { term: tell("zeus", "altar", 80) }),
+  );
+  counter.world.tick(move(counter.world, "hera", "refuse"));
+  expect(
+    getRelationship(counter.world.state, id("zeus"), id("hera")),
+  ).toMatchObject({ affinity: -1, grudge: 0 });
+  expect(
+    getRelationship(counter.world.state, id("hera"), id("zeus")),
+  ).toBeUndefined();
+});
+
+test("an expiry and a death change no feeling: the closed thread and each living party's memory of it are what outlast it", () => {
+  const lapse = opened().world;
+  lapse.until(() => lapse.thread().status === "expired");
+  expect(endingMemories(lapse, "hera")).toHaveLength(1);
+  expect(endingMemories(lapse, "zeus")).toHaveLength(1);
+  expect(lapse.state.relationships.size).toBe(0);
+  expect(motifs(lapse)).toEqual([]);
+
+  const death = accepted(tell("zeus", "altar", 50)).world;
+  death.kill("zeus");
+  death.tick();
+  expect(death.thread().status).toBe("withdrawn");
+  expect(endingMemories(death, "hera")).toHaveLength(1);
+  // The dead remember nothing.
+  expect(endingMemories(death, "zeus")).toEqual([]);
+  expect(death.state.relationships.size).toBe(0);
+  expect(motifs(death)).toEqual([]);
+});
+
+test("only the god who must perform may swear: the beneficiary accepting a counter cannot swear it, and a party the counter shifted the duty to can", () => {
+  const { world } = opened();
+  world.tick(
+    move(world, "zeus", "counter", { term: tell("zeus", "altar", 80) }),
+  );
+  world.tick(move(world, "hera", "accept", { swear: true }));
+  expect(world.rejected()).toEqual(["unauthorized-claim"]);
+  expect(world.thread().status).toBe("countered");
+  world.tick(move(world, "hera", "accept"));
+  expect(world.thread()).toMatchObject({
+    status: "accepted",
+    acceptance: { sworn: false },
+  });
+
+  // Zeus counters that Hera tell the legend; she is then the one bound, and may swear.
+  const shifted = opened().world;
+  shifted.tick(
+    move(shifted, "zeus", "counter", { term: tell("hera", "altar", 80) }),
+  );
+  shifted.tick(move(shifted, "hera", "accept", { swear: true }));
+  expect(shifted.thread()).toMatchObject({
+    status: "accepted",
+    acceptance: { sworn: true },
+  });
+  // The penalty falls on Hera, who swore, when she does not perform.
+  shifted.until(() => breached(shifted));
+  expect(motifs(shifted).map((m) => [String(m.entityId), m.motif])).toEqual([
+    ["hera", "oath-penalty"],
+    ["hera", "standing-lost"],
+  ]);
+  expect(getRelationship(shifted.state, id("zeus"), id("hera"))).toMatchObject({
+    grudge: 1,
+  });
+});
+
+test("a breach whose stake is a transformation changes the breacher's form and capabilities, names its cause, and keeps his memories, relationships, and identity (R18, AE9)", () => {
+  const world = new World();
+  const told = world.hears("zeus");
+  const cause = world.hears();
+  world.apply({
+    kind: "relationship-changed",
+    entityId: "zeus",
+    toward: "athena",
+    affinityDelta: 3,
+    grudgeDelta: 0,
+    memoryEventId: told,
+  });
+  const open = world.apply({
+    kind: "practice-opened",
+    entityId: "hera",
+    practice: "settlement",
+    counterparty: "zeus",
+    causes: [cause],
+    term: {
+      kind: "tell-legend",
+      party: "zeus",
+      place: "altar",
+      deadline: world.state.tick + 20,
+    },
+    negotiationDeadline: world.state.tick + 40,
+    counterBudget: 2,
+    stake: {
+      form: "stag",
+      capabilitiesGained: ["beast"],
+      capabilitiesLost: ["divine"],
+    },
+  });
+  world.tick(move(world, "zeus", "accept"));
+  world.until(() => breached(world));
+
+  const [ended] = world.ended();
+  const change = motifs(world).find((m) => m.effect === "transformation");
+  expect(change).toMatchObject({
+    entityId: "zeus",
+    motif: "transformation-punishment",
+    intent: "punishment",
+    form: "stag",
+    capabilitiesGained: ["beast"],
+    capabilitiesLost: ["divine"],
+    threadId: open.id,
+    cause: ended?.id,
+  });
+  const zeus = getActor(world.state, id("zeus"));
+  expect(zeus).toMatchObject({ id: "zeus", isDeity: true, form: "stag" });
+  expect(zeus?.capabilities).toEqual(["beast"]);
+  // Identity, memory, and relationships stay with the actor.
+  expect(
+    getMemories(world.state, id("zeus")).some((m) => m.kind === "told"),
+  ).toBe(true);
+  expect(getRelationship(world.state, id("zeus"), id("athena"))).toMatchObject({
+    affinity: 3,
+  });
+  expect(getRelationship(world.state, id("hera"), id("zeus"))).toMatchObject({
+    grudge: 1,
+  });
+});
+
+test("a transformation, wherever it comes from, bumps the actor's revision so its pending proposal goes stale, and touches nothing it did not name", () => {
+  const world = new World();
+  const zeus = getActor(world.state, id("zeus"));
+  const pending = {
+    actor: "zeus",
+    kind: "move",
+    to: "square",
+    expectedRevisions: [{ entityId: "zeus", revision: zeus?.revision ?? 0 }],
+  };
+  world.apply({
+    kind: "motif-applied",
+    entityId: "zeus",
+    motif: "transformation-mercy",
+    threadId: "evt-0-1",
+    cause: "evt-0-1",
+    effect: "transformation",
+    intent: "mercy",
+    form: "laurel",
+    capabilitiesGained: [],
+    capabilitiesLost: [],
+  });
+  const changed = getActor(world.state, id("zeus"));
+  expect(changed).toMatchObject({
+    form: "laurel",
+    revision: (zeus?.revision ?? 0) + 1,
+  });
+  expect(changed?.capabilities).toEqual(zeus?.capabilities);
+  expect(changed?.inventory).toEqual(zeus?.inventory);
+  expect(getActor(world.state, id("hera"))?.form).toBeUndefined();
+  world.tick(pending);
+  expect(world.rejected()).toEqual(["stale-target"]);
+  expect(getActor(world.state, id("zeus"))?.locationId).toBe(id("altar"));
+});
+
+test("only a sealed settlement makes an alliance: the ally term is sealed when accepted, in both directions, and binds only the two gods (R19, AE11)", () => {
+  const world = new World();
+  const cause = world.hears();
+  const ally = (to: string, party = "zeus") => ({
+    kind: "ally",
+    party,
+    to,
+    deadlineTicks: 50,
+  });
+  // No third god's cooperation is promised, and no god allies with itself.
+  world.tick(demand(cause, ally("athena")));
+  expect(world.rejected()).toEqual(["unauthorized-claim"]);
+  world.tick(demand(cause, ally("zeus")));
+  expect(world.rejected()).toEqual(["unauthorized-claim"]);
+
+  world.tick(demand(cause, ally("hera")));
+  expect(world.thread().status).toBe("open");
+  expect(
+    getRelationship(world.state, id("hera"), id("zeus"))?.allied ?? false,
+  ).toBe(false);
+
+  const sealing = world.tick(move(world, "zeus", "accept"));
+  expect(world.thread().status).toBe("fulfilled");
+  expect(world.ended()).toMatchObject([
+    { outcome: "fulfilled", reason: "sealed" },
+  ]);
+  const changes = sealing.derivedEvents.filter(
+    (e) => e.kind === "relationship-changed" && e.allied === true,
+  );
+  expect(
+    changes.map((e) => [
+      e.entityId,
+      e.kind === "relationship-changed" ? e.toward : "",
+    ]),
+  ).toEqual([
+    ["hera", "zeus"],
+    ["zeus", "hera"],
+  ]);
+  expect(getRelationship(world.state, id("hera"), id("zeus"))?.allied).toBe(
+    true,
+  );
+  expect(getRelationship(world.state, id("zeus"), id("hera"))?.allied).toBe(
+    true,
+  );
+  // Athena, who sealed nothing, is allied with no one.
+  expect(
+    [...world.state.relationships.values()].filter((r) => r.allied),
+  ).toHaveLength(2);
+});
+
+test("an ally term is refused when one of its gods is dead, and a settlement over it with a dead party ends withdrawn, sealing nothing", () => {
+  const world = new World();
+  const cause = world.hears();
+  world.tick(
+    demand(cause, {
+      kind: "ally",
+      party: "zeus",
+      to: "hera",
+      deadlineTicks: 50,
+    }),
+  );
+  world.kill("hera");
+  world.tick(move(world, "zeus", "accept"));
+  expect(world.rejected()).toEqual(["dead-actor"]);
+  world.tick();
+  expect(world.thread().status).toBe("withdrawn");
+  expect([...world.state.relationships.values()].some((r) => r.allied)).toBe(
+    false,
+  );
+});
+
+test("penalties, forms, stakes, and alliances replay from the log and survive a JSON round trip", () => {
+  const world = new World({ oathDivinityLoss: 3, oathAccessTicks: 50 });
+  const cause = world.hears();
+  const open = world.apply({
+    kind: "practice-opened",
+    entityId: "hera",
+    practice: "settlement",
+    counterparty: "zeus",
+    causes: [cause],
+    term: {
+      kind: "tell-legend",
+      party: "zeus",
+      place: "altar",
+      deadline: world.state.tick + 20,
+    },
+    negotiationDeadline: world.state.tick + 40,
+    counterBudget: 2,
+    stake: {
+      form: "stag",
+      capabilitiesGained: ["beast"],
+      capabilitiesLost: [],
+    },
+  });
+  world.tick(move(world, "zeus", "accept", { swear: true }));
+  world.until(() => breached(world));
+  expect(world.state.threads.get(open.id as EventId)?.stake).toMatchObject({
+    form: "stag",
+  });
+  // The thread's stake and the god's penalty are all there before the access returns.
+  const zeus = getActor(world.state, id("zeus"));
+  expect(zeus?.form).toBe("stag");
+  expect(zeus?.withheld).toHaveLength(1);
+
+  for (const phase of ["mid-penalty", "restored"]) {
+    if (phase === "restored") {
+      world.until(
+        () => getActor(world.state, id("zeus"))?.withheld === undefined,
+      );
+    }
+    const rebuilt = applyEvents(world.initial, world.log);
+    expect(rebuilt.actors).toEqual(world.state.actors);
+    expect(rebuilt.threads).toEqual(world.state.threads);
+    expect(rebuilt.memories).toEqual(world.state.memories);
+    expect(rebuilt.relationships).toEqual(world.state.relationships);
+    const stored = JSON.parse(JSON.stringify(encode(world.state)));
+    const decoded = decode(stored);
+    expect(decoded.actors).toEqual(world.state.actors);
+    expect(decoded.threads).toEqual(world.state.threads);
+    expect(encode(decoded)).toEqual(encode(world.state));
+  }
+
+  // A stored penalty that names no capability, or a form that is not a word, is corrupt.
+  const stored = JSON.parse(JSON.stringify(encode(world.state)));
+  const zeusEntry = stored.actors.find(
+    (entry: [string, unknown]) => entry[0] === "zeus",
+  );
+  zeusEntry[1].form = 7;
+  expect(() => decode(stored)).toThrow();
 });

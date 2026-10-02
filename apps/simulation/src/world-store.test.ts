@@ -1525,6 +1525,152 @@ test("practice threads survive reopen, rebuild, and archive import: a fulfilled 
   }
 });
 
+test("a sworn breach's penalty, the endings' memories, and a sealed alliance survive reopen, rebuild, and archive import", () => {
+  const storeDir = tempDir("panthea-sim-ending-");
+  const exportDir = tempDir("panthea-sim-ending-export-");
+  const slotsDir = tempDir("panthea-sim-ending-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const world = liveWorld(storePath, socialSeed());
+    world.run(
+      queuedProposal("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 3,
+      }),
+    );
+    const ignition = eventOfKind(
+      listEvents(world.store.db),
+      "building-ignited",
+    );
+    world.run(queuedProposal("bard", { kind: "move", to: "town-square" }));
+    world.run(
+      queuedProposal("bard", {
+        kind: "report",
+        listener: "hera",
+        content: "Zeus burned the tavern",
+        linkedEventId: ignition.id,
+        claim: { effect: "harm", agent: "zeus", target: "farmer" },
+      }),
+    );
+    // Hera demands a legend in the square; Zeus swears it and never tells it.
+    world.run(
+      queuedProposal("hera", {
+        kind: "practice",
+        move: "demand",
+        counterparty: "zeus",
+        cause: ignition.id,
+        term: {
+          kind: "tell-legend",
+          party: "zeus",
+          place: "town-square",
+          deadlineTicks: 30,
+        },
+      }),
+    );
+    const [oath] = [...world.state.threads.values()];
+    if (!oath) throw new Error("expected a thread");
+    world.run(
+      queuedProposal("zeus", {
+        kind: "practice",
+        move: "accept",
+        thread: oath.id,
+        swear: true,
+        expectedRevisions: [{ entityId: oath.id, revision: oath.revision }],
+      }),
+    );
+    for (let tick = 0; tick < 40; tick += 1) {
+      if (world.state.threads.get(oath.id)?.status === "breached") break;
+      world.run();
+    }
+    expect(world.state.threads.get(oath.id)?.status).toBe("breached");
+    const zeus = world.state.actors.get(id("zeus"));
+    expect(zeus?.capabilities).not.toContain("divine");
+    expect(zeus?.withheld).toHaveLength(1);
+
+    // Later, Zeus and Hera seal an alliance.
+    world.run(
+      queuedProposal("hera", {
+        kind: "practice",
+        move: "demand",
+        counterparty: "zeus",
+        cause: ignition.id,
+        term: { kind: "ally", party: "zeus", to: "hera", deadlineTicks: 30 },
+      }),
+    );
+    const seal = [...world.state.threads.values()].at(-1);
+    if (!seal) throw new Error("expected a second thread");
+    world.run(
+      queuedProposal("zeus", {
+        kind: "practice",
+        move: "accept",
+        thread: seal.id,
+        expectedRevisions: [{ entityId: seal.id, revision: seal.revision }],
+      }),
+    );
+    expect(world.state.threads.get(seal.id)?.status).toBe("fulfilled");
+    const state = world.state;
+    expect(getRelationship(state, id("hera"), id("zeus"))?.allied).toBe(true);
+
+    const events = listEvents(world.store.db);
+    const penalty = eventOfKind(
+      events,
+      "motif-applied",
+      (event) => event.effect === "oath-penalty",
+    );
+    const breach = eventOfKind(
+      events,
+      "practice-ended",
+      (event) => event.outcome === "breached",
+    );
+    expect(penalty).toMatchObject({ entityId: "zeus", cause: breach.id });
+    // Both parties' memories of the breach come from events of the breach's own tick.
+    const remembered = events.filter(
+      (event) =>
+        event.kind === "memory-recorded" && event.sourceEventId === breach.id,
+    );
+    expect(remembered.map((event) => event.tick)).toEqual([
+      breach.tick,
+      breach.tick,
+    ]);
+
+    closeStore(world.store);
+    const freshReducers = createWorldProjectionReducers(socialSeed());
+    const reopened = openStore(storePath, freshReducers);
+    const clock = readClock(reopened.db);
+    expect(
+      restoreWorldTime(readLiveProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+    expect(
+      restoreWorldTime(rebuildProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(reopened, exportPath);
+    const imported = importArchive(exportPath, slotsDir, worldImportReducers);
+    const branch = openStore(
+      join(imported.slotPath, "world.sqlite"),
+      freshReducers,
+    );
+    const branchClock = readClock(branch.db);
+    const restored = restoreWorldTime(
+      readLiveProjections(branch, freshReducers),
+      branchClock,
+    );
+    expect(restored.actors.get(id("zeus"))?.withheld).toEqual(zeus?.withheld);
+    expect(restored.relationships).toEqual(state.relationships);
+    expect(
+      restoreWorldTime(rebuildProjections(branch, freshReducers), branchClock),
+    ).toEqual(state);
+    closeStore(branch);
+    closeStore(reopened);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
 test("live equals rebuild through the store when the world forgets: the same memory is evicted either way", () => {
   const storeDir = tempDir("panthea-sim-evict-");
   try {

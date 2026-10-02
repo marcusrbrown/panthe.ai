@@ -31,12 +31,17 @@ import {
 import {
   PRACTICE_END_REASONS,
   PRACTICE_KINDS,
+  PRACTICE_MOTIF_CHANGES,
+  PRACTICE_MOTIFS,
   PRACTICE_OUTCOMES,
   type PracticeEndReason,
   type PracticeKind,
+  type PracticeMotif,
   type PracticeOutcome,
   type PracticeTerm,
   parsePracticeTerm,
+  parseTransformation,
+  type Transformation,
 } from "./practice";
 
 export interface EventEnvelope {
@@ -413,6 +418,8 @@ export interface PracticeOpenedEvent extends EventEnvelope {
   readonly negotiationDeadline: number;
   readonly counterBudget: number;
   readonly succeeds?: EventId;
+  /** What the breacher of the term becomes when it breaches: the transformation stake the demand carries. */
+  readonly stake?: Transformation;
 }
 
 /**
@@ -446,6 +453,48 @@ export interface PracticeEndedEvent extends EventEnvelope {
   readonly performedBy?: EventId;
 }
 
+/** What a motif changed, by kind of change. */
+export type MotifEffect =
+  /** Divinity lost, and a capability withheld until `accessRestoredAt` (a world tick): the bounded Styx penalty. */
+  | {
+      readonly effect: "oath-penalty";
+      readonly divinityLost: number;
+      readonly capability: string;
+      readonly accessRestoredAt: number;
+    }
+  /** A change of form and capabilities that keeps the actor's identity, memory, and relationships. */
+  | ({
+      readonly effect: "transformation";
+      readonly intent: "punishment" | "mercy";
+    } & Transformation)
+  /** Standing at `place` moved by `delta`. Only recorded in M2; standing itself is a later unit's state. */
+  | {
+      readonly effect: "standing";
+      readonly place: EntityId;
+      readonly delta: number;
+    };
+
+/**
+ * A motif's change, applied to `entityId` because a thread ended: `threadId` is
+ * the thread, `cause` the ending event (the breach, the performance) that
+ * called for it. Primary events of the tick that ended the thread.
+ */
+export type MotifAppliedEvent = EventEnvelope & {
+  readonly kind: "motif-applied";
+  readonly entityId: EntityId;
+  readonly motif: PracticeMotif;
+  readonly threadId: EventId;
+  readonly cause: EventId;
+} & MotifEffect;
+
+/** A capability a penalty withheld came back, when its period ran out. `motifEventId` is the penalty it ends. */
+export interface AccessRestoredEvent extends EventEnvelope {
+  readonly kind: "access-restored";
+  readonly entityId: EntityId;
+  readonly capability: string;
+  readonly motifEventId: EventId;
+}
+
 /** Kinds that happen at no place: a report is heard only by its listener, a memory and a feeling are inside someone's head, a goal is the god's own, and a practice thread is held between its parties. Nobody perceives them, so nobody witnesses them. */
 export const UNPLACED_EVENT_KINDS = [
   "report-told",
@@ -462,6 +511,8 @@ export const UNPLACED_EVENT_KINDS = [
   "practice-opened",
   "practice-moved",
   "practice-ended",
+  "motif-applied",
+  "access-restored",
 ] as const;
 
 /** The kinds an actor can witness. */
@@ -482,10 +533,25 @@ export interface MemoryRecordedBase extends EventEnvelope {
   readonly consequence?: Consequence;
 }
 
-/** The actor was there when the event happened. */
+/** The unplaced events that end a thread; their parties remember them though no one stands at them. */
+export const ENDING_EVENT_KINDS = ["practice-moved", "practice-ended"] as const;
+export type EndingEventKind = (typeof ENDING_EVENT_KINDS)[number];
+
+/** What a participant remembers of how a thread ended: the outcome and, when someone's act decided it, who. */
+export interface MemoryEnding {
+  readonly outcome: PracticeOutcome;
+  /** Who refused, withdrew, performed, or breached; absent when no one's act did (a lapse, a spent budget, a death). */
+  readonly agent?: EntityId;
+  /** The ending sealed an alliance between the two parties. */
+  readonly sealed?: true;
+}
+
+/** The actor was there when the event happened, or took part in the thread the event ended (`ending`). */
 export interface WitnessedMemoryRecordedEvent extends MemoryRecordedBase {
   readonly memoryKind: "witnessed";
-  readonly eventKind: WitnessedEventKind;
+  readonly eventKind: WitnessedEventKind | EndingEventKind;
+  /** Present exactly when `eventKind` is an ending event. */
+  readonly ending?: MemoryEnding;
 }
 
 /** The actor was told, and holds the teller's account as a belief: attributed, possibly false, never resolved to the truth. */
@@ -575,7 +641,9 @@ export type WorldEvent =
   | GoalChangeRefusedEvent
   | PracticeOpenedEvent
   | PracticeMovedEvent
-  | PracticeEndedEvent;
+  | PracticeEndedEvent
+  | MotifAppliedEvent
+  | AccessRestoredEvent;
 
 const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "entity-moved": true,
@@ -611,6 +679,8 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "practice-opened": true,
   "practice-moved": true,
   "practice-ended": true,
+  "motif-applied": true,
+  "access-restored": true,
 };
 
 /** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
@@ -681,6 +751,8 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
       case "practice-ended":
         return [event.entityId, event.counterparty];
       case "practice-moved":
+      case "motif-applied":
+      case "access-restored":
       case "unmet-need":
       case "need-met":
       case "stock-spoiled":
@@ -741,6 +813,10 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.threadId;
     case "practice-ended":
       return event.performedBy ?? event.threadId;
+    case "motif-applied":
+      return event.cause;
+    case "access-restored":
+      return event.motifEventId;
     default:
       return undefined;
   }
@@ -979,16 +1055,27 @@ function parseMemoryRecorded(
 
   switch (input.memoryKind) {
     case "witnessed": {
-      const eventKind = parseEnum(
-        input.eventKind,
-        "eventKind",
-        WITNESSED_EVENT_KINDS,
-      );
+      const eventKind = parseEnum(input.eventKind, "eventKind", [
+        ...WITNESSED_EVENT_KINDS,
+        ...ENDING_EVENT_KINDS,
+      ] as const);
       if (!eventKind.ok) return eventKind;
+      const isEnding = (ENDING_EVENT_KINDS as readonly string[]).includes(
+        eventKind.value,
+      );
+      const ending = parseMemoryEnding(input.ending, "ending");
+      if (!ending.ok) return ending;
+      if (isEnding !== (ending.value !== undefined)) {
+        return fail(
+          "ending",
+          "a memory of an ending event says how it ended, and no other does",
+        );
+      }
       return ok({
         ...base,
         memoryKind: "witnessed",
         eventKind: eventKind.value,
+        ...(ending.value === undefined ? {} : { ending: ending.value }),
       });
     }
     case "told": {
@@ -1051,6 +1138,33 @@ function parseMemoryRecorded(
         `unknown memory kind: ${String(input.memoryKind)}`,
       );
   }
+}
+
+function parseMemoryEnding(
+  value: unknown,
+  path: string,
+): ParseResult<MemoryEnding | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (!isRecord(value)) return fail(path, "expected an ending object");
+  const outcome = parseEnum(
+    value.outcome,
+    `${path}.outcome`,
+    PRACTICE_OUTCOMES,
+  );
+  if (!outcome.ok) return outcome;
+  const agent =
+    value.agent === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.agent, `${path}.agent`);
+  if (!agent.ok) return agent;
+  if (value.sealed !== undefined && value.sealed !== true) {
+    return fail(`${path}.sealed`, "expected true or nothing");
+  }
+  return ok({
+    outcome: outcome.value,
+    ...(agent.value === undefined ? {} : { agent: agent.value }),
+    ...(value.sealed === true ? { sealed: true as const } : {}),
+  });
 }
 
 export function parseEvent(input: unknown): ParseResult<WorldEvent> {
@@ -1663,6 +1777,11 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       if (!counterBudget.ok) return counterBudget;
       const succeeds = parseOptionalEventId(input.succeeds, "succeeds");
       if (!succeeds.ok) return succeeds;
+      const stake =
+        input.stake === undefined
+          ? ok<Transformation | undefined>(undefined)
+          : parseTransformation(input.stake, "stake");
+      if (!stake.ok) return stake;
       return ok({
         ...envelope,
         kind: "practice-opened",
@@ -1674,6 +1793,7 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         negotiationDeadline: negotiationDeadline.value,
         counterBudget: counterBudget.value,
         ...(succeeds.value === undefined ? {} : { succeeds: succeeds.value }),
+        ...(stake.value === undefined ? {} : { stake: stake.value }),
       });
     }
     case "practice-moved": {
@@ -1735,6 +1855,119 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         ...(performedBy.value === undefined
           ? {}
           : { performedBy: performedBy.value }),
+      });
+    }
+    case "motif-applied": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const motif = parseEnum(input.motif, "motif", PRACTICE_MOTIFS);
+      if (!motif.ok) return motif;
+      const threadId = parseEventId(input.threadId, "threadId");
+      if (!threadId.ok) return threadId;
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
+      const base = {
+        ...envelope,
+        kind: "motif-applied" as const,
+        entityId: entityId.value,
+        motif: motif.value,
+        threadId: threadId.value,
+        cause: cause.value,
+      };
+      // The effect must be the change its motif names, so a record cannot say a
+      // motif did something other than what the catalogue says it does.
+      const change = PRACTICE_MOTIF_CHANGES[motif.value];
+      switch (input.effect) {
+        case "oath-penalty": {
+          if (change !== "oath-penalty") {
+            return fail(
+              "effect",
+              `${motif.value} does not apply an oath penalty`,
+            );
+          }
+          const divinityLost = parseNonNegativeInteger(
+            input.divinityLost,
+            "divinityLost",
+          );
+          if (!divinityLost.ok) return divinityLost;
+          const capability = parseString(input.capability, "capability");
+          if (!capability.ok) return capability;
+          const accessRestoredAt = parseNonNegativeInteger(
+            input.accessRestoredAt,
+            "accessRestoredAt",
+          );
+          if (!accessRestoredAt.ok) return accessRestoredAt;
+          return ok({
+            ...base,
+            effect: "oath-penalty",
+            divinityLost: divinityLost.value,
+            capability: capability.value,
+            accessRestoredAt: accessRestoredAt.value,
+          });
+        }
+        case "transformation": {
+          if (change !== "transformation") {
+            return fail("effect", `${motif.value} does not transform anyone`);
+          }
+          const intent = parseEnum(input.intent, "intent", [
+            "punishment",
+            "mercy",
+          ] as const);
+          if (!intent.ok) return intent;
+          if (motif.value !== `transformation-${intent.value}`) {
+            return fail("intent", `${motif.value} is not a ${intent.value}`);
+          }
+          const form = parseTransformation(input, "effect");
+          if (!form.ok) return form;
+          return ok({
+            ...base,
+            effect: "transformation",
+            intent: intent.value,
+            ...form.value,
+          });
+        }
+        case "standing": {
+          if (change !== "standing-record") {
+            return fail("effect", `${motif.value} does not record standing`);
+          }
+          const place = parseEntityId(input.place, "place");
+          if (!place.ok) return place;
+          const delta = parseInteger(input.delta, "delta");
+          if (!delta.ok) return delta;
+          // Won standing is a gain and lost standing a loss, never the other way round.
+          if (
+            delta.value === 0 ||
+            delta.value > 0 !== (motif.value === "standing-won")
+          ) {
+            return fail("delta", `${motif.value} moves standing the other way`);
+          }
+          return ok({
+            ...base,
+            effect: "standing",
+            place: place.value,
+            delta: delta.value,
+          });
+        }
+        default:
+          return fail(
+            "effect",
+            "expected one of: oath-penalty, transformation, standing",
+          );
+      }
+    }
+    case "access-restored": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const capability = parseString(input.capability, "capability");
+      if (!capability.ok) return capability;
+      const motifEventId = parseEventId(input.motifEventId, "motifEventId");
+      if (!motifEventId.ok) return motifEventId;
+      return ok({
+        ...envelope,
+        kind: "access-restored",
+        entityId: entityId.value,
+        capability: capability.value,
+        motifEventId: motifEventId.value,
       });
     }
     case "goal-ended": {

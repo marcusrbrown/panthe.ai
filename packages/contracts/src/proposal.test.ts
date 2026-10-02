@@ -724,6 +724,7 @@ test("every checkable term parses with its own fields, and anything outside that
       amount: 1,
       deadlineTicks: 90,
     },
+    { kind: "ally", party: "zeus", to: "hera", deadlineTicks: 90 },
   ];
   for (const term of good) {
     const parsed = parseProposal(

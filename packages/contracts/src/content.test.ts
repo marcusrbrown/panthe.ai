@@ -342,6 +342,9 @@ test("memory tunables are checked key by key: whole non-negative numbers where a
         toldShare: 0.5,
         affinityLimit: 10,
         grudgeLimit: 10,
+        refusalAffinity: 1,
+        "salience_practice-ended": 7,
+        // Retired, and still accepted: affinity no longer makes an alliance.
         allianceAffinity: 5,
       }),
     ).ok,
@@ -446,6 +449,9 @@ test("practice tunables are strict: each a positive whole number, unknown keys r
     counterBudget: 3,
     minTermTicks: 25,
     maxTermTicks: 500,
+    oathDivinityLoss: 3,
+    oathAccessTicks: 100,
+    standingDelta: 1,
   };
   const parsed = parseContentPack(packWithPracticeBalance(good));
   expect(parsed.ok).toBe(true);
@@ -464,6 +470,10 @@ test("practice tunables are strict: each a positive whole number, unknown keys r
     { counterBudget: 2.5 },
     { minTermTicks: "soon" },
     { maxTermTicks: Number.POSITIVE_INFINITY },
+    { oathDivinityLoss: 0 },
+    { oathAccessTicks: 1.5 },
+    { standingDelta: -1 },
+    { oathPenalty: 3 },
     { counterBudgt: 3 },
     { answerWindowTicks: 250 },
     ["counterBudget"],

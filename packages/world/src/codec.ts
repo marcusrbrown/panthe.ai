@@ -14,6 +14,7 @@
 // a known actor).
 
 import {
+  ENDING_EVENT_KINDS,
   type EntityId,
   type EventId,
   fail,
@@ -46,9 +47,11 @@ import {
   parseReportContent,
   parseSalience,
   parseString,
+  parseTransformation,
   REALMS,
   type RejectionReasonCode,
   TRANSPORT_KINDS,
+  type Transformation,
   UNMET_NEED_REASONS,
   WITNESSED_EVENT_KINDS,
 } from "@panthea/contracts";
@@ -74,6 +77,7 @@ import {
   type PracticeThread,
   type RelationshipState,
   relationshipKey,
+  type WithheldCapability,
   type WorldState,
 } from "./state";
 
@@ -302,6 +306,38 @@ function parseFavors(
   return parseArray(value, path, parseFavor);
 }
 
+function parseWithheld(
+  value: unknown,
+  path: string,
+): ParseResult<readonly WithheldCapability[] | undefined> {
+  if (value === undefined) return ok(undefined);
+  const items = parseArray(value, path, (item, at) => {
+    if (!isRecord(item)) return fail(at, "expected a withheld capability");
+    const capability = parseString(item.capability, `${at}.capability`);
+    if (!capability.ok) return capability;
+    const restoreAt = parseNonNegativeInteger(
+      item.restoreAt,
+      `${at}.restoreAt`,
+    );
+    if (!restoreAt.ok) return restoreAt;
+    const eventId = parseEventId(item.eventId, `${at}.eventId`);
+    if (!eventId.ok) return eventId;
+    return ok({
+      capability: capability.value,
+      restoreAt: restoreAt.value,
+      eventId: eventId.value,
+    });
+  });
+  if (!items.ok) return items;
+  if (items.value.length === 0) {
+    return fail(
+      path,
+      "an empty list of withheld capabilities is absent instead",
+    );
+  }
+  return items;
+}
+
 function parseDrives(
   value: unknown,
   path: string,
@@ -365,6 +401,10 @@ function parseActorState(
   if (!wants.ok) return wants;
   const favors = parseFavors(value.favors, `${path}.favors`);
   if (!favors.ok) return favors;
+  const form = parseOptionalString(value.form, `${path}.form`);
+  if (!form.ok) return form;
+  const withheld = parseWithheld(value.withheld, `${path}.withheld`);
+  if (!withheld.ok) return withheld;
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
   return ok({
@@ -379,6 +419,8 @@ function parseActorState(
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
     ...(favors.value === undefined ? {} : { favors: favors.value }),
+    ...(form.value === undefined ? {} : { form: form.value }),
+    ...(withheld.value === undefined ? {} : { withheld: withheld.value }),
     revision: revision.value,
   });
 }
@@ -737,11 +779,10 @@ function parseMemoryEntry(
 
   switch (value.kind) {
     case "witnessed": {
-      const eventKind = parseEnum(
-        value.eventKind,
-        `${path}.eventKind`,
-        WITNESSED_EVENT_KINDS,
-      );
+      const eventKind = parseEnum(value.eventKind, `${path}.eventKind`, [
+        ...WITNESSED_EVENT_KINDS,
+        ...ENDING_EVENT_KINDS,
+      ] as const);
       if (!eventKind.ok) return eventKind;
       return ok({ ...base, kind: "witnessed", eventKind: eventKind.value });
     }
@@ -1039,7 +1080,9 @@ function parseThreadEntry(
   if (!term.ok) return term;
   for (const party of [
     term.value.party,
-    ...(term.value.kind === "give-resource" ? [term.value.to] : []),
+    ...(term.value.kind === "give-resource" || term.value.kind === "ally"
+      ? [term.value.to]
+      : []),
   ]) {
     if (!knownActorIds.has(party)) {
       return fail(`${at}.term`, `term names unknown actor: ${party}`);
@@ -1096,6 +1139,11 @@ function parseThreadEntry(
       sworn: sworn.value,
     };
   }
+  const stake =
+    record.stake === undefined
+      ? ok<Transformation | undefined>(undefined)
+      : parseTransformation(record.stake, `${at}.stake`);
+  if (!stake.ok) return stake;
   const closedTick =
     record.closedTick === undefined
       ? ok<number | undefined>(undefined)
@@ -1137,6 +1185,7 @@ function parseThreadEntry(
       obligated,
       causes: causes.value,
       term: term.value,
+      ...(stake.value === undefined ? {} : { stake: stake.value }),
       offeredBy,
       status: status.value,
       openedTick: openedTick.value,

@@ -33,9 +33,17 @@ interface EndpointForm {
   readonly reasoningEffort?: "none";
 }
 
+/** `inheritFallback` is the role having no fallback of its own (it uses the global one); unchecked, `fallback` is the role's own list, which may be empty (no fallback at all). */
+interface RoleFormFields {
+  endpoint: string;
+  model: string;
+  fallback: string;
+  inheritFallback: boolean;
+}
+
 interface MutableSettings {
   endpoints: EndpointForm[];
-  roles: Record<string, { endpoint: string; model: string; fallback: string }>;
+  roles: Record<string, RoleFormFields>;
   fallback: string;
   offline: boolean;
 }
@@ -61,12 +69,23 @@ function roleLabel(id: string): string {
   return ROLES.find((role) => role.id === id)?.label ?? id;
 }
 
+function emptyRole(): RoleFormFields {
+  return { endpoint: "", model: "", fallback: "", inheritFallback: true };
+}
+
+function roleToForm(assignment: RoleForm): RoleFormFields {
+  return {
+    endpoint: assignment.endpoint,
+    model: assignment.model ?? "",
+    fallback: assignment.fallback?.join(", ") ?? "",
+    inheritFallback: assignment.fallback === undefined,
+  };
+}
+
 function emptyForm(): MutableSettings {
   return {
     endpoints: [],
-    roles: Object.fromEntries(
-      ROLES.map((role) => [role.id, { endpoint: "", model: "", fallback: "" }]),
-    ),
+    roles: Object.fromEntries(ROLES.map((role) => [role.id, emptyRole()])),
     fallback: "",
     offline: false,
   };
@@ -80,24 +99,11 @@ export function settingsToForm(
   const roles = Object.fromEntries(
     ROLES.map(({ id }) => {
       const assignment = value.models.roles[id];
-      return [
-        id,
-        {
-          endpoint: assignment?.endpoint ?? "",
-          model: assignment?.model ?? "",
-          fallback: assignment?.fallback?.join(", ") ?? "",
-        },
-      ];
+      return [id, assignment ? roleToForm(assignment) : emptyRole()];
     }),
   );
   for (const [name, assignment] of Object.entries(value.models.roles)) {
-    if (!(name in roles)) {
-      roles[name] = {
-        endpoint: assignment.endpoint,
-        model: assignment.model ?? "",
-        fallback: assignment.fallback?.join(", ") ?? "",
-      };
-    }
+    if (!(name in roles)) roles[name] = roleToForm(assignment);
   }
   return {
     endpoints: value.models.endpoints.map((endpoint) => ({
@@ -144,7 +150,7 @@ export function formToSettings(form: MutableSettings): SettingsShape {
         {
           endpoint: role.endpoint,
           ...(role.model.trim() ? { model: role.model.trim() } : {}),
-          ...(role.fallback.trim() ? { fallback: list(role.fallback) } : {}),
+          ...(role.inheritFallback ? {} : { fallback: list(role.fallback) }),
         },
       ]),
   );
@@ -217,7 +223,7 @@ export function updateRoleField(
   roleId: string,
   patch: Partial<MutableSettings["roles"][string]>,
 ): MutableSettings {
-  const role = form.roles[roleId] ?? { endpoint: "", model: "", fallback: "" };
+  const role = form.roles[roleId] ?? emptyRole();
   return { ...form, roles: { ...form.roles, [roleId]: { ...role, ...patch } } };
 }
 
@@ -648,11 +654,7 @@ export function SettingsView({
                 </p>
               </div>
               {roles.map((roleName) => {
-                const role = form.roles[roleName] ?? {
-                  endpoint: "",
-                  model: "",
-                  fallback: "",
-                };
+                const role = form.roles[roleName] ?? emptyRole();
                 return (
                   <fieldset className="role-row" key={roleName}>
                     <legend>{roleLabel(roleName)}</legend>
@@ -707,6 +709,7 @@ export function SettingsView({
                       <input
                         value={role.fallback}
                         placeholder="endpoint-a, endpoint-b"
+                        disabled={role.inheritFallback}
                         onChange={(event) =>
                           setForm((prior) =>
                             updateRoleField(prior, roleName, {
@@ -721,6 +724,20 @@ export function SettingsView({
                       <FieldError
                         message={errors[`roles.${roleName}.fallback`]}
                       />
+                    </label>
+                    <label className="toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={role.inheritFallback}
+                        onChange={(event) =>
+                          setForm((prior) =>
+                            updateRoleField(prior, roleName, {
+                              inheritFallback: event.target.checked,
+                            }),
+                          )
+                        }
+                      />
+                      <span>Use the global fallback</span>
                     </label>
                   </fieldset>
                 );

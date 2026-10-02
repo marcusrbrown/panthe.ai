@@ -269,10 +269,80 @@ test("settings loaded keyed by id fill the matching rows and add no duplicate ro
     endpoint: "local",
     model: "x",
     fallback: "hosted",
+    inheritFallback: false,
   });
   expect(form.roles.hera?.endpoint).toBe("");
   // And back: a round trip keeps the id.
   expect(Object.keys(formToSettings(form).models.roles)).toEqual(["zeus"]);
+});
+
+// --- A role's own empty fallback is not the same as inheriting the global one ----------------
+
+/** Loads `roleFallback` onto Zeus (global fallback `hosted`), saves, and returns the saved role and Zeus's route. */
+async function roundTripZeus(roleFallback: readonly string[] | undefined) {
+  const fake = fakeTransport();
+  const form = settingsToForm({
+    models: {
+      ...models,
+      roles: {
+        zeus: {
+          endpoint: "local",
+          ...(roleFallback === undefined ? {} : { fallback: roleFallback }),
+        },
+      },
+      fallback: ["hosted"],
+    },
+    offline: false,
+  });
+  const result = await persistModelSettings(
+    formToSettings(form),
+    fake.transport,
+  );
+  expect(result).toEqual({ ok: true });
+  const saved = JSON.parse(String(fake.calls[0]?.value)) as {
+    models: { roles: Record<string, { fallback?: string[] }> };
+  };
+  const config = parseRoutingConfig(saved.models);
+  if (!config.ok) throw new Error(`${config.path}: ${config.message}`);
+  return {
+    role: saved.models.roles.zeus,
+    route: planRoute(config.value, "zeus", { offline: false }).steps.map(
+      (step) => step.endpoint.id,
+    ),
+  };
+}
+
+test("a role's explicit empty fallback survives a load and save, so a local outage never reaches the hosted global fallback", async () => {
+  const { role, route } = await roundTripZeus([]);
+  expect(role?.fallback).toEqual([]);
+  expect(route).toEqual(["local"]);
+});
+
+test("a role with no fallback of its own still inherits the global one after a load and save", async () => {
+  const { role, route } = await roundTripZeus(undefined);
+  expect(role).not.toHaveProperty("fallback");
+  expect(route).toEqual(["local", "hosted"]);
+});
+
+test("each role row offers a Use the global fallback checkbox, checked only while the role has no fallback of its own", () => {
+  const html = renderToStaticMarkup(
+    <SettingsView
+      transport={fakeTransport().transport}
+      initialSettings={{
+        models: {
+          ...models,
+          roles: { zeus: { endpoint: "local", fallback: [] } },
+        },
+        offline: false,
+      }}
+    />,
+  );
+  const boxes = html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
+  // Zeus has an explicit (empty) list; Hera has no assignment and so inherits. The offline toggle is the third.
+  expect(html.match(/Use the global fallback/g)).toHaveLength(2);
+  expect(boxes).toHaveLength(3);
+  expect(boxes[0]).not.toContain("checked");
+  expect(boxes[1]).toContain("checked");
 });
 
 // --- A key reference is trimmed once, for the settings and every key operation ----------

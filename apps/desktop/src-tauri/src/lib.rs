@@ -12,8 +12,6 @@ pub mod sidecar;
 mod state;
 mod tray;
 
-use std::sync::Arc;
-
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use commands::KeyVault;
@@ -33,7 +31,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .manage(SidecarState::default())
-        .manage(KeyVault(Arc::new(keys::KeyringStore)))
+        .manage(KeyVault(keys::platform_key_store()))
         .invoke_handler(tauri::generate_handler![
             commands::subscribe_world,
             commands::present_event,

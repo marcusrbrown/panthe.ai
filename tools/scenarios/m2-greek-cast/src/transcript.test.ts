@@ -1063,3 +1063,91 @@ test("a hosted run's transcript and summary say a hosted OpenAI-compatible endpo
   // Control: a local run still says so.
   expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
 });
+
+// --- What the world did with every god proposal ------------------------------------------
+
+/** An episode whose gods proposed a move, then two blesses the world refused as stale, then a not-adjacent move. */
+function dispositionRecord(index = 1): EpisodeRecord {
+  const committed = move("zeus", "olympus-gate", 5);
+  const refused = [
+    act("hera", { kind: "bless", petition: "pet-1" }, 6, {
+      outcome: "rejected",
+    }),
+    act("hera", { kind: "bless", petition: "pet-2" }, 7, {
+      outcome: "rejected",
+    }),
+  ];
+  const apart = act("zeus", { kind: "move", to: "tavern" }, 8, {
+    outcome: "rejected",
+  });
+  const rejections = [...refused, apart];
+  const data = input([committed, ...rejections]);
+  const reasons = new Map(
+    rejections.map((r, i) => [
+      r.proposal.proposalId,
+      i < 2 ? "stale-target" : "not-adjacent",
+    ]),
+  );
+  const real: RealInput = {
+    ...data,
+    proposals: data.proposals.map((p) =>
+      reasons.has(p.proposalId)
+        ? { ...p, reason: reasons.get(p.proposalId) }
+        : p,
+    ),
+    // A rejection commits no event.
+    events: data.events.filter(
+      (e) =>
+        !rejections.some((r) => r.proposal.observationId === e.correlationId),
+    ),
+  };
+  return {
+    ...record([committed], [], index),
+    input: real,
+    analysis: analyzeReal(real),
+    episode: analyzeEpisode(real, identities, ["zeus", "hera"]),
+  };
+}
+
+test("the transcript lists every god proposal with the action and what the world did with it, rejections and their reason codes included", () => {
+  const text = renderTranscript(dispositionRecord());
+  expect(text).toContain("## What the world did with every proposal");
+  expect(text).toMatch(/Zeus: move → olympus-gate — committed: entity-moved/);
+  expect(text).toMatch(/Hera: bless → pet-1 — rejected: stale-target/);
+  expect(text).toMatch(/Hera: bless → pet-2 — rejected: stale-target/);
+  expect(text).toMatch(/Zeus: move → tavern — rejected: not-adjacent/);
+  expect(text).toContain("- dispositions: bless 2 × stale-target");
+  // The committed-actions list still holds only what committed.
+  const committedSection = text.split("## What happened")[1]?.split("##")[0];
+  expect(committedSection).not.toContain("stale-target");
+});
+
+test("an episode with no proposals says so", () => {
+  const empty = record([], []);
+  expect(renderTranscript(empty)).toContain("No god proposal was journaled.");
+});
+
+test("the summary adds one line counting dispositions by action kind and outcome across all episodes", () => {
+  const text = renderSummary([dispositionRecord(1), dispositionRecord(2)], {
+    seconds: 300,
+    model: "m",
+    files: ["episode-1.md", "episode-2.md"],
+  });
+  expect(text).toContain(
+    "- dispositions: bless 4 × stale-target, move 2 × committed, move 2 × not-adjacent",
+  );
+});
+
+test("the summary header names the requirement the gate is evidence for, on its own line, before the settings", () => {
+  const text = renderSummary([record([move("zeus", "olympus-gate", 2)])], {
+    seconds: 300,
+    model: "m",
+    files: ["episode-1.md"],
+  });
+  const lines = text.split("\n");
+  expect(lines[0]).toBe("# M2 experience gate");
+  expect(lines).toContain("- Requirements: O08");
+  expect(lines.indexOf("- Requirements: O08")).toBeLessThan(
+    lines.findIndex((line) => line.startsWith("- Model:")),
+  );
+});

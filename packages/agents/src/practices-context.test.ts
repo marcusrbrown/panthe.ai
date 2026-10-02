@@ -530,6 +530,7 @@ test("the schema stays flat: one practice object with move, thread, cause, and o
     "give-resource",
     "bless-mortal",
     "make-offering",
+    "ally",
   ]);
   expect(term.properties.party?.enum).toContain("hera");
   expect(term.properties.place?.enum).toContain("altar");
@@ -973,4 +974,260 @@ test("the event stream a god's turn reads is unaffected: practice events are pri
   expect(
     seen.map((e) => e.kind).filter((k) => k.startsWith("practice")),
   ).toEqual([]);
+});
+
+// --- Alliances, and swearing only to what one owes ---------------------------------------------
+
+const ally = (
+  party: string,
+  to: string,
+  ticks = 100,
+): Record<string, unknown> => ({
+  kind: "ally",
+  party,
+  to,
+  deadlineTicks: ticks,
+});
+
+test("an alliance is a term a god may offer: it is in the schema, parses in a demand and a counter, and binds only the two gods of the thread", () => {
+  const run = new Run();
+  const cause = run.hears("hera");
+  const hera = run.view("hera");
+  const term = (
+    hera.schema.jsonSchema as {
+      properties: { term: { properties: { kind: { enum: string[] } } } };
+    }
+  ).properties.term.properties.kind.enum;
+  expect(term).toContain("ally");
+  const demand = (t: unknown) =>
+    hera.schema.parse({ action: "practice", move: "demand", cause, term: t })
+      .ok;
+  // Hera asks Zeus to ally with her: he is the party, she the other.
+  expect(demand(ally("zeus", "hera"))).toBe(true);
+  expect(demand(ally("zeus", "zeus"))).toBe(false);
+  expect(demand(ally("zeus", "athena"))).toBe(false);
+  expect(demand(ally("hera", "zeus"))).toBe(false);
+  expect(demand({ kind: "ally", party: "zeus", deadlineTicks: 100 })).toBe(
+    false,
+  );
+
+  const thread = run.demand(cause, { term: ally("zeus", "hera") });
+  const zeus = run.view("zeus");
+  const counter = (t: unknown) =>
+    zeus.schema.parse({
+      action: "practice",
+      move: "counter",
+      thread: thread.id,
+      term: t,
+    }).ok;
+  expect(counter(ally("hera", "zeus"))).toBe(true);
+  expect(counter(ally("zeus", "hera"))).toBe(true);
+  expect(counter(ally("zeus", "zeus"))).toBe(false);
+});
+
+test("the digest and the prompt say an alliance in words, and the instructions name it among the terms", () => {
+  const run = new Run();
+  const cause = run.hears("hera");
+  const thread = run.demand(cause, { term: ally("zeus", "hera") });
+  const row = rowsOf(digestOf(run.view("zeus").context.prompt))[0] as string;
+  expect(row).toContain("you must ally with hera");
+  const heraRow = rowsOf(
+    digestOf(run.view("hera").context.prompt),
+  )[0] as string;
+  expect(heraRow).toContain("zeus must ally with you");
+  expect(run.view("hera").context.instructions).toContain("ally");
+  expect(thread.term.kind).toBe("ally");
+});
+
+test("an alliance offered by a model is built, committed, and sealed by the world: accepting it makes the two gods allies", () => {
+  const run = new Run();
+  const cause = run.hears("hera");
+  const { snapshot, remembered, schema } = run.view("hera");
+  const parsed = schema.parse({
+    action: "practice",
+    move: "demand",
+    cause,
+    term: ally("zeus", "hera"),
+  });
+  if (!parsed.ok) throw new Error(parsed.message);
+  const built = buildModelProposal(
+    id("hera"),
+    snapshot,
+    parsed.value,
+    remembered,
+  );
+  if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+  expect(built.proposal).toMatchObject({
+    kind: "practice",
+    move: "demand",
+    term: { kind: "ally", party: "zeus", to: "hera", deadlineTicks: 100 },
+  });
+  const ran = runTick(run.state, createPrng(1), [built.proposal]);
+  expect(ran.rejected).toEqual([]);
+  run.state = ran.state;
+  const thread = run.latest();
+  const after = run.move("zeus", "accept", thread.id);
+  expect(after?.status).toBe("fulfilled");
+  expect(run.state.relationships.get("hera>zeus" as never)?.allied).toBe(true);
+});
+
+test("a god is offered swear only on a thread whose term it must perform: the schema carries it then, the row says so, and a swear anywhere else is refused at parse", () => {
+  const run = new Run();
+  // Zeus owes: Hera demanded of him. He may swear it.
+  const owedToHera = run.demand(run.hears("hera", "a"));
+  const zeus = run.view("zeus");
+  const zeusProps = (
+    zeus.schema.jsonSchema as { properties: Record<string, unknown> }
+  ).properties;
+  expect(zeusProps.swear).toBeDefined();
+  expect(
+    zeus.schema.parse({
+      action: "practice",
+      move: "accept",
+      thread: owedToHera.id,
+      swear: true,
+    }).ok,
+  ).toBe(true);
+  const zeusRow = rowsOf(digestOf(zeus.context.prompt))[0] as string;
+  expect(zeusRow).toContain("swear true");
+
+  // Hera answers Zeus's counter, which binds Zeus: she does not owe it, so she may not swear it.
+  run.move("zeus", "counter", owedToHera.id, { term: tell("zeus", 150) });
+  const hera = run.view("hera");
+  expect(
+    hera.schema.parse({
+      action: "practice",
+      move: "accept",
+      thread: owedToHera.id,
+    }).ok,
+  ).toBe(true);
+  expect(
+    hera.schema.parse({
+      action: "practice",
+      move: "accept",
+      thread: owedToHera.id,
+      swear: true,
+    }).ok,
+  ).toBe(false);
+  expect(
+    (hera.schema.jsonSchema as { properties: Record<string, unknown> })
+      .properties.swear,
+  ).toBeUndefined();
+  const heraRow = rowsOf(digestOf(hera.context.prompt))[0] as string;
+  expect(heraRow).not.toContain("swear");
+  // A swear of false is no swear, and is fine anywhere.
+  expect(
+    hera.schema.parse({
+      action: "practice",
+      move: "accept",
+      thread: owedToHera.id,
+      swear: false,
+    }).ok,
+  ).toBe(true);
+});
+
+test("the world agrees with the parser: a swear the god may not make would have been refused, and one it may make commits sworn", () => {
+  const run = new Run();
+  const thread = run.demand(run.hears());
+  run.move("zeus", "counter", thread.id, { term: tell("zeus", 150) });
+  const refused = run.tick({
+    actor: "hera",
+    kind: "practice",
+    move: "accept",
+    thread: thread.id,
+    swear: true,
+  });
+  expect(refused.rejected.map((r) => r.reason)).toEqual(["unauthorized-claim"]);
+  const sworn = new Run();
+  const owed = sworn.demand(sworn.hears());
+  expect(
+    sworn.move("zeus", "accept", owed.id, { swear: true })?.acceptance?.sworn,
+  ).toBe(true);
+});
+
+// --- What a god remembers of an ending ---------------------------------------------------------
+
+test("a god who took part in a thread that ended remembers it in readable words, never as a raw event kind", () => {
+  const run = new Run();
+  const thread = run.demand(run.hears());
+  run.move("zeus", "refuse", thread.id);
+  for (const god of ["zeus", "hera"]) {
+    const { context, remembered } = run.view(god);
+    expect(
+      remembered.memories.some(
+        (m) => m.kind === "witnessed" && m.eventKind === "practice-moved",
+      ),
+    ).toBe(true);
+    expect(context.prompt).not.toContain("practice-moved");
+    expect(context.prompt).not.toContain("practice-ended");
+    expect(context.prompt).toMatch(
+      god === "zeus"
+        ? /A practice between (hera and zeus|zeus and hera) ended \[evt-[^\]]+\]/
+        : /A practice between (hera and zeus|zeus and hera) ended \[evt-[^\]]+\]/,
+    );
+  }
+});
+
+test("an ending, a motif, and a restored access in a god's own memory never crash the prompt or the schema, and an ending can be the cause of a later demand", () => {
+  const run = new Run();
+  const thread = run.demand(run.hears("hera", "Zeus visited a nymph"));
+  run.move("zeus", "refuse", thread.id);
+  // The ending memory is a shown memory: Hera may demand over how it ended.
+  const view = run.view("hera");
+  const ending = view.remembered.memories.find(
+    (m) => m.kind === "witnessed" && m.eventKind === "practice-moved",
+  );
+  if (!ending) throw new Error("no ending memory");
+  expect(view.remembered.practice.causes.map((c) => c.id)).toContain(
+    ending.sourceEventId,
+  );
+  expect(view.context.instructions).toContain(
+    `[${ending.sourceEventId}] a practice you were party to ended`,
+  );
+  expect(
+    view.schema.parse({
+      action: "practice",
+      move: "demand",
+      cause: ending.sourceEventId,
+      term: tell("zeus"),
+    }).ok,
+  ).toBe(true);
+  // The private motif events are in no one's perception and in no prompt.
+  run.apply({
+    kind: "access-restored",
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: "evt-0-1",
+  });
+  const text =
+    JSON.stringify(run.view("zeus").context) +
+    JSON.stringify(run.view("zeus").schema.jsonSchema);
+  expect(text).not.toContain("access-restored");
+  expect(text).not.toContain("motif-applied");
+});
+
+test("a sworn breach is lived through: the oath-breaker's prompt and schema still build, the penalty events appear nowhere in them, and both gods remember the ending in words", () => {
+  const run = new Run();
+  const thread = run.demand(run.hears());
+  run.move("zeus", "accept", thread.id, { swear: true });
+  while (run.state.threads.get(thread.id)?.status === "accepted") run.tick();
+  expect(run.state.threads.get(thread.id)?.status).toBe("breached");
+  const kinds = new Set(run.events.map((e) => e.kind));
+  expect(kinds.has("motif-applied")).toBe(true);
+  for (const god of ["zeus", "hera"]) {
+    const { context, schema, actions } = run.view(god);
+    expect(actions.at(-1)).toBe("wait");
+    const text = `${context.instructions}\n${context.prompt}\n${JSON.stringify(schema.jsonSchema)}`;
+    for (const raw of [
+      "practice-ended",
+      "practice-moved",
+      "motif-applied",
+      "access-restored",
+    ]) {
+      expect(text).not.toContain(raw);
+    }
+    expect(context.prompt).toMatch(
+      /A practice between \w+ and \w+ ended \[evt-/,
+    );
+  }
 });

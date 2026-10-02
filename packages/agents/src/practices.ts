@@ -59,6 +59,8 @@ export interface ThreadView {
   readonly tick: number;
   /** The answers this god may give now. */
   readonly moves: readonly AnswerMove[];
+  /** Whether this god may swear its acceptance: only the god who must perform the term may. */
+  readonly canSwear: boolean;
   /** Why an obligation of this god's cannot be performed now, when it cannot. */
   readonly unperformable?: string;
   /** Why the world judged the god's last move on this thread to make no progress. Unit 3 fills it. */
@@ -93,6 +95,11 @@ export const NO_PRACTICE: PracticeOptions = {
   causes: [],
 };
 
+/** Whether a witnessed memory's event kind is a thread's ending, which its parties remember though no one stood at it. */
+export function isEndingKind(kind: string): boolean {
+  return kind === "practice-moved" || kind === "practice-ended";
+}
+
 /**
  * What one memory says about the event it rests on, in the god's own terms. A
  * told account is named, not quoted: its words are in the memory section of the
@@ -102,7 +109,9 @@ export const NO_PRACTICE: PracticeOptions = {
 function describeBasis(memory: MemoryEntry): string {
   switch (memory.kind) {
     case "witnessed":
-      return `you saw ${memory.eventKind} (${memory.subjects.join(", ")})`;
+      return isEndingKind(memory.eventKind)
+        ? "a practice you were party to ended"
+        : `you saw ${memory.eventKind} (${memory.subjects.join(", ")})`;
     case "told":
       return `${memory.teller} told you of it`;
     case "noticed":
@@ -162,6 +171,8 @@ export function describeTerm(term: PracticeTerm, self: EntityId): string {
       return `${party} must bless ${term.mortal}`;
     case "make-offering":
       return `${party} must offer ${who(term.to)} ${term.amount} ${term.resource}`;
+    case "ally":
+      return `${party} must ally with ${who(term.to)}`;
   }
 }
 
@@ -259,6 +270,7 @@ export function practiceBy(
       counterBudgetLeft: thread.counterBudgetLeft,
       tick: state.tick,
       moves,
+      canSwear: moves.includes("accept") && thread.term.party === actorId,
       ...(obstacle === undefined ? {} : { unperformable: obstacle.message }),
     });
   }
@@ -355,7 +367,7 @@ function fullRow(view: ThreadView): string[] {
       lines.push(
         `- [${view.id}] AWAITING YOUR ANSWER: ${view.lastMove}: ${term}, ${by}. ${answerBy} Cause: ${view.cause}.`,
         respond
-          ? `  Answer with action "practice", thread "${view.id}", and move ${quoted(view.moves)}${view.moves.includes("accept") ? " (add swear true to swear it by the Styx)" : ""}${view.moves.includes("counter") ? `; a counter carries a new term (${view.counterBudgetLeft} left)` : ""}.`
+          ? `  Answer with action "practice", thread "${view.id}", and move ${quoted(view.moves)}${view.canSwear ? " (add swear true to swear it by the Styx)" : ""}${view.moves.includes("counter") ? `; a counter carries a new term (${view.counterBudgetLeft} left)` : ""}.`
           : `  The window to answer has closed; it ends on its own.`,
       );
       break;
@@ -444,7 +456,7 @@ export function describePracticeInstructions(
   const lines: string[] = [];
   if (canDemand) {
     lines.push(
-      `You may bargain with another god through the world (action "practice"). To demand something, send move "demand" with a cause you were shown and one term for that god to do by a deadline: tell a legend at a place, be at a place, stay away from a place, give a resource, bless a mortal, or make an offering. The world checks the term itself; only moves bind, and words never do.`,
+      `You may bargain with another god through the world (action "practice"). To demand something, send move "demand" with a cause you were shown and one term for that god to do by a deadline: tell a legend at a place, be at a place, stay away from a place, give a resource, bless a mortal, make an offering, or ally with you. The world checks the term itself; only moves bind, and words never do.`,
       `Causes you may demand over: ${options.causes.map((cause) => `[${cause.id}] ${cause.text}`).join("; ")}.`,
     );
   }
@@ -457,6 +469,17 @@ export function describePracticeInstructions(
 }
 
 // --- The intent ------------------------------------------------------------------------------
+
+/** The kinds of term a god may offer: the closed checkable set. */
+const TERM_KINDS = [
+  "tell-legend",
+  "be-at",
+  "stay-away",
+  "give-resource",
+  "bless-mortal",
+  "make-offering",
+  "ally",
+] as const;
 
 /** What a god's `practice` action says, once parsed against what it was shown. */
 export type PracticeIntent = { readonly action: "practice" } & (
@@ -489,6 +512,8 @@ export interface PracticeOffer {
   readonly canDemand: boolean;
   /** Each thread's other party, for the terms a counter may bind. */
   readonly otherOf: ReadonlyMap<EventId, EntityId>;
+  /** The threads this god may swear its acceptance of: those whose term it must perform. */
+  readonly swearable: readonly EventId[];
 }
 
 /** The practice offer, or `undefined` when the god has nothing to say in a practice now. */
@@ -516,6 +541,7 @@ export function practiceOffer(
     mortals: [...new Set([...options.mortals, ...herePresent])],
     canDemand,
     otherOf: new Map(threads.map((view) => [view.id, view.other])),
+    swearable: threads.filter((view) => view.canSwear).map((view) => view.id),
   };
 }
 
@@ -549,7 +575,7 @@ export function practiceProperties(
       enum: options.causes.map((cause) => cause.id),
     };
   }
-  if (offer.answers.accept.length > 0) properties.swear = { type: "boolean" };
+  if (offer.swearable.length > 0) properties.swear = { type: "boolean" };
   if (offer.canDemand || offer.answers.counter.length > 0) {
     const everyone = [offer.self, ...options.gods];
     properties.term = {
@@ -557,14 +583,7 @@ export function practiceProperties(
       properties: {
         kind: {
           type: "string",
-          enum: [
-            "tell-legend",
-            "be-at",
-            "stay-away",
-            "give-resource",
-            "bless-mortal",
-            "make-offering",
-          ],
+          enum: [...TERM_KINDS],
         },
         party: { type: "string", enum: everyone },
         place: { type: "string", enum: [...options.places] },
@@ -625,19 +644,7 @@ function parseTerm(
   }
   const fields = raw as Record<string, unknown>;
   const { options } = offer;
-  const kind = member(
-    fields.kind,
-    "term.kind",
-    [
-      "tell-legend",
-      "be-at",
-      "stay-away",
-      "give-resource",
-      "bless-mortal",
-      "make-offering",
-    ] as const,
-    "kind",
-  );
+  const kind = member(fields.kind, "term.kind", TERM_KINDS, "kind");
   if (!kind.ok) return kind;
   const party = member(
     fields.party,
@@ -687,6 +694,20 @@ function parseTerm(
           ...base,
           mortal: mortal.value as EntityId,
         },
+      };
+    }
+    case "ally": {
+      // An alliance is between the two gods of the thread: the party and the other.
+      const to = member(
+        fields.to,
+        "term.to",
+        pair.filter((p) => p !== base.party),
+        "to",
+      );
+      if (!to.ok) return to;
+      return {
+        ok: true,
+        value: { kind: "ally", ...base, to: to.value as EntityId },
       };
     }
     case "give-resource":
@@ -788,6 +809,12 @@ export function parsePractice(
       const swear = fields.swear;
       if (swear !== undefined && swear !== null && typeof swear !== "boolean") {
         return invalid("swear", "swear must be true or false");
+      }
+      if (swear === true && !offer.swearable.includes(id)) {
+        return invalid(
+          "swear",
+          "you may swear only a term you must perform yourself",
+        );
       }
       return {
         ok: true,

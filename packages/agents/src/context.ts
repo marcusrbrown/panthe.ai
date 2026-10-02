@@ -42,6 +42,7 @@ import type { ParseResult } from "./config";
 import {
   describeDigest,
   describePracticeInstructions,
+  isEndingKind,
   NO_PRACTICE,
   type PracticeIntent,
   type PracticeOffer,
@@ -1184,6 +1185,10 @@ function describeConsequence(consequence: Consequence | undefined): string {
 
 function describeMemory(memory: MemoryEntry): string {
   const what = describeConsequence(memory.consequence);
+  if (memory.kind === "witnessed" && isEndingKind(memory.eventKind)) {
+    // A thread's ending is remembered by its parties though no one stood at it; what it said is the thread's, not a scene.
+    return `- A practice between ${memory.subjects.join(" and ")} ended [${memory.sourceEventId}]`;
+  }
   if (memory.kind === "witnessed") {
     return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
   }

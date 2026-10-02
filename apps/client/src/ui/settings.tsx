@@ -725,7 +725,7 @@ export function SettingsView({
                         message={errors[`roles.${roleName}.fallback`]}
                       />
                     </label>
-                    <label className="toggle-row">
+                    <label className="toggle-row role-fallback-toggle">
                       <input
                         type="checkbox"
                         checked={role.inheritFallback}

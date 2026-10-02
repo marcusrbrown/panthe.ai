@@ -345,6 +345,19 @@ test("each role row offers a Use the global fallback checkbox, checked only whil
   expect(boxes[1]).toContain("checked");
 });
 
+test("role fallback toggles expose a separate layout hook from the offline toggle", () => {
+  const html = renderToStaticMarkup(
+    <SettingsView
+      transport={fakeTransport().transport}
+      initialSettings={{ models, offline: false }}
+    />,
+  );
+
+  expect(html.match(/class="toggle-row role-fallback-toggle"/g)).toHaveLength(
+    2,
+  );
+});
+
 // --- A key reference is trimmed once, for the settings and every key operation ----------
 
 test("a key reference with spaces is stored, deleted, and checked under the trimmed name that the settings hold", async () => {

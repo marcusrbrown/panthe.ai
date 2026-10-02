@@ -180,7 +180,7 @@ The review's three correctness fixes landed first as separate PRs: event-linked 
 - **Keys live in Keychain.** The shell reads a configured endpoint's key and passes it to the sidecar at spawn with the launch token; changing it restarts the sidecar. Keys stay out of config, prompts, saves, trace, and logs.
 - **Model-request payloads are bounded and pruned.** Trace rows keep bounded prompt and output text for evaluation and episode review, pruned after seven days (defaults.md); digests and metadata stay with the world history.
 - **Offline drops non-local endpoints, judged by URL.** An endpoint is local when its URL host is a loopback address, `localhost`, a private LAN address (10/8, 172.16/12, 192.168/16, IPv6 unique-local or link-local), or a `*.local` name; any other host is non-local. There is no editable flag. Offline mode removes non-local endpoints from assignment and fallback before any adapter is built, and adapters do not follow redirects. Model ids are always provider instances, never bare strings.
-- **Local routing uses `@ai-sdk/openai-compatible` against Ollama `/v1`** with a derived `llama3.2:3b` 4K model (`parallel=1` stays a server setting), and the promoted repair pass. The production chain is operator-configured per role. Every endpoint uses the same OpenAI-compatible adapter and repair pass; no tier or order is built in.
+- **Local routing uses `@ai-sdk/openai-compatible` against Ollama `/v1`** with a derived `llama3.2:3b` 4K model (`parallel=1` stays a server setting; since 2026-10-02 the local baseline is qwen3 8B at 4K, see the gate result below), and the promoted repair pass. The production chain is operator-configured per role. Every endpoint uses the same OpenAI-compatible adapter and repair pass; no tier or order is built in.
 - **A model outage never stops ticks.** `model-degraded` is a new status distinct from `store-error` and `disk-full`; routines and the director keep running. It shows through the existing status display with wording that separates it from a halting world failure and from intentional offline mode.
 - **Two gates decide whether M2 works.** After the slice, the owner rates real-inference Zeus and Hera episodes and chooses continue, tune, or replan before the other five gods are built. At exit, the unattended run must meet starting thresholds (Unit 13), revisited after the slice measurements. A failed run is kept as tuning evidence but does not pass.
 - **Scheduling is gods-first** within the ~39 turns/min capacity (ADR-0005): one inference at a time, bounded pending work per god, fairness across gods, a per-turn and total-fallback timeout under the 30 s starvation target, and pause freezes new dispatch.
@@ -306,7 +306,7 @@ sequenceDiagram
 
 **Verification:** `bun run check`; the scenario from Unit 8 later exercises the chain end to end.
 
-- [ ] **Unit 3: Minimal settings view and endpoint keys** (refined in `docs/plans/2026-10-01-003-feat-provider-settings-plan.md`)
+- [x] **Unit 3: Minimal settings view and endpoint keys** (refined in `docs/plans/2026-10-01-003-feat-provider-settings-plan.md`; shipped in #84 and #85)
 
 **Goal:** an endpoint list (base URL, model), per-role assignment and fallback order, persisted outside world saves; a write-only command stores an endpoint key in Keychain; the shell reads it at sidecar spawn and passes it with the launch token.
 
@@ -452,7 +452,7 @@ sequenceDiagram
 
 **Verification:** tests; a short live run with local Ollama shows god proposals committing.
 
-- [ ] **Unit 8: M2 slice scenario**
+- [x] **Unit 8: M2 slice scenario** (closed 2026-10-02 on the gate 3 continue; the threshold revisit moves to Unit 13)
 
 **Goal:** the causal story end to end against the compiled sidecar: a god acts, a witness remembers, another hears an imperfect report, a relationship changes, and the next choice changes.
 
@@ -493,6 +493,10 @@ Replan 2 (2026-10-01): gate 2 failed on both models, and the next replan is `doc
 
 Gate 3 diagnosis (2026-10-02): no model had answered a petition because a bless pinned the whole revision of the petitioner and of the god's location and was refused as `stale-target` before its own conditions were checked (73 of 81 proposals in one hosted episode); a bless now pins no revision, a report no longer pins its listener, and the harness records every proposal's outcome (`docs/solutions/logic-errors/whole-entity-revision-pins-refused-petition-answers-2026-10-02.md`).
 On the fix, 3 × 300 s: qwen3 8B passes every automated check in 6 of 6 god-episodes and answers 9 of 10 heard petitions in each, llama3.1 8B passes 2 of 6, and gpt-6-luna through a self-hosted proxy passes 5 of 6; the owner's ratings are not in, so Unit 9 still waits (transcripts in `tools/scenarios/m2-greek-cast/episodes/2026-10-02T03-46-02/`, `2026-10-02T04-04-50/`, and `2026-10-02T04-19-56/`).
+
+Gate 3 result (owner, 2026-10-02): continue. The rerun at b0d978d (#90–#94) on qwen3 8B at 4K with reasoning off (`tools/scenarios/m2-greek-cast/episodes/2026-10-02T14-29-04/`) passes every automated check in 5 of 6 god-episodes (Hera, episode 3: a repetition run of 4) and answers 9 of the 10 or 11 petitions each god hears, with 29 goals set and 28 ended and all-native output, and the owner rated all three episodes continue. Unit 9 is unblocked. qwen3 8B at 4K (`qwen3-8b-4k`, `tools/probes/inference-baseline/Modelfile.qwen3-8b-4k`) is the M2 local baseline model; llama3.1 8B (`2026-10-02T14-44-12/`) passes 2 of 6 and is comparison only. Three failures in that run are disclosed, and the owner reaffirmed continue with them known: repetition (Hera, episode 3, a run of 4); petition privacy in episode 1, a false positive of the check (Zeus stood at the altar from tick 102 to 116 and witnessed the farmer's prayer to Hera, which the petitions plan allows, and the check scans his whole prompt, not only his prayers section, which stays filtered; it is being narrowed separately); and changed next action in episodes 1 and 3, a coverage limit of the check plus run behaviour, not a regression (it looks only at each god's first belief or feeling and needs actions on both sides of it, and Hera's report reached Zeus before his first action; the qwen3 run before #91 to #94, `2026-10-02T04-19-56`, failed it in 2 of 3 episodes too).
+
+Unit 9 direction (owner, 2026-10-02): the episodes still repeat because the world gives a character too little to do. Unit 9 is planned as world-building: each new god's abilities are backed by new world rules, and the twenty inhabitants get needs, routines, and trades that give the gods something to answer and act on.
 
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
@@ -588,7 +592,7 @@ On the fix, 3 × 300 s: qwen3 8B passes every automated check in 6 of 6 god-epis
 - Captures the M2 workload baseline that ADR-0005's gate requires.
 - Owner scores selected episodes with the acceptance rubric; director-caused and god-caused episodes are scored separately.
 
-**Starting exit thresholds** (revisited at the experience gate; a run that misses any is kept as evidence and does not pass):
+**Starting exit thresholds** (revisited here with the measured numbers from the experience gates, moved from Unit 8 on 2026-10-02; a run that misses any is kept as evidence and does not pass):
 - Per god: p95 queue wait of 30 s or less (ADR-0005 starvation target).
 - Per god: a minimum count of committed actions tied to its own drives or abilities, and a repetition cap.
 - Per god: at least one relationship or belief change it caused.

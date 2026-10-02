@@ -11,6 +11,7 @@ bun run --cwd tools/scenarios scenario:m2                                    # b
 bun run --cwd tools/scenarios scenario:m2 --skip-build                       # reuse the built sidecar
 bun run --cwd tools/scenarios scenario:m2 --positive-control=<name>          # must exit non-zero; names below
 bun run --cwd tools/scenarios scenario:m2 --real [--seconds=180]             # both gods through local Ollama; asserts properties, writes real-run.json
+bun run --cwd tools/scenarios scenario:m2 --episodes=3 --reasoning-effort=none   # the experience gate on the local baseline, qwen3-8b-4k (set up once: ollama create qwen3-8b-4k -f tools/probes/inference-baseline/Modelfile.qwen3-8b-4k)
 bun run --cwd tools/scenarios scenario:m2 --episodes=3 --model=<model> --base-url=https://<host>/v1 [--key-ref=<keyRef>]   # the gate against a hosted endpoint; the key is read once from the Keychain
 bun run --cwd tools/scenarios scenario:m2 --write-readme                     # story + every control, rewrites this file from a fresh run and real-run.json
 ```

@@ -11,7 +11,13 @@ ollama serve &                      # native /api/chat on :11434
 ollama pull <model>                  # e.g. qwen3.5:2b-q4_K_M
 ```
 
-**Production routing model (M2):** the router and its live integration test use a 4K-context derivative of `llama3.2:3b`, so context size matches the measured baseline instead of Ollama's default. Create it once (it needs `ollama pull llama3.2:3b` first):
+**Production routing model (M2):** the M2 local baseline is qwen3 8B at a 4K context (owner, 2026-10-02; run it with `reasoning_effort` none), so the gate harness defaults to `qwen3-8b-4k`. Create it once (it needs `ollama pull qwen3:8b` first):
+
+```sh
+ollama create qwen3-8b-4k -f tools/probes/inference-baseline/Modelfile.qwen3-8b-4k
+```
+
+The router's live integration test still uses the 4K-context derivative of `llama3.2:3b` that M0 measured, so it stays fast; create it once (it needs `ollama pull llama3.2:3b` first):
 
 ```sh
 ollama create llama3.2-3b-4k -f tools/probes/inference-baseline/Modelfile.llama3.2-3b-4k

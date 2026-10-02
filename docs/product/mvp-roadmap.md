@@ -46,6 +46,8 @@ The M0 renderer probe app (`apps/probe-renderer`) was removed on 2026-09-28 (sou
 `ce9e5a4`; evidence stays in [the probe README](../../tools/probes/renderer-webgl2/README.md)), so
 the repeat runs will use the packaged desktop app with a measurement harness.
 
+2026-10-02 note: the M2 local baseline model is qwen3 8B at 4K (owner, after the M2 experience gate was rated continue; see [ADR-0005](../decisions/0005-model-providers.md)); the `llama3.2:3b` @ 4K figures above are the M0 measurement.
+
 **2026-09-28, memory-policy gate:** M1 closed without the coexistence re-measurement, so the
 "deferred to M1" assignment above no longer stands. Only the comparable baseline-versus-3-GiB pair is
 evidence (LLM p95 1242 → 3086 ms, 6 images), and it does not support that policy. The unconstrained,

@@ -3,8 +3,13 @@
 import { isLocalUrl, parseRoutingConfig } from "@panthea/agents/config";
 import { CONTROL_NAMES, type ControlName, type StoryOptions } from "./story";
 
-/** The model the real run and the experience gate use unless told otherwise. */
-export const DEFAULT_MODEL = "llama3.2-3b-4k";
+/**
+ * The model the real run and the experience gate use unless told otherwise:
+ * qwen3 8B at a 4K context, the M2 local baseline (owner, 2026-10-02). Create it
+ * with `tools/probes/inference-baseline/Modelfile.qwen3-8b-4k`; it is meant to be
+ * run with `--reasoning-effort=none`.
+ */
+export const DEFAULT_MODEL = "qwen3-8b-4k";
 
 export interface Args extends StoryOptions {
   readonly real: boolean;

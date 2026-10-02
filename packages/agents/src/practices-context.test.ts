@@ -957,6 +957,17 @@ test("prompt size on Zeus after the tavern strike: nothing, one awaiting thread,
     term: tell("hera"),
   });
   const busy = measure("obligation + 2 others", three);
+  // The same, with the last move refused: the one line the refusal adds.
+  const refusal = {
+    kind: "practice-refused",
+    entityId: "zeus",
+    attempted: "demand",
+    reason: "no-progress",
+    why: "that was already answered: hera refused it (evt-1-3); a demand on the same matter needs a cause you learned since it closed",
+  } as unknown as WorldEvent;
+  const refused = withRefusal(three, "zeus", refusal);
+  sizes["obligation + 2 others + refusal"] =
+    `${refused.context.instructions}\n\n${refused.context.prompt}`.length;
 
   // The digest leads, the instructions grow by one short paragraph, and each stays under the 4K-token context (about 16K characters).
   expect(awaiting.length).toBeGreaterThan(base.length);
@@ -1160,10 +1171,10 @@ test("a god who took part in a thread that ended remembers it in readable words,
     ).toBe(true);
     expect(context.prompt).not.toContain("practice-moved");
     expect(context.prompt).not.toContain("practice-ended");
-    expect(context.prompt).toMatch(
+    expect(context.prompt).toContain(
       god === "zeus"
-        ? /A practice between (hera and zeus|zeus and hera) ended \[evt-[^\]]+\]/
-        : /A practice between (hera and zeus|zeus and hera) ended \[evt-[^\]]+\]/,
+        ? "- you refused hera's offer ["
+        : "- zeus refused your offer [",
     );
   }
 });
@@ -1182,7 +1193,7 @@ test("an ending, a motif, and a restored access in a god's own memory never cras
     ending.sourceEventId,
   );
   expect(view.context.instructions).toContain(
-    `[${ending.sourceEventId}] a practice you were party to ended`,
+    `[${ending.sourceEventId}] zeus refused your offer`,
   );
   expect(
     view.schema.parse({
@@ -1226,8 +1237,270 @@ test("a sworn breach is lived through: the oath-breaker's prompt and schema stil
     ]) {
       expect(text).not.toContain(raw);
     }
-    expect(context.prompt).toMatch(
-      /A practice between \w+ and \w+ ended \[evt-/,
+    expect(context.prompt).toContain(
+      god === "zeus"
+        ? "- you breached the sworn term to hera ["
+        : "- zeus breached the sworn term to you [",
     );
   }
+});
+
+// --- How things ended, in the god's own words --------------------------------------------------
+
+/** The line `who` holds about the ending of its thread, from the "You remember" section. */
+const endingLine = (run: Run, who: string) =>
+  run
+    .view(who)
+    .context.prompt.split("\n")
+    .filter(
+      (l) =>
+        l.startsWith("- ") &&
+        /\[evt-[^\]]+\]$/.test(l) &&
+        !l.includes("told you"),
+    )
+    .at(-1);
+
+test("each way a thread can end is remembered as what it was and who decided it: a refusal, a sworn breach, a kept term, a sealed alliance, a lapse, a withdrawal, and a death", () => {
+  const refused = new Run();
+  refused.move("zeus", "refuse", refused.demand(refused.hears()).id);
+  expect(endingLine(refused, "zeus")).toContain("you refused hera's offer");
+  expect(endingLine(refused, "hera")).toContain("zeus refused your offer");
+
+  const sworn = new Run();
+  const owed = sworn.demand(sworn.hears(), { term: tell("zeus", 30) });
+  sworn.move("zeus", "accept", owed.id, { swear: true });
+  while (sworn.state.threads.get(owed.id)?.status === "accepted") sworn.tick();
+  expect(endingLine(sworn, "zeus")).toContain(
+    "you breached the sworn term to hera",
+  );
+  expect(endingLine(sworn, "hera")).toContain(
+    "zeus breached the sworn term to you",
+  );
+
+  const unsworn = new Run();
+  const plain = unsworn.demand(unsworn.hears(), { term: tell("zeus", 30) });
+  unsworn.move("zeus", "accept", plain.id);
+  while (unsworn.state.threads.get(plain.id)?.status === "accepted")
+    unsworn.tick();
+  expect(endingLine(unsworn, "hera")).toContain(
+    "zeus breached the term to you",
+  );
+  expect(endingLine(unsworn, "hera")).not.toContain("sworn");
+
+  const kept = new Run();
+  const keep = kept.demand(kept.hears(), {
+    term: {
+      kind: "be-at",
+      party: "zeus",
+      place: "great-hall",
+      deadlineTicks: 30,
+    },
+  });
+  kept.move("zeus", "accept", keep.id);
+  expect(endingLine(kept, "zeus")).toContain("you fulfilled the term to hera");
+  expect(endingLine(kept, "hera")).toContain("zeus fulfilled the term to you");
+
+  const allied = new Run();
+  const bond = allied.demand(allied.hears(), {
+    term: { kind: "ally", party: "zeus", to: "hera", deadlineTicks: 100 },
+  });
+  allied.move("zeus", "accept", bond.id);
+  expect(endingLine(allied, "zeus")).toContain(
+    "you and hera sealed an alliance",
+  );
+  expect(endingLine(allied, "hera")).toContain(
+    "you and zeus sealed an alliance",
+  );
+
+  const lapsed = new Run();
+  const idle = lapsed.demand(lapsed.hears());
+  while (lapsed.state.threads.get(idle.id)?.status === "open") lapsed.tick();
+  expect(endingLine(lapsed, "hera")).toContain(
+    "your practice with zeus expired unanswered",
+  );
+
+  const withdrawn = new Run();
+  withdrawn.move("hera", "withdraw", withdrawn.demand(withdrawn.hears()).id);
+  expect(endingLine(withdrawn, "hera")).toContain(
+    "you withdrew from the practice with zeus",
+  );
+  expect(endingLine(withdrawn, "zeus")).toContain(
+    "hera withdrew from the practice with you",
+  );
+});
+
+test("a memory of an ending the god holds without an outcome (one from before outcomes were kept) still reads as an ending, and never as a raw event kind", () => {
+  const run = new Run();
+  run.move("zeus", "refuse", run.demand(run.hears()).id);
+  const { snapshot, remembered } = run.view("hera");
+  const bare = remembered.memories.map((m) => {
+    if (m.kind !== "witnessed") return m;
+    const { ending: _gone, ...rest } = m as typeof m & { ending?: unknown };
+    return rest as typeof m;
+  });
+  const text = buildGodContext(godProfile("hera"), snapshot, {
+    ...remembered,
+    memories: bare,
+  }).prompt;
+  expect(text).toMatch(
+    /- A practice between (hera and zeus|zeus and hera) ended \[evt-/,
+  );
+  expect(text).not.toContain("practice-moved");
+});
+
+// --- Why the last practice move was refused ----------------------------------------------------
+
+function refusedRun() {
+  const run = new Run();
+  const cause = run.hears();
+  const thread = run.demand(cause);
+  run.move("zeus", "refuse", thread.id);
+  const again = run.tick({
+    actor: "hera",
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause,
+    term: tell("zeus"),
+  });
+  expect(again.rejected.map((r) => r.reason)).toEqual(["no-progress"]);
+  const refusal = run.events
+    .filter((e) => e.kind === "practice-refused")
+    .at(-1);
+  if (refusal?.kind !== "practice-refused") throw new Error("no refusal event");
+  return { run, cause, thread, refusal };
+}
+
+const withRefusal = (run: Run, god: string, refusal: WorldEvent) => {
+  const snapshot = perceive(run.state, id(god), run.events);
+  if (!snapshot) throw new Error("no snapshot");
+  const remembered = rememberedBy(
+    run.state,
+    id(god),
+    [],
+    undefined,
+    refusal as never,
+  );
+  return {
+    remembered,
+    snapshot,
+    context: buildGodContext(godProfile(god), snapshot, remembered),
+    schema: godIntentSchema(godProfile(god), snapshot, remembered),
+  };
+};
+
+test("a repeated demand the world refused is told to the god in its next digest: it was already answered, and by whom", () => {
+  const { run, refusal } = refusedRun();
+  const { context } = withRefusal(run, "hera", refusal);
+  const digest = digestOf(context.prompt);
+  // Hera has no open thread, yet the digest exists, leads the prompt, and says why.
+  expect(context.prompt.split("\n")[0]).toBe(PRACTICES_HEADING);
+  expect(digest.join("\n")).toContain("Your last demand was refused");
+  expect(digest.join("\n")).toContain(
+    "that was already answered: zeus refused it",
+  );
+  // Control: Zeus, who was not refused, is shown none of it.
+  expect(digestOf(withRefusal(run, "zeus", refusal).context.prompt)).toEqual(
+    [],
+  );
+  // And the god that is shown nothing of the sort (no refusal passed) gets no digest.
+  expect(digestOf(run.view("hera").context.prompt)).toEqual([]);
+});
+
+test("a refused move on an open thread is told on that thread's own row", () => {
+  const run = new Run();
+  run.demand(run.hears());
+  const thread = run.latest();
+  run.move("zeus", "counter", thread.id, { term: tell("zeus", 150) });
+  const stuck = run.tick({
+    actor: "hera",
+    kind: "practice",
+    move: "counter",
+    thread: thread.id,
+    term: tell("zeus", 150),
+  });
+  expect(stuck.rejected.map((r) => r.reason)).toEqual(["no-progress"]);
+  const refusal = run.events
+    .filter((e) => e.kind === "practice-refused")
+    .at(-1);
+  if (!refusal) throw new Error("no refusal");
+  const { context, remembered } = withRefusal(run, "hera", refusal);
+  const row = rowsOf(digestOf(context.prompt))[0] as string;
+  expect(row).toContain(`[${thread.id}]`);
+  expect(row).toContain("Not accepted: that is the offer already on the table");
+  expect(remembered.threads[0]?.noProgress).toContain("already on the table");
+  // Said once: on the row, not again as a line of its own.
+  expect(
+    digestOf(context.prompt)
+      .join("\n")
+      .match(/already on the table/g),
+  ).toHaveLength(1);
+});
+
+test("talk the world refused for circling a thread, and moves refused for other reasons, are told in the god's words and never in the world's: no hidden facts, and a reason it can act on", () => {
+  const cases: [string, string, string][] = [
+    ["stale-target", "accept", "the thread changed while you were deciding"],
+    ["malformed", "demand", "the world would not take that move now"],
+    ["unauthorized-claim", "counter", "you may not make that move"],
+    ["insufficient-resources", "demand", "you cannot afford that term"],
+    ["not-adjacent", "demand", "you cannot reach that by its deadline"],
+    ["dead-actor", "accept", "someone in it is no longer living"],
+    ["busy-actor", "refuse", "you had already acted this tick"],
+  ];
+  const run = new Run();
+  run.demand(run.hears());
+  for (const [reason, attempted, words] of cases) {
+    const event = {
+      kind: "practice-refused",
+      entityId: "zeus",
+      attempted,
+      reason,
+      // A world message must never be shown for these: it might name another's petitions or holdings.
+      why: "SECRET-PETITION-OF-FARMER",
+    } as unknown as WorldEvent;
+    const { context } = withRefusal(run, "zeus", event);
+    const text = digestOf(context.prompt).join("\n");
+    expect([reason, text.includes(words)]).toEqual([reason, true]);
+    expect(text).not.toContain("SECRET-PETITION");
+  }
+  const talk = {
+    kind: "practice-refused",
+    entityId: "zeus",
+    attempted: "report",
+    reason: "no-progress",
+    why: "talk about this does not move evt-1-3 forward; answer it with a practice move",
+  } as unknown as WorldEvent;
+  expect(
+    digestOf(withRefusal(run, "zeus", talk).context.prompt).join("\n"),
+  ).toContain(
+    "Your last report was refused: talk about this does not move evt-1-3 forward",
+  );
+});
+
+test("the refusal line counts against the digest and stays small: an obligation, two threads, and a refusal still fit", () => {
+  const { run, refusal } = refusedRun();
+  const owed = run.demand(run.hears("hera", "o"), { term: tell("zeus", 90) });
+  run.move("zeus", "accept", owed.id);
+  run.demand(run.hears("hera", "p"), { term: tell("zeus", 95) });
+  const digest = digestOf(withRefusal(run, "hera", refusal).context.prompt);
+  expect(rowsOf(digest).length).toBeGreaterThanOrEqual(3);
+  expect(digest.join("\n")).toContain("Your last demand was refused");
+  expect(digest.join("\n").length).toBeLessThan(1900);
+});
+
+test("a refusal never displaces what leads the digest: the obligation is still its first row, and the refusal comes after every row", () => {
+  const run = new Run();
+  const owed = run.demand(run.hears("hera", "o"), { term: tell("zeus", 90) });
+  run.move("zeus", "accept", owed.id);
+  run.demand(run.hears("hera", "p"), { term: tell("zeus", 95) });
+  const refusal = {
+    kind: "practice-refused",
+    entityId: "zeus",
+    attempted: "demand",
+    reason: "stale-target",
+  } as unknown as WorldEvent;
+  const digest = digestOf(withRefusal(run, "zeus", refusal).context.prompt);
+  const rows = rowsOf(digest);
+  expect(rows[0]).toContain("YOU OWE hera");
+  expect(rows.at(-1)).toContain("Your last demand was refused");
 });

@@ -12,6 +12,7 @@
 import type {
   EntityId,
   EventId,
+  PracticeRefusedEvent,
   PracticeTerm,
   PracticeTermOffer,
 } from "@panthea/contracts";
@@ -67,6 +68,41 @@ export interface ThreadView {
   readonly noProgress?: string;
 }
 
+/** A refused practice move, as the god's prompt tells it: what it tried and why the world would not take it, in words that name nothing the god was not shown. */
+export interface PracticeRefusalView {
+  readonly attempted: PracticeRefusedEvent["attempted"];
+  readonly reason: PracticeRefusedEvent["reason"];
+  readonly thread?: EventId;
+  readonly text: string;
+}
+
+/** What a refusal other than no-progress says: only what the god can act on. The world's own message is never shown for these, since it may name what the god has no way to know. */
+const REFUSAL_WORDS: Readonly<Record<string, string>> = {
+  "stale-target": "the thread changed while you were deciding",
+  malformed: "the world would not take that move now",
+  "unauthorized-claim": "you may not make that move",
+  "insufficient-resources": "you cannot afford that term",
+  "insufficient-power": "you lack the power that term needs",
+  "dead-actor": "someone in it is no longer living",
+  "not-adjacent": "you cannot reach that by its deadline",
+  "restricted-realm": "you cannot enter where that needs you to be",
+  "busy-actor": "you had already acted this tick",
+  "counterparty-declined": "the other side declined",
+};
+
+/** The refusal as the prompt tells it. A no-progress refusal says what already answered the move, which the world built from the thread itself. */
+export function refusalView(event: PracticeRefusedEvent): PracticeRefusalView {
+  return {
+    attempted: event.attempted,
+    reason: event.reason,
+    ...(event.thread === undefined ? {} : { thread: event.thread }),
+    text:
+      event.reason === "no-progress"
+        ? (event.why ?? "that made no progress")
+        : (REFUSAL_WORDS[event.reason] ?? "the world refused it"),
+  };
+}
+
 /** A cause the god may open a demand on: an event it remembers, with the memory that says so. */
 export interface DemandCause {
   readonly id: EventId;
@@ -101,16 +137,58 @@ export function isEndingKind(kind: string): boolean {
 }
 
 /**
+ * How a thread ended, as its party remembers it: what happened and who decided
+ * it, in the party's own terms ("you", or the other god's id). A memory held
+ * from before outcomes were kept says only that a practice ended.
+ */
+export function describeEnding(
+  memory: Extract<MemoryEntry, { kind: "witnessed" }>,
+  self: EntityId | undefined,
+): string {
+  const parties = memory.subjects;
+  const other = parties.find((party) => party !== self);
+  const { ending } = memory;
+  if (ending === undefined || self === undefined || other === undefined) {
+    return `A practice between ${parties.join(" and ")} ended`;
+  }
+  const who = (id: EntityId) => (id === self ? "you" : id);
+  const agent = ending.agent;
+  const toward = (id: EntityId) => (id === self ? other : "you");
+  const term = `${ending.sworn === true ? "sworn " : ""}term`;
+  switch (ending.outcome) {
+    case "refused":
+      return agent === undefined
+        ? `the practice with ${other} ended refused: no counteroffers were left`
+        : `${who(agent)} refused ${agent === self ? `${other}'s` : "your"} offer`;
+    case "withdrawn":
+      return agent === undefined
+        ? `the practice with ${other} ended: a party died`
+        : `${who(agent)} withdrew from the practice with ${toward(agent)}`;
+    case "expired":
+      return `your practice with ${other} expired unanswered`;
+    case "fulfilled":
+      if (ending.sealed === true) return `you and ${other} sealed an alliance`;
+      return agent === undefined
+        ? `the practice with ${other} was fulfilled`
+        : `${who(agent)} fulfilled the ${term} to ${toward(agent)}`;
+    case "breached":
+      return agent === undefined
+        ? `the practice with ${other} was breached`
+        : `${who(agent)} breached the ${term} to ${toward(agent)}`;
+  }
+}
+
+/**
  * What one memory says about the event it rests on, in the god's own terms. A
  * told account is named, not quoted: its words are in the memory section of the
  * prompt, and quoting them again here would carry a teller's words into a line
  * the privacy checks do not recognize as a told account.
  */
-function describeBasis(memory: MemoryEntry): string {
+function describeBasis(memory: MemoryEntry, self: EntityId): string {
   switch (memory.kind) {
     case "witnessed":
       return isEndingKind(memory.eventKind)
-        ? "a practice you were party to ended"
+        ? describeEnding(memory, self)
         : `you saw ${memory.eventKind} (${memory.subjects.join(", ")})`;
     case "told":
       return `${memory.teller} told you of it`;
@@ -144,12 +222,17 @@ const evidences = (memory: MemoryEntry, cause: EventId) =>
 /** The causes a god may open a demand on: what the memories its prompt shows are evidence of. */
 export function demandCauses(
   shown: readonly MemoryEntry[],
+  self: EntityId,
 ): readonly DemandCause[] {
   const causes = new Map<EventId, DemandCause>();
   for (const memory of shown) {
     const id = basisOf(memory);
     if (id === undefined || causes.has(id)) continue;
-    causes.set(id, { id, memoryId: memory.id, text: describeBasis(memory) });
+    causes.set(id, {
+      id,
+      memoryId: memory.id,
+      text: describeBasis(memory, self),
+    });
   }
   return [...causes.values()];
 }
@@ -186,7 +269,9 @@ function causeAsKnown(
   const memories = getMemories(state, self);
   const known = causes.flatMap((cause) => {
     const memory = memories.find((m) => evidences(m, cause));
-    return memory === undefined ? [] : [`${describeBasis(memory)} [${cause}]`];
+    return memory === undefined
+      ? []
+      : [`${describeBasis(memory, self)} [${cause}]`];
   });
   if (known.length > 0) return known.join("; ");
   return `${demander === self ? "you cite" : `${demander} cites`} an event; you hold no account of it`;
@@ -198,6 +283,7 @@ export function practiceBy(
   actorId: EntityId,
   shownMemories: readonly MemoryEntry[],
   shownPetitioners: readonly EntityId[],
+  refusal?: PracticeRefusalView,
 ): { threads: readonly ThreadView[]; options: PracticeOptions } {
   const self = getActor(state, actorId);
   if (!self?.isDeity) return { threads: [], options: NO_PRACTICE };
@@ -271,6 +357,9 @@ export function practiceBy(
       tick: state.tick,
       moves,
       canSwear: moves.includes("accept") && thread.term.party === actorId,
+      ...(refusal?.reason === "no-progress" && refusal.thread === thread.id
+        ? { noProgress: refusal.text }
+        : {}),
       ...(obstacle === undefined ? {} : { unperformable: obstacle.message }),
     });
   }
@@ -333,7 +422,7 @@ export function practiceBy(
       resources: [...resources].sort(byId),
       minTicks: practiceBalanceOf(state.rules, "minTermTicks"),
       maxTicks: practiceBalanceOf(state.rules, "maxTermTicks"),
-      causes: demandCauses(shownMemories),
+      causes: demandCauses(shownMemories, actorId),
     },
   };
 }
@@ -416,11 +505,21 @@ const sizeOf = (lines: readonly string[]) =>
  */
 export function describeDigest(
   threads: readonly ThreadView[],
+  refusal?: PracticeRefusalView,
   budget = DIGEST_BUDGET_CHARS,
 ): string[] {
-  if (threads.length === 0) return [];
+  // A refusal bound to an open thread is said on that thread's row; any other is a line of its own.
+  const onRow =
+    refusal !== undefined &&
+    threads.some((view) => view.noProgress !== undefined);
+  const lineOf =
+    refusal === undefined || onRow
+      ? []
+      : [`- Your last ${refusal.attempted} was refused: ${refusal.text}.`];
+  if (threads.length === 0 && lineOf.length === 0) return [];
+  // The refusal comes after every row, so an obligation still leads the digest; its size is reserved.
   const lines: string[] = [PRACTICES_HEADING];
-  let used = sizeOf(lines);
+  let used = sizeOf(lines) + sizeOf(lineOf);
   let cut = 0;
   for (const view of threads) {
     const full = fullRow(view);
@@ -440,6 +539,7 @@ export function describeDigest(
   if (cut > 0) {
     lines.push(`- (${cut} more open thread${cut === 1 ? "" : "s"} not shown)`);
   }
+  lines.push(...lineOf);
   return lines;
 }
 

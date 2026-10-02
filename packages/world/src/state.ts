@@ -23,6 +23,7 @@ import type {
   InhabitantDrives,
   LegendId,
   LocationEdge,
+  MemoryEnding,
   PetitionRequest,
   PracticeKind,
   PracticeStatus,
@@ -30,6 +31,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  ThreadSubject,
   Transformation,
   UnmetNeedReason,
   WitnessedEventKind,
@@ -234,6 +236,8 @@ export type MemoryEntry = {
       readonly kind: "witnessed";
       /** The event seen, or the ending of a thread its owner took part in. */
       readonly eventKind: WitnessedEventKind | EndingEventKind;
+      /** How the thread ended, present exactly when `eventKind` is an ending: the outcome and, when someone's act decided it, who. */
+      readonly ending?: MemoryEnding;
     }
   | {
       readonly kind: "told";
@@ -364,6 +368,10 @@ export interface PracticeThread {
   /** The cause events the thread consumed: what the opener knew when it opened. A closed thread keeps them, so a successor can be told apart by a newer cause. */
   readonly causes: readonly EventId[];
   readonly term: PracticeTerm;
+  /** What the demand is about, from the demander's own memory of its cause when that names an agent. A repeat demand and talk around the thread are matched against it, never against words. */
+  readonly subject?: ThreadSubject;
+  /** The tuple of every offer that has been on the table, the demand and each counter, as `termTuple` keys: what a counter that changes nothing is compared with. */
+  readonly offers: readonly string[];
   /** What the one who breaches the term becomes: a transformation the demand carried, applied by the world when it rules a breach. Absent when the demand named none. */
   readonly stake?: Transformation;
   /** Whose offer `term` is: the other god may answer it. */

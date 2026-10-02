@@ -108,3 +108,29 @@ test("no proposals reads as none", () => {
   expect(renderDispositionCounts([])).toBe("none");
   expect(buildDispositions(input([]))).toEqual([]);
 });
+
+test("a practice move is told apart by its move and what it names, and a no-progress rejection travels as its reason like any other", () => {
+  const demand = {
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause: "evt-3",
+  };
+  const answer = { kind: "practice", move: "accept", thread: "evt-9" };
+  const made = [
+    rejected("hera", demand, "no-progress", 5),
+    rejected("hera", demand, "no-progress", 6),
+    act("zeus", answer, 7),
+  ];
+  const dispositions = buildDispositions(run(made));
+  expect(
+    dispositions.map((d) => [d.actor, d.kind, d.target, d.outcome]),
+  ).toEqual([
+    ["hera", "practice", "demand evt-3", "no-progress"],
+    ["hera", "practice", "demand evt-3", "no-progress"],
+    ["zeus", "practice", "accept evt-9", "committed"],
+  ]);
+  expect(renderDispositionCounts(dispositions)).toBe(
+    "practice 2 × no-progress, practice 1 × committed",
+  );
+});

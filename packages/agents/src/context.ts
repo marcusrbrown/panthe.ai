@@ -19,6 +19,7 @@ import {
   type GoalChangeRefusedEvent,
   MAX_GOAL_LENGTH,
   MAX_REPORT_LENGTH,
+  type PracticeRefusedEvent,
   type WorldEvent,
 } from "@panthea/contracts";
 import {
@@ -41,16 +42,19 @@ import {
 import type { ParseResult } from "./config";
 import {
   describeDigest,
+  describeEnding,
   describePracticeInstructions,
   isEndingKind,
   NO_PRACTICE,
   type PracticeIntent,
   type PracticeOffer,
   type PracticeOptions,
+  type PracticeRefusalView,
   parsePractice,
   practiceBy,
   practiceOffer,
   practiceProperties,
+  refusalView,
   type ThreadView,
 } from "./practices";
 import type { IntentSchema, RouteContext } from "./router";
@@ -228,6 +232,10 @@ export interface Remembered {
   readonly threads: readonly ThreadView[];
   /** What a practice term may name, and the causes a demand may rest on. */
   readonly practice: PracticeOptions;
+  /** The god's last practice move the world refused, and why: what the digest says about it. */
+  readonly practiceRefusal: PracticeRefusalView | undefined;
+  /** Whose memory this is: what lets an ending read as "you refused" or "zeus refused". Absent for the empty memory. */
+  readonly self: EntityId | undefined;
 }
 
 /** Whether `ids` name `target` or a building `target` owns. */
@@ -417,6 +425,7 @@ export function rememberedBy(
   actorId: EntityId,
   ownEvents: readonly WorldEvent[] = [],
   refusal?: GoalChangeRefusedEvent,
+  practiceRefusal?: PracticeRefusedEvent,
 ): Remembered {
   const own = ownEvents
     .filter((event) => authoredAction(event, actorId))
@@ -466,11 +475,17 @@ export function rememberedBy(
         petitionView(state, self, petition),
       )
     : [];
+  // Only the god's own refusal is told to it: another's is never read into its prompt.
+  const refused =
+    practiceRefusal === undefined || practiceRefusal.entityId !== actorId
+      ? undefined
+      : refusalView(practiceRefusal);
   const { threads, options } = practiceBy(
     state,
     actorId,
     memories,
     petitions.map((petition) => petition.petitioner),
+    refused,
   );
   const lock =
     state.rules.petitionBalance === undefined
@@ -502,6 +517,8 @@ export function rememberedBy(
         : undefined,
     threads,
     practice: options,
+    practiceRefusal: refused,
+    self: actorId,
   };
 }
 
@@ -517,6 +534,8 @@ export const NOTHING_REMEMBERED: Remembered = {
   refusal: undefined,
   threads: [],
   practice: NO_PRACTICE,
+  practiceRefusal: undefined,
+  self: undefined,
 };
 
 /**
@@ -1183,11 +1202,11 @@ function describeConsequence(consequence: Consequence | undefined): string {
   return `${consequence.agent} ${EFFECT_WORDS[consequence.effect]} ${consequence.target ?? "someone"}`;
 }
 
-function describeMemory(memory: MemoryEntry): string {
+function describeMemory(memory: MemoryEntry, self?: EntityId): string {
   const what = describeConsequence(memory.consequence);
   if (memory.kind === "witnessed" && isEndingKind(memory.eventKind)) {
-    // A thread's ending is remembered by its parties though no one stood at it; what it said is the thread's, not a scene.
-    return `- A practice between ${memory.subjects.join(" and ")} ended [${memory.sourceEventId}]`;
+    // A thread's ending is remembered by its parties though no one stood at it: how it ended, and who decided it.
+    return `- ${describeEnding(memory, self)} [${memory.sourceEventId}]`;
   }
   if (memory.kind === "witnessed") {
     return `- You saw [${memory.sourceEventId}] ${memory.eventKind} (${memory.subjects.join(", ")})${what === "" ? "" : `: ${what}`}`;
@@ -1206,7 +1225,12 @@ function describeMemory(memory: MemoryEntry): string {
 function describeRemembered(remembered: Remembered): string[] {
   const lines: string[] = [];
   if (remembered.memories.length > 0) {
-    lines.push("You remember:", ...remembered.memories.map(describeMemory));
+    lines.push(
+      "You remember:",
+      ...remembered.memories.map((memory) =>
+        describeMemory(memory, remembered.self),
+      ),
+    );
   }
   if (remembered.relationships.length > 0) {
     lines.push(
@@ -1244,9 +1268,12 @@ function describeOwnAction(event: WorldEvent): string {
   }
 }
 
-function describeHistoryEntry(entry: GoalHistoryEntry): string {
+function describeHistoryEntry(
+  entry: GoalHistoryEntry,
+  self?: EntityId,
+): string {
   return entry.kind === "memory"
-    ? describeMemory(entry.memory)
+    ? describeMemory(entry.memory, self)
     : `- ${describeOwnAction(entry.event)}`;
 }
 
@@ -1363,7 +1390,9 @@ function describeSelf(
     if (remembered.goalHistory.length > 0) {
       lines.push(
         "Since you set it:",
-        ...remembered.goalHistory.map(describeHistoryEntry),
+        ...remembered.goalHistory.map((entry) =>
+          describeHistoryEntry(entry, remembered.self),
+        ),
       );
     }
   }
@@ -1449,7 +1478,7 @@ export function buildGodContext(
           .map((item) => `${item.resource} ${item.amount}`)
           .join(", ");
   const prompt = [
-    ...describeDigest(remembered.threads),
+    ...describeDigest(remembered.threads, remembered.practiceRefusal),
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
     ...describePetitions(remembered),

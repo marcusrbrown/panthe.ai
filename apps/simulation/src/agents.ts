@@ -19,6 +19,7 @@ import {
 import {
   type EntityId,
   type GoalChangeRefusedEvent,
+  type PracticeRefusedEvent,
   UNPLACED_EVENT_KINDS,
   type WorldEvent,
 } from "@panthea/contracts";
@@ -132,6 +133,38 @@ export function readLatestRefusal(
     : (JSON.parse(row.payload) as GoalChangeRefusedEvent);
 }
 
+/**
+ * The god's latest refused practice move (or talk around an open thread) up to
+ * `toSequence`, if no practice move of its own has committed since. A refusal
+ * is private world state like the goal refusal: committed with the rejected
+ * proposal, so replay reproduces exactly what the god is told. The god's own
+ * next committed move answers it, and it is no longer shown. Read inside the
+ * turn's handled path with the other store reads.
+ */
+export function readLatestPracticeRefusal(
+  db: Store["db"],
+  god: EntityId,
+  toSequence: number,
+): PracticeRefusedEvent | undefined {
+  const row = db
+    .query(
+      `SELECT payload FROM events
+       WHERE sequence <= ? AND kind = 'practice-refused'
+         AND json_extract(payload, '$.entityId') = ?
+         AND sequence > COALESCE(
+           (SELECT MAX(sequence) FROM events
+            WHERE sequence <= ? AND kind IN ('practice-opened', 'practice-moved')
+              AND json_extract(payload, '$.entityId') = ?),
+           0)
+       ORDER BY sequence DESC
+       LIMIT 1`,
+    )
+    .get(toSequence, god, toSequence, god) as { payload: string } | null;
+  return row === null
+    ? undefined
+    : (JSON.parse(row.payload) as PracticeRefusedEvent);
+}
+
 /** The actors with a pending journal entry: they have a proposal waiting and get no new turn. */
 function actorsWithPendingProposals(store: Store): ReadonlySet<string> {
   const actors = new Set<string>();
@@ -228,12 +261,18 @@ export function createGodTurnRunner(deps: GodTurnRunnerDeps): GodTurnRunner {
       });
       const ownEvents = readOwnEvents(deps.store.db, god, state.lastSequence);
       const refusal = readLatestRefusal(deps.store.db, god, state.lastSequence);
+      const practiceRefusal = readLatestPracticeRefusal(
+        deps.store.db,
+        god,
+        state.lastSequence,
+      );
       const result = await runGodTurn(deps, {
         state,
         actorId: god,
         recentEvents,
         ownEvents,
         ...(refusal === undefined ? {} : { refusal }),
+        ...(practiceRefusal === undefined ? {} : { practiceRefusal }),
         signal,
       });
       if (result && !signal.aborted) conclude(result);

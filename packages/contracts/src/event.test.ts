@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(35);
+  expect(WORLD_EVENT_KINDS).toHaveLength(36);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -987,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 16);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 17);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -2043,4 +2043,127 @@ test("a witnessed memory of a thread ending says how it ended, and no other witn
   ]) {
     expect(ending(bad).ok).toBe(false);
   }
+});
+
+// --- Anti-loop: a thread's subject, refused moves, and how a thread ended ---------------------
+
+test("a practice-opened event may name the thread's subject: the agent and, when the cause names one, the target; a malformed subject is refused", () => {
+  const withSubject = (subject: unknown) =>
+    parseEvent(envelope({ ...PRACTICE_OPENED, subject }));
+  const both = withSubject({ agent: "zeus", target: "farmer" });
+  expect(both.ok).toBe(true);
+  if (both.ok && both.value.kind === "practice-opened") {
+    expect(both.value.subject).toEqual({
+      agent: "zeus",
+      target: "farmer",
+    } as never);
+  }
+  expect(withSubject({ agent: "zeus" }).ok).toBe(true);
+  expect(parseEvent(envelope(PRACTICE_OPENED)).ok).toBe(true);
+  for (const bad of [
+    {},
+    { target: "farmer" },
+    { agent: 7 },
+    { agent: "zeus", target: 4 },
+    "zeus",
+  ]) {
+    expect(withSubject(bad).ok).toBe(false);
+  }
+});
+
+test("a practice-refused event records a refused practice move and why: a reason the world gives, the move, the thread it concerned, and for no-progress what already answered it", () => {
+  const refused = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-refused",
+        entityId: "hera",
+        attempted: "demand",
+        reason: "no-progress",
+        thread: "evt-9",
+        why: "that was already answered",
+        ...overrides,
+      }),
+    );
+  const good = refused({});
+  expect(good.ok).toBe(true);
+  if (good.ok && good.value.kind === "practice-refused") {
+    expect(good.value.reason).toBe("no-progress");
+    expect(String(good.value.thread)).toBe("evt-9");
+    expect(good.value.why).toBe("that was already answered");
+  }
+  for (const attempted of [
+    "demand",
+    "counter",
+    "accept",
+    "refuse",
+    "withdraw",
+    "report",
+    "legend",
+  ]) {
+    expect(refused({ attempted }).ok).toBe(true);
+  }
+  expect(
+    refused({ thread: undefined, why: undefined, reason: "stale-target" }).ok,
+  ).toBe(true);
+  for (const bad of [
+    { attempted: "swear" },
+    { attempted: undefined },
+    { reason: "bored" },
+    { reason: undefined },
+    { thread: 4 },
+    { why: "" },
+    { why: 4 },
+    { entityId: undefined },
+  ]) {
+    expect(refused(bad).ok).toBe(false);
+  }
+  // Private, like every practice event; it names the god that was refused and traces to its thread.
+  expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(
+    "practice-refused",
+  );
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(
+    "practice-refused",
+  );
+  const event = parsedEvent({
+    kind: "practice-refused",
+    entityId: "hera",
+    attempted: "report",
+    reason: "no-progress",
+    thread: "evt-9",
+  });
+  expect(subjectsOf(event)).toEqual(["hera"]);
+  expect(String(eventCause(event))).toBe("evt-9");
+  expect(
+    eventCause(
+      parsedEvent({
+        kind: "practice-refused",
+        entityId: "hera",
+        attempted: "demand",
+        reason: "malformed",
+      }),
+    ),
+  ).toBeUndefined();
+});
+
+test("a memory of an ending may say the term was sworn; sworn is true or nothing", () => {
+  const ending = (e: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        ...WITNESSED,
+        eventKind: "practice-ended",
+        ending: { outcome: "breached", agent: "zeus", ...e },
+      }),
+    );
+  const sworn = ending({ sworn: true });
+  expect(sworn.ok).toBe(true);
+  if (
+    sworn.ok &&
+    sworn.value.kind === "memory-recorded" &&
+    sworn.value.memoryKind === "witnessed"
+  ) {
+    expect(sworn.value.ending?.sworn).toBe(true);
+  }
+  expect(ending({}).ok).toBe(true);
+  expect(ending({ sworn: false }).ok).toBe(false);
+  expect(ending({ sworn: "yes" }).ok).toBe(false);
 });

@@ -35,6 +35,7 @@ import {
   parseGoalText,
   parseLegendId,
   parseMemoryBalance,
+  parseMemoryEnding,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalBoolean,
@@ -47,6 +48,7 @@ import {
   parseReportContent,
   parseSalience,
   parseString,
+  parseThreadSubject,
   parseTransformation,
   REALMS,
   type RejectionReasonCode,
@@ -784,7 +786,23 @@ function parseMemoryEntry(
         ...ENDING_EVENT_KINDS,
       ] as const);
       if (!eventKind.ok) return eventKind;
-      return ok({ ...base, kind: "witnessed", eventKind: eventKind.value });
+      const ending = parseMemoryEnding(value.ending, `${path}.ending`);
+      if (!ending.ok) return ending;
+      const isEnding = (ENDING_EVENT_KINDS as readonly string[]).includes(
+        eventKind.value,
+      );
+      if (isEnding !== (ending.value !== undefined)) {
+        return fail(
+          `${path}.ending`,
+          "a memory of an ending event says how it ended, and no other does",
+        );
+      }
+      return ok({
+        ...base,
+        kind: "witnessed",
+        eventKind: eventKind.value,
+        ...(ending.value === undefined ? {} : { ending: ending.value }),
+      });
     }
     case "told": {
       const teller = parseEntityId(value.teller, `${path}.teller`);
@@ -1088,6 +1106,22 @@ function parseThreadEntry(
       return fail(`${at}.term`, `term names unknown actor: ${party}`);
     }
   }
+  const subject = parseThreadSubject(record.subject, `${at}.subject`);
+  if (!subject.ok) return subject;
+  if (subject.value !== undefined && !knownActorIds.has(subject.value.agent)) {
+    return fail(
+      `${at}.subject`,
+      `subject names unknown actor: ${subject.value.agent}`,
+    );
+  }
+  const offers = parseArray(record.offers, `${at}.offers`, parseString);
+  if (!offers.ok) return offers;
+  if (offers.value.length === 0) {
+    return fail(
+      `${at}.offers`,
+      "a thread has had at least its demand on the table",
+    );
+  }
   const status = parseEnum(record.status, `${at}.status`, PRACTICE_STATUSES);
   if (!status.ok) return status;
   const openedTick = parseNonNegativeInteger(
@@ -1185,6 +1219,8 @@ function parseThreadEntry(
       obligated,
       causes: causes.value,
       term: term.value,
+      ...(subject.value === undefined ? {} : { subject: subject.value }),
+      offers: offers.value,
       ...(stake.value === undefined ? {} : { stake: stake.value }),
       offeredBy,
       status: status.value,

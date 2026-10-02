@@ -23,6 +23,7 @@ export const CONTEXT_ACTIONS: readonly string[] = [
   "realm-transition",
   "report",
   "bless",
+  "practice",
 ];
 
 /** What the checks and the transcript need of a god's profile. */
@@ -100,6 +101,9 @@ export function primaryTarget(proposal: Record<string, unknown>): string {
         : "legend";
     case "bless":
       return String(proposal.petition);
+    case "practice":
+      // A demand is told apart by its cause, an answer by its thread: two moves on one thread are two choices.
+      return `${String(proposal.move)} ${String(proposal.thread ?? proposal.cause)}`;
     default:
       return "";
   }

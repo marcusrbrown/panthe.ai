@@ -128,7 +128,12 @@ function memoryEntryOf(event: MemoryRecordedEvent): MemoryEntry {
   };
   switch (event.memoryKind) {
     case "witnessed":
-      return { ...base, kind: "witnessed", eventKind: event.eventKind };
+      return {
+        ...base,
+        kind: "witnessed",
+        eventKind: event.eventKind,
+        ...(event.ending === undefined ? {} : { ending: event.ending }),
+      };
     case "noticed":
       return { ...base, kind: "noticed", causeEventId: event.causeEventId };
     case "sign":
@@ -363,6 +368,7 @@ export function endingMemories(
     outcome,
     ...(agent === undefined ? {} : { agent }),
     ...(sealed ? { sealed: true as const } : {}),
+    ...(thread.acceptance?.sworn === true ? { sworn: true as const } : {}),
   };
   return [thread.demander, thread.obligated]
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))

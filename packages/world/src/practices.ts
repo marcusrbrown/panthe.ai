@@ -31,6 +31,7 @@ import type {
   PracticeTermOffer,
   PracticeTermSpec,
   RejectionReasonCode,
+  ThreadSubject,
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
@@ -44,6 +45,7 @@ import {
   getActor,
   getLocation,
   isThreadOpen,
+  type MemoryEntry,
   type PracticeThread,
   type WorldEventDraft,
   type WorldState,
@@ -75,6 +77,32 @@ export function practiceBalanceOf(rules: WorldRules, key: string): number {
 
 // --- Reducers -------------------------------------------------------------------------------
 
+/**
+ * What an offer is, as far as repeating it goes: its kind, who must perform,
+ * what it names, what and how much, and how long it allows. Never any words,
+ * and never the tick it was said on, so the same offer made later is the same
+ * offer.
+ */
+export function termTuple(term: PracticeTermSpec, ticks: number): string {
+  const subject =
+    term.kind === "tell-legend" ||
+    term.kind === "be-at" ||
+    term.kind === "stay-away"
+      ? term.place
+      : term.kind === "bless-mortal"
+        ? term.mortal
+        : term.to;
+  const [resource, amount] =
+    term.kind === "give-resource" || term.kind === "make-offering"
+      ? [term.resource, term.amount]
+      : ["", 0];
+  return `${term.kind}|${term.party}|${subject}|${resource}|${amount}|${ticks}`;
+}
+
+/** The tuple of a committed term: its deadline measured from the tick it was offered on. */
+const tupleOf = (term: PracticeTerm, offeredAt: number) =>
+  termTuple(term, term.deadline - offeredAt);
+
 function withThread(state: WorldState, thread: PracticeThread): WorldState {
   const threads = new Map(state.threads);
   threads.set(thread.id, thread);
@@ -92,6 +120,8 @@ export function applyPracticeOpened(
     obligated: event.counterparty,
     causes: event.causes,
     term: event.term,
+    ...(event.subject === undefined ? {} : { subject: event.subject }),
+    offers: [tupleOf(event.term, event.tick)],
     offeredBy: event.entityId,
     ...(event.stake === undefined ? {} : { stake: event.stake }),
     status: "open",
@@ -129,6 +159,7 @@ export function applyPracticeMoved(
       return withThread(state, {
         ...thread,
         term: event.term,
+        offers: [...thread.offers, tupleOf(event.term, event.tick)],
         offeredBy: event.entityId,
         status: "countered",
         counterBudgetLeft: Math.max(0, thread.counterBudgetLeft - 1),
@@ -279,6 +310,8 @@ function withActorState(state: WorldState, actor: ActorState): WorldState {
 export interface Obstacle {
   readonly reason: RejectionReasonCode;
   readonly message: string;
+  /** The thread the refusal is about, when one is: what a no-progress move repeated or talked around. */
+  readonly thread?: EventId;
 }
 
 const obstacle = (reason: RejectionReasonCode, message: string): Obstacle => ({
@@ -470,10 +503,12 @@ export type PracticeVerdict =
 const deny = (
   reason: RejectionReasonCode,
   message: string,
+  thread?: EventId,
 ): PracticeVerdict => ({
   ok: false,
   reason,
   message,
+  ...(thread === undefined ? {} : { thread }),
 });
 
 /**
@@ -544,6 +579,175 @@ function bindsOutsiders(
   );
 }
 
+// --- Anti-loop ---------------------------------------------------------------------------------
+//
+// A thread is a place to make progress, so the world refuses the three ways a
+// god can circle it: repeating a demand the world already answered, restating
+// an offer that has already been on the table, and talking about the matter
+// instead of moving on it. Each is matched on structure (the cause, the
+// subject's agent and target, the term's tuple) and never on words.
+
+/**
+ * What a demand is about: the agent and target of the consequence the
+ * demander itself remembers its cause as having (a claim it was told, or a
+ * harm or kindness it saw). Nothing when its memory of the cause names no
+ * agent, in which case only the cause itself ties the demand to a thread.
+ */
+export function subjectFor(
+  state: WorldState,
+  actor: EntityId,
+  cause: EventId,
+): ThreadSubject | undefined {
+  for (const memory of getMemories(state, actor)) {
+    if (!evidences(memory, cause) || memory.consequence === undefined) continue;
+    const { agent, target } = memory.consequence;
+    return { agent, ...(target === undefined ? {} : { target }) };
+  }
+  return undefined;
+}
+
+const evidences = (memory: MemoryEntry, cause: EventId) =>
+  memory.sourceEventId === cause ||
+  (memory.kind === "told" && memory.linkedEventId === cause) ||
+  (memory.kind === "noticed" && memory.causeEventId === cause);
+
+const sameSubject = (a?: ThreadSubject, b?: ThreadSubject) =>
+  a !== undefined &&
+  b !== undefined &&
+  a.agent === b.agent &&
+  a.target === b.target;
+
+/** Whether `actor` learned of `cause` after the event numbered `sequence`; a cause no memory backs (a need, a loss) is as new as the world says. */
+function learnedAfter(
+  state: WorldState,
+  actor: EntityId,
+  cause: EventId,
+  sequence: number,
+): boolean {
+  const learned = getMemories(state, actor)
+    .filter((memory) => evidences(memory, cause))
+    .map((memory) => memory.recordedAt);
+  return learned.length === 0 || Math.max(...learned) > sequence;
+}
+
+/** How a closed thread ended, in a few words, from what the thread itself holds. */
+function howItEnded(thread: PracticeThread): string {
+  const refuser =
+    thread.offeredBy === thread.demander ? thread.obligated : thread.demander;
+  switch (thread.status) {
+    case "refused":
+      return `${refuser} refused it`;
+    case "fulfilled":
+      return "it was fulfilled";
+    case "breached":
+      return "it was breached";
+    case "expired":
+      return "it expired unanswered";
+    case "withdrawn":
+      return "it was withdrawn";
+    default:
+      return "it is still open";
+  }
+}
+
+const NO_PROGRESS_LIMIT = 190;
+const briefly = (text: string) =>
+  text.length > NO_PROGRESS_LIMIT
+    ? `${text.slice(0, NO_PROGRESS_LIMIT - 1)}…`
+    : text;
+
+/**
+ * The thread a demand continues, or why it may not: the threads between these
+ * two gods about the same matter (the cause is one they consumed, or the
+ * subject is the same). One still open already holds it. Once they have closed,
+ * a new demand needs a cause not consumed and learned since the latest of them
+ * opened, and then opens as its successor, linking it.
+ */
+function successorOf(
+  state: WorldState,
+  actor: EntityId,
+  counterparty: EntityId,
+  cause: EventId,
+  subject: ThreadSubject | undefined,
+): { succeeds?: EventId } | Obstacle {
+  const affair = [...state.threads.values()].filter(
+    (thread) =>
+      ((thread.demander === actor && thread.obligated === counterparty) ||
+        (thread.demander === counterparty && thread.obligated === actor)) &&
+      (thread.causes.includes(cause) || sameSubject(thread.subject, subject)),
+  );
+  const open = affair.find(isThreadOpen);
+  if (open !== undefined) {
+    return {
+      reason: "no-progress",
+      message: briefly(
+        `${open.id} already holds this matter between you and ${counterparty}; answer it, or let it end`,
+      ),
+      thread: open.id,
+    };
+  }
+  const closed = affair.sort((a, b) => a.openedSequence - b.openedSequence);
+  const latest = closed.at(-1);
+  if (latest === undefined) return {};
+  const consumed = new Set(closed.flatMap((thread) => thread.causes));
+  if (
+    consumed.has(cause) ||
+    !learnedAfter(state, actor, cause, latest.openedSequence)
+  ) {
+    return {
+      reason: "no-progress",
+      message: briefly(
+        `that was already answered: ${howItEnded(latest)} (${latest.id}); a demand on the same matter needs a cause you learned since it closed`,
+      ),
+      thread: latest.id,
+    };
+  }
+  return { succeeds: latest.id };
+}
+
+/**
+ * What stops talk from being told because it circles an open thread: a report
+ * or legend from one party of the thread that reaches the other and either
+ * cites the thread's cause or makes a claim naming its subject's agent and
+ * target. The claim is structure, so rewording changes nothing; a claim naming
+ * anyone else, and talk to anyone outside the thread, is free.
+ */
+export function talkAroundThread(
+  state: WorldState,
+  speaker: EntityId,
+  listeners: readonly EntityId[],
+  claim: { readonly agent: EntityId; readonly target?: EntityId } | undefined,
+  linkedEventId: EventId | undefined,
+): Obstacle | undefined {
+  for (const thread of state.threads.values()) {
+    if (!isThreadOpen(thread)) continue;
+    const other =
+      thread.demander === speaker
+        ? thread.obligated
+        : thread.obligated === speaker
+          ? thread.demander
+          : undefined;
+    if (other === undefined || !listeners.includes(other)) continue;
+    const citesCause =
+      linkedEventId !== undefined && thread.causes.includes(linkedEventId);
+    const namesSubject =
+      claim !== undefined &&
+      thread.subject !== undefined &&
+      claim.agent === thread.subject.agent &&
+      claim.target === thread.subject.target;
+    if (citesCause || namesSubject) {
+      return {
+        reason: "no-progress",
+        message: briefly(
+          `talk about this does not move ${thread.id} forward; answer it with a practice move`,
+        ),
+        thread: thread.id,
+      };
+    }
+  }
+  return undefined;
+}
+
 function openDemand(
   state: WorldState,
   proposal: Extract<PracticeProposal, { move: "demand" }>,
@@ -584,6 +788,15 @@ function openDemand(
       "a demand binds the god it is made of, and no one promises a third god's cooperation",
     );
   }
+  const subject = subjectFor(state, proposal.actor, proposal.cause);
+  const next = successorOf(
+    state,
+    proposal.actor,
+    proposal.counterparty,
+    proposal.cause,
+    subject,
+  );
+  if ("reason" in next) return deny(next.reason, next.message, next.thread);
   const stopped = offerObstacle(state, term);
   if (stopped !== undefined) return deny(stopped.reason, stopped.message);
   return {
@@ -595,6 +808,8 @@ function openDemand(
         practice: "settlement",
         counterparty: proposal.counterparty,
         causes: [proposal.cause],
+        ...(subject === undefined ? {} : { subject }),
+        ...(next.succeeds === undefined ? {} : { succeeds: next.succeeds }),
         term: committedTerm(state, term),
         negotiationDeadline:
           state.tick + practiceBalanceOf(state.rules, "negotiationTicks"),
@@ -708,6 +923,16 @@ function answer(
         return deny(
           "unauthorized-claim",
           "a term binds only the two gods of the thread, and no one promises a third god's cooperation",
+        );
+      }
+      const tuple = termTuple(proposal.term, proposal.term.deadlineTicks);
+      if (thread.offers.includes(tuple)) {
+        return deny(
+          "no-progress",
+          thread.offers.at(-1) === tuple
+            ? "that is the offer already on the table; accept it, or change what it asks"
+            : "that offer was already made and answered; change what it asks",
+          thread.id,
         );
       }
       const stopped = offerObstacle(state, proposal.term);

@@ -1722,3 +1722,466 @@ test("penalties, forms, stakes, and alliances replay from the log and survive a 
   zeusEntry[1].form = 7;
   expect(() => decode(stored)).toThrow();
 });
+
+// --- Anti-loop: nothing is gained by repeating, restating, or talking around a thread ---------
+
+const WRONG = { effect: "harm", agent: "zeus", target: "farmer" } as const;
+
+/** `who` was told of a wrong, with a structured claim: what the cause is about is the claim's agent and target. */
+function sees(
+  world: World,
+  who = "hera",
+  claim: Record<string, unknown> = WRONG,
+  content = "Zeus wronged the farmer",
+): EventId {
+  const report = world.apply({
+    kind: "report-told",
+    entityId: "farmer",
+    listenerId: who,
+    content,
+    claim,
+  });
+  world.apply({
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: who,
+    sourceEventId: report.id,
+    teller: "farmer",
+    content,
+    subjects: ["farmer", who],
+    salience: 4,
+    consequence: claim,
+  });
+  return report.id;
+}
+
+const refusals = (world: World) =>
+  world.log.filter(
+    (e): e is Extract<WorldEvent, { kind: "practice-refused" }> =>
+      e.kind === "practice-refused",
+  );
+
+test("after Zeus refuses, Hera's identical demand makes no progress: it is rejected no-progress, the world records that it was already answered, and no new thread opens (AE4)", () => {
+  const world = new World({ counterBudget: 3 });
+  const cause = sees(world);
+  world.tick(demand(cause));
+  world.tick(move(world, "zeus", "refuse"));
+  const closed = world.thread();
+  expect(closed.status).toBe("refused");
+
+  const again = world.tick(demand(cause));
+  expect(again.rejected.map((r) => r.reason)).toEqual(["no-progress"]);
+  expect(again.rejected[0]?.message).toContain("already answered");
+  expect(world.threads()).toHaveLength(1);
+  expect(world.thread().status).toBe("refused");
+  expect(refusals(world)).toMatchObject([
+    {
+      entityId: "hera",
+      attempted: "demand",
+      reason: "no-progress",
+      thread: closed.id,
+    },
+  ]);
+  expect(refusals(world)[0]?.why).toContain("refused");
+  // Hearing the same cause again from someone else is not a new cause: the thread consumed it.
+  world.apply({
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: "hera",
+    sourceEventId: "evt-0-4242",
+    teller: "athena",
+    content: "Yes, I heard it too",
+    linkedEventId: cause,
+    subjects: ["athena"],
+    salience: 4,
+  });
+  world.tick(demand(cause, tell("zeus", "altar", 95)));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  // The words of the offer do not matter, only the cause and the affair: a changed term on the same cause is still the same demand.
+  world.tick(demand(cause, tell("zeus", "tavern", 80)));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.threads()).toHaveLength(1);
+});
+
+test("a repeat demand is refused while the first is still open, and a different affair between the same gods opens beside it", () => {
+  const world = new World();
+  const cause = sees(world);
+  world.tick(demand(cause));
+  world.tick(demand(cause, tell("zeus", "altar", 120)));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  // The same subject from a newer sighting is still the same affair while the thread is open.
+  world.tick(demand(sees(world), tell("zeus", "altar", 130)));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.threads()).toHaveLength(1);
+  // Control: another affair (another agent) is its own thread.
+  const other = sees(world, "hera", {
+    effect: "harm",
+    agent: "athena",
+    target: "farmer",
+  });
+  world.tick(demand(other, tell("zeus", "altar", 130)));
+  expect(world.rejected()).toEqual([]);
+  expect(world.threads()).toHaveLength(2);
+});
+
+test("after a fulfilled demand, a demand on the same subject with no newer cause is refused; after a new sighting it opens as a linked successor", () => {
+  const world = new World();
+  // Hera knew of this one before she opened anything: it is not news later.
+  const older = sees(world);
+  const cause = sees(world);
+  world.tick(demand(cause));
+  world.tick(move(world, "zeus", "accept"));
+  world.tick(legend("zeus"));
+  const first = world.thread();
+  expect(first.status).toBe("fulfilled");
+  expect(first.subject).toEqual({ agent: "zeus", target: "farmer" } as never);
+
+  // The cause the thread consumed, and one she knew all along, are not new.
+  for (const stale of [cause, older]) {
+    world.tick(demand(stale, tell("zeus", "altar", 90)));
+    expect(world.rejected()).toEqual(["no-progress"]);
+  }
+  expect(world.threads()).toHaveLength(1);
+  expect(refusals(world).map((e) => e.thread)).toEqual([first.id, first.id]);
+
+  // A new sighting of the same wrong opens a successor that links the closed thread.
+  const sighting = sees(world);
+  world.tick(demand(sighting));
+  expect(world.rejected()).toEqual([]);
+  const second = world.thread();
+  expect(world.threads()).toHaveLength(2);
+  expect(second).toMatchObject({ status: "open", causes: [sighting] });
+  expect(world.state.threads.get(first.id)).toMatchObject({
+    status: "fulfilled",
+    successor: second.id,
+  });
+  const opening = world.log.find(
+    (e) => e.kind === "practice-opened" && e.id === second.id,
+  );
+  expect(opening).toMatchObject({ succeeds: first.id });
+});
+
+test("a newer cause about another subject opens a fresh thread, with no link; a cause no one's memory backs never counts, and a standing aim is no cause", () => {
+  const world = new World();
+  const cause = sees(world);
+  world.tick(demand(cause));
+  world.tick(move(world, "zeus", "refuse"));
+  const first = world.thread();
+  const elsewhere = sees(world, "hera", {
+    effect: "harm",
+    agent: "athena",
+    target: "woodcutter",
+  });
+  world.tick(demand(elsewhere));
+  expect(world.rejected()).toEqual([]);
+  expect(world.thread().id).not.toBe(first.id);
+  expect(world.state.threads.get(first.id)?.successor).toBeUndefined();
+
+  // Hera's goal is her own motive: its event is not something she knows of as a cause.
+  world.tick({
+    actor: "hera",
+    kind: "goal",
+    goal: { set: { text: "humble Zeus", target: "zeus" } },
+  });
+  const aim = world.state.goals.get(id("hera"))?.eventId;
+  if (!aim) throw new Error("no goal");
+  world.tick(demand(aim, tell("zeus", "altar", 70)));
+  expect(world.rejected()).toEqual(["unauthorized-claim"]);
+});
+
+test("a goal set or ended never touches a thread: ending Zeus's goal as achieved leaves every thread as it was", () => {
+  const { world } = accepted();
+  world.tick({
+    actor: "zeus",
+    kind: "goal",
+    goal: { set: { text: "settle with Hera", target: "hera" } },
+  });
+  const before = new Map(world.state.threads);
+  world.tick({
+    actor: "zeus",
+    kind: "goal",
+    goal: { end: { outcome: "achieved" } },
+  });
+  expect(world.state.goals.has(id("zeus"))).toBe(false);
+  expect(world.state.threads).toEqual(before);
+  expect(world.thread().status).toBe("accepted");
+});
+
+test("Zeus counters, Hera counters, and Zeus's counter restating his first on the same tuple makes no progress and spends nothing; a changed counter then spends the last and ends it refused (AE5)", () => {
+  const world = new World({ counterBudget: 3 });
+  world.tick(demand(sees(world)));
+  world.tick(
+    move(world, "zeus", "counter", { term: tell("zeus", "altar", 150) }),
+  );
+  world.tick(
+    move(world, "hera", "counter", { term: tell("zeus", "altar", 200) }),
+  );
+  expect(world.thread()).toMatchObject({
+    status: "countered",
+    counterBudgetLeft: 1,
+  });
+  const revision = world.thread().revision;
+
+  // The same tuple again, later: the words are not part of it, nor is the tick it is said on.
+  world.tick();
+  world.tick(
+    move(world, "zeus", "counter", { term: tell("zeus", "altar", 150) }),
+  );
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.thread()).toMatchObject({
+    status: "countered",
+    counterBudgetLeft: 1,
+    revision,
+  });
+  expect(refusals(world).at(-1)).toMatchObject({
+    attempted: "counter",
+    reason: "no-progress",
+    thread: world.thread().id,
+  });
+
+  // A materially changed counter is progress, and it spends the last counteroffer.
+  const last = world.tick(
+    move(world, "zeus", "counter", { term: beAt("zeus", "altar", 150) }),
+  );
+  expect(last.rejected).toEqual([]);
+  expect(world.thread()).toMatchObject({
+    status: "refused",
+    counterBudgetLeft: 0,
+  });
+  expect(world.ended().at(-1)).toMatchObject({
+    outcome: "refused",
+    reason: "budget-exhausted",
+  });
+});
+
+test("a counter that restates the offer on the table, or one already answered, makes no progress; a changed deadline, party, or kind is a material change", () => {
+  const world = new World({ counterBudget: 3 });
+  world.tick(demand(sees(world), tell("zeus", "altar", 100)));
+  // Zeus restating Hera's demand is accepting it by another name.
+  world.tick(
+    move(world, "zeus", "counter", { term: tell("zeus", "altar", 100) }),
+  );
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.thread().counterBudgetLeft).toBe(3);
+  for (const changed of [
+    tell("zeus", "altar", 101),
+    tell("hera", "altar", 100),
+    tell("zeus", "hall", 100),
+    beAt("zeus", "altar", 100),
+  ]) {
+    const fresh = new World({ counterBudget: 3 });
+    fresh.tick(demand(sees(fresh), tell("zeus", "altar", 100)));
+    fresh.tick(move(fresh, "zeus", "counter", { term: changed }));
+    expect([JSON.stringify(changed), ...fresh.rejected()]).toEqual([
+      JSON.stringify(changed),
+    ]);
+    expect(fresh.thread().status).toBe("countered");
+  }
+});
+
+/** Hera and Zeus together at the altar, a thread open between them about the wrong done the farmer. */
+function talking() {
+  const world = new World();
+  world.place("hera", "altar");
+  const cause = sees(world);
+  world.apply({
+    kind: "memory-recorded",
+    memoryKind: "witnessed",
+    entityId: "zeus",
+    sourceEventId: cause,
+    eventKind: "resource-consumed",
+    subjects: ["zeus"],
+    salience: 3,
+  });
+  world.tick(demand(cause));
+  return { world, cause, thread: world.thread() };
+}
+
+const report = (content: string, extra: Record<string, unknown> = {}) => ({
+  actor: "zeus",
+  kind: "report",
+  listener: "hera",
+  content,
+  ...extra,
+});
+
+test("while a thread is open, a report between its parties whose claim names its subject makes no progress: rejected, nothing recorded in the thread, and the god is told", () => {
+  const { world, thread } = talking();
+  const ran = world.tick(report("I did nothing to him.", { claim: WRONG }));
+  expect(ran.rejected.map((r) => r.reason)).toEqual(["no-progress"]);
+  expect(ran.events.some((e) => e.kind === "report-told")).toBe(false);
+  expect(world.state.threads.get(thread.id)).toEqual(thread);
+  expect(refusals(world)).toMatchObject([
+    {
+      entityId: "zeus",
+      attempted: "report",
+      reason: "no-progress",
+      thread: thread.id,
+    },
+  ]);
+  // Worded another way, or with the opposite effect, it is the same structured claim.
+  world.tick(report("The storm did it, not I.", { claim: WRONG }));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  world.tick(
+    report("I helped him.", {
+      claim: { effect: "kindness", agent: "zeus", target: "farmer" },
+    }),
+  );
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.state.threads.get(thread.id)).toEqual(thread);
+});
+
+test("a report between the parties that cites the thread's cause event makes no progress, whatever its words", () => {
+  const { world, cause } = talking();
+  world.tick(report("I remember it differently.", { linkedEventId: cause }));
+  expect(world.rejected()).toEqual(["no-progress"]);
+});
+
+test("a report whose claim names a different agent or target is unaffected, even when its words mention the same affair; so is one to someone outside the thread", () => {
+  const { world } = talking();
+  const free = (
+    claim: Record<string, unknown> | undefined,
+    content = "About the farmer and Zeus.",
+  ) => {
+    world.tick(report(content, claim === undefined ? {} : { claim }));
+    return world.rejected();
+  };
+  expect(free({ effect: "harm", agent: "zeus", target: "hera" })).toEqual([]);
+  expect(free({ effect: "harm", agent: "athena", target: "farmer" })).toEqual(
+    [],
+  );
+  expect(free(undefined, "Zeus wronged the farmer, they say.")).toEqual([]);
+  // The farmer, a third party at the altar, may hear the very claim the thread is about.
+  world.tick({
+    actor: "zeus",
+    kind: "report",
+    listener: "farmer",
+    content: "x",
+    claim: WRONG,
+  });
+  expect(world.rejected()).toEqual([]);
+  expect(world.log.filter((e) => e.kind === "report-told")).toHaveLength(5);
+});
+
+test("a legend that names the thread's subject, told with the other party among its hearers, makes no progress; with no one of the thread there to hear it, it is told", () => {
+  const { world, thread } = talking();
+  world.tick({ ...legend("zeus"), claim: WRONG });
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(refusals(world).at(-1)).toMatchObject({
+    attempted: "legend",
+    thread: thread.id,
+  });
+  expect(world.log.some((e) => e.kind === "legend-recorded")).toBe(false);
+  // Hera walks away: the legend is heard by the farmer alone, and nothing of the thread is in it.
+  world.place("hera", "square");
+  world.tick({ ...legend("zeus"), claim: WRONG });
+  expect(world.rejected()).toEqual([]);
+  expect(world.log.some((e) => e.kind === "legend-recorded")).toBe(true);
+});
+
+test("talk around a thread is free once it has ended: the same report that made no progress is told after Hera withdraws", () => {
+  const { world } = talking();
+  world.tick(report("I did nothing.", { claim: WRONG }));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  world.tick(move(world, "hera", "withdraw"));
+  world.tick(report("I did nothing.", { claim: WRONG }));
+  expect(world.rejected()).toEqual([]);
+  expect(
+    world.log.some(
+      (e) => e.kind === "report-told" && e.entityId === id("zeus"),
+    ),
+  ).toBe(true);
+});
+
+test("a refused practice move leaves a private record the god can be shown, with the thread and the reason; moves the world accepts, and other rejected actions, leave none", () => {
+  const { world, thread } = opened();
+  // A stale pin: Zeus answers from the revision before Hera withdrew.
+  const stale = move(world, "zeus", "accept");
+  world.tick(move(world, "hera", "withdraw", {}, false));
+  world.tick(stale);
+  expect(world.rejected()).toEqual(["stale-target"]);
+  expect(refusals(world)).toMatchObject([
+    {
+      entityId: "zeus",
+      attempted: "accept",
+      reason: "stale-target",
+      thread: thread.id,
+    },
+  ]);
+  expect(refusals(world)[0]?.why).toBeUndefined();
+  // Control: an accepted move records none, and neither does a plain move refused for its own reasons.
+  const before = refusals(world).length;
+  const fresh = opened();
+  fresh.world.tick(move(fresh.world, "zeus", "refuse"));
+  expect(refusals(fresh.world)).toEqual([]);
+  world.tick({ actor: "athena", kind: "move", to: "island" });
+  expect(world.rejected()).toEqual(["not-adjacent"]);
+  expect(refusals(world)).toHaveLength(before);
+});
+
+test("how a thread ended is in each party's memory with its outcome and who decided it: a refusal names the refuser, a sworn breach the oath-breaker, a sealed settlement the alliance", () => {
+  const refused = opened();
+  refused.world.tick(move(refused.world, "zeus", "refuse"));
+  for (const who of ["zeus", "hera"]) {
+    expect(endingMemories(refused.world, who)).toMatchObject([
+      { kind: "witnessed", ending: { outcome: "refused", agent: "zeus" } },
+    ]);
+  }
+  const sworn = new World();
+  const owed = opened(tell("zeus", "altar", 20), sworn);
+  sworn.tick(move(sworn, "zeus", "accept", { swear: true }));
+  sworn.until(() => breached(sworn));
+  expect(owed.thread.id).toBeDefined();
+  for (const who of ["zeus", "hera"]) {
+    expect(endingMemories(sworn, who).at(-1)).toMatchObject({
+      ending: { outcome: "breached", agent: "zeus", sworn: true },
+    });
+  }
+  const bond = new World();
+  const cause = bond.hears();
+  bond.tick(
+    demand(cause, {
+      kind: "ally",
+      party: "zeus",
+      to: "hera",
+      deadlineTicks: 100,
+    }),
+  );
+  bond.tick(move(bond, "zeus", "accept"));
+  expect(endingMemories(bond, "hera").at(-1)).toMatchObject({
+    ending: { outcome: "fulfilled", sealed: true },
+  });
+  // A breach not sworn does not say it was.
+  const plain = new World();
+  opened(tell("zeus", "altar", 20), plain);
+  plain.tick(move(plain, "zeus", "accept"));
+  plain.until(() => breached(plain));
+  expect(
+    endingMemories(plain, "hera").at(-1)?.kind === "witnessed" &&
+      (endingMemories(plain, "hera").at(-1) as { ending?: { sworn?: boolean } })
+        .ending?.sworn,
+  ).toBeUndefined();
+});
+
+test("subjects, offers, refusals, and endings replay from the log and survive a JSON round trip", () => {
+  const world = new World({ counterBudget: 3 });
+  const cause = sees(world);
+  world.tick(demand(cause));
+  world.tick(
+    move(world, "zeus", "counter", { term: tell("zeus", "altar", 150) }),
+  );
+  world.tick(move(world, "hera", "refuse"));
+  world.tick(demand(cause));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  const rebuilt = applyEvents(world.initial, world.log);
+  expect(rebuilt.threads).toEqual(world.state.threads);
+  expect(rebuilt.memories).toEqual(world.state.memories);
+  const decoded = decode(JSON.parse(JSON.stringify(encode(world.state))));
+  expect(decoded.threads).toEqual(world.state.threads);
+  expect(decoded.memories).toEqual(world.state.memories);
+  expect(world.thread().subject).toEqual({
+    agent: "zeus",
+    target: "farmer",
+  } as never);
+  expect(world.thread().offers).toHaveLength(2);
+});

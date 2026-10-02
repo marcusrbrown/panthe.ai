@@ -1165,6 +1165,34 @@ function liveWorld(storePath: string, seed: WorldState) {
   };
 }
 
+/** Zeus walks to the square and tells Hera, there, that he wronged the farmer: a newer account than the bard's, from another teller. Returns the report's id. */
+function zeusAdmits(world: ReturnType<typeof liveWorld>) {
+  const square = id("town-square");
+  for (let hop = 0; hop < 12; hop += 1) {
+    const zeus = world.state.actors.get(id("zeus"));
+    if (!zeus || zeus.locationId === square) break;
+    const next = nextHop(
+      world.state,
+      zeus.locationId,
+      square,
+      zeus.capabilities,
+    );
+    if (next === undefined) throw new Error("Zeus has no way to the square");
+    world.run(queuedProposal("zeus", { kind: "move", to: next }));
+  }
+  world.run(
+    queuedProposal("zeus", {
+      kind: "report",
+      listener: "hera",
+      content: "I wronged him again",
+      claim: { effect: "harm", agent: "zeus", target: "farmer" },
+    }),
+  );
+  const told = eventOfKindAll(listEvents(world.store.db), "report-told").at(-1);
+  if (!told) throw new Error("expected Zeus's report");
+  return told;
+}
+
 function eventOfKindAll<K extends WorldEvent["kind"]>(
   events: readonly WorldEvent[],
   kind: K,
@@ -1448,13 +1476,15 @@ test("practice threads survive reopen, rebuild, and archive import: a fulfilled 
     );
     expect(world.state.threads.get(first.id)?.status).toBe("fulfilled");
 
-    // A second demand on the same cause, and Zeus's counter, left open.
+    // A new account of the same wrong reaches Hera, from Zeus himself: a newer cause, so she may demand again.
+    const newer = zeusAdmits(world);
+    // A second demand on the newer cause, and Zeus's counter, left open.
     world.run(
       queuedProposal("hera", {
         kind: "practice",
         move: "demand",
         counterparty: "zeus",
-        cause: ignition.id,
+        cause: newer.id,
         term: tellInSquare(120),
       }),
     );
@@ -1588,13 +1618,14 @@ test("a sworn breach's penalty, the endings' memories, and a sealed alliance sur
     expect(zeus?.capabilities).not.toContain("divine");
     expect(zeus?.withheld).toHaveLength(1);
 
-    // Later, Zeus and Hera seal an alliance.
+    // Later, Zeus and Hera seal an alliance, over a newer account of the same wrong.
+    const newer = zeusAdmits(world);
     world.run(
       queuedProposal("hera", {
         kind: "practice",
         move: "demand",
         counterparty: "zeus",
-        cause: ignition.id,
+        cause: newer.id,
         term: { kind: "ally", party: "zeus", to: "hera", deadlineTicks: 30 },
       }),
     );

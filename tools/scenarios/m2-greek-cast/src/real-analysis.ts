@@ -75,13 +75,14 @@ export interface RealAnalysis {
   readonly properties: readonly Property[];
 }
 
-const GOD_ACTIONS: ReadonlySet<string> = new Set([
+export const GOD_ACTIONS: ReadonlySet<string> = new Set([
   "move",
   "realm-transition",
   "strike",
   "legend",
   "report",
   "bless",
+  "practice",
   "goal",
 ]);
 
@@ -97,6 +98,9 @@ export function namedIds(proposal: Record<string, unknown>): string[] {
   add(proposal.linkedEventId);
   // The petition a bless answers is an id the god was shown.
   add(proposal.petition);
+  // A practice move answers a thread or opens a demand on a cause: both ids are ones the digest and the instructions list.
+  add(proposal.thread);
+  add(proposal.cause);
   const claim = proposal.claim;
   if (typeof claim === "object" && claim !== null) {
     add((claim as Record<string, unknown>).agent);

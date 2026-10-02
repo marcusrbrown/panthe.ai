@@ -23,6 +23,7 @@ import {
   type EntityId,
   type EventId,
   LATEST_EVENT_SCHEMA_VERSION,
+  MAX_REFUSAL_WHY,
   type PracticeEndedEvent,
   type Proposal,
   parseProposal,
@@ -301,7 +302,8 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       next = applyAccessRestored(state, event);
       break;
     case "goal-change-refused":
-      // Their world state arrives with the units that produce them.
+    case "practice-refused":
+      // Private records of a refusal: what the god's next prompt says, and no world state.
       next = state;
       break;
     default: {
@@ -366,7 +368,7 @@ export interface RejectedRecord {
   readonly proposal: Proposal;
   readonly reason: RejectionReasonCode;
   readonly message: string;
-  /** The goal events the rejected proposal's goal change still committed: the action was refused, the declaration was not. */
+  /** The events the rejected proposal still committed: its goal change (the action was refused, the declaration was not), and the private record that a practice move, or talk around an open thread, was refused. */
   readonly goalEvents: readonly WorldEvent[];
 }
 
@@ -583,6 +585,49 @@ export function runTick(
     return events;
   };
 
+  /**
+   * The events a rejected proposal still commits: its goal change, and, for a
+   * practice move (or talk the world judged to circle an open thread), a
+   * private record that it was refused and why, which the god's next prompt
+   * reads. The record belongs to no action slot, like a goal event.
+   */
+  const commitRefusalEvents = (
+    proposal: Proposal,
+    reason: RejectionReasonCode,
+    message: string,
+    thread: EventId | undefined,
+  ): WorldEvent[] => {
+    const events = commitGoalEvents(proposal);
+    const attempted =
+      proposal.kind === "practice"
+        ? proposal.move
+        : reason === "no-progress" &&
+            (proposal.kind === "report" || proposal.kind === "legend")
+          ? proposal.kind
+          : undefined;
+    if (attempted === undefined) return events;
+    const concerned =
+      thread ??
+      (proposal.kind === "practice" && proposal.move !== "demand"
+        ? proposal.thread
+        : undefined);
+    const completed = completePrimary(
+      {
+        kind: "practice-refused",
+        entityId: proposal.actor,
+        attempted,
+        reason,
+        ...(concerned === undefined ? {} : { thread: concerned }),
+        ...(reason === "no-progress"
+          ? { why: message.slice(0, MAX_REFUSAL_WHY) }
+          : {}),
+      },
+      String(proposal.observationId),
+    );
+    working = applyEvent(working, completed);
+    return [...events, completed];
+  };
+
   for (const proposal of queue) {
     // A claim never commits and a goal-only proposal has no action: neither
     // holds the actor's one action slot.
@@ -592,7 +637,12 @@ export function runTick(
         proposal,
         reason: "busy-actor",
         message: `${proposal.actor} already committed an action this tick`,
-        goalEvents: commitGoalEvents(proposal),
+        goalEvents: commitRefusalEvents(
+          proposal,
+          "busy-actor",
+          "already committed an action this tick",
+          undefined,
+        ),
       });
       continue;
     }
@@ -603,7 +653,12 @@ export function runTick(
         proposal,
         reason: outcome.reason,
         message: outcome.message,
-        goalEvents: commitGoalEvents(proposal),
+        goalEvents: commitRefusalEvents(
+          proposal,
+          outcome.reason,
+          outcome.message,
+          outcome.thread,
+        ),
       });
       continue;
     }

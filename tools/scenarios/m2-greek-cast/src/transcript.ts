@@ -340,6 +340,16 @@ export function buildWorldNotes(record: EpisodeRecord): WorldNote[] {
           `${e.entityId}'s change to ${e.entityId === "hera" ? "her" : "his"} goal was refused (${e.reason}, ${e.unlocksInTicks} ticks left)`,
         );
         break;
+      case "practice-refused":
+        note(
+          e,
+          `${e.entityId}'s ${e.attempted} was refused ${
+            e.reason === "no-progress"
+              ? `as no-progress${e.why === undefined ? "" : `: ${e.why}`}`
+              : `(${e.reason})`
+          }${e.thread === undefined ? "" : ` [${e.thread}]`}`,
+        );
+        break;
       case "memory-recorded":
         if (e.memoryKind === "sign") {
           note(

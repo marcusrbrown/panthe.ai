@@ -6,6 +6,7 @@ import {
 } from "./episode-test-data";
 import {
   analyzeReal,
+  GOD_ACTIONS,
   namedIds,
   type RealInput,
   type RealProposal,
@@ -692,4 +693,19 @@ test("petition privacy fails a god that was not at the altar when the prayer was
     expect([name, result?.ok]).toEqual([name, false]);
     expect(result?.detail).toContain("not at the altar");
   }
+});
+
+test("a practice move names the thread or cause it answers, ids the god must have been shown, and is a god action", () => {
+  expect(
+    namedIds({ kind: "practice", move: "accept", thread: "evt-9" }),
+  ).toEqual(["evt-9"]);
+  expect(
+    namedIds({
+      kind: "practice",
+      move: "demand",
+      cause: "evt-3",
+      term: { kind: "ally" },
+    }),
+  ).toEqual(["evt-3"]);
+  expect(GOD_ACTIONS.has("practice")).toBe(true);
 });

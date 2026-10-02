@@ -16,6 +16,7 @@ import type {
   Consequence,
   ConsumeProposal,
   EntityId,
+  EventId,
   GatherProposal,
   LegendProposal,
   MoveProposal,
@@ -47,7 +48,7 @@ import {
   petitionBalanceOf,
   petitionFor,
 } from "./petitions";
-import { validatePractice } from "./practices";
+import { talkAroundThread, validatePractice } from "./practices";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -70,6 +71,8 @@ export interface RuleRejection {
   readonly ok: false;
   readonly reason: RejectionReasonCode;
   readonly message: string;
+  /** The practice thread the refusal is about, when one is. */
+  readonly thread?: EventId;
 }
 
 export interface RuleCommit {
@@ -82,8 +85,14 @@ export type RuleOutcome = RuleCommit | RuleRejection;
 export function reject(
   reason: RejectionReasonCode,
   message: string,
+  thread?: EventId,
 ): RuleRejection {
-  return { ok: false, reason, message };
+  return {
+    ok: false,
+    reason,
+    message,
+    ...(thread === undefined ? {} : { thread }),
+  };
 }
 
 export function commit(events: readonly WorldEventDraft[]): RuleCommit {
@@ -542,6 +551,16 @@ function handleLegend(
     )
     .map((actor) => actor.id)
     .sort();
+  const circling = talkAroundThread(
+    state,
+    proposal.actor,
+    hearers,
+    claim,
+    proposal.linkedEventId,
+  );
+  if (circling !== undefined) {
+    return reject(circling.reason, circling.message, circling.thread);
+  }
   return commit([
     {
       kind: "legend-recorded",
@@ -712,6 +731,16 @@ function handleReport(
   const claim = proposal.claim;
   if (claim !== undefined && !claimIdsExist(state, claim)) {
     return reject("malformed", CLAIM_IDS_MESSAGE);
+  }
+  const circling = talkAroundThread(
+    state,
+    proposal.actor,
+    [proposal.listener],
+    claim,
+    proposal.linkedEventId,
+  );
+  if (circling !== undefined) {
+    return reject(circling.reason, circling.message, circling.thread);
   }
   return commit([
     {

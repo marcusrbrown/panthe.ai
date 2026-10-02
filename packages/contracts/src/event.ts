@@ -26,6 +26,8 @@ import {
   parseResourceAmount,
   parseSchemaVersion,
   parseString,
+  REJECTION_REASON_CODES,
+  type RejectionReasonCode,
   type ResourceAmount,
 } from "./ids";
 import {
@@ -399,6 +401,12 @@ export interface GoalEndedEvent extends EventEnvelope {
   readonly goalEventId: EventId;
 }
 
+/** What a practice thread is about: who did it and, when known, to whom or what. */
+export interface ThreadSubject {
+  readonly agent: EntityId;
+  readonly target?: EntityId;
+}
+
 /**
  * A god opened a practice thread with another: a demand resting on `causes`,
  * the committed events the opener knows of, which the thread consumes. It holds
@@ -418,6 +426,13 @@ export interface PracticeOpenedEvent extends EventEnvelope {
   readonly negotiationDeadline: number;
   readonly counterBudget: number;
   readonly succeeds?: EventId;
+  /**
+   * What the demand is about, in structure: the agent and, when the cause names
+   * one, the target, taken from what the demander itself remembers of its
+   * cause. Absent when its memory of the cause names no agent. A repeat demand
+   * and talk around the thread are matched against it, never against words.
+   */
+  readonly subject?: ThreadSubject;
   /** What the breacher of the term becomes when it breaches: the transformation stake the demand carries. */
   readonly stake?: Transformation;
 }
@@ -495,6 +510,38 @@ export interface AccessRestoredEvent extends EventEnvelope {
   readonly motifEventId: EventId;
 }
 
+/** The moves and talk a refusal can be about: a practice move, or a report or legend that talked around an open thread. */
+export const PRACTICE_ATTEMPTS = [
+  "demand",
+  "counter",
+  "accept",
+  "refuse",
+  "withdraw",
+  "report",
+  "legend",
+] as const;
+export type PracticeAttempt = (typeof PRACTICE_ATTEMPTS)[number];
+
+/** Most characters of the reason a refused move is given. */
+export const MAX_REFUSAL_WHY = 200;
+
+/**
+ * A god's practice move, or talk around its open thread, was refused. The
+ * rejection itself travels through the journal and trace; this private event
+ * is what lets the god's next prompt say so and why, and what replay
+ * reproduces. `thread` is the thread it concerned, when one did; `why` is
+ * what already answered the move, for a no-progress refusal.
+ */
+export interface PracticeRefusedEvent extends EventEnvelope {
+  readonly kind: "practice-refused";
+  /** The god that was refused. */
+  readonly entityId: EntityId;
+  readonly attempted: PracticeAttempt;
+  readonly reason: RejectionReasonCode;
+  readonly thread?: EventId;
+  readonly why?: string;
+}
+
 /** Kinds that happen at no place: a report is heard only by its listener, a memory and a feeling are inside someone's head, a goal is the god's own, and a practice thread is held between its parties. Nobody perceives them, so nobody witnesses them. */
 export const UNPLACED_EVENT_KINDS = [
   "report-told",
@@ -511,6 +558,7 @@ export const UNPLACED_EVENT_KINDS = [
   "practice-opened",
   "practice-moved",
   "practice-ended",
+  "practice-refused",
   "motif-applied",
   "access-restored",
 ] as const;
@@ -544,6 +592,8 @@ export interface MemoryEnding {
   readonly agent?: EntityId;
   /** The ending sealed an alliance between the two parties. */
   readonly sealed?: true;
+  /** The term had been sworn by the Styx. */
+  readonly sworn?: true;
 }
 
 /** The actor was there when the event happened, or took part in the thread the event ended (`ending`). */
@@ -642,6 +692,7 @@ export type WorldEvent =
   | PracticeOpenedEvent
   | PracticeMovedEvent
   | PracticeEndedEvent
+  | PracticeRefusedEvent
   | MotifAppliedEvent
   | AccessRestoredEvent;
 
@@ -679,6 +730,7 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "practice-opened": true,
   "practice-moved": true,
   "practice-ended": true,
+  "practice-refused": true,
   "motif-applied": true,
   "access-restored": true,
 };
@@ -751,6 +803,7 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
       case "practice-ended":
         return [event.entityId, event.counterparty];
       case "practice-moved":
+      case "practice-refused":
       case "motif-applied":
       case "access-restored":
       case "unmet-need":
@@ -813,6 +866,8 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.threadId;
     case "practice-ended":
       return event.performedBy ?? event.threadId;
+    case "practice-refused":
+      return event.thread;
     case "motif-applied":
       return event.cause;
     case "access-restored":
@@ -1140,7 +1195,26 @@ function parseMemoryRecorded(
   }
 }
 
-function parseMemoryEnding(
+export function parseThreadSubject(
+  value: unknown,
+  path: string,
+): ParseResult<ThreadSubject | undefined> {
+  if (value === undefined) return ok(undefined);
+  if (!isRecord(value)) return fail(path, "expected a subject object");
+  const agent = parseEntityId(value.agent, `${path}.agent`);
+  if (!agent.ok) return agent;
+  const target =
+    value.target === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(value.target, `${path}.target`);
+  if (!target.ok) return target;
+  return ok({
+    agent: agent.value,
+    ...(target.value === undefined ? {} : { target: target.value }),
+  });
+}
+
+export function parseMemoryEnding(
   value: unknown,
   path: string,
 ): ParseResult<MemoryEnding | undefined> {
@@ -1160,10 +1234,14 @@ function parseMemoryEnding(
   if (value.sealed !== undefined && value.sealed !== true) {
     return fail(`${path}.sealed`, "expected true or nothing");
   }
+  if (value.sworn !== undefined && value.sworn !== true) {
+    return fail(`${path}.sworn`, "expected true or nothing");
+  }
   return ok({
     outcome: outcome.value,
     ...(agent.value === undefined ? {} : { agent: agent.value }),
     ...(value.sealed === true ? { sealed: true as const } : {}),
+    ...(value.sworn === true ? { sworn: true as const } : {}),
   });
 }
 
@@ -1782,6 +1860,8 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
           ? ok<Transformation | undefined>(undefined)
           : parseTransformation(input.stake, "stake");
       if (!stake.ok) return stake;
+      const subject = parseThreadSubject(input.subject, "subject");
+      if (!subject.ok) return subject;
       return ok({
         ...envelope,
         kind: "practice-opened",
@@ -1793,7 +1873,36 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         negotiationDeadline: negotiationDeadline.value,
         counterBudget: counterBudget.value,
         ...(succeeds.value === undefined ? {} : { succeeds: succeeds.value }),
+        ...(subject.value === undefined ? {} : { subject: subject.value }),
         ...(stake.value === undefined ? {} : { stake: stake.value }),
+      });
+    }
+    case "practice-refused": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const attempted = parseEnum(
+        input.attempted,
+        "attempted",
+        PRACTICE_ATTEMPTS,
+      );
+      if (!attempted.ok) return attempted;
+      const reason = parseEnum(input.reason, "reason", REJECTION_REASON_CODES);
+      if (!reason.ok) return reason;
+      const thread = parseOptionalEventId(input.thread, "thread");
+      if (!thread.ok) return thread;
+      const why = parseOptionalString(input.why, "why");
+      if (!why.ok) return why;
+      if (why.value !== undefined && why.value.length > MAX_REFUSAL_WHY) {
+        return fail("why", `expected at most ${MAX_REFUSAL_WHY} characters`);
+      }
+      return ok({
+        ...envelope,
+        kind: "practice-refused",
+        entityId: entityId.value,
+        attempted: attempted.value,
+        reason: reason.value,
+        ...(thread.value === undefined ? {} : { thread: thread.value }),
+        ...(why.value === undefined ? {} : { why: why.value }),
       });
     }
     case "practice-moved": {

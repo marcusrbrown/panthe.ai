@@ -224,10 +224,9 @@ export function buildModelProposal(
         return refuse(`${intent.listener} is not an actor in the snapshot`);
       }
       factsRead.push(`actor:${listener.id}.location`);
-      expectedRevisions.push({
-        entityId: listener.id,
-        revision: listener.revision,
-      });
+      // The listener's revision is not pinned: its liveness and presence are
+      // judged again when the report is validated, and its inventory changing
+      // (a routine gather, a trade) is no reason to refuse a report.
       proposal = {
         ...base,
         targets: [listener.id],
@@ -257,12 +256,16 @@ export function buildModelProposal(
         `petition:${petition.id}`,
         `actor:${petitioner.id}.location`,
       );
-      expectedRevisions.push({
-        entityId: petitioner.id,
-        revision: petitioner.revision,
-      });
+      // A bless pins no revision. Everything it depends on is judged again when
+      // it is validated: the god's power and divinity, the petitioner alive and
+      // at the god's location, the petition open, addressed to this god, of a
+      // kind a bless answers, and inside its window. A pin only added refusals
+      // for changes it does not depend on (a routine gathering raises the
+      // petitioner's revision, any mortal passing through raises the
+      // location's) and hid the real reason when one did apply.
       proposal = {
         ...base,
+        expectedRevisions: [],
         targets: [petitioner.id],
         kind: "bless",
         petition: petition.id,

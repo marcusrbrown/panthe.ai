@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { goalSetEvent, petitionOpenedEvent } from "./episode-test-data";
+import {
+  goalSetEvent,
+  movedEvent,
+  petitionOpenedEvent,
+} from "./episode-test-data";
 import {
   analyzeReal,
   namedIds,
@@ -631,4 +635,61 @@ test("petition privacy matches whole ids: evt-26-7 does not match inside evt-26-
     requests: [asked("zeus", "A note about evt-26-7"), asked("hera", "ok")],
   });
   expect(property(exact, "petition privacy")?.ok).toBe(false);
+});
+
+// A god that stood at the altar when a prayer was made witnessed it, so the prayer's id may reach its prompt through the scene or a citation; what it may never be is a divine delivery: the prayers section is the named god's alone.
+const sceneWithPrayer =
+  "You are Zeus.\nHere with you:\n- farmer\nRecent events here:\n- [evt-26-7] petition-opened (farmer)\nFor a legend, linkedEventId may be only one of: evt-26-7; omit it to cite nothing.\nWhat do you do?";
+
+test("petition privacy passes a god that stood at the altar when the prayer was made, whose prompt carries the id in its scene and its citation guidance", () => {
+  const witnessed = base({
+    events: [
+      movedEvent("evt-20-3", 3, "zeus", "altar"),
+      prayerToHera(),
+    ] as never,
+    requests: [asked("zeus", sceneWithPrayer), asked("hera", "ok")],
+  });
+  const result = property(witnessed, "petition privacy");
+  expect(result?.ok).toBe(true);
+});
+
+test("petition privacy still fails a witnessing god whose prayers section lists the other god's petition: witnessing never excuses divine delivery", () => {
+  const delivered = base({
+    events: [
+      movedEvent("evt-20-3", 3, "zeus", "altar"),
+      prayerToHera(),
+    ] as never,
+    requests: [
+      asked(
+        "zeus",
+        `${sceneWithPrayer}\nPrayers to you:\n- [evt-26-7] farmer asks for help with food.\n  farmer at Altar [altar] (here).\nHere with you:\n- farmer`,
+      ),
+      asked("hera", "ok"),
+    ],
+  });
+  const result = property(delivered, "petition privacy");
+  expect(result?.ok).toBe(false);
+  expect(result?.detail).toContain("prayers");
+  expect(result?.detail).toContain("evt-26-7");
+});
+
+test("petition privacy fails a god that was not at the altar when the prayer was made, wherever its prompt carries the id: never there, left before, or arrived after", () => {
+  const prompts = [asked("zeus", sceneWithPrayer), asked("hera", "ok")];
+  const histories: Record<string, unknown[]> = {
+    "never moved": [],
+    "left before the prayer": [
+      movedEvent("evt-20-3", 3, "zeus", "altar"),
+      movedEvent("evt-21-4", 4, "zeus", "town-square"),
+    ],
+    "arrived after the prayer": [movedEvent("evt-30-9", 9, "zeus", "altar")],
+    "another god was there": [movedEvent("evt-20-3", 3, "hera", "altar")],
+  };
+  for (const [name, moves] of Object.entries(histories)) {
+    const result = property(
+      base({ events: [...moves, prayerToHera()] as never, requests: prompts }),
+      "petition privacy",
+    );
+    expect([name, result?.ok]).toEqual([name, false]);
+    expect(result?.detail).toContain("not at the altar");
+  }
 });

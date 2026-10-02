@@ -38,6 +38,7 @@ export {
   MAX_REMEMBERED,
   NOTHING_REMEMBERED,
   OWN_EVENT_WINDOW,
+  PRAYERS_HEADING,
   rememberedBy,
   shownIds,
 } from "./context";

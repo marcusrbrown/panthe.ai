@@ -1,10 +1,11 @@
-import type { Realm } from "@panthea/contracts";
+import type { ModelEndpointStatus, Realm } from "@panthea/contracts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type ConnectedFrame,
   type ConnectionError,
   createTauriTransport,
+  type ModelSettingsTransport,
   presentEvent,
   subscribe,
   type Transport,
@@ -32,7 +33,7 @@ import {
 import { ClientSurface } from "./ui/surface";
 
 export interface ClientDependencies {
-  readonly transport?: Transport;
+  readonly transport?: Transport & ModelSettingsTransport;
   readonly subscribe?: (
     onFrame: (connected: ConnectedFrame) => void,
     onError: (error: ConnectionError) => void,
@@ -60,6 +61,10 @@ export function App({
     kind: "idle",
   });
   const [receiptErrors, setReceiptErrors] = useState<string[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [endpointStatuses, setEndpointStatuses] = useState<
+    readonly ModelEndpointStatus[]
+  >([]);
   const summaryDismissal = useMemo(
     () =>
       createSummaryDismissal(
@@ -97,6 +102,7 @@ export function App({
   const acceptFrame = useCallback(
     (connected: ConnectedFrame) => {
       store.apply(connected.frame, connected.state);
+      setEndpointStatuses(connected.frame.modelEndpoints ?? []);
     },
     [store],
   );
@@ -198,6 +204,11 @@ export function App({
       }}
       dismissedSummary={dismissedSummary}
       receiptErrors={receiptErrors}
+      settingsOpen={settingsOpen}
+      onOpenSettings={() => setSettingsOpen(true)}
+      onCloseSettings={() => setSettingsOpen(false)}
+      settingsTransport={transport}
+      endpointStatuses={endpointStatuses}
       scene={
         <SceneHost
           key={rendererEpoch}

@@ -123,6 +123,21 @@ a:focus-visible {
   color: #31523f;
   font-size: 10px;
 }
+.settings-nav-button {
+  min-height: 32px;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+}
+.settings-nav-button:hover,
+.settings-nav-button[aria-current="page"] {
+  background: #ebe6d9;
+}
 
 .status-banner {
   min-height: 38px;

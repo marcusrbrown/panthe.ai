@@ -155,7 +155,12 @@ export interface PetitionPlace {
   readonly id: EntityId;
   readonly name: string;
   /** The exit to take from where the god is, or `undefined` when it is already there or no route exists. */
-  readonly hop?: { readonly id: EntityId; readonly name: string };
+  readonly hop?: {
+    readonly id: EntityId;
+    readonly name: string;
+    /** The action that reaches it: a move within a realm, a realm-transition across one (the world refuses a plain move across realms). */
+    readonly action: "move" | "realm-transition";
+  };
   readonly here: boolean;
 }
 
@@ -298,13 +303,20 @@ function placeFor(
   }
   const hop = nextHop(state, god.locationId, place, god.capabilities);
   const exit = hop === undefined ? undefined : state.locations.get(hop);
+  const from = state.locations.get(god.locationId);
   return {
     id: place,
     name: location.name,
     here: false,
-    ...(hop === undefined || !exit
+    ...(hop === undefined || !exit || !from
       ? {}
-      : { hop: { id: hop, name: exit.name } }),
+      : {
+          hop: {
+            id: hop,
+            name: exit.name,
+            action: exit.realm === from.realm ? "move" : "realm-transition",
+          },
+        }),
   };
 }
 
@@ -774,20 +786,27 @@ function parseAction(
   if (!action.ok) return action;
 
   switch (action.value) {
-    case "move": {
-      const to = parseMember(fields.to, "to", offer.moves, "to");
-      return to.ok
-        ? { ok: true, value: { action: "move", to: to.value as EntityId } }
-        : to;
-    }
+    case "move":
     case "realm-transition": {
-      const to = parseMember(fields.to, "to", offer.transitions, "to");
-      return to.ok
-        ? {
-            ok: true,
-            value: { action: "realm-transition", to: to.value as EntityId },
-          }
-        : to;
+      // The schema offers one list of destinations, so the destination, not the
+      // word the model paired with it, says which it is: a step within the
+      // realm, or a crossing. The world still validates the proposal either way.
+      const to = parseMember(
+        fields.to,
+        "to",
+        [...new Set([...offer.moves, ...offer.transitions])],
+        "to",
+      );
+      if (!to.ok) return to;
+      const destination = to.value as EntityId;
+      const crossing = offer.transitions.includes(destination);
+      return {
+        ok: true,
+        value: {
+          action: crossing ? "realm-transition" : "move",
+          to: destination,
+        },
+      };
     }
     case "strike": {
       const target = parseMember(
@@ -1181,7 +1200,7 @@ function answerGuidance(petition: PetitionView): string[] {
     return hop === undefined
       ? []
       : [
-          `  To answer it, take ${hop.name} [${hop.id}] toward ${petition.petitioner}, and keep going each turn until you are with them; then bless them.`,
+          `  To answer it, send action "${hop.action}" with to "${hop.id}" (${hop.name}) toward ${petition.petitioner}, and keep going each turn until you are with them; then bless them.`,
         ];
   }
   const buildings = request.buildings;
@@ -1203,7 +1222,7 @@ function answerGuidance(petition: PetitionView): string[] {
   return away === undefined || hop === undefined
     ? []
     : [
-        `  To answer it, take ${hop.name} [${hop.id}] toward ${away.place.name}, and keep going each turn until you are there; then strike ${target(away)}.`,
+        `  To answer it, send action "${hop.action}" with to "${hop.id}" (${hop.name}) toward ${away.place.name}, and keep going each turn until you are there; then strike ${target(away)}.`,
       ];
 }
 
@@ -1229,7 +1248,7 @@ function describePetitions(remembered: Remembered): string[] {
             ? " (here)"
             : place.hop === undefined
               ? ": no way there"
-              : `: take ${place.hop.name} [${place.hop.id}] toward ${place.name}`
+              : `: take ${place.hop.name} [${place.hop.id}] toward ${place.name} (action "${place.hop.action}", to "${place.hop.id}")`
         }.`,
       );
     }

@@ -144,10 +144,20 @@ export function buildModelProposal(
   if (goalTarget !== undefined) {
     factsRead.push(goalTargetFact(snapshot, remembered, goalTarget));
   }
+  // Every action pins the god's own revision. The god's location is pinned
+  // only by the actions that stand on it (`locationPin`): strike and
+  // realm-transition. Its revision goes up whenever anyone arrives or leaves, so
+  // pinning it refused report, move, and legend because a bystander came or
+  // went, while the validator already judges at commit time what that pin would
+  // protect: the listener's presence, the destination's adjacency and access, and
+  // the audience a legend is told to.
   const expectedRevisions: EntityRevision[] = [
     { entityId: actorId, revision: snapshot.self.revision },
-    { entityId: snapshot.location.id, revision: snapshot.location.revision },
   ];
+  const locationPin: EntityRevision = {
+    entityId: snapshot.location.id,
+    revision: snapshot.location.revision,
+  };
   const observationId = createObservationId();
   const base = {
     schemaVersion: 1,
@@ -186,6 +196,7 @@ export function buildModelProposal(
         return refuse(`${intent.to} is not an exit in the snapshot`);
       }
       factsRead.push(`location:${intent.to}`);
+      expectedRevisions.push(locationPin);
       proposal = {
         ...base,
         targets: [],
@@ -203,7 +214,7 @@ export function buildModelProposal(
         return refuse(`${intent.target} is not a building in the snapshot`);
       }
       factsRead.push(`building:${target.id}.status`);
-      expectedRevisions.push({
+      expectedRevisions.push(locationPin, {
         entityId: target.id,
         revision: target.revision,
       });

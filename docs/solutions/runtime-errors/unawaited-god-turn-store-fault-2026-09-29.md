@@ -1,6 +1,7 @@
 ---
 title: An unawaited god-turn promise crashed the sidecar on a store fault
 date: 2026-09-29
+last_updated: 2026-10-02
 category: runtime-errors
 module: simulation-core
 problem_type: runtime_error
@@ -10,10 +11,11 @@ symptoms:
   - "`dispatch()` stored a rejecting promise that the live tick loop never awaited"
   - A store fault in the fire-and-forget turn path became an unhandled rejection
   - The sidecar could exit instead of reporting `store-error` and halting ticks
+  - "`dispatch()` threw into the tick timer when its lifecycle gate read the pause state and the store failed"
 root_cause: async_timing
 resolution_type: code_fix
 severity: high
-tags: [unhandled-rejection, async, tick-loop, bun-sidecar, god-turn, floating-promise, store-error]
+tags: [unhandled-rejection, async, tick-loop, bun-sidecar, god-turn, floating-promise, store-error, lifecycle-gate, error-boundary]
 ---
 
 # An unawaited god-turn promise crashed the sidecar on a store fault
@@ -74,12 +76,18 @@ async function turn(god: EntityId, state: WorldState, signal: AbortSignal) {
 }
 ```
 
-`dispatch()` also wraps its state and journal reads. A failed read logs and returns `false`, so no turn starts and nothing throws into the tick loop:
+`dispatch()` also wraps its state and journal reads. A failed read logs and returns `false`, so no turn starts and nothing throws into the tick loop.
+
+That first wrap missed the lifecycle gate at the top of `dispatch()`. `startupCatchUpComplete()`, `catchUpRunning()` and `paused()` still ran above the `try`, and `paused()` reads the clock from the store, so a store fault there threw into the tick timer. PR #78 (commit `8ab4cac`, O03) moved the gate inside the same `try`. Only the in-memory `running` check stays outside:
 
 ```ts
+if (running !== undefined) return false;
 let state: WorldState;
 let god: EntityId | undefined;
 try {
+  if (!lifecycle.startupCatchUpComplete() || lifecycle.catchUpRunning() || lifecycle.paused()) {
+    return false;
+  }
   state = deps.getState();
   god = nextGod(state);
 } catch (error) {
@@ -106,6 +114,7 @@ afterEach(() => {
 
 - **Fault while preparing a turn:** the test injects a failure on `FROM events`, dispatches, and waits for the runner to go idle. It then asserts that nothing was rejected, no model request was sent, no proposal was journaled, and the same runner dispatches normally once the fault clears.
 - **Fault while choosing a god:** the test injects a failure on `FROM external_proposals`, and separately makes `getState()` throw. `dispatch()` returns `false`, leaves no turn in flight, and works again once the reads are healthy.
+- **Fault in the lifecycle gate:** `paused()` throws `db down`. `dispatch()` doesn't throw, returns `false`, logs `god turn not started: db down`, sends no model request, and dispatches normally once the read is healthy. Only `paused()` has a test; the other two gate reads moved inside the `try` with it.
 
 ## Why This Works
 
@@ -120,11 +129,13 @@ This doesn't make store faults succeed; it changes how they fail. A god turn who
 - Any promise launched from a timer, interval, event callback or tick without being awaited must never reject.
 - Put the whole async body inside `try`/`catch`, including the reads before the first `await`.
 - Wrap the caller's synchronous setup too, when it reads state, the journal or the store.
+- Guards are I/O too. A precondition check at the top of a timer-driven entry point that reads persisted state belongs inside the error boundary; only pure in-memory checks may stay outside.
 - `.finally(...)` is not a catch. Use it to clear flags, not to make a promise safe.
 - Test fire-and-forget paths with an injected fault and a live `unhandledRejection` listener, plus a control that clears the fault and shows the same runner working again.
 
 ## Related Issues
 
 - [PR #64: feat(agents): god turn runner with journaled model proposals](https://github.com/marcusrbrown/panthea/pull/64)
+- [PR #78: keep lifecycle faults inside dispatch](https://github.com/marcusrbrown/panthea/pull/78): completed the `dispatch()` wrap for the lifecycle gate
 - [Side effects inside the commit transaction](../best-practices/side-effects-inside-the-commit-transaction-2026-09-28.md): the other way the tick loop has crashed the process
 - [Lifecycle state behind one lock](../best-practices/lifecycle-state-one-lock-transitions-2026-09-28.md): the shell supervisor that restarts a crashed sidecar

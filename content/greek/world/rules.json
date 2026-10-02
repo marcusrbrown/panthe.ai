@@ -68,6 +68,12 @@
       "blessResourceCap": 4,
       "directorQuietTicks": 120,
       "goalLockTicks": 40
+    },
+    "practiceBalance": {
+      "negotiationTicks": 200,
+      "counterBudget": 3,
+      "minTermTicks": 25,
+      "maxTermTicks": 500
     }
   }
 }

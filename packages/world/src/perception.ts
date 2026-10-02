@@ -210,6 +210,9 @@ function eventLocation(
     case "petition-answered":
     case "petition-lapsed":
     case "goal-change-refused":
+    case "practice-opened":
+    case "practice-moved":
+    case "practice-ended":
       return undefined;
   }
 }

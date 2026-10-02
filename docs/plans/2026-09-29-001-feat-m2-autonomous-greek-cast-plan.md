@@ -498,6 +498,8 @@ Gate 3 result (owner, 2026-10-02): continue. The rerun at b0d978d (#90–#94) on
 
 Unit 9 direction (owner, 2026-10-02): the episodes still repeat because the world gives a character too little to do. Unit 9 is planned as world-building: each new god's abilities are backed by new world rules, and the twenty inhabitants get needs, routines, and trades that give the gods something to answer and act on.
 
+Superseded 2026-10-02: Units 9, 10, and 11 are absorbed by `docs/plans/2026-10-02-001-feat-god-practices-plan.md` (origin `docs/brainstorms/2026-10-02-god-practices-requirements.md`): its Unit 7 carries the five gods and twenty inhabitants (this plan's Unit 9), its Unit 9 the gods-first scheduler (Unit 10), and its Units 1, 4, 5, and 8 the endings, transformation, and alliances by settlement (Unit 11). The unit texts below are kept for their context and are not to be worked from; Unit 13 runs after that plan.
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**

@@ -106,6 +106,8 @@ export interface WorldRules {
   readonly memoryBalance?: Readonly<Record<string, number>>;
   /** Petition, bless, director, and goal-lock tunables. Absent means every default in packages/world's petition rules. */
   readonly petitionBalance?: Readonly<Record<string, number>>;
+  /** Practice thread tunables (negotiation window, counteroffer budget, term deadline bounds). Absent means every default in packages/world's practice rules. */
+  readonly practiceBalance?: Readonly<Record<string, number>>;
 }
 
 export interface ContentPack {
@@ -390,6 +392,39 @@ export function parsePetitionBalance(
   return ok(balance);
 }
 
+/** The keys of `rules.practiceBalance`: every one a positive whole number of ticks or units. */
+export const PRACTICE_BALANCE_KEYS = [
+  "negotiationTicks",
+  "counterBudget",
+  "minTermTicks",
+  "maxTermTicks",
+] as const;
+
+/**
+ * `rules.practiceBalance`, checked like `parsePetitionBalance`: each key a
+ * positive whole number, any other key refused so a typo cannot silently leave
+ * a default in force. Used for authored content and when a stored world's rules
+ * are decoded.
+ */
+export function parsePracticeBalance(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, number>>> {
+  if (!isRecord(value)) return fail(path, "expected a balance object");
+  const balance: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const at = `${path}.${key}`;
+    if (!(PRACTICE_BALANCE_KEYS as readonly string[]).includes(key)) {
+      return fail(at, "not a practice tunable");
+    }
+    const parsed = parseNonNegativeInteger(entry, at);
+    if (!parsed.ok) return parsed;
+    if (parsed.value < 1) return fail(at, "expected a positive integer");
+    balance[key] = parsed.value;
+  }
+  return ok(balance);
+}
+
 function parseBalanceRecord(
   value: unknown,
   path: string,
@@ -449,6 +484,11 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parsePetitionBalance(value.petitionBalance, `${path}.petitionBalance`);
   if (!petitionBalance.ok) return petitionBalance;
+  const practiceBalance =
+    value.practiceBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parsePracticeBalance(value.practiceBalance, `${path}.practiceBalance`);
+  if (!practiceBalance.ok) return practiceBalance;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -462,6 +502,9 @@ function parseWorldRules(
     ...(petitionBalance.value === undefined
       ? {}
       : { petitionBalance: petitionBalance.value }),
+    ...(practiceBalance.value === undefined
+      ? {}
+      : { practiceBalance: practiceBalance.value }),
   });
 }
 

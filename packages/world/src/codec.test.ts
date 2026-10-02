@@ -477,3 +477,21 @@ test("decode holds a stored world's petition tunables to the same strict rule as
     expect(() => decode(withBalance(bad))).toThrow();
   }
 });
+
+test("decode holds a stored world's practice tunables to the same strict rule as content, and a world with no threads decodes to none", () => {
+  const state = createInitialWorldState(walkPack());
+  const encoded = JSON.parse(JSON.stringify(encode(state)));
+  expect(decode(encoded).threads.size).toBe(0);
+  const withBalance = (practiceBalance: unknown) => ({
+    ...encoded,
+    rules: { ...encoded.rules, practiceBalance },
+  });
+  expect(() => decode(withBalance({ counterBudget: 2 }))).not.toThrow();
+  for (const bad of [
+    { counterBudget: 0 },
+    { negotiationTicks: 1.5 },
+    { counterBudgt: 3 },
+  ]) {
+    expect(() => decode(withBalance(bad))).toThrow();
+  }
+});

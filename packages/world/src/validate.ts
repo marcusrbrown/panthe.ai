@@ -47,6 +47,7 @@ import {
   petitionBalanceOf,
   petitionFor,
 } from "./petitions";
+import { validatePractice } from "./practices";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -784,6 +785,8 @@ export function validateProposal(
       return handlePray(state, proposal);
     case "bless":
       return handleBless(state, proposal);
+    case "practice":
+      return validatePractice(state, proposal);
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

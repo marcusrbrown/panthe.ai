@@ -73,6 +73,12 @@ import {
   planNoticeStep,
   recordCauses,
 } from "./petitions";
+import {
+  applyPracticeEnded,
+  applyPracticeMoved,
+  applyPracticeOpened,
+  judgePractices,
+} from "./practices";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -272,6 +278,15 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "petition-lapsed":
       next = applyPetitionLapsed(state, event);
+      break;
+    case "practice-opened":
+      next = applyPracticeOpened(state, event);
+      break;
+    case "practice-moved":
+      next = applyPracticeMoved(state, event);
+      break;
+    case "practice-ended":
+      next = applyPracticeEnded(state, event);
       break;
     case "goal-change-refused":
       // Their world state arrives with the units that produce them.
@@ -633,12 +648,33 @@ export function runTick(
     ...committed.flatMap((record) => record.events),
     ...rejected.flatMap((record) => record.goalEvents),
   ].sort((a, b) => a.sequence - b.sequence);
+
+  // The thread judge closes the environment step: with everything this tick
+  // did in, the world rules on each practice thread (performances seen,
+  // deadlines passed, budgets spent, a party dead). Its rulings are primary
+  // events, so the memories and feelings derived below see them this tick.
+  const practiceEvents = judgePractices(
+    state,
+    [
+      ...proposalEvents,
+      ...incomeEvents,
+      ...fireEvents,
+      ...needEvents,
+      ...directorEvents,
+      ...noticeEvents,
+    ],
+    working,
+    applyEvent,
+  ).map((draft) => completePrimary(draft, environmentCause));
+  working = applyEvents(working, practiceEvents);
+
   const environmentEvents = [
     ...incomeEvents,
     ...fireEvents,
     ...needEvents,
     ...directorEvents,
     ...noticeEvents,
+    ...practiceEvents,
   ];
 
   // Derivation phase: with the primary events numbered and applied, memories

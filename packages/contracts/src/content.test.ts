@@ -431,3 +431,43 @@ test("petition tunables are strict: each a positive whole number, unknown keys r
   }
   expect(parseContentPack(packWithPetitionBalance([250])).ok).toBe(false);
 });
+
+function packWithPracticeBalance(
+  practiceBalance: unknown,
+): Record<string, unknown> {
+  const pack = validPack();
+  (pack.rules as Record<string, unknown>).practiceBalance = practiceBalance;
+  return pack;
+}
+
+test("practice tunables are strict: each a positive whole number, unknown keys refused, a missing record means every default", () => {
+  const good = {
+    negotiationTicks: 200,
+    counterBudget: 3,
+    minTermTicks: 25,
+    maxTermTicks: 500,
+  };
+  const parsed = parseContentPack(packWithPracticeBalance(good));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok) expect(parsed.value.rules.practiceBalance).toEqual(good);
+  expect(
+    parseContentPack(packWithPracticeBalance({ counterBudget: 2 })).ok,
+  ).toBe(true);
+  const plain = parseContentPack(validPack());
+  expect(plain.ok && plain.value.rules.practiceBalance === undefined).toBe(
+    true,
+  );
+
+  for (const bad of [
+    { negotiationTicks: 0 },
+    { counterBudget: -1 },
+    { counterBudget: 2.5 },
+    { minTermTicks: "soon" },
+    { maxTermTicks: Number.POSITIVE_INFINITY },
+    { counterBudgt: 3 },
+    { answerWindowTicks: 250 },
+    ["counterBudget"],
+  ]) {
+    expect(parseContentPack(packWithPracticeBalance(bad)).ok).toBe(false);
+  }
+});

@@ -52,6 +52,7 @@ import {
   getRelationship,
   getResourceAmount,
   isEventLinked,
+  nextHop,
   runTick,
   submitProposal,
   toEntityId,
@@ -1359,6 +1360,162 @@ test("a witnessed strike, a report, and a relationship change survive reopen, re
     ).toHaveLength(2);
     closeStore(liveTrace);
 
+    closeStore(branch);
+    closeStore(reopened);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
+test("practice threads survive reopen, rebuild, and archive import: a fulfilled settlement and a countered one are rebuilt exactly, and the thread explains itself from the log", () => {
+  const storeDir = tempDir("panthea-sim-practice-");
+  const exportDir = tempDir("panthea-sim-practice-export-");
+  const slotsDir = tempDir("panthea-sim-practice-slots-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const world = liveWorld(storePath, socialSeed());
+
+    // Zeus strikes the tavern with the bard beside him; the bard tells Hera in the square.
+    world.run(
+      queuedProposal("zeus", {
+        kind: "strike",
+        target: "the-tavern",
+        power: 3,
+      }),
+    );
+    const ignition = eventOfKind(
+      listEvents(world.store.db),
+      "building-ignited",
+    );
+    world.run(queuedProposal("bard", { kind: "move", to: "town-square" }));
+    world.run(
+      queuedProposal("bard", {
+        kind: "report",
+        listener: "hera",
+        content: "Zeus burned the tavern",
+        linkedEventId: ignition.id,
+        claim: { effect: "harm", agent: "zeus", target: "farmer" },
+      }),
+    );
+
+    // Hera demands a legend in the square; Zeus accepts, walks there, and tells it.
+    const tellInSquare = (ticks: number) => ({
+      kind: "tell-legend",
+      party: "zeus",
+      place: "town-square",
+      deadlineTicks: ticks,
+    });
+    world.run(
+      queuedProposal("hera", {
+        kind: "practice",
+        move: "demand",
+        counterparty: "zeus",
+        cause: ignition.id,
+        term: tellInSquare(100),
+      }),
+    );
+    const [first] = [...world.state.threads.values()];
+    if (!first) throw new Error("expected a thread");
+    world.run(
+      queuedProposal("zeus", {
+        kind: "practice",
+        move: "accept",
+        thread: first.id,
+        swear: true,
+        expectedRevisions: [{ entityId: first.id, revision: first.revision }],
+      }),
+    );
+    const square = id("town-square");
+    for (let hop = 0; hop < 12; hop += 1) {
+      const zeus = world.state.actors.get(id("zeus"));
+      if (!zeus || zeus.locationId === square) break;
+      const next = nextHop(
+        world.state,
+        zeus.locationId,
+        square,
+        zeus.capabilities,
+      );
+      if (next === undefined) throw new Error("Zeus has no way to the square");
+      world.run(queuedProposal("zeus", { kind: "move", to: next }));
+    }
+    world.run(
+      queuedProposal("zeus", {
+        kind: "legend",
+        assertion: "Hera is queen of heaven",
+      }),
+    );
+    expect(world.state.threads.get(first.id)?.status).toBe("fulfilled");
+
+    // A second demand on the same cause, and Zeus's counter, left open.
+    world.run(
+      queuedProposal("hera", {
+        kind: "practice",
+        move: "demand",
+        counterparty: "zeus",
+        cause: ignition.id,
+        term: tellInSquare(120),
+      }),
+    );
+    const second = [...world.state.threads.values()].at(-1);
+    if (!second) throw new Error("expected a second thread");
+    world.run(
+      queuedProposal("zeus", {
+        kind: "practice",
+        move: "counter",
+        thread: second.id,
+        term: tellInSquare(150),
+      }),
+    );
+    const state = world.state;
+    expect([...state.threads.values()].map((t) => t.status)).toEqual([
+      "fulfilled",
+      "countered",
+    ]);
+
+    // The thread explains itself from the log: its opening rests on the strike Hera was told of.
+    const events = listEvents(world.store.db);
+    const ended = eventOfKind(events, "practice-ended");
+    expect(ended).toMatchObject({ outcome: "fulfilled", threadId: first.id });
+    const opening = eventOfKind(events, "practice-opened");
+    expect(
+      causalChain(
+        (eventId) => getEventRow(world.store.db, eventId),
+        opening.id,
+      ).map((event) => event.kind),
+    ).toEqual(["building-ignited", "practice-opened"]);
+
+    // Live equals reopened equals rebuilt.
+    closeStore(world.store);
+    const freshReducers = createWorldProjectionReducers(socialSeed());
+    const reopened = openStore(storePath, freshReducers);
+    const clock = readClock(reopened.db);
+    expect(
+      restoreWorldTime(readLiveProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+    expect(
+      restoreWorldTime(rebuildProjections(reopened, freshReducers), clock),
+    ).toEqual(state);
+
+    // Export, import into a new slot: the branch rebuilds the same threads.
+    const exportPath = join(exportDir, "archive.sqlite");
+    exportArchive(reopened, exportPath);
+    const imported = importArchive(exportPath, slotsDir, worldImportReducers);
+    const branch = openStore(
+      join(imported.slotPath, "world.sqlite"),
+      freshReducers,
+    );
+    const branchClock = readClock(branch.db);
+    const restored = restoreWorldTime(
+      readLiveProjections(branch, freshReducers),
+      branchClock,
+    );
+    expect(restored.threads).toEqual(state.threads);
+    expect(restored.threads.get(first.id)?.acceptance?.sworn).toBe(true);
+    expect(
+      restoreWorldTime(rebuildProjections(branch, freshReducers), branchClock),
+    ).toEqual(state);
     closeStore(branch);
     closeStore(reopened);
   } finally {

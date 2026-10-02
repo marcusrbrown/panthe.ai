@@ -109,6 +109,7 @@ External research found no evidence that models of 8B or smaller can hold open-e
 - **Unmet needs become events.** A prayer about a failed trade or an empty larder can then cite a real cause. The cost is a new event that routines emit.
 - **The director never tells the gods anything.** Gods learn of director trouble through petitions or through what they themselves perceive. This keeps W04: a god never learns about the world except by perception, telling, or its divine sense of prayers addressed to it.
 - **The world enforces goal persistence and adds no model calls.** This targets the two measured failures: goals reset unchanged, and goals dropped after one action. The world still never judges whether a goal succeeded. The gate counts world ticks and records refusals, so replay reproduces it. A new petition unlocks a goal change, so a god committed to the other god can still turn to a prayer.
+- **Superseded in part 2026-10-02:** standalone petitions become supplication, one of three practices the world holds as threads (`docs/brainstorms/2026-10-02-god-practices-requirements.md`, plan `docs/plans/2026-10-02-001-feat-god-practices-plan.md`, Unit 5). A supplication with no terms behaves exactly as a petition does here, and the petition tests remain its characterization suite. Until Unit 5 lands the petition rules above are unchanged.
 
 ---
 

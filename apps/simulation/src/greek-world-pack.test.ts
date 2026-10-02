@@ -5,6 +5,7 @@ import {
   createInitialWorldState,
   DEFAULT_MEMORY_BALANCE,
   DEFAULT_PETITION_BALANCE,
+  DEFAULT_PRACTICE_BALANCE,
 } from "@panthea/world";
 import {
   loadEmbeddedGreekGodProfiles,
@@ -99,6 +100,12 @@ test("the Greek pack states the petition tunables the world rules default to, so
   const pack = loadEmbeddedGreekWorldPack();
   if (!pack.ok) throw new Error(pack.message);
   expect(pack.value.rules.petitionBalance).toEqual(DEFAULT_PETITION_BALANCE);
+});
+
+test("the Greek pack states the practice tunables the world rules default to, strictly parsed", () => {
+  const pack = loadEmbeddedGreekWorldPack();
+  if (!pack.ok) throw new Error(pack.message);
+  expect(pack.value.rules.practiceBalance).toEqual(DEFAULT_PRACTICE_BALANCE);
 });
 
 test("PANTHEA_PETITION_BALANCE overrides petition tunables over the authored ones, and anything invalid is refused", () => {

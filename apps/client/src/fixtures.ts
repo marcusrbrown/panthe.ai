@@ -135,6 +135,7 @@ function worldOf(
     needs: new Map(),
     causes: new Map(),
     petitions: new Map(),
+    threads: new Map(),
     repairGrants: new Map(),
     noticed: new Map(),
     director: { lastConsequentialTick: 0 },

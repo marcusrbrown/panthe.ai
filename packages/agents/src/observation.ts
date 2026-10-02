@@ -144,10 +144,24 @@ export function buildModelProposal(
   if (goalTarget !== undefined) {
     factsRead.push(goalTargetFact(snapshot, remembered, goalTarget));
   }
-  const expectedRevisions: EntityRevision[] = [
-    { entityId: actorId, revision: snapshot.self.revision },
-    { entityId: snapshot.location.id, revision: snapshot.location.revision },
-  ];
+  // Only the actions that stand on what they saw pin anything: strike pins the
+  // god, its location, and the building; realm-transition the god and its
+  // location. Report, move, legend, and bless pin nothing. A revision goes up on
+  // any change, so a pin refused them for changes they do not depend on (a
+  // bystander arriving or leaving raises the location's, a mortal's worship
+  // raises the god's), while the validator already judges at commit time
+  // everything those pins would protect: the god alive, its current location and
+  // access to the destination (move), its presence with the listener and what
+  // it cites (report), and the audience at its place (legend).
+  const expectedRevisions: EntityRevision[] = [];
+  const selfPin: EntityRevision = {
+    entityId: actorId,
+    revision: snapshot.self.revision,
+  };
+  const locationPin: EntityRevision = {
+    entityId: snapshot.location.id,
+    revision: snapshot.location.revision,
+  };
   const observationId = createObservationId();
   const base = {
     schemaVersion: 1,
@@ -186,6 +200,7 @@ export function buildModelProposal(
         return refuse(`${intent.to} is not an exit in the snapshot`);
       }
       factsRead.push(`location:${intent.to}`);
+      expectedRevisions.push(selfPin, locationPin);
       proposal = {
         ...base,
         targets: [],
@@ -203,7 +218,7 @@ export function buildModelProposal(
         return refuse(`${intent.target} is not a building in the snapshot`);
       }
       factsRead.push(`building:${target.id}.status`);
-      expectedRevisions.push({
+      expectedRevisions.push(selfPin, locationPin, {
         entityId: target.id,
         revision: target.revision,
       });

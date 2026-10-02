@@ -198,6 +198,20 @@ const envelope = (id: string, sequence: number, tick: number) => ({
   approximate: false,
 });
 
+/** `actor` arrived at `to`, as the world's log holds it. */
+export const movedEvent = (
+  id: string,
+  sequence: number,
+  actor: string,
+  to: string,
+  tick = 1,
+) => ({
+  ...envelope(id, sequence, tick),
+  kind: "entity-moved",
+  entityId: actor,
+  to,
+});
+
 /** A prayer by `petitioner` to `god`, about the event `cause`. */
 export const petitionOpenedEvent = (
   id: string,

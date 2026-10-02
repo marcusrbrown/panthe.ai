@@ -1245,10 +1245,13 @@ function answerGuidance(petition: PetitionView): string[] {
       ];
 }
 
+/** The heading of the prayers section: the one place the divine sense delivers petitions, found by it (with the indented and dashed lines under it) wherever a prompt is checked for another god's prayers. */
+export const PRAYERS_HEADING = "Prayers to you:";
+
 /** The prayers addressed to the god: who asked, for what, about what, and where each place is from here. */
 function describePetitions(remembered: Remembered): string[] {
   if (remembered.petitions.length === 0) return [];
-  const lines = ["Prayers to you:"];
+  const lines = [PRAYERS_HEADING];
   for (const petition of remembered.petitions) {
     const request = petition.request;
     const ask =

@@ -526,6 +526,8 @@ flowchart TB
 
 **Verification:** every check passes on both models, and the owner's rating meets the bar. Otherwise, fall back to structured choice (see origin).
 
+**Outcome (2026-10-01): gate 3 failed.** Both models failed "petition answered": 0 of 6 god-episodes on each, before and after the prompt tune (`20ae42b`: prayers first, a next-step line per prayer, repeated reports collapsed, goal changes riding with an action). Every petition was a help-with-food request, and no strike or bless was committed. llama3.2 3B failed repetition in 4 of 6 god-episodes before the tune and 1 of 6 after (longest run 4; 41 of episode 3's 43 exhausted requests were move versus realm-transition destination errors); gemma4:e4b failed repetition in 6 of 6 both times, with goals stalled. Evidence: `tools/scenarios/m2-greek-cast/episodes/2026-10-01T22-18-59/` (llama, before), `2026-10-01T22-34-02/` (gemma, before), `2026-10-01T23-05-12/` (llama, after), `2026-10-01T23-20-15/` (gemma, after). Next: try other local models, then decide on the structured-choice fallback. The unit stays open.
+
 ## System-Wide Impact
 
 - **Interaction graph:** routine → pray → petition → god prompt → god turn → strike or bless → derivation (answer, sign, worship, affinity) → routing for later prayers. The director feeds causes into the same path.

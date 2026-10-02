@@ -306,7 +306,7 @@ sequenceDiagram
 
 **Verification:** `bun run check`; the scenario from Unit 8 later exercises the chain end to end.
 
-- [ ] **Unit 3: Minimal settings view and endpoint keys**
+- [ ] **Unit 3: Minimal settings view and endpoint keys** (refined in `docs/plans/2026-10-01-003-feat-provider-settings-plan.md`)
 
 **Goal:** an endpoint list (base URL, model), per-role assignment and fallback order, persisted outside world saves; a write-only command stores an endpoint key in Keychain; the shell reads it at sidecar spawn and passes it with the launch token.
 

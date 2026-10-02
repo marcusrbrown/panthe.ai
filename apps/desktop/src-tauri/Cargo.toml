@@ -18,12 +18,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Pinned to 2.12.0, not the originally scaffolded 2.11.5: with 2.11.5, cargo
+# Pinned exactly, not the originally scaffolded 2.11.5: with 2.11.5, cargo
 # resolved tauri-runtime/tauri-runtime-wry to 2.12.0 (published the same day)
-# and the crate failed to compile against that mismatched internal API. 2.12.0
-# is co-published across the whole tauri-* crate family and matches the JS
-# @tauri-apps/api@2.12.0 / @tauri-apps/cli@2.12.0 pins below, so crate and API
-# stay in lockstep with no version skew.
+# and the crate failed to compile against that mismatched internal API. The
+# pin was 2.12.0 and is now 2.12.1 (#70); Cargo.lock has tauri, tauri-runtime,
+# and tauri-runtime-wry all at 2.12.1. The JS @tauri-apps/api and
+# @tauri-apps/cli are exact 2.12.0 pins in apps/client and apps/desktop
+# package.json, so the crate and the JS packages agree on minor 2.12 (ADR-0001)
+# and differ by one patch.
 # `tray-icon`: the tray keeps the shell running after window close
 # rather than quitting the whole app.
 tauri = { version = "=2.12.1", features = ["tray-icon"] }

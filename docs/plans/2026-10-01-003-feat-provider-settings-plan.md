@@ -246,6 +246,8 @@ flowchart LR
 
 **Verification:** traceability rows cite the tests and screenshots.
 
+**2026-10-02 note:** the OpenCode Go manual run is blocked. Go's usage policy limits it to OpenCode and similar coding-agent traffic, and god turns are not that traffic (see the 2026-10-02 correction in [ADR-0005](../decisions/0005-model-providers.md)). The run stays open; hosted evidence uses the owner's self-hosted OpenAI-compatible proxy ([hosted endpoint practice](../solutions/best-practices/hosted-endpoint-policy-and-smoke-test-2026-10-02.md)).
+
 ## System-Wide Impact
 
 - **Interaction graph:** settings view → shell commands → settings file and Keychain → lifecycle restart → sidecar spawn line → router → endpoint status → frame → view.

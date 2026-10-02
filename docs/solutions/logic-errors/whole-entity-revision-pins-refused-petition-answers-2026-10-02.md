@@ -78,7 +78,7 @@ Before the fix, the same models answered 0 petitions.
 - Don't use a goal's "achieved" status as evidence of the action that came with it.
 - Test concurrency the way the world runs: one test where a routine changes the target, another where unrelated traffic changes the location, each run between observing and validating. Pair them with controls showing a genuinely stale proposal is still refused for its real reason.
 
-Still open: the god and location pins remain on move, strike, report and legend, and reports are the largest remaining refusal (26 × `stale-target` on `gpt-6-luna`, 19 on qwen3).
+Follow-up (2026-10-02): the same pins were also refusing report, move, and legend (26 reports on `gpt-6-luna` and 19 on qwen3 8B per three episodes were `stale-target`), because any arrival or departure raises the location's revision and a mortal's worship raises the god's. Report, move, legend, and bless now pin nothing, since the validator rechecks at commit the god alive, its current location and access, its presence with the listener, and the audience at its place. Strike still pins the god, its location, and the building, and realm-transition the god and its location (`packages/agents/src/observation.ts`).
 
 ## Related Issues
 

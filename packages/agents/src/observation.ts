@@ -144,16 +144,20 @@ export function buildModelProposal(
   if (goalTarget !== undefined) {
     factsRead.push(goalTargetFact(snapshot, remembered, goalTarget));
   }
-  // Every action pins the god's own revision. The god's location is pinned
-  // only by the actions that stand on it (`locationPin`): strike and
-  // realm-transition. Its revision goes up whenever anyone arrives or leaves, so
-  // pinning it refused report, move, and legend because a bystander came or
-  // went, while the validator already judges at commit time what that pin would
-  // protect: the listener's presence, the destination's adjacency and access, and
-  // the audience a legend is told to.
-  const expectedRevisions: EntityRevision[] = [
-    { entityId: actorId, revision: snapshot.self.revision },
-  ];
+  // Only the actions that stand on what they saw pin anything: strike pins the
+  // god, its location, and the building; realm-transition the god and its
+  // location. Report, move, legend, and bless pin nothing. A revision goes up on
+  // any change, so a pin refused them for changes they do not depend on (a
+  // bystander arriving or leaving raises the location's, a mortal's worship
+  // raises the god's), while the validator already judges at commit time
+  // everything those pins would protect: the god alive, its current location and
+  // access to the destination (move), its presence with the listener and what
+  // it cites (report), and the audience at its place (legend).
+  const expectedRevisions: EntityRevision[] = [];
+  const selfPin: EntityRevision = {
+    entityId: actorId,
+    revision: snapshot.self.revision,
+  };
   const locationPin: EntityRevision = {
     entityId: snapshot.location.id,
     revision: snapshot.location.revision,
@@ -196,7 +200,7 @@ export function buildModelProposal(
         return refuse(`${intent.to} is not an exit in the snapshot`);
       }
       factsRead.push(`location:${intent.to}`);
-      expectedRevisions.push(locationPin);
+      expectedRevisions.push(selfPin, locationPin);
       proposal = {
         ...base,
         targets: [],
@@ -214,7 +218,7 @@ export function buildModelProposal(
         return refuse(`${intent.target} is not a building in the snapshot`);
       }
       factsRead.push(`building:${target.id}.status`);
-      expectedRevisions.push(locationPin, {
+      expectedRevisions.push(selfPin, locationPin, {
         entityId: target.id,
         revision: target.revision,
       });

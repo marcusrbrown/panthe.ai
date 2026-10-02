@@ -111,7 +111,7 @@ test('the service stamps source "model" on both the proposal and its observation
   expect(buildModelProposal.length).toBe(3);
 });
 
-test("a move and a legend name only the actor; a realm transition takes its via from the location", () => {
+test("a move and a legend pin nothing; a realm transition takes its via from the location", () => {
   const snapshot = snapshotAt(tavernState());
   const move = build(snapshot, { action: "move", to: "town-square" });
   expect(move.proposal).toMatchObject({
@@ -119,14 +119,14 @@ test("a move and a legend name only the actor; a realm transition takes its via 
     to: "town-square",
     targets: [],
   });
-  expect(revisionsOf(move.proposal)).toEqual(["zeus@0"]);
+  expect(revisionsOf(move.proposal)).toEqual([]);
 
   const legend = build(snapshot, { action: "legend", assertion: "Hear me." });
   expect(legend.proposal).toMatchObject({
     kind: "legend",
     assertion: "Hear me.",
   });
-  expect(revisionsOf(legend.proposal)).toEqual(["zeus@0"]);
+  expect(revisionsOf(legend.proposal)).toEqual([]);
 
   const atMountain = snapshotAt(zeusAtMountain());
   const transition = build(atMountain, {
@@ -577,17 +577,17 @@ const reportToFarmer = {
   content: "A word.",
 };
 
-test("report, move, and legend pin the god's own revision and nothing else; strike and realm-transition keep their location pin", () => {
+test("report, move, and legend pin nothing; strike pins the god, its location, and the building, and realm-transition the god and its location", () => {
   const snapshot = snapshotAt(tavernState());
   for (const raw of [
     { action: "move", to: "town-square" },
     { action: "legend", assertion: "Hear me." },
   ]) {
-    expect(revisionsOf(build(snapshot, raw).proposal)).toEqual(["zeus@0"]);
+    expect(revisionsOf(build(snapshot, raw).proposal)).toEqual([]);
   }
   expect(
     revisionsOf(build(snapshotAt(withFarmer()), reportToFarmer).proposal),
-  ).toEqual(["zeus@0"]);
+  ).toEqual([]);
   expect(revisionsOf(build(snapshot, strikeTavern).proposal)).toEqual([
     "tavern@0",
     "the-tavern@0",
@@ -597,7 +597,10 @@ test("report, move, and legend pin the god's own revision and nothing else; stri
     action: "realm-transition",
     to: "olympus-gate",
   });
-  expect(revisionsOf(transition.proposal)).toContain("mountain-path@0");
+  expect(revisionsOf(transition.proposal)).toEqual([
+    "mountain-path@0",
+    "zeus@0",
+  ]);
 });
 
 test("a report still commits when a bystander arrived at, or left, the god's location while the god thought", () => {
@@ -717,15 +720,13 @@ test("a legend is still refused for its real reason: a claim naming something th
   ]);
 });
 
-// The god's own revision stays pinned. A mortal's worship credits the god's
-// divinity, which raises its revision without moving it, and each of these is
-// refused `stale-target` today:
-//
-//   expect(rejectedReasons(worshipped(state), proposal)).toEqual([]);
-//   - Expected  - 0 / + Received  + 1:  "stale-target"
-//
-// so a god that is worshipped while it thinks loses the turn. They are left as
-// `test.todo`, not fixed: whether the self pin should go is the owner's decision.
+// The god's own revision is not pinned either. A mortal's worship credits the
+// god's divinity, which raises its revision without moving it, and a god that is
+// worshipped while it thinks must not lose its turn. Everything the pin would
+// have protected is judged again at commit: liveness before any rule
+// (validate.ts, validateProposal), the god's current location and access for a
+// move (handleMove), its co-location with the listener and what it cites for a
+// report (handleReport), and the audience at its place for a legend (handleLegend).
 
 const worshipped = (state: WorldState) =>
   applyEvent(
@@ -739,13 +740,13 @@ const worshipped = (state: WorldState) =>
     }),
   );
 
-test.todo("a report still commits when a mortal's worship raised the god's own revision while the god thought", () => {
+test("a report still commits when a mortal's worship raised the god's own revision while the god thought", () => {
   const state = withFarmer();
   const { proposal } = build(snapshotAt(state), reportToFarmer);
   expect(rejectedReasons(worshipped(state), proposal)).toEqual([]);
 });
 
-test.todo("a move still commits when a mortal's worship raised the god's own revision while the god thought", () => {
+test("a move still commits when a mortal's worship raised the god's own revision while the god thought", () => {
   const state = tavernState();
   const { proposal } = build(snapshotAt(state), {
     action: "move",
@@ -754,11 +755,66 @@ test.todo("a move still commits when a mortal's worship raised the god's own rev
   expect(rejectedReasons(worshipped(state), proposal)).toEqual([]);
 });
 
-test.todo("a legend still commits when a mortal's worship raised the god's own revision while the god thought", () => {
+test("a legend still commits when a mortal's worship raised the god's own revision while the god thought", () => {
   const state = tavernState();
   const { proposal } = build(snapshotAt(state), {
     action: "legend",
     assertion: "Hear me.",
   });
   expect(rejectedReasons(worshipped(state), proposal)).toEqual([]);
+});
+
+// What the god's own pin used to protect is still judged at commit, for the real reason.
+
+test("a report is refused as not-adjacent when the god itself moved away from the listener while it thought", () => {
+  const state = withFarmer();
+  const { proposal } = build(snapshotAt(state), reportToFarmer);
+  expect(
+    rejectedReasons(arrives(state, "zeus", "town-square"), proposal),
+  ).toEqual(["not-adjacent"]);
+});
+
+test("a move is refused as not-adjacent when the god is no longer at the origin it set out from", () => {
+  const state = tavernState();
+  const { proposal } = build(snapshotAt(state), {
+    action: "move",
+    to: "town-square",
+  });
+  // Zeus has already walked to the square: it cannot move to where it stands.
+  expect(
+    rejectedReasons(arrives(state, "zeus", "town-square"), proposal),
+  ).toEqual(["not-adjacent"]);
+  // Control: still at the origin, the same proposal commits.
+  expect(runProposal(state, proposal).rejected).toEqual([]);
+});
+
+test("a move is refused as restricted-realm when the god lost the capability the destination needs, even though losing it raised its revision", () => {
+  const hall = actorAt(greekState(), "zeus", "great-hall");
+  const { proposal } = build(snapshotAt(hall), {
+    action: "move",
+    to: "olympus-gate",
+  });
+  const zeus = getActor(hall, id("zeus"));
+  if (!zeus) throw new Error("no zeus");
+  const stripped = withActor(hall, {
+    ...zeus,
+    capabilities: [],
+    revision: zeus.revision + 1,
+  });
+  expect(rejectedReasons(stripped, proposal)).toEqual(["restricted-realm"]);
+});
+
+test("a legend told after the god itself moved commits and is heard by whoever is at the god's new place, not the old one", () => {
+  const state = actorAt(tavernState(), "woodcutter", "town-square");
+  const crowded = actorAt(state, "farmer", "tavern");
+  const { proposal } = build(snapshotAt(crowded), {
+    action: "legend",
+    assertion: "Hear me.",
+  });
+  // Zeus walks to the square before the legend is validated: the farmer stays at the tavern.
+  const ran = runProposal(arrives(crowded, "zeus", "town-square"), proposal);
+  expect(ran.rejected).toEqual([]);
+  expect(ran.events.find((e) => e.kind === "legend-recorded")).toMatchObject({
+    hearers: ["woodcutter"],
+  });
 });

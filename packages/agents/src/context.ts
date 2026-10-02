@@ -252,6 +252,17 @@ function memoryInvolves(memory: MemoryEntry, target: EntityId): boolean {
  */
 /** What one petition's cause was, in the god's words. */
 /** How a god is told it may keep and change one goal. */
+/** What one action may cite as `linkedEventId`, listed by action because a report cites only what the god saw and a legend only what is here now; and to omit it when there is nothing. */
+function citationGuidance(
+  action: "report" | "legend",
+  ids: readonly EventId[],
+): string {
+  const unique = [...new Set(ids)];
+  return unique.length > 0
+    ? `For a ${action}, linkedEventId may be only one of: ${unique.join(", ")}; omit it to cite nothing.`
+    : `For a ${action}, omit linkedEventId: ${action === "report" ? "you saw no event you can cite" : "no event here can be cited"}.`;
+}
+
 function goalInstruction(remembered: Remembered): string {
   const shape =
     'add "goal" to your reply, {"set": {"text": your aim in your own words, "target": one id you were shown}} and/or {"end": {"outcome": "achieved", "failed", or "abandoned"}}.';
@@ -1074,7 +1085,13 @@ export function godIntentSchema(
   };
   const citable = [...new Set([...offer.eventIds, ...offer.witnessedEventIds])];
   if ((offer.canLegend || offer.listeners.length > 0) && citable.length > 0) {
-    properties.linkedEventId = { type: "string", enum: citable };
+    // One flat list, the union: the schema stays small on the 4K context. Which ids an action may cite is told in the instructions (`citationGuidance`) and enforced by the parser.
+    properties.linkedEventId = {
+      type: "string",
+      enum: citable,
+      description:
+        "Cite only an id the instructions list for your action (report or legend); omit it when none is listed.",
+    };
   }
 
   return {
@@ -1315,6 +1332,7 @@ export function buildGodContext(
   snapshot: PerceptionSnapshot,
   remembered: Remembered = NOTHING_REMEMBERED,
 ): RouteContext {
+  const offer = offerFor(profile, snapshot, remembered);
   const drives = Object.entries(profile.drives)
     .map(([drive, weight]) => `${drive} ${weight}`)
     .join(", ");
@@ -1341,6 +1359,7 @@ export function buildGodContext(
     ...(snapshot.actors.length > 0
       ? [
           'You may also tell someone here something (action "report", naming the listener, your words, and optionally a claim of who harmed or did a kindness to whom, and an event you saw). It is your own account, told as you choose.',
+          citationGuidance("report", offer.witnessedEventIds),
         ]
       : []),
     ...(abilityFor(profile, "legend") === undefined
@@ -1349,6 +1368,7 @@ export function buildGodContext(
           snapshot.actors.length === 0
             ? "No one is here to hear a legend now."
             : `A legend is heard by everyone here now: ${snapshot.actors.map((actor) => actor.id).join(", ")}.`,
+          citationGuidance("legend", offer.eventIds),
         ]),
     "Speak your report and legend words in the first person, to those who hear them, without using your own name.",
     `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,

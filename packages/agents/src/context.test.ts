@@ -713,6 +713,91 @@ test("a report may cite only an event the god witnessed: one it remembers seeing
   if (!refused.ok) expect(refused.path).toBe("linkedEventId");
 });
 
+// --- What each action may cite ----------------------------------------------------------
+
+/** The instruction line about what `action` may cite, or `undefined` when there is none. */
+const citationLine = (instructions: string, action: "report" | "legend") =>
+  instructions.split("\n").find((l) => l.startsWith(`For a ${action}, `));
+
+test.each([
+  {
+    name: "only a witnessed event (a report may cite it, a legend may not)",
+    citable: "report",
+    other: "legend",
+  },
+  {
+    name: "only a perceived event (a legend may cite it, a report may not)",
+    citable: "legend",
+    other: "report",
+  },
+] as const)(
+  "citation schema and guidance match the parser when only one action has citable events: $name",
+  ({ citable, other }) => {
+    const struck = tick(tavernWorld(), strikeTavern);
+    const ignition = struck.events.find((e) => e.kind === "building-ignited");
+    if (!ignition) throw new Error("no ignition");
+    // Witnessed only: Zeus remembers the strike, and the scene shows no events.
+    // Perceived only: the scene shows the strike, and Zeus remembers nothing.
+    const world = citable === "report" ? struck.state : tavernWorld();
+    const snapshot = snapshotIn(
+      world,
+      "zeus",
+      citable === "report" ? [] : [...struck.events],
+    );
+    const remembered = rememberedBy(world, toEntityId("zeus"));
+    const schema = godIntentSchema(zeus, snapshot, remembered);
+    const instructions =
+      buildGodContext(zeus, snapshot, remembered).instructions ?? "";
+    const intent = {
+      report: { action: "report", listener: "farmer", content: "x" },
+      legend: { action: "legend", assertion: "x" },
+    } as const;
+    const cite = (action: "report" | "legend") => ({
+      ...intent[action],
+      linkedEventId: ignition.id,
+    });
+
+    // The parser: the right action's citation and any uncited action pass; the other action's citation is refused, never dropped.
+    expect(schema.parse(cite(citable)).ok).toBe(true);
+    expect(schema.parse(intent.report).ok).toBe(true);
+    expect(schema.parse(intent.legend).ok).toBe(true);
+    const refused = schema.parse(cite(other));
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.path).toBe("linkedEventId");
+
+    // The guidance lists the id for the action that may cite it, and says to omit it for the other.
+    const allowed = citationLine(instructions, citable);
+    const barred = citationLine(instructions, other);
+    expect(allowed).toContain(ignition.id);
+    expect(barred).toBeDefined();
+    expect(barred).not.toContain(ignition.id);
+    expect(barred).toContain("omit");
+
+    // The schema stays flat: one linkedEventId enum, no per-action branches, and it says what to do with it.
+    const json = schema.jsonSchema as {
+      anyOf?: unknown;
+      oneOf?: unknown;
+      properties: Record<string, { enum?: string[]; description?: string }>;
+    };
+    expect(json.anyOf).toBeUndefined();
+    expect(json.oneOf).toBeUndefined();
+    expect(json.properties.linkedEventId?.enum).toContain(ignition.id);
+    expect(json.properties.linkedEventId?.description).toContain("omit");
+  },
+);
+
+test("with nothing to cite for either action the guidance says to omit linkedEventId and the schema has no such field", () => {
+  const snapshot = snapshotIn(tavernWorld(), "zeus", []);
+  const remembered = rememberedBy(tavernWorld(), toEntityId("zeus"));
+  const instructions =
+    buildGodContext(zeus, snapshot, remembered).instructions ?? "";
+  expect(citationLine(instructions, "report")).toContain("omit");
+  expect(citationLine(instructions, "legend")).toContain("omit");
+  expect(
+    properties(godIntentSchema(zeus, snapshot, remembered)).linkedEventId,
+  ).toBeUndefined();
+});
+
 // --- What a god remembers, in its context ----------------------------------------------
 
 test("the god's context carries what it remembers and how it feels, from its own memory alone", () => {

@@ -11,10 +11,10 @@
     "contract": "bun run src/run.ts --contract"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.67",
-    "@ai-sdk/openai": "4.0.79",
-    "@ai-sdk/openai-compatible": "3.0.58",
+    "@ai-sdk/anthropic": "4.0.68",
+    "@ai-sdk/openai": "4.0.80",
+    "@ai-sdk/openai-compatible": "3.0.59",
     "@panthea/tools-probes-shared": "workspace:*",
-    "ai": "7.0.120"
+    "ai": "7.0.122"
   }
 }

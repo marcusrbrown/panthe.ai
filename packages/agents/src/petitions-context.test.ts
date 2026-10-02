@@ -667,3 +667,84 @@ test("the instructions say a goal change can ride with a move or an answer in th
   const text = run.prompt("hera");
   expect(text).toContain("same turn");
 });
+
+/** A remote help prayer (the farmer, at the altar, robbed by an unseen thief), with its god standing at the Gates of Olympus: the spot the gate runs got stuck at. */
+function godAtTheGate() {
+  const run = greek();
+  const theft = run.apply({
+    kind: "theft",
+    entityId: "woodcutter",
+    victim: "farmer",
+    resource: "currency",
+    amount: 1,
+    cause: "director",
+  });
+  const opened = prayAbout(run, "farmer", theft.id);
+  const god = String(opened.god);
+  run.state = actorAt(run.state, god, "olympus-gate");
+  return { run, god };
+}
+
+test("from the Gates of Olympus a prayer's guidance names the action that reaches the hop: realm-transition to the Mountain Path, not a move", () => {
+  const { run, god } = godAtTheGate();
+  const prayers = prayersOf(run.prompt(god));
+  expect(prayers).toContain(
+    'action "realm-transition" with to "mountain-path"',
+  );
+  expect(prayers).not.toContain('action "move" with to "mountain-path"');
+  // The same hop in the whereabouts line names its action too.
+  expect(prayers).toContain('(action "realm-transition", to "mountain-path")');
+});
+
+test("from the Hall of the Gods the first hop is an ordinary move to the Gates, and the guidance says so", () => {
+  const run = greek();
+  const opened = run.prayAboutTheft("farmer", "woodcutter");
+  const prayers = prayersOf(run.prompt(String(opened.god)));
+  expect(prayers).toContain('action "move" with to "olympus-gate"');
+});
+
+test("the guided hop is accepted whichever of move and realm-transition the model names: the gate run's rejected `move` to the Mountain Path now commits as the crossing it is", () => {
+  const { run, god } = godAtTheGate();
+  const schema = run.schema(god);
+  // The schema offers both destinations; the gate runs showed a model pairing the wrong kind with one.
+  const to = (schema.jsonSchema as { properties: { to: { enum: string[] } } })
+    .properties.to.enum;
+  expect(to).toEqual(expect.arrayContaining(["mountain-path", "great-hall"]));
+  const crossing = schema.parse({
+    action: "move",
+    to: "mountain-path",
+  }) as unknown;
+  expect(crossing).toEqual({
+    ok: true,
+    value: { action: "realm-transition", to: "mountain-path" },
+  });
+  const step = schema.parse({
+    action: "realm-transition",
+    to: "great-hall",
+  }) as unknown;
+  expect(step).toEqual({
+    ok: true,
+    value: { action: "move", to: "great-hall" },
+  });
+  // The right pairs still parse as themselves.
+  expect(schema.parse({ action: "move", to: "great-hall" }) as unknown).toEqual(
+    {
+      ok: true,
+      value: { action: "move", to: "great-hall" },
+    },
+  );
+  expect(
+    schema.parse({
+      action: "realm-transition",
+      to: "mountain-path",
+    }) as unknown,
+  ).toEqual({
+    ok: true,
+    value: { action: "realm-transition", to: "mountain-path" },
+  });
+  // A destination that is neither is still refused.
+  expect(schema.parse({ action: "move", to: "altar" }).ok).toBe(false);
+  expect(schema.parse({ action: "realm-transition", to: "altar" }).ok).toBe(
+    false,
+  );
+});

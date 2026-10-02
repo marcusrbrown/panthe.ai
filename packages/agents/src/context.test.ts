@@ -261,7 +261,14 @@ test("moves are limited to the exits of the current location", () => {
     ok: true,
     value: { action: "realm-transition", to: "olympus-gate" },
   });
-  expect(mountain.parse({ action: "move", to: "olympus-gate" }).ok).toBe(false);
+  // The destination decides the kind: a `move` naming the crossing's destination is the crossing, not a refusal (the gate runs exhausted on that pairing).
+  expect(
+    mountain.parse({ action: "move", to: "olympus-gate" }) as unknown,
+  ).toEqual({
+    ok: true,
+    value: { action: "realm-transition", to: "olympus-gate" },
+  });
+  expect(mountain.parse({ action: "move", to: "altar" }).ok).toBe(false);
 });
 
 test("non-object, unknown, and empty-assertion candidates fail", () => {

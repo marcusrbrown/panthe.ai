@@ -14,7 +14,7 @@ import {
   withActor,
   withBuilding,
 } from "@panthea/world";
-import { godIntentSchema, type ParsedGodIntent } from "./context";
+import { godIntentSchema, type ParsedGodIntent, rememberedBy } from "./context";
 import {
   buildModelProposal,
   type ModelProposalResult,
@@ -817,4 +817,166 @@ test("a legend told after the god itself moved commits and is heard by whoever i
   expect(ran.events.find((e) => e.kind === "legend-recorded")).toMatchObject({
     hearers: ["woodcutter"],
   });
+});
+
+// --- Practice moves ----------------------------------------------------------------
+
+/** Hera was told of something Zeus did (a told memory of a real report), and may cite it. */
+function heraHearsOfZeus(): { state: WorldState; cause: string } {
+  const at = (state: WorldState, overrides: Record<string, unknown>) =>
+    applyEvent(state, {
+      schemaVersion: 1,
+      tick: 0,
+      simTime: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      sequence: state.lastSequence + 1,
+      ...overrides,
+    } as never);
+  let state = at(greekState(), {
+    id: "evt-0-1",
+    kind: "report-told",
+    entityId: "farmer",
+    listenerId: "hera",
+    content: "Zeus visited a nymph",
+  });
+  state = at(state, {
+    id: "evt-0-2",
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: "hera",
+    sourceEventId: "evt-0-1",
+    teller: "farmer",
+    content: "Zeus visited a nymph",
+    subjects: ["farmer", "hera"],
+    salience: 4,
+  });
+  return { state, cause: "evt-0-1" };
+}
+
+const term = {
+  kind: "be-at",
+  party: "zeus",
+  place: "altar",
+  deadlineTicks: 80,
+};
+
+test("a demand rests on a cause the god was shown and pins nothing; its facts are ones the snapshot holds", () => {
+  const { state, cause } = heraHearsOfZeus();
+  const snapshot = snapshotAt(state, "hera");
+  const remembered = rememberedBy(state, id("hera"));
+  const intent = godIntentSchema(
+    godProfile("hera"),
+    snapshot,
+    remembered,
+  ).parse({
+    action: "practice",
+    move: "demand",
+    cause,
+    term,
+  });
+  if (!intent.ok) throw new Error(intent.message);
+  const built = buildModelProposal(
+    id("hera"),
+    snapshot,
+    intent.value,
+    remembered,
+  );
+  if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+  expect(built.proposal.expectedRevisions).toEqual([]);
+  expect(built.proposal).toMatchObject({
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause,
+    term,
+  });
+  expect(built.observation.factsRead.some((f) => f.startsWith("memory:"))).toBe(
+    true,
+  );
+  const facts = snapshotFacts(snapshot, remembered);
+  for (const fact of built.observation.factsRead) {
+    expect(facts.has(fact)).toBe(true);
+  }
+  // Control: the same demand where the god was shown no such cause is refused by the builder.
+  const unshown = buildModelProposal(id("hera"), snapshot, intent.value, {
+    ...remembered,
+    practice: { ...remembered.practice, causes: [] },
+  });
+  expect(unshown.ok).toBe(false);
+});
+
+test("counter, accept, refuse, and withdraw each pin only their thread's revision; a thread the god was not shown is refused", () => {
+  const { state: heard, cause } = heraHearsOfZeus();
+  const opened = runTick(heard, createPrng(1), [
+    (() => {
+      const submitted = submitProposal({
+        schemaVersion: 1,
+        actor: "hera",
+        targets: [],
+        expectedRevisions: [],
+        source: "fixture",
+        observationId: "obs-d",
+        kind: "practice",
+        move: "demand",
+        counterparty: "zeus",
+        cause,
+        term,
+      });
+      if (!submitted.ok) throw new Error(submitted.rejection.message);
+      return submitted.proposal;
+    })(),
+  ]);
+  expect(opened.rejected).toEqual([]);
+  const [thread] = [...opened.state.threads.values()];
+  if (!thread) throw new Error("no thread");
+  const snapshot = snapshotAt(opened.state, "zeus");
+  const remembered = rememberedBy(opened.state, id("zeus"));
+  const schema = godIntentSchema(godProfile("zeus"), snapshot, remembered);
+  for (const raw of [
+    { move: "accept", swear: false },
+    { move: "refuse" },
+    { move: "withdraw" },
+    { move: "counter", term: { ...term, deadlineTicks: 120 } },
+  ]) {
+    const intent = schema.parse({
+      action: "practice",
+      thread: thread.id,
+      ...raw,
+    });
+    if (!intent.ok) throw new Error(intent.message);
+    const built = buildModelProposal(
+      id("zeus"),
+      snapshot,
+      intent.value,
+      remembered,
+    );
+    if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+    expect(built.proposal.expectedRevisions).toEqual([
+      { entityId: thread.id as unknown as string, revision: thread.revision },
+    ] as never);
+    expect(built.proposal).toMatchObject({
+      kind: "practice",
+      move: raw.move,
+      thread: thread.id,
+    });
+    expect(built.observation.factsRead).toContain(`thread:${thread.id}`);
+    expect(snapshotFacts(snapshot, remembered).has(`thread:${thread.id}`)).toBe(
+      true,
+    );
+  }
+  // A thread the god was not shown cannot be built into a proposal, whatever intent was parsed.
+  const accept = schema.parse({
+    action: "practice",
+    move: "accept",
+    thread: thread.id,
+  });
+  if (!accept.ok) throw new Error(accept.message);
+  expect(
+    buildModelProposal(id("zeus"), snapshot, accept.value, {
+      ...remembered,
+      threads: [],
+    }).ok,
+  ).toBe(false);
 });

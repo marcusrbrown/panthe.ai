@@ -44,6 +44,20 @@ export {
 } from "./context";
 export type { ModelProposalResult } from "./observation";
 export { buildModelProposal, snapshotFacts } from "./observation";
+export type {
+  AnswerMove,
+  DemandCause,
+  PracticeIntent,
+  PracticeOptions,
+  Standing,
+  ThreadView,
+} from "./practices";
+export {
+  DIGEST_BUDGET_CHARS,
+  describeDigest,
+  describeTerm,
+  PRACTICES_HEADING,
+} from "./practices";
 export type { EndpointModelArgs } from "./providers";
 export { createEndpointModel, RedirectRefusedError } from "./providers";
 export { extractJsonObjects, repairIntent } from "./repair";

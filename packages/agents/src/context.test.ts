@@ -932,3 +932,27 @@ test("the instructions state the legend and report text limits, from the constan
   expect(line).toHaveLength(1);
   expect(line[0]?.length).toBeLessThan(200);
 });
+
+// --- Practice -----------------------------------------------------------------
+
+test("practice is a god intent action, offered only when there is a thread to answer or a cause to demand over: Zeus alone in the hall remembers nothing and is not offered it", () => {
+  expect(GOD_INTENT_ACTIONS).toContain("practice");
+  const bare = snapshotOf("zeus", "great-hall");
+  expect(godAvailableActions(zeus, bare)).not.toContain("practice");
+  expect(properties(godIntentSchema(zeus, bare))).not.toHaveProperty("move");
+  expect(
+    godIntentSchema(zeus, bare).parse({
+      action: "practice",
+      move: "demand",
+      cause: "evt-1",
+      term: { kind: "be-at", party: "hera", place: "altar", deadlineTicks: 50 },
+    }).ok,
+  ).toBe(false);
+  // Control: remembering the strike gives Zeus a cause to demand over, and waiting stays last.
+  const struck = tick(tavernWorld(), strikeTavern);
+  const remembered = rememberedBy(struck.state, toEntityId("zeus"));
+  const snapshot = snapshotIn(struck.state, "zeus", [...struck.events]);
+  const offered = godAvailableActions(zeus, snapshot, remembered);
+  expect(offered).toContain("practice");
+  expect(offered.at(-1)).toBe("wait");
+});

@@ -39,6 +39,19 @@ import {
   type WorldState,
 } from "@panthea/world";
 import type { ParseResult } from "./config";
+import {
+  describeDigest,
+  describePracticeInstructions,
+  NO_PRACTICE,
+  type PracticeIntent,
+  type PracticeOffer,
+  type PracticeOptions,
+  parsePractice,
+  practiceBy,
+  practiceOffer,
+  practiceProperties,
+  type ThreadView,
+} from "./practices";
 import type { IntentSchema, RouteContext } from "./router";
 
 /** World actions a god intent can carry today. An ability naming any other action is not offered to the model yet. */
@@ -49,6 +62,7 @@ export const GOD_INTENT_ACTIONS = [
   "legend",
   "report",
   "bless",
+  "practice",
   "wait",
 ] as const;
 export type GodIntentAction = (typeof GOD_INTENT_ACTIONS)[number];
@@ -88,6 +102,8 @@ type GodAction =
     }
   /** Bless the mortal behind one open help petition, standing with it. */
   | { readonly action: "bless"; readonly petition: EventId }
+  /** One move in a practice thread with another god: a demand, or an answer to one. */
+  | PracticeIntent
   /** Do nothing this turn. Always allowed; nothing is journaled. */
   | { readonly action: "wait" };
 
@@ -207,6 +223,10 @@ export interface Remembered {
   readonly blessCost: number;
   /** The god's latest goal-change refusal since it set its goal, if any. */
   readonly refusal: RefusalView | undefined;
+  /** Every open practice thread the god is a party to, most urgent first (none is hidden): what the digest shows and a move on one pins. */
+  readonly threads: readonly ThreadView[];
+  /** What a practice term may name, and the causes a demand may rest on. */
+  readonly practice: PracticeOptions;
 }
 
 /** Whether `ids` name `target` or a building `target` owns. */
@@ -440,6 +460,17 @@ export function rememberedBy(
     .sort((a, b) => strength(b) - strength(a) || (a.toward < b.toward ? -1 : 1))
     .slice(0, MAX_FEELINGS);
   const self = getActor(state, actorId);
+  const petitions = self?.isDeity
+    ? openPetitionsFor(state, actorId).map((petition) =>
+        petitionView(state, self, petition),
+      )
+    : [];
+  const { threads, options } = practiceBy(
+    state,
+    actorId,
+    memories,
+    petitions.map((petition) => petition.petitioner),
+  );
   const lock =
     state.rules.petitionBalance === undefined
       ? undefined
@@ -452,11 +483,7 @@ export function rememberedBy(
     ).slice(-MAX_OWN_ACTIONS),
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
-    petitions: self?.isDeity
-      ? openPetitionsFor(state, actorId).map((petition) =>
-          petitionView(state, self, petition),
-        )
-      : [],
+    petitions,
     goalLockTicks: lock,
     blessCost: petitionBalanceOf(state.rules, "blessDivinityCost"),
     refusal:
@@ -472,6 +499,8 @@ export function rememberedBy(
             ),
           }
         : undefined,
+    threads,
+    practice: options,
   };
 }
 
@@ -485,6 +514,8 @@ export const NOTHING_REMEMBERED: Remembered = {
   goalLockTicks: undefined,
   blessCost: 0,
   refusal: undefined,
+  threads: [],
+  practice: NO_PRACTICE,
 };
 
 /**
@@ -597,6 +628,8 @@ interface Offer {
   readonly goalTargets: readonly EntityId[];
   /** Open help petitions whose petitioner stands here and whose bless the god can pay for. */
   readonly blessPetitions: readonly EventId[];
+  /** What a practice move may name, when the god has a move to make or a cause to demand over. */
+  readonly practice: PracticeOffer | undefined;
 }
 
 /** Help petitions whose petitioner is here, the one thing a bless can answer. */
@@ -647,6 +680,12 @@ function offerFor(
     hasGoal: remembered.goal !== undefined,
     goalTargets: shownIds(snapshot, remembered),
     blessPetitions: blessablePetitions(snapshot, remembered),
+    practice: practiceOffer(
+      snapshot.self.id,
+      remembered.threads,
+      remembered.practice,
+      snapshot.actors.filter((a) => !a.isDeity).map((a) => a.id),
+    ),
   };
 }
 
@@ -658,6 +697,7 @@ function availableActions(offer: Offer): readonly GodIntentAction[] {
   if (offer.canLegend) actions.push("legend");
   if (offer.listeners.length > 0) actions.push("report");
   if (offer.blessPetitions.length > 0) actions.push("bless");
+  if (offer.practice !== undefined) actions.push("practice");
   actions.push("wait");
   return actions;
 }
@@ -682,6 +722,7 @@ export function godAvailableActions(
     ...profile.abilities.map((ability) => ability.action),
     "report",
     "bless",
+    "practice",
     "wait",
   ];
   return [...new Set(order)].filter(
@@ -902,6 +943,12 @@ function parseAction(
           }
         : petition;
     }
+    case "practice": {
+      if (offer.practice === undefined) {
+        return invalid("action", "you have no practice move to make");
+      }
+      return parsePractice(offer.practice, fields);
+    }
     case "wait":
       return { ok: true, value: { action: "wait" } };
   }
@@ -1057,6 +1104,9 @@ export function godIntentSchema(
   }
   if (offer.blessPetitions.length > 0) {
     properties.petition = { type: "string", enum: [...offer.blessPetitions] };
+  }
+  if (offer.practice !== undefined) {
+    Object.assign(properties, practiceProperties(offer.practice));
   }
   properties.goal = {
     type: "object",
@@ -1380,6 +1430,9 @@ export function buildGodContext(
     `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
     goalInstruction(remembered),
     ...prayerInstructions(remembered),
+    ...(offer.practice === undefined
+      ? []
+      : describePracticeInstructions(remembered.threads, remembered.practice)),
     'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
     "Reply with one JSON object naming your action.",
   ].join("\n");
@@ -1391,6 +1444,7 @@ export function buildGodContext(
           .map((item) => `${item.resource} ${item.amount}`)
           .join(", ");
   const prompt = [
+    ...describeDigest(remembered.threads),
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
     ...describePetitions(remembered),

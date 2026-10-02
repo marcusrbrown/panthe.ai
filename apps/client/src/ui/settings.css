@@ -267,6 +267,9 @@
   padding: 0 7px;
   font: 500 17px var(--serif);
 }
+.role-row .role-fallback-toggle {
+  grid-column: 3;
+}
 .global-fallback {
   margin-top: 18px;
 }
@@ -388,8 +391,8 @@
   .role-row {
     grid-template-columns: minmax(100px, 0.7fr) minmax(130px, 1fr);
   }
-  .role-row label:last-child {
-    grid-column: 1 / -1;
+  .role-row .role-fallback-toggle {
+    grid-column: 2;
   }
 }
 @media (max-width: 680px) {
@@ -444,7 +447,7 @@
   .role-row {
     grid-template-columns: minmax(0, 1fr);
   }
-  .role-row label:last-child {
+  .role-row .role-fallback-toggle {
     grid-column: auto;
   }
   .key-row {

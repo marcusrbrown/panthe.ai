@@ -8,6 +8,10 @@
 //   bun run scenario:m2 --write-readme               run the story and every control, rewrite README.md (uses real-run.json)
 //   bun run scenario:m2 --real [--seconds=N]         both gods through local Ollama, unscripted; asserts properties, writes real-run.json
 //                                                    (rebuilds the sidecar first, unless --skip-build)
+//   bun run scenario:m2 --episodes=N --model=M --base-url=https://host/v1 [--key-ref=NAME]
+//                                                    the same gate against any OpenAI-compatible endpoint, local or hosted (no Ollama check or warm-up); --key-ref reads
+//                                                    that key from the macOS Keychain (service ai.panthe.desktop.endpoint-keys) once and sends it
+//                                                    only on the sidecar's launch line
 //   bun run scenario:m2 --episodes=N [--episode-seconds=300] [--out=DIR]
 //                                                    experience gate: N fresh worlds, Zeus and Hera on local Ollama for the same time each;
 //                                                    writes episode-N.md and summary.md to DIR (default m2-greek-cast/episodes/<timestamp>/)
@@ -21,7 +25,13 @@ import { killAllSidecars } from "../../m1-living-world/src/sidecar";
 import { type Args, parseArgs } from "./args";
 import { resolveSidecarBinary } from "./binary";
 import { defaultOutDir, runEpisodes } from "./episodes";
-import { OllamaUnreachable, type RealRecord, runReal } from "./real";
+import {
+  endpointOptions,
+  KeyMissing,
+  OllamaUnreachable,
+  type RealRecord,
+  runReal,
+} from "./real";
 import { buildReportInput, type ControlResult } from "./report";
 import { CONTROL_NAMES, type ControlName, runStory } from "./story";
 
@@ -78,6 +88,7 @@ async function runRealRun(args: Args): Promise<void> {
     ...(args.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: args.reasoningEffort }),
+    ...(await endpointOptions(args)),
   });
   writeFileSync(
     join(import.meta.dir, "..", "real-run.json"),
@@ -107,6 +118,7 @@ async function runEpisodeGate(args: Args): Promise<void> {
     ...(args.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: args.reasoningEffort }),
+    ...(await endpointOptions(args)),
     episodes: args.episodes,
     outDir,
   });
@@ -209,7 +221,10 @@ async function main(): Promise<void> {
     killAllSidecars();
     if (error instanceof ScenarioFailure) {
       console.error(`\nFAIL ${error.message}`);
-    } else if (error instanceof OllamaUnreachable) {
+    } else if (
+      error instanceof OllamaUnreachable ||
+      error instanceof KeyMissing
+    ) {
       console.error(`\nFAIL ${error.message}`);
     } else {
       console.error("\nFAIL unexpected error:", error);

@@ -10,6 +10,7 @@ import {
   submitProposal,
   toEntityId,
   type WorldState,
+  withActor,
   withBuilding,
 } from "@panthea/world";
 import { godIntentSchema, type ParsedGodIntent } from "./context";
@@ -428,7 +429,7 @@ test("a model-built realm transition commits through the real tick from the auth
 /** Zeus and the farmer at the tavern, where Zeus can tell the farmer something. */
 const withFarmer = () => actorAt(tavernState(), "farmer", "tavern");
 
-test("a report proposal names its listener as a target and pins the listener's revision; the claim and the words are the god's own", () => {
+test("a report proposal names its listener as a target and does not pin the listener's revision; the claim and the words are the god's own", () => {
   const snapshot = snapshotAt(withFarmer());
   const { observation, proposal } = build(snapshot, {
     action: "report",
@@ -446,8 +447,10 @@ test("a report proposal names its listener as a target and pins the listener's r
     source: "model",
     observationId: observation.id,
   });
-  expect(revisionsOf(proposal)).toContain("farmer@0");
-  expect(proposal.expectedRevisions.map((r) => r.entityId)).toContain(
+  // The listener's liveness and presence are judged again when the report is
+  // validated; pinning its whole revision only refused a report because the
+  // listener gathered or traded while the god thought.
+  expect(proposal.expectedRevisions.map((r) => r.entityId)).not.toContain(
     id("farmer"),
   );
   // Every fact the observation cites is in the snapshot.
@@ -457,7 +460,7 @@ test("a report proposal names its listener as a target and pins the listener's r
   expect(submitProposal(proposal).ok).toBe(true);
 });
 
-test("a report against the real validator: it commits when the listener has not moved, and is stale-target when the listener has", () => {
+test("a report against the real validator: it commits when the listener has not moved, and is refused as not-adjacent when the listener has", () => {
   const snapshot = snapshotAt(withFarmer());
   const { proposal } = build(snapshot, {
     action: "report",
@@ -485,7 +488,52 @@ test("a report against the real validator: it commits when the listener has not 
     createPrng(1),
     [proposal],
   );
-  expect(stale.rejected.map((r) => r.reason)).toEqual(["stale-target"]);
+  expect(stale.rejected.map((r) => r.reason)).toEqual(["not-adjacent"]);
+});
+
+test("a strike pins the god, its location, and the building, never the building's owner: the owner's inventory changing does not stale it", () => {
+  const base = withFarmer();
+  const { proposal } = build(snapshotAt(base), strikeTavern);
+  expect(revisionsOf(proposal)).toEqual(["tavern@0", "the-tavern@0", "zeus@0"]);
+  const farmer = getActor(base, id("farmer"));
+  if (!farmer) throw new Error("no farmer");
+  const traded = withActor(base, {
+    ...farmer,
+    inventory: new Map(farmer.inventory).set("food", 99),
+    revision: farmer.revision + 1,
+  });
+  expect(runTick(traded, createPrng(1), [proposal]).rejected).toEqual([]);
+});
+
+test("a report still commits after the listener's inventory changed while the god thought, and is refused as dead-actor if the listener died", () => {
+  const { proposal } = build(snapshotAt(withFarmer()), {
+    action: "report",
+    listener: "farmer",
+    content: "A word.",
+  });
+  const state = withFarmer();
+  const farmer = getActor(state, id("farmer"));
+  if (!farmer) throw new Error("no farmer");
+  const gathered = withActor(state, {
+    ...farmer,
+    inventory: new Map(farmer.inventory).set(
+      "food",
+      (farmer.inventory.get("food") ?? 0) + 1,
+    ),
+    revision: farmer.revision + 1,
+  });
+  const ran = runTick(gathered, createPrng(1), [proposal]);
+  expect(ran.rejected).toEqual([]);
+  expect(ran.events.map((e) => e.kind)).toContain("report-told");
+
+  const dead = withActor(state, {
+    ...farmer,
+    alive: false,
+    revision: farmer.revision + 1,
+  });
+  expect(
+    runTick(dead, createPrng(1), [proposal]).rejected.map((r) => r.reason),
+  ).toEqual(["dead-actor"]);
 });
 
 test("a report intent parsed against an older snapshot is refused when its listener is not in the one it is built from", () => {

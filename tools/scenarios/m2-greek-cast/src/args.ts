@@ -1,5 +1,6 @@
 // Command-line flags of the M2 scenario runner.
 
+import { isLocalUrl, parseRoutingConfig } from "@panthea/agents/config";
 import { CONTROL_NAMES, type ControlName, type StoryOptions } from "./story";
 
 /** The model the real run and the experience gate use unless told otherwise. */
@@ -17,6 +18,10 @@ export interface Args extends StoryOptions {
   readonly model: string;
   /** Set to "none" to ask the model not to reason before answering. */
   readonly reasoningEffort: "none" | undefined;
+  /** The endpoint's OpenAI-compatible base URL; local Ollama's when unset. */
+  readonly baseUrl: string | undefined;
+  /** The Keychain entry (account) holding the endpoint's key; none when unset. */
+  readonly keyRef: string | undefined;
 }
 
 function positiveInt(flag: string, text: string): number {
@@ -38,6 +43,8 @@ export function parseArgs(argv: readonly string[]): Args {
   let out: string | undefined;
   let model = DEFAULT_MODEL;
   let reasoningEffort: "none" | undefined;
+  let baseUrl: string | undefined;
+  let keyRef: string | undefined;
   for (const arg of argv) {
     if (arg === "--skip-build") skipBuild = true;
     else if (arg === "--real") real = true;
@@ -56,6 +63,18 @@ export function parseArgs(argv: readonly string[]): Args {
         throw new Error('--reasoning-effort accepts only "none"');
       }
       reasoningEffort = "none";
+    } else if (arg.startsWith("--base-url=")) {
+      baseUrl = arg.slice(11);
+      // The routing config's own parser decides what a usable base URL is,
+      // credentials in it included.
+      const parsed = parseRoutingConfig({
+        endpoints: [{ id: "hosted", baseUrl, model: "m" }],
+        roles: {},
+      });
+      if (!parsed.ok) throw new Error(`--base-url ${parsed.message}`);
+    } else if (arg.startsWith("--key-ref=")) {
+      keyRef = arg.slice(10);
+      if (keyRef === "") throw new Error("--key-ref needs a key reference");
     } else if (arg.startsWith("--positive-control=")) {
       const name = arg.slice("--positive-control=".length);
       if (!(CONTROL_NAMES as readonly string[]).includes(name)) {
@@ -68,6 +87,29 @@ export function parseArgs(argv: readonly string[]): Args {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
+  // Which endpoint flags may be combined, decided here so nothing downstream
+  // (the Keychain read, the launch line) can run on a bad combination. Messages
+  // name flags only, never a key.
+  if (keyRef !== undefined) {
+    if (baseUrl === undefined) {
+      throw new Error(
+        "--key-ref needs --base-url: a key is never sent to the default local Ollama endpoint",
+      );
+    }
+    if (new URL(baseUrl).protocol !== "https:" || isLocalUrl(baseUrl)) {
+      throw new Error(
+        "--key-ref is sent only to a non-local https:// --base-url: a local or plain-http endpoint would receive the key unprotected",
+      );
+    }
+  }
+  if (
+    (baseUrl !== undefined || keyRef !== undefined) &&
+    !real &&
+    episodes === 0
+  ) {
+    const flag = keyRef !== undefined ? "--key-ref" : "--base-url";
+    throw new Error(`${flag} applies only with --real or --episodes`);
+  }
   return {
     ...(control ? { control } : {}),
     skipBuild,
@@ -79,5 +121,7 @@ export function parseArgs(argv: readonly string[]): Args {
     out,
     model,
     reasoningEffort,
+    baseUrl,
+    keyRef,
   };
 }

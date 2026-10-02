@@ -6,6 +6,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isLocalUrl } from "@panthea/agents/config";
 import { captureEnvironment } from "@panthea/tools-probes-shared";
 import {
   killAllSidecars,
@@ -27,6 +28,12 @@ export interface RealOptions {
   readonly model: string;
   /** Asks the model not to reason before answering. */
   readonly reasoningEffort?: "none";
+  /** The endpoint's OpenAI-compatible base URL; `${ollama}/v1` when unset. */
+  readonly baseUrl?: string;
+  /** The key reference the endpoint names, whose key is in `keys`. */
+  readonly keyRef?: string;
+  /** Keys by key reference, read once from the Keychain. Only ever sent on the launch line. */
+  readonly keys?: Readonly<Record<string, string>>;
 }
 
 export interface RealRecord {
@@ -39,27 +46,124 @@ export interface RealRecord {
   readonly hardware: string;
 }
 
-/** The model config the sidecar reads: both gods on one local Ollama endpoint. */
+/** The model config the sidecar reads: both gods on one endpoint, local Ollama unless a base URL is given. Names a key by reference, never carries one. */
 export function routingConfigFor(options: RealOptions): object {
+  const id = options.baseUrl === undefined ? "ollama" : "hosted";
   return {
     endpoints: [
       {
-        id: "ollama",
-        baseUrl: `${options.ollama}/v1`,
+        id,
+        baseUrl: options.baseUrl ?? `${options.ollama}/v1`,
         model: options.model,
+        ...(options.keyRef === undefined ? {} : { keyRef: options.keyRef }),
         ...(options.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: options.reasoningEffort }),
       },
     ],
-    roles: { zeus: { endpoint: "ollama" }, hera: { endpoint: "ollama" } },
+    roles: { zeus: { endpoint: id }, hera: { endpoint: id } },
   };
+}
+
+/** The launch config line the shell would send: the models, online, and the keys. The only place a key travels. */
+export function launchConfigFor(options: RealOptions) {
+  return {
+    models: routingConfigFor(options),
+    offline: false,
+    keys: options.keys ?? {},
+  };
+}
+
+export class KeyMissing extends Error {}
+
+/** The macOS Keychain service the shell stores endpoint keys under; the account is the key reference. */
+const KEYCHAIN_SERVICE = "ai.panthe.desktop.endpoint-keys";
+
+async function runSecurity(
+  argv: readonly string[],
+): Promise<{ exitCode: number; stdout: string }> {
+  const child = Bun.spawn([...argv], { stdout: "pipe", stderr: "ignore" });
+  const [stdout, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    child.exited,
+  ]);
+  return { exitCode, stdout };
+}
+
+/**
+ * Reads an endpoint key from the macOS Keychain, once. The key is returned and
+ * nothing else: it is not logged, and a failure names only the key reference.
+ */
+export async function readKeychainKey(
+  keyRef: string,
+  run: typeof runSecurity = runSecurity,
+): Promise<string> {
+  const { exitCode, stdout } = await run([
+    "security",
+    "find-generic-password",
+    "-s",
+    KEYCHAIN_SERVICE,
+    "-a",
+    keyRef,
+    "-w",
+  ]);
+  const key = stdout.endsWith("\n") ? stdout.slice(0, -1) : stdout;
+  if (exitCode !== 0 || key === "") {
+    throw new KeyMissing(
+      `no key for "${keyRef}" in the macOS Keychain (service ${KEYCHAIN_SERVICE}); set it in the app's settings first`,
+    );
+  }
+  return key;
+}
+
+/**
+ * The endpoint flags as run options: the base URL, the key reference, and the
+ * key read once through `read` (the Keychain). `parseArgs` has already refused
+ * every combination that would hand a key to the wrong place, so nothing is
+ * read for those.
+ */
+export async function endpointOptions(
+  args: {
+    readonly baseUrl?: string | undefined;
+    readonly keyRef?: string | undefined;
+  },
+  read: (keyRef: string) => Promise<string> = readKeychainKey,
+) {
+  return {
+    ...(args.baseUrl === undefined ? {} : { baseUrl: args.baseUrl }),
+    ...(args.keyRef === undefined
+      ? {}
+      : {
+          keyRef: args.keyRef,
+          keys: { [args.keyRef]: await read(args.keyRef) },
+        }),
+  };
+}
+
+/**
+ * Which kind of explicit endpoint the run used, for run records: `hosted` or
+ * `local` for any `--base-url`, nothing for the default Ollama. Records say only
+ * that: never the endpoint's host, port, path, key reference, or a key, since a
+ * transcript is committed and a host can be private.
+ */
+export function endpointKind(
+  options: RealOptions,
+): "hosted" | "local" | undefined {
+  if (options.baseUrl === undefined) return undefined;
+  return isLocalUrl(options.baseUrl) ? "local" : "hosted";
 }
 
 export class OllamaUnreachable extends Error {}
 
-/** Confirms Ollama answers and has the model, loads it, and returns. Throws with the exact error otherwise. */
+/**
+ * On the default path (no `--base-url`), confirms Ollama answers and has the
+ * model, loads it, and returns; throws with the exact error otherwise. An
+ * explicit base URL, local or hosted, names an endpoint that is not necessarily
+ * Ollama (a llama-server, a LAN proxy, Ollama on another port), so nothing is
+ * checked or warmed and the default Ollama is never contacted.
+ */
 export async function prepareOllama(options: RealOptions): Promise<void> {
+  if (options.baseUrl !== undefined) return;
   const tags = `${options.ollama}/api/tags`;
   let names: string[];
   try {
@@ -119,11 +223,7 @@ export async function collectRun(
   const dataDir = join(root, "app-data");
   try {
     const sidecar = await startSidecar(options.binary, dataDir, {
-      launchConfig: {
-        models: routingConfigFor(options),
-        offline: false,
-        keys: {},
-      },
+      launchConfig: launchConfigFor(options),
     });
     const polls = { total: 0, degraded: 0 };
     const deadline = Date.now() + options.durationMs;

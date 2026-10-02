@@ -268,7 +268,8 @@ test("bless is offered only for a petitioner who is present, naming one of its o
   expect(blessProps(other).actions).not.toContain("bless");
 });
 
-test("a bless intent parses against the offered petitions only, and builds a proposal that pins the petitioner and cites the petition", () => {
+/** The farmer has an open help petition to a god who now stands with it at the altar, and the god has built a bless from what it saw there. */
+function blessSituation() {
   const run = greek();
   const cause = run.apply({
     kind: "building-damaged",
@@ -305,25 +306,136 @@ test("a bless intent parses against the offered petitions only, and builds a pro
   const remembered = rememberedBy(run.state, id(god));
   const schema = godIntentSchema(godProfile(god), snapshot, remembered);
   const parsed = schema.parse({ action: "bless", petition: opened.id });
-  expect(parsed.ok).toBe(true);
-  expect(schema.parse({ action: "bless", petition: "evt-404" }).ok).toBe(false);
-  expect(schema.parse({ action: "bless" }).ok).toBe(false);
-  if (!parsed.ok) return;
+  if (!parsed.ok) throw new Error(parsed.message);
   const built = buildModelProposal(id(god), snapshot, parsed.value, remembered);
   if (!built.ok || built.kind !== "proposal")
     throw new Error("expected a proposal");
+  return { run, god, opened, schema, built };
+}
+
+/** Runs the proposal built in `blessSituation` against the world as it is now. */
+function validateBless(situation: ReturnType<typeof blessSituation>) {
+  return runTick(situation.run.state, createPrng(1), [
+    situation.built.proposal,
+  ]);
+}
+
+test("a bless intent parses against the offered petitions only, and builds a proposal that cites the petition and pins nothing the validator re-checks", () => {
+  const { run, god, opened, schema, built } = blessSituation();
+  expect(schema.parse({ action: "bless", petition: opened.id }).ok).toBe(true);
+  expect(schema.parse({ action: "bless", petition: "evt-404" }).ok).toBe(false);
+  expect(schema.parse({ action: "bless" }).ok).toBe(false);
   expect(built.proposal).toMatchObject({
     kind: "bless",
+    actor: god,
     petition: opened.id,
     targets: ["farmer"],
   });
-  expect(built.proposal.expectedRevisions.map((r) => r.entityId)).toContain(
-    id("farmer"),
-  );
+  // Every condition a bless depends on is checked again when it is validated, so it
+  // pins no revision: a world that moved on while the god thought cannot stale it.
+  expect(built.proposal.expectedRevisions).toEqual([]);
   // The real validator commits it: the farmer is present and the god can pay.
   const committed = runTick(run.state, createPrng(1), [built.proposal]);
   expect(committed.rejected).toEqual([]);
   expect(committed.events.map((e) => e.kind)).toContain("blessing-granted");
+});
+
+test("a bless still commits after the petitioner's routine gathering changed its inventory while the god thought", () => {
+  const situation = blessSituation();
+  situation.run.apply({
+    kind: "resource-gathered",
+    entityId: "farmer",
+    resource: "food",
+    amount: 1,
+  });
+  const ran = validateBless(situation);
+  expect(ran.rejected).toEqual([]);
+  expect(ran.events.map((e) => e.kind)).toContain("blessing-granted");
+});
+
+test("a bless still commits after another mortal walked through the god's location while it thought", () => {
+  const situation = blessSituation();
+  situation.run.apply({
+    kind: "entity-moved",
+    entityId: "woodcutter",
+    from: "town-square",
+    to: "altar",
+  });
+  situation.run.apply({
+    kind: "entity-moved",
+    entityId: "woodcutter",
+    from: "altar",
+    to: "town-square",
+  });
+  const ran = validateBless(situation);
+  expect(ran.rejected).toEqual([]);
+  expect(ran.events.map((e) => e.kind)).toContain("blessing-granted");
+});
+
+// A bless the world has really moved past is still refused, for the reason that matters.
+
+test("a bless is refused as not-adjacent when the petitioner walked away while the god thought", () => {
+  const situation = blessSituation();
+  situation.run.apply({
+    kind: "entity-moved",
+    entityId: "farmer",
+    from: "altar",
+    to: "town-square",
+  });
+  expect(validateBless(situation).rejected.map((r) => r.reason)).toEqual([
+    "not-adjacent",
+  ]);
+});
+
+test("a bless is refused when the petition was answered or lapsed while the god thought", () => {
+  const answered = blessSituation();
+  const petition = answered.run.state.petitions.get(answered.opened.id);
+  if (!petition) throw new Error("petition");
+  answered.run.state = {
+    ...answered.run.state,
+    petitions: new Map(answered.run.state.petitions).set(answered.opened.id, {
+      ...petition,
+      status: "answered",
+    }),
+  };
+  expect(validateBless(answered).rejected.map((r) => r.reason)).toEqual([
+    "malformed",
+  ]);
+
+  const lapsed = blessSituation();
+  lapsed.run.state = {
+    ...lapsed.run.state,
+    tick: lapsed.run.state.tick + 100000,
+  };
+  expect(validateBless(lapsed).rejected.map((r) => r.reason)).toEqual([
+    "malformed",
+  ]);
+});
+
+test("a bless is refused when the petitioner died or the god spent its divinity while the god thought", () => {
+  const dead = blessSituation();
+  // No event kills an actor yet; the state carries the death and its revision bump.
+  const farmer = getActor(dead.run.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  dead.run.state = withActor(dead.run.state, {
+    ...farmer,
+    alive: false,
+    revision: farmer.revision + 1,
+  });
+  expect(validateBless(dead).rejected.map((r) => r.reason)).toEqual([
+    "dead-actor",
+  ]);
+
+  const spent = blessSituation();
+  spent.run.apply({
+    kind: "resource-consumed",
+    entityId: spent.god,
+    resource: "divinity",
+    amount: 1000,
+  });
+  expect(validateBless(spent).rejected.map((r) => r.reason)).toEqual([
+    "insufficient-power",
+  ]);
 });
 
 test("a goal may name anyone a prayer names, though they are not in the scene", () => {

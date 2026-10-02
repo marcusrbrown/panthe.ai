@@ -10,6 +10,11 @@ import type {
 } from "@panthea/contracts";
 import type { StoredEvent } from "./checks";
 import {
+  buildDispositions,
+  type Disposition,
+  renderDispositionCounts,
+} from "./dispositions";
+import {
   CONTEXT_ACTIONS,
   choiceKey,
   type EpisodeAnalysis,
@@ -28,6 +33,8 @@ import {
 export interface EpisodeSettings {
   readonly model: string;
   readonly reasoningEffort?: "none";
+  /** The kind of explicit endpoint the model ran on; absent for the default local Ollama. The host and port are never recorded. */
+  readonly endpoint?: "hosted" | "local";
   readonly seconds: number;
   readonly ranAt: string;
   readonly ticks: number;
@@ -433,6 +440,28 @@ function renderRepetition(record: EpisodeRecord): string {
     .join("\n");
 }
 
+/** One line per god proposal: the action, and what the world did with it. */
+function renderDispositions(record: EpisodeRecord): string {
+  const dispositions = buildDispositions(record.input);
+  if (dispositions.length === 0) return "No god proposal was journaled.";
+  const words = (d: Disposition): string =>
+    d.outcome === "committed"
+      ? `committed: ${d.events.join(", ")}`
+      : d.outcome === "committed, no event" ||
+          d.outcome === "pending" ||
+          d.outcome === "rejected"
+        ? d.outcome
+        : `rejected: ${d.outcome}`;
+  return [
+    `- dispositions: ${renderDispositionCounts(dispositions)}`,
+    "",
+    ...dispositions.map(
+      (d, i) =>
+        `${i + 1}. ${nameOf(record, d.actor)}: ${d.kind}${d.target === "" ? "" : ` → ${d.target}`} — ${words(d)}`,
+    ),
+  ].join("\n");
+}
+
 function renderChecks(record: EpisodeRecord): string {
   const rows = record.episode.gods.flatMap((g) =>
     g.checks.map(
@@ -470,6 +499,21 @@ const RUBRIC = [
   "Inspectability",
 ];
 
+/** Where the model ran: local Ollama at its 4K context, a local or hosted OpenAI-compatible endpoint (never named). */
+function modelLine(settings: {
+  readonly model: string;
+  readonly reasoningEffort?: "none";
+  readonly endpoint?: "hosted" | "local";
+}): string {
+  const where =
+    settings.endpoint === "hosted"
+      ? "a hosted OpenAI-compatible endpoint"
+      : settings.endpoint === "local"
+        ? "a local OpenAI-compatible endpoint"
+        : "local Ollama, 4K context";
+  return `${settings.model} through ${where}, ${reasoningText(settings.reasoningEffort)}`;
+}
+
 export function renderTranscript(record: EpisodeRecord): string {
   const { settings } = record;
   const actions = buildActions(record);
@@ -479,7 +523,7 @@ export function renderTranscript(record: EpisodeRecord): string {
     "## Settings",
     "",
     `- Recorded: ${settings.ranAt}`,
-    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
+    `- Model: ${modelLine(settings)}`,
     `- Length: ${settings.seconds} s (${settings.ticks} ticks)`,
     "- World: a fresh world from the initial authored Greek state; no fixtures, no seeds",
     `- Machine: ${settings.hardware}`,
@@ -493,6 +537,10 @@ export function renderTranscript(record: EpisodeRecord): string {
     actions.length === 0
       ? "No god took a committed action."
       : actions.map((entry, i) => renderAction(entry, i, record)).join("\n"),
+    "",
+    "## What the world did with every proposal",
+    "",
+    renderDispositions(record),
     "",
     "## What the world did",
     "",
@@ -527,6 +575,8 @@ export interface SummarySettings {
   readonly seconds: number;
   readonly model: string;
   readonly reasoningEffort?: "none";
+  /** The kind of explicit endpoint the model ran on; absent for the default local Ollama. The host and port are never recorded. */
+  readonly endpoint?: "hosted" | "local";
   /** Transcript file names, in episode order. */
   readonly files: readonly string[];
 }
@@ -562,8 +612,10 @@ export function renderSummary(
   return [
     "# M2 experience gate",
     "",
-    `- Model: ${settings.model} through local Ollama, 4K context, ${reasoningText(settings.reasoningEffort)}`,
+    "- Requirements: O08",
+    `- Model: ${modelLine(settings)}`,
     `- ${records.length} episodes of ${settings.seconds} s, each a fresh world from the initial authored Greek state; no fixtures, no seeds`,
+    `- dispositions: ${renderDispositionCounts(records.flatMap((record) => buildDispositions(record.input)))}`,
     "",
     "## Automated checks",
     "",

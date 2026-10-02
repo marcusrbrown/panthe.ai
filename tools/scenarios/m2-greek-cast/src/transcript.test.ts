@@ -20,6 +20,7 @@ import {
   petitionLapsedEvent,
   petitionOpenedEvent,
 } from "./episode-test-data";
+import { episodeSettings } from "./episodes";
 import { analyzeReal, type RealInput } from "./real-analysis";
 import {
   buildActions,
@@ -1019,4 +1020,173 @@ test("a transcript with none of these says so, and the summary shows each god's 
   expect(text).toContain("Petitions heard / answered");
   expect(text).toMatch(/\| 1 \| Zeus \|[^\n]*\| 1 \/ 1 \|/);
   expect(text).toContain("Goal changes refused");
+});
+
+test("a hosted run's transcript and summary say a hosted OpenAI-compatible endpoint, never the endpoint's host or a key", () => {
+  const SECRET_KEY = "sk-sentinel-DO-NOT-LEAK-0123456789";
+  const base = record([move("zeus", "olympus-gate", 2)]);
+  // The run configuration as the harness is given it, rendered the way the gate renders it.
+  const options = {
+    binary: "/b",
+    durationMs: 300_000,
+    ollama: "http://127.0.0.1:11434",
+    model: "gpt-x",
+    baseUrl: "https://private-host.example/v1",
+    keyRef: "private-key-ref",
+    keys: { "private-key-ref": SECRET_KEY },
+    episodes: 1,
+    outDir: "/tmp/out",
+  };
+  const hosted: EpisodeRecord = {
+    ...base,
+    settings: episodeSettings(options, {
+      ranAt: "2026-10-02T00:00:00.000Z",
+      ticks: 300,
+      hardware: "Apple M1 Pro",
+    }),
+  };
+  const transcript = renderTranscript(hosted);
+  const summary = renderSummary([hosted], {
+    seconds: 300,
+    model: "gpt-x",
+    endpoint: "hosted",
+    files: ["episode-1.md"],
+  });
+  for (const text of [transcript, summary]) {
+    expect(text).toContain("through a hosted OpenAI-compatible endpoint");
+    expect(text).not.toContain("private-host.example");
+    expect(text).not.toContain("private-key-ref");
+    expect(text).not.toContain(SECRET_KEY);
+    expect(text).not.toContain("local Ollama");
+    expect(text).not.toContain("4K context");
+  }
+  // Control: a local run still says so.
+  expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
+});
+
+test("an explicit local base URL renders as a local OpenAI-compatible endpoint, not Ollama, with no host or port; the default path still says local Ollama", () => {
+  const base = record([move("zeus", "olympus-gate", 2)]);
+  const local: EpisodeRecord = {
+    ...base,
+    settings: episodeSettings(
+      {
+        binary: "/b",
+        durationMs: 300_000,
+        ollama: "http://127.0.0.1:11434",
+        model: "local-model",
+        baseUrl: "http://192.168.1.20:8080/v1",
+      },
+      {
+        ranAt: "2026-10-02T00:00:00.000Z",
+        ticks: 300,
+        hardware: "Apple M1 Pro",
+      },
+    ),
+  };
+  const summary = renderSummary([local], {
+    seconds: 300,
+    model: "local-model",
+    endpoint: "local",
+    files: ["episode-1.md"],
+  });
+  for (const text of [renderTranscript(local), summary]) {
+    expect(text).toContain("through a local OpenAI-compatible endpoint");
+    expect(text).not.toContain("local Ollama");
+    expect(text).not.toContain("4K context");
+    expect(text).not.toContain("192.168.1.20");
+    expect(text).not.toContain("8080");
+  }
+  // Control: the default path is unchanged.
+  expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
+  expect(
+    renderSummary([base], { seconds: 300, model: "m", files: [] }),
+  ).toContain("through local Ollama, 4K context");
+});
+
+// --- What the world did with every god proposal ------------------------------------------
+
+/** An episode whose gods proposed a move, then two blesses the world refused as stale, then a not-adjacent move. */
+function dispositionRecord(index = 1): EpisodeRecord {
+  const committed = move("zeus", "olympus-gate", 5);
+  const refused = [
+    act("hera", { kind: "bless", petition: "pet-1" }, 6, {
+      outcome: "rejected",
+    }),
+    act("hera", { kind: "bless", petition: "pet-2" }, 7, {
+      outcome: "rejected",
+    }),
+  ];
+  const apart = act("zeus", { kind: "move", to: "tavern" }, 8, {
+    outcome: "rejected",
+  });
+  const rejections = [...refused, apart];
+  const data = input([committed, ...rejections]);
+  const reasons = new Map(
+    rejections.map((r, i) => [
+      r.proposal.proposalId,
+      i < 2 ? "stale-target" : "not-adjacent",
+    ]),
+  );
+  const real: RealInput = {
+    ...data,
+    proposals: data.proposals.map((p) =>
+      reasons.has(p.proposalId)
+        ? { ...p, reason: reasons.get(p.proposalId) }
+        : p,
+    ),
+    // A rejection commits no event.
+    events: data.events.filter(
+      (e) =>
+        !rejections.some((r) => r.proposal.observationId === e.correlationId),
+    ),
+  };
+  return {
+    ...record([committed], [], index),
+    input: real,
+    analysis: analyzeReal(real),
+    episode: analyzeEpisode(real, identities, ["zeus", "hera"]),
+  };
+}
+
+test("the transcript lists every god proposal with the action and what the world did with it, rejections and their reason codes included", () => {
+  const text = renderTranscript(dispositionRecord());
+  expect(text).toContain("## What the world did with every proposal");
+  expect(text).toMatch(/Zeus: move → olympus-gate — committed: entity-moved/);
+  expect(text).toMatch(/Hera: bless → pet-1 — rejected: stale-target/);
+  expect(text).toMatch(/Hera: bless → pet-2 — rejected: stale-target/);
+  expect(text).toMatch(/Zeus: move → tavern — rejected: not-adjacent/);
+  expect(text).toContain("- dispositions: bless 2 × stale-target");
+  // The committed-actions list still holds only what committed.
+  const committedSection = text.split("## What happened")[1]?.split("##")[0];
+  expect(committedSection).not.toContain("stale-target");
+});
+
+test("an episode with no proposals says so", () => {
+  const empty = record([], []);
+  expect(renderTranscript(empty)).toContain("No god proposal was journaled.");
+});
+
+test("the summary adds one line counting dispositions by action kind and outcome across all episodes", () => {
+  const text = renderSummary([dispositionRecord(1), dispositionRecord(2)], {
+    seconds: 300,
+    model: "m",
+    files: ["episode-1.md", "episode-2.md"],
+  });
+  expect(text).toContain(
+    "- dispositions: bless 4 × stale-target, move 2 × committed, move 2 × not-adjacent",
+  );
+});
+
+test("the summary header names the requirement the gate is evidence for, on its own line, before the settings", () => {
+  const text = renderSummary([record([move("zeus", "olympus-gate", 2)])], {
+    seconds: 300,
+    model: "m",
+    files: ["episode-1.md"],
+  });
+  const lines = text.split("\n");
+  expect(lines[0]).toBe("# M2 experience gate");
+  expect(lines).toContain("- Requirements: O08");
+  expect(lines.indexOf("- Requirements: O08")).toBeLessThan(
+    lines.findIndex((line) => line.startsWith("- Model:")),
+  );
 });

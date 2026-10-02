@@ -134,3 +134,23 @@ test("a practice move is told apart by its move and what it names, and a no-prog
     "practice 2 × no-progress, practice 1 × committed",
   );
 });
+
+test("an offer on a prayer is told apart by the prayer it names, so two offers on two prayers are two choices and a repeat on one is one", () => {
+  const offer = (petition: string) => ({
+    kind: "practice",
+    move: "offer",
+    petition,
+    term: { kind: "make-offering" },
+    stake: "wolf",
+  });
+  const dispositions = buildDispositions(
+    run([
+      rejected("zeus", offer("evt-4"), "no-progress", 5),
+      act("zeus", offer("evt-6"), 6),
+    ]),
+  );
+  expect(dispositions.map((d) => [d.kind, d.target, d.outcome])).toEqual([
+    ["practice", "offer evt-4", "no-progress"],
+    ["practice", "offer evt-6", "committed"],
+  ]);
+});

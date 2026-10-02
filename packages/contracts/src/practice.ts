@@ -19,13 +19,14 @@ import {
   parseString,
 } from "./ids";
 
-/** The practices a thread can be. Contest and supplication join them in later units. */
-export const PRACTICE_KINDS = ["settlement"] as const;
+/** The practices a thread can be: a settlement between two gods, and a supplication, the terms a god sets on a prayer. Contest joins them in a later unit. */
+export const PRACTICE_KINDS = ["settlement", "supplication"] as const;
 export type PracticeKind = (typeof PRACTICE_KINDS)[number];
 
-/** The moves of a settlement. A demand opens the thread; the others answer it. */
+/** The moves of a thread. A demand opens a settlement and an offer opens a supplication; the others answer. */
 export const PRACTICE_MOVES = [
   "demand",
+  "offer",
   "counter",
   "accept",
   "refuse",
@@ -67,6 +68,8 @@ export const PRACTICE_END_REASONS = [
   "party-died",
   /** An alliance term needs no performance: the settlement is the seal. */
   "sealed",
+  /** A supplication's deadline passed without the boon the god promised: the mortal owes nothing for what it never received. */
+  "boon-unanswered",
 ] as const;
 export type PracticeEndReason = (typeof PRACTICE_END_REASONS)[number];
 

@@ -77,7 +77,16 @@
       "maxTermTicks": 500,
       "oathDivinityLoss": 3,
       "oathAccessTicks": 100,
-      "standingDelta": 1
+      "standingDelta": 1,
+      "acceptPietyPercent": 10,
+      "urgentTicks": 20
+    },
+    "practiceStakes": {
+      "wolf": {
+        "form": "wolf",
+        "capabilitiesGained": ["beast"],
+        "capabilitiesLost": []
+      }
     }
   }
 }

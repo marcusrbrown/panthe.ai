@@ -24,6 +24,7 @@ import {
   parseString,
   type ResourceAmount,
 } from "./ids";
+import { parseTransformation, type Transformation } from "./practice";
 
 export const CONTENT_SCHEMA_VERSIONS = [1] as const;
 
@@ -108,6 +109,8 @@ export interface WorldRules {
   readonly petitionBalance?: Readonly<Record<string, number>>;
   /** Practice thread tunables (negotiation window, counteroffer budget, term deadline bounds). Absent means every default in packages/world's practice rules. */
   readonly practiceBalance?: Readonly<Record<string, number>>;
+  /** The stakes a god may set on the terms it offers a supplicant, by id: what the mortal becomes if it takes the boon and breaks the term. Absent means no stake can be set. */
+  readonly practiceStakes?: Readonly<Record<string, Transformation>>;
 }
 
 export interface ContentPack {
@@ -404,6 +407,10 @@ export const PRACTICE_BALANCE_KEYS = [
   "oathDivinityLoss",
   "oathAccessTicks",
   "standingDelta",
+  /** How pious a mortal's drive must be, as a percent, to accept the terms a god offers it. */
+  "acceptPietyPercent",
+  /** How many ticks before an accepted term's deadline performing it outranks the mortal's other choices. */
+  "urgentTicks",
 ] as const;
 
 /**
@@ -429,6 +436,33 @@ export function parsePracticeBalance(
     balance[key] = parsed.value;
   }
   return ok(balance);
+}
+
+/**
+ * `rules.practiceStakes`: an id for each stake and the change of form it is,
+ * checked field by field. An unknown field is refused, so a typo cannot leave a
+ * stake with no effect.
+ */
+export function parsePracticeStakes(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, Transformation>>> {
+  if (!isRecord(value)) return fail(path, "expected an object of stakes by id");
+  const stakes: Record<string, Transformation> = {};
+  for (const [id, entry] of Object.entries(value)) {
+    const at = `${path}.${id}`;
+    if (id.length === 0) return fail(path, "a stake needs an id");
+    if (!isRecord(entry)) return fail(at, "expected a stake object");
+    for (const key of Object.keys(entry)) {
+      if (!["form", "capabilitiesGained", "capabilitiesLost"].includes(key)) {
+        return fail(`${at}.${key}`, "not a stake field");
+      }
+    }
+    const transformation = parseTransformation(entry, at);
+    if (!transformation.ok) return transformation;
+    stakes[id] = transformation.value;
+  }
+  return ok(stakes);
 }
 
 function parseBalanceRecord(
@@ -495,6 +529,11 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parsePracticeBalance(value.practiceBalance, `${path}.practiceBalance`);
   if (!practiceBalance.ok) return practiceBalance;
+  const practiceStakes =
+    value.practiceStakes === undefined
+      ? ok<Readonly<Record<string, Transformation>> | undefined>(undefined)
+      : parsePracticeStakes(value.practiceStakes, `${path}.practiceStakes`);
+  if (!practiceStakes.ok) return practiceStakes;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -511,6 +550,9 @@ function parseWorldRules(
     ...(practiceBalance.value === undefined
       ? {}
       : { practiceBalance: practiceBalance.value }),
+    ...(practiceStakes.value === undefined
+      ? {}
+      : { practiceStakes: practiceStakes.value }),
   });
 }
 

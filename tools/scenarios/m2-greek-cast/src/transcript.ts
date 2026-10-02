@@ -340,6 +340,14 @@ export function buildWorldNotes(record: EpisodeRecord): WorldNote[] {
           `${e.entityId}'s change to ${e.entityId === "hera" ? "her" : "his"} goal was refused (${e.reason}, ${e.unlocksInTicks} ticks left)`,
         );
         break;
+      case "practice-progressed":
+        note(
+          e,
+          e.step === "boon"
+            ? `${e.entityId}'s boon to ${e.counterparty} was seen given [${e.threadId}] (${e.by})`
+            : `${e.counterparty}'s offering to ${e.entityId} was seen made [${e.threadId}] (${e.by})`,
+        );
+        break;
       case "practice-refused":
         note(
           e,

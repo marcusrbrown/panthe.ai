@@ -213,6 +213,7 @@ function eventLocation(
     case "practice-opened":
     case "practice-moved":
     case "practice-ended":
+    case "practice-progressed":
     case "motif-applied":
     case "access-restored":
       return undefined;

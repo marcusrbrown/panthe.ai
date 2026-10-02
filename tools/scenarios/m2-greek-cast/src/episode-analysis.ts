@@ -102,8 +102,8 @@ export function primaryTarget(proposal: Record<string, unknown>): string {
     case "bless":
       return String(proposal.petition);
     case "practice":
-      // A demand is told apart by its cause, an answer by its thread: two moves on one thread are two choices.
-      return `${String(proposal.move)} ${String(proposal.thread ?? proposal.cause)}`;
+      // A demand is told apart by its cause, an offer by its prayer, an answer by its thread: two moves on one thread are two choices.
+      return `${String(proposal.move)} ${String(proposal.thread ?? proposal.cause ?? proposal.petition)}`;
     default:
       return "";
   }

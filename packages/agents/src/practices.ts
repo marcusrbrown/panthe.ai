@@ -20,8 +20,10 @@ import {
   canStillPerform,
   getActor,
   getMemories,
+  inAnswerWindow,
   isThreadOpen,
   type MemoryEntry,
+  openPetitionsFor,
   practiceBalanceOf,
   termObstacle,
   type WorldState,
@@ -58,6 +60,12 @@ export interface ThreadView {
   readonly counterBudgetLeft: number;
   /** The tick the view was read at: deadlines are shown as ticks left. */
   readonly tick: number;
+  /** The prayer a supplication answers, and which halves of its bargain the world has seen done. Absent on a settlement. */
+  readonly supplication?: {
+    readonly petition: EventId;
+    readonly boonGiven: boolean;
+    readonly offeringMade: boolean;
+  };
   /** The answers this god may give now. */
   readonly moves: readonly AnswerMove[];
   /** Whether this god may swear its acceptance: only the god who must perform the term may. */
@@ -119,6 +127,16 @@ export interface PracticeOptions {
   readonly minTicks: number;
   readonly maxTicks: number;
   readonly causes: readonly DemandCause[];
+  /** Prayers addressed to this god it may set terms on: open, in their window, with no terms standing, from a petitioner still living. */
+  readonly offerable: readonly OfferablePrayer[];
+  /** The stakes the world authored, by id: what a mortal becomes if it takes a god's boon and breaks the term. */
+  readonly stakes: readonly { readonly id: string; readonly form: string }[];
+}
+
+/** A prayer a god may answer with terms. */
+export interface OfferablePrayer {
+  readonly id: EventId;
+  readonly petitioner: EntityId;
 }
 
 export const NO_PRACTICE: PracticeOptions = {
@@ -129,6 +147,8 @@ export const NO_PRACTICE: PracticeOptions = {
   minTicks: 1,
   maxTicks: 1,
   causes: [],
+  offerable: [],
+  stakes: [],
 };
 
 /** Whether a witnessed memory's event kind is a thread's ending, which its parties remember though no one stood at it. */
@@ -331,11 +351,13 @@ export function practiceBy(
     const accepter =
       thread.demander === thread.offeredBy ? thread.obligated : thread.demander;
     const lastMove =
-      status === "accepted"
-        ? `${who(accepter)} agreed at tick ${thread.acceptance?.tick ?? "?"}${thread.acceptance?.sworn ? ", sworn by the Styx" : ""}`
-        : status === "countered"
-          ? `${who(thread.offeredBy)} countered`
-          : `${who(thread.demander)} demanded`;
+      thread.practice === "supplication" && status !== "accepted"
+        ? `${who(thread.demander)} offered terms`
+        : status === "accepted"
+          ? `${who(accepter)} agreed at tick ${thread.acceptance?.tick ?? "?"}${thread.acceptance?.sworn ? ", sworn by the Styx" : ""}`
+          : status === "countered"
+            ? `${who(thread.offeredBy)} countered`
+            : `${who(thread.demander)} demanded`;
 
     const obstacle =
       standing === "obligation" && !canStillPerform(state, thread)
@@ -356,6 +378,15 @@ export function practiceBy(
       counterBudgetLeft: thread.counterBudgetLeft,
       tick: state.tick,
       moves,
+      ...(thread.practice === "supplication" && thread.petition !== undefined
+        ? {
+            supplication: {
+              petition: thread.petition,
+              boonGiven: thread.progress?.boon !== undefined,
+              offeringMade: thread.progress?.offering !== undefined,
+            },
+          }
+        : {}),
       canSwear: moves.includes("accept") && thread.term.party === actorId,
       ...(refusal?.reason === "no-progress" && refusal.thread === thread.id
         ? { noProgress: refusal.text }
@@ -423,6 +454,24 @@ export function practiceBy(
       minTicks: practiceBalanceOf(state.rules, "minTermTicks"),
       maxTicks: practiceBalanceOf(state.rules, "maxTermTicks"),
       causes: demandCauses(shownMemories, actorId),
+      // A prayer to this god that is still open to an answer, with no terms standing on it, from a petitioner still living.
+      offerable: openPetitionsFor(state, actorId)
+        .filter(
+          (petition) =>
+            inAnswerWindow(state, petition, state.tick) &&
+            getActor(state, petition.petitioner)?.alive === true &&
+            ![...state.threads.values()].some(
+              (thread) =>
+                thread.petition === petition.id && isThreadOpen(thread),
+            ),
+        )
+        .map((petition) => ({
+          id: petition.id,
+          petitioner: petition.petitioner,
+        })),
+      stakes: Object.entries(state.rules.practiceStakes ?? {})
+        .map(([id, stake]) => ({ id, form: stake.form }))
+        .sort((a, b) => byId(a.id, b.id)),
     },
   };
 }
@@ -461,6 +510,25 @@ function fullRow(view: ThreadView): string[] {
       );
       break;
     case "other":
+      if (view.supplication !== undefined) {
+        const { petition, boonGiven, offeringMade } = view.supplication;
+        if (view.status === "accepted") {
+          lines.push(
+            `- [${view.id}] ${view.other} ACCEPTED your terms on its prayer [${petition}]: ${term}, ${by}.`,
+            `  Boon: ${boonGiven ? "given" : 'still owed (answer the prayer: action "bless" or "strike", as its entry says)'}. Offering: ${offeringMade ? "made" : "still owed"}.`,
+          );
+        } else {
+          lines.push(
+            `- [${view.id}] OPEN, waiting on ${view.other}: you offered terms on its prayer [${petition}]: ${term}, ${by}. Its answer is due by tick ${view.negotiationDeadline}.`,
+          );
+          if (view.moves.includes("withdraw")) {
+            lines.push(
+              `  You may withdraw it: action "practice", thread "${view.id}", move "withdraw".`,
+            );
+          }
+        }
+        break;
+      }
       lines.push(
         view.status === "accepted"
           ? `- [${view.id}] ${view.other} OWES YOU: ${term}, ${by}. ${view.lastMove}. Cause: ${view.cause}.`
@@ -489,7 +557,9 @@ function compactRow(view: ThreadView): string {
     case "awaiting":
       return `- [${view.id}] AWAITING YOUR ANSWER: ${term}, ${by}. thread "${view.id}", move ${quoted(view.moves)}; answer by tick ${view.negotiationDeadline}.`;
     case "other":
-      return `- [${view.id}] OPEN with ${view.other}: ${term}, ${by}.`;
+      return view.supplication !== undefined
+        ? `- [${view.id}] ${view.status === "accepted" ? `${view.other} ACCEPTED your terms` : `OPEN, terms offered to ${view.other}`}: ${term}, ${by}.`
+        : `- [${view.id}] OPEN with ${view.other}: ${term}, ${by}.`;
   }
 }
 
@@ -552,8 +622,14 @@ export function describePracticeInstructions(
 ): string[] {
   const canAnswer = threads.some((view) => view.moves.length > 0);
   const canDemand = options.causes.length > 0 && options.gods.length > 0;
-  if (!canAnswer && !canDemand) return [];
+  const canOffer = options.offerable.length > 0;
+  if (!canAnswer && !canDemand && !canOffer) return [];
   const lines: string[] = [];
+  if (canOffer) {
+    lines.push(
+      `You may answer a prayer on terms (action "practice", move "offer", prayer: the prayer's id): your boon for one offering by the one who prayed, to you, by a deadline. Send a make-offering term (party the one who prayed, to you, a resource, an amount, deadlineTicks), and optionally a stake: what they become if they take your boon and break the term (${options.stakes.map((stake) => stake.id).join(", ") || "none authored"}). Once they accept, the boon is still yours to give with "bless" or "strike". Prayers you may set terms on: ${options.offerable.map((prayer) => `[${prayer.id}] ${prayer.petitioner}`).join("; ")}.`,
+    );
+  }
   if (canDemand) {
     lines.push(
       `You may bargain with another god through the world (action "practice"). To demand something, send move "demand" with a cause you were shown and one term for that god to do by a deadline: tell a legend at a place, be at a place, stay away from a place, give a resource, bless a mortal, make an offering, or ally with you. The world checks the term itself; only moves bind, and words never do.`,
@@ -584,6 +660,12 @@ const TERM_KINDS = [
 /** What a god's `practice` action says, once parsed against what it was shown. */
 export type PracticeIntent = { readonly action: "practice" } & (
   | {
+      readonly move: "offer";
+      readonly petition: EventId;
+      readonly term: PracticeTermOffer;
+      readonly stake?: string;
+    }
+  | {
       readonly move: "demand";
       readonly cause: EventId;
       readonly term: PracticeTermOffer;
@@ -610,6 +692,8 @@ export interface PracticeOffer {
   /** Mortals a term may name: those the god was shown, here or remembered. */
   readonly mortals: readonly EntityId[];
   readonly canDemand: boolean;
+  /** Prayers this god may offer terms on, by id, with who prayed. */
+  readonly offerable: readonly OfferablePrayer[];
   /** Each thread's other party, for the terms a counter may bind. */
   readonly otherOf: ReadonlyMap<EventId, EntityId>;
   /** The threads this god may swear its acceptance of: those whose term it must perform. */
@@ -633,13 +717,16 @@ export function practiceOffer(
   };
   const canDemand = options.causes.length > 0 && options.gods.length > 0;
   const canAnswer = Object.values(answers).some((ids) => ids.length > 0);
-  if (!canDemand && !canAnswer) return undefined;
+  if (!canDemand && !canAnswer && options.offerable.length === 0) {
+    return undefined;
+  }
   return {
     self,
     options,
     answers,
     mortals: [...new Set([...options.mortals, ...herePresent])],
     canDemand,
+    offerable: options.offerable,
     otherOf: new Map(threads.map((view) => [view.id, view.other])),
     swearable: threads.filter((view) => view.canSwear).map((view) => view.id),
   };
@@ -649,6 +736,7 @@ export function practiceOffer(
 export function offeredMoves(offer: PracticeOffer): readonly string[] {
   const moves: string[] = [];
   if (offer.canDemand) moves.push("demand");
+  if (offer.offerable.length > 0) moves.push("offer");
   for (const move of ["accept", "counter", "refuse", "withdraw"] as const) {
     if (offer.answers[move].length > 0) moves.push(move);
   }
@@ -676,8 +764,31 @@ export function practiceProperties(
     };
   }
   if (offer.swearable.length > 0) properties.swear = { type: "boolean" };
-  if (offer.canDemand || offer.answers.counter.length > 0) {
-    const everyone = [offer.self, ...options.gods];
+  if (offer.offerable.length > 0) {
+    // The prayer an offer answers. It is its own field, not the bless action's `petition`: a bless is offered by presence and an offer by an open prayer, and one list for both would change what a god offered only a bless is shown.
+    properties.prayer = {
+      type: "string",
+      enum: offer.offerable.map((prayer) => prayer.id),
+    };
+    if (options.stakes.length > 0) {
+      properties.stake = {
+        type: "string",
+        enum: options.stakes.map((stake) => stake.id),
+        description:
+          "Only an offer on a prayer may carry a stake: what the one who prayed becomes if it takes your boon and breaks the term.",
+      };
+    }
+  }
+  if (
+    offer.canDemand ||
+    offer.answers.counter.length > 0 ||
+    offer.offerable.length > 0
+  ) {
+    const everyone = [
+      offer.self,
+      ...options.gods,
+      ...offer.offerable.map((prayer) => prayer.petitioner),
+    ];
     properties.term = {
       type: "object",
       properties: {
@@ -687,7 +798,7 @@ export function practiceProperties(
         },
         party: { type: "string", enum: everyone },
         place: { type: "string", enum: [...options.places] },
-        to: { type: "string", enum: everyone },
+        to: { type: "string", enum: [offer.self, ...options.gods] },
         ...(offer.mortals.length > 0
           ? { mortal: { type: "string", enum: [...offer.mortals] } }
           : {}),
@@ -848,13 +959,113 @@ function parseTerm(
   }
 }
 
-/** Parses a `practice` action against the offer: the move, the thread or cause it names, and its term. */
+/**
+ * The one term an offer on a prayer may hold: an offering, by the one who
+ * prayed, to the god making the offer, of a resource that exists, within the
+ * world's bounds on how long a term may run.
+ */
+function parseOfferTerm(
+  offer: PracticeOffer,
+  prayer: OfferablePrayer,
+  raw: unknown,
+): ParseResult<PracticeTermOffer> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return invalid("term", "term must be an object");
+  }
+  const fields = raw as Record<string, unknown>;
+  const { options } = offer;
+  const kind = member(fields.kind, "term.kind", ["make-offering"], "kind");
+  if (!kind.ok) return kind;
+  const party = member(
+    fields.party,
+    "term.party",
+    [prayer.petitioner],
+    "party",
+  );
+  if (!party.ok) return party;
+  const to = member(fields.to, "term.to", [offer.self], "to");
+  if (!to.ok) return to;
+  const resource = member(
+    fields.resource,
+    "term.resource",
+    options.resources,
+    "resource",
+  );
+  if (!resource.ok) return resource;
+  const { amount, deadlineTicks: ticks } = fields;
+  if (typeof amount !== "number" || !Number.isInteger(amount) || amount < 1) {
+    return invalid("term.amount", "amount must be a positive whole number");
+  }
+  if (
+    typeof ticks !== "number" ||
+    !Number.isInteger(ticks) ||
+    ticks < options.minTicks ||
+    ticks > options.maxTicks
+  ) {
+    return invalid(
+      "term.deadlineTicks",
+      `deadlineTicks must be a whole number from ${options.minTicks} to ${options.maxTicks}`,
+    );
+  }
+  return {
+    ok: true,
+    value: {
+      kind: "make-offering",
+      party: party.value as EntityId,
+      to: to.value as EntityId,
+      resource: resource.value,
+      amount,
+      deadlineTicks: ticks,
+    },
+  };
+}
+
+/** Parses a `practice` action against the offer: the move, the thread, prayer, or cause it names, and its term. */
 export function parsePractice(
   offer: PracticeOffer,
   fields: Record<string, unknown>,
 ): ParseResult<PracticeIntent> {
   const move = member(fields.move, "move", offeredMoves(offer), "move");
   if (!move.ok) return move;
+  // A stake belongs to an offer on a prayer and to no other move.
+  if (
+    move.value !== "offer" &&
+    fields.stake !== undefined &&
+    fields.stake !== null
+  ) {
+    return invalid("stake", "only an offer on a prayer may carry a stake");
+  }
+  if (move.value === "offer") {
+    const petition = member(
+      fields.prayer,
+      "prayer",
+      offer.offerable.map((prayer) => prayer.id),
+      "prayer",
+    );
+    if (!petition.ok) return petition;
+    const prayer = offer.offerable.find(
+      (candidate) => candidate.id === petition.value,
+    ) as OfferablePrayer;
+    const term = parseOfferTerm(offer, prayer, fields.term);
+    if (!term.ok) return term;
+    const stakes = offer.options.stakes.map((stake) => stake.id);
+    let stake: string | undefined;
+    if (fields.stake !== undefined && fields.stake !== null) {
+      const named = member(fields.stake, "stake", stakes, "stake");
+      if (!named.ok) return named;
+      stake = named.value;
+    }
+    return {
+      ok: true,
+      value: {
+        action: "practice",
+        move: "offer",
+        petition: prayer.id,
+        term: term.value,
+        ...(stake === undefined ? {} : { stake }),
+      },
+    };
+  }
   if (move.value === "demand") {
     const cause = member(
       fields.cause,

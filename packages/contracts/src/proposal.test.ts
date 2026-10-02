@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { MAX_GOAL_LENGTH, MAX_REPORT_LENGTH } from "./event";
+import { PRACTICE_MOVES } from "./practice";
 import {
   PROPOSAL_KINDS,
   parseObservationRecord,
@@ -789,5 +790,107 @@ test("a practice proposal without what its move needs is refused: no move, an un
     { kind: "practice", move: "withdraw", thread: "" },
   ]) {
     expect(parseProposal(base(bad)).ok).toBe(false);
+  }
+});
+
+// --- Offering terms to a supplicant -----------------------------------------------------------
+
+const OFFERING = {
+  kind: "make-offering",
+  party: "farmer",
+  to: "hera",
+  resource: "wood",
+  amount: 1,
+  deadlineTicks: 80,
+};
+
+test("a god offers a supplicant terms with one flat practice proposal: the petition it answers, one offering term, and optionally a stake by its id", () => {
+  const plain = parseProposal(
+    base({
+      kind: "practice",
+      move: "offer",
+      petition: "evt-4",
+      term: OFFERING,
+    }),
+  );
+  expect(plain.ok).toBe(true);
+  if (
+    plain.ok &&
+    plain.value.kind === "practice" &&
+    plain.value.move === "offer"
+  ) {
+    expect(String(plain.value.petition)).toBe("evt-4");
+    expect(plain.value.term).toEqual(OFFERING as never);
+    expect(plain.value.stake).toBeUndefined();
+  }
+  const staked = parseProposal(
+    base({
+      kind: "practice",
+      move: "offer",
+      petition: "evt-4",
+      term: OFFERING,
+      stake: "wolf",
+    }),
+  );
+  expect(staked.ok).toBe(true);
+  if (
+    staked.ok &&
+    staked.value.kind === "practice" &&
+    staked.value.move === "offer"
+  ) {
+    expect(staked.value.stake).toBe("wolf");
+  }
+  expect(PRACTICE_MOVES as readonly string[]).toContain("offer");
+  for (const bad of [
+    { kind: "practice", move: "offer", term: OFFERING },
+    { kind: "practice", move: "offer", petition: "", term: OFFERING },
+    { kind: "practice", move: "offer", petition: "evt-4" },
+    {
+      kind: "practice",
+      move: "offer",
+      petition: "evt-4",
+      term: OFFERING,
+      stake: "",
+    },
+    {
+      kind: "practice",
+      move: "offer",
+      petition: "evt-4",
+      term: OFFERING,
+      stake: 3,
+    },
+    {
+      kind: "practice",
+      move: "offer",
+      petition: "evt-4",
+      term: { ...OFFERING, deadlineTicks: 0 },
+    },
+  ]) {
+    expect(parseProposal(base(bad)).ok).toBe(false);
+  }
+});
+
+test("a stake belongs to an offer to a supplicant and to nothing else: a demand, a counter, an accept, a refusal, and a withdrawal that carry one are refused", () => {
+  const term = {
+    kind: "tell-legend",
+    party: "zeus",
+    place: "altar",
+    deadlineTicks: 100,
+  };
+  for (const bad of [
+    {
+      kind: "practice",
+      move: "demand",
+      counterparty: "zeus",
+      cause: "evt-3",
+      term,
+      stake: "wolf",
+    },
+    { kind: "practice", move: "counter", thread: "evt-9", term, stake: "wolf" },
+    { kind: "practice", move: "accept", thread: "evt-9", stake: "wolf" },
+    { kind: "practice", move: "refuse", thread: "evt-9", stake: "wolf" },
+    { kind: "practice", move: "withdraw", thread: "evt-9", stake: "wolf" },
+  ]) {
+    expect([bad.move, parseProposal(base(bad)).ok]).toEqual([bad.move, false]);
   }
 });

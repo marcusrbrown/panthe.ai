@@ -261,6 +261,13 @@ export interface BlessProposal extends ProposalBase {
  */
 export type PracticeProposal = ProposalBase & { readonly kind: "practice" } & (
     | {
+        /** A god answers a prayer with terms: its boon for one offering by the mortal. `stake` names, by its id in the world's rules, what the mortal becomes if it takes the boon and breaks the term. */
+        readonly move: "offer";
+        readonly petition: EventId;
+        readonly term: PracticeTermOffer;
+        readonly stake?: string;
+      }
+    | {
         readonly move: "demand";
         readonly counterparty: EntityId;
         readonly cause: EventId;
@@ -609,7 +616,30 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       return ok({ ...base, kind: "bless", petition: petition.value });
     }
     case "practice": {
+      // A stake belongs to an offer to a supplicant, and to no other move.
+      if (input.stake !== undefined && input.move !== "offer") {
+        return fail("stake", "only an offer to a supplicant may carry a stake");
+      }
       switch (input.move) {
+        case "offer": {
+          const petition = parseEventId(input.petition, "petition");
+          if (!petition.ok) return petition;
+          const term = parsePracticeTermOffer(input.term, "term");
+          if (!term.ok) return term;
+          const stake =
+            input.stake === undefined
+              ? ok<string | undefined>(undefined)
+              : parseString(input.stake, "stake");
+          if (!stake.ok) return stake;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: "offer",
+            petition: petition.value,
+            term: term.value,
+            ...(stake.value === undefined ? {} : { stake: stake.value }),
+          });
+        }
         case "demand": {
           const counterparty = parseEntityId(
             input.counterparty,

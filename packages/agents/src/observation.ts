@@ -289,6 +289,31 @@ export function buildModelProposal(
       break;
     }
     case "practice": {
+      if (intent.move === "offer") {
+        const prayer = remembered.practice.offerable.find(
+          (candidate) => candidate.id === intent.petition,
+        );
+        const petition = remembered.petitions.find(
+          (candidate) => candidate.id === intent.petition,
+        );
+        if (prayer === undefined || petition === undefined) {
+          return refuse(`${intent.petition} is not a prayer the god was shown`);
+        }
+        factsRead.push(`petition:${petition.id}`);
+        // An offer opens a thread, so there is nothing to pin: whether the
+        // prayer is still open, the offering affordable, the stake authored,
+        // and no terms already standing are judged when it commits.
+        proposal = {
+          ...base,
+          targets: [],
+          kind: "practice",
+          move: "offer",
+          petition: intent.petition,
+          term: intent.term,
+          ...(intent.stake === undefined ? {} : { stake: intent.stake }),
+        };
+        break;
+      }
       if (intent.move === "demand") {
         const cause = remembered.practice.causes.find(
           (candidate) => candidate.id === intent.cause,

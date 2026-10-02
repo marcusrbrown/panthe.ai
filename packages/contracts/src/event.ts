@@ -426,6 +426,8 @@ export interface PracticeOpenedEvent extends EventEnvelope {
   readonly negotiationDeadline: number;
   readonly counterBudget: number;
   readonly succeeds?: EventId;
+  /** The prayer a supplication answers: present exactly when `practice` is a supplication. A supplication's counterparty is the mortal who prayed, and the thread allows no counteroffers. */
+  readonly petition?: EventId;
   /**
    * What the demand is about, in structure: the agent and, when the cause names
    * one, the target, taken from what the demander itself remembers of its
@@ -510,9 +512,29 @@ export interface AccessRestoredEvent extends EventEnvelope {
   readonly motifEventId: EventId;
 }
 
+/** The two halves of a supplication's bargain: the god's boon, and the mortal's offering. */
+export const SUPPLICATION_STEPS = ["boon", "offering"] as const;
+export type SupplicationStep = (typeof SUPPLICATION_STEPS)[number];
+
+/**
+ * One half of a supplication's bargain was seen done, the other still owing:
+ * the world records it so the thread remembers it. `by` is the committed event
+ * that showed it (the blessing, the worship). `entityId` is the god that opened
+ * the thread and `counterparty` the mortal.
+ */
+export interface PracticeProgressedEvent extends EventEnvelope {
+  readonly kind: "practice-progressed";
+  readonly entityId: EntityId;
+  readonly counterparty: EntityId;
+  readonly threadId: EventId;
+  readonly step: SupplicationStep;
+  readonly by: EventId;
+}
+
 /** The moves and talk a refusal can be about: a practice move, or a report or legend that talked around an open thread. */
 export const PRACTICE_ATTEMPTS = [
   "demand",
+  "offer",
   "counter",
   "accept",
   "refuse",
@@ -558,6 +580,7 @@ export const UNPLACED_EVENT_KINDS = [
   "practice-opened",
   "practice-moved",
   "practice-ended",
+  "practice-progressed",
   "practice-refused",
   "motif-applied",
   "access-restored",
@@ -692,6 +715,7 @@ export type WorldEvent =
   | PracticeOpenedEvent
   | PracticeMovedEvent
   | PracticeEndedEvent
+  | PracticeProgressedEvent
   | PracticeRefusedEvent
   | MotifAppliedEvent
   | AccessRestoredEvent;
@@ -730,6 +754,7 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "practice-opened": true,
   "practice-moved": true,
   "practice-ended": true,
+  "practice-progressed": true,
   "practice-refused": true,
   "motif-applied": true,
   "access-restored": true,
@@ -801,6 +826,7 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
       case "practice-opened":
         return [event.entityId, event.counterparty];
       case "practice-ended":
+      case "practice-progressed":
         return [event.entityId, event.counterparty];
       case "practice-moved":
       case "practice-refused":
@@ -866,6 +892,8 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.threadId;
     case "practice-ended":
       return event.performedBy ?? event.threadId;
+    case "practice-progressed":
+      return event.by;
     case "practice-refused":
       return event.thread;
     case "motif-applied":
@@ -1862,6 +1890,17 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
       if (!stake.ok) return stake;
       const subject = parseThreadSubject(input.subject, "subject");
       if (!subject.ok) return subject;
+      const petition = parseOptionalEventId(input.petition, "petition");
+      if (!petition.ok) return petition;
+      if (
+        (practice.value === "supplication") !==
+        (petition.value !== undefined)
+      ) {
+        return fail(
+          "petition",
+          "a supplication names the prayer it answers, and a settlement names none",
+        );
+      }
       return ok({
         ...envelope,
         kind: "practice-opened",
@@ -1874,7 +1913,29 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         counterBudget: counterBudget.value,
         ...(succeeds.value === undefined ? {} : { succeeds: succeeds.value }),
         ...(subject.value === undefined ? {} : { subject: subject.value }),
+        ...(petition.value === undefined ? {} : { petition: petition.value }),
         ...(stake.value === undefined ? {} : { stake: stake.value }),
+      });
+    }
+    case "practice-progressed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const counterparty = parseEntityId(input.counterparty, "counterparty");
+      if (!counterparty.ok) return counterparty;
+      const threadId = parseEventId(input.threadId, "threadId");
+      if (!threadId.ok) return threadId;
+      const step = parseEnum(input.step, "step", SUPPLICATION_STEPS);
+      if (!step.ok) return step;
+      const by = parseEventId(input.by, "by");
+      if (!by.ok) return by;
+      return ok({
+        ...envelope,
+        kind: "practice-progressed",
+        entityId: entityId.value,
+        counterparty: counterparty.value,
+        threadId: threadId.value,
+        step: step.value,
+        by: by.value,
       });
     }
     case "practice-refused": {

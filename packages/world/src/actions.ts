@@ -82,6 +82,7 @@ import {
   applyPracticeEnded,
   applyPracticeMoved,
   applyPracticeOpened,
+  applyPracticeProgressed,
   judgePractices,
   planAccessRestorations,
   planConsequences,
@@ -294,6 +295,9 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
       break;
     case "practice-ended":
       next = applyPracticeEnded(state, event);
+      break;
+    case "practice-progressed":
+      next = applyPracticeProgressed(state, event);
       break;
     case "motif-applied":
       next = applyMotifApplied(state, event);
@@ -608,7 +612,9 @@ export function runTick(
     if (attempted === undefined) return events;
     const concerned =
       thread ??
-      (proposal.kind === "practice" && proposal.move !== "demand"
+      (proposal.kind === "practice" &&
+      proposal.move !== "demand" &&
+      proposal.move !== "offer"
         ? proposal.thread
         : undefined);
     const completed = completePrimary(

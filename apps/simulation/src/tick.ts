@@ -91,24 +91,35 @@ function classifyStoreError(error: unknown): DegradedReason {
   return message.includes("SQLITE_FULL") ? "disk-full" : "store-error";
 }
 
-/** Every drive-bearing, living actor's routine decision against `state`, as the queue for the *next* tick. */
+/**
+ * Every drive-bearing, living actor's routine decision against `state`, as the
+ * queue for the *next* tick.
+ *
+ * Admission policy: a routine proposal that keeps a promise whose deadline is
+ * near (`urgent`: a mortal's offering within the urgency window) goes ahead of
+ * every other routine proposal; the rest keep the actors' own order. Only the
+ * first `maxProposalsPerTick` actions are admitted, so when the cap is short it
+ * is gathering, trading, and the like that overflow, never the promise. The
+ * order is a pure function of `state`, so catch-up and live play agree.
+ */
 export function buildRoutineQueue(
   state: WorldState,
   actorIds: Iterable<EntityId> = state.actors.keys(),
 ): readonly QueuedProposal[] {
-  const queue: QueuedProposal[] = [];
+  const urgent: QueuedProposal[] = [];
+  const ordinary: QueuedProposal[] = [];
   for (const actorId of actorIds) {
     const decision = decideRoutineProposal(state, actorId);
     if (!decision) {
       continue;
     }
-    queue.push({
+    (decision.urgent === true ? urgent : ordinary).push({
       id: createProposalId(),
       proposal: decision.proposal,
       observation: decision.observation,
     });
   }
-  return queue;
+  return [...urgent, ...ordinary];
 }
 
 /**

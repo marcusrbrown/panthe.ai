@@ -26,19 +26,21 @@ import type {
   PracticeMovedEvent,
   PracticeOpenedEvent,
   PracticeOutcome,
+  PracticeProgressedEvent,
   PracticeProposal,
   PracticeTerm,
   PracticeTermOffer,
   PracticeTermSpec,
   RejectionReasonCode,
   ThreadSubject,
+  Transformation,
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
 import { debitActorInventory, getResourceAmount } from "./economy";
 import { routeLength } from "./geography";
 import { getMemories } from "./memory";
-import { inAnswerWindow, petitionBalanceOf } from "./petitions";
+import { inAnswerWindow, judgeAnswers, petitionBalanceOf } from "./petitions";
 import {
   type ActorState,
   DIVINE_CAPABILITY,
@@ -68,6 +70,10 @@ export const DEFAULT_PRACTICE_BALANCE: Readonly<Record<string, number>> = {
   oathAccessTicks: 100,
   /** What a recorded gain or loss of standing at a place weighs. Standing itself is a later unit's state. */
   standingDelta: 1,
+  /** How pious a mortal's drive must be, as a percent, to take the terms a god offers it. The authored mortals sit at 10, so by default they take what they can afford. */
+  acceptPietyPercent: 10,
+  /** Ticks before an accepted term's deadline when performing it outranks every other routine choice. A mortal acts every tick, so this leaves it many chances, and it is under the shortest term a god may set (25). */
+  urgentTicks: 20,
 };
 
 /** A practice tunable from `rules`, or its default. */
@@ -121,6 +127,7 @@ export function applyPracticeOpened(
     causes: event.causes,
     term: event.term,
     ...(event.subject === undefined ? {} : { subject: event.subject }),
+    ...(event.petition === undefined ? {} : { petition: event.petition }),
     offers: [tupleOf(event.term, event.tick)],
     offeredBy: event.entityId,
     ...(event.stake === undefined ? {} : { stake: event.stake }),
@@ -191,6 +198,19 @@ export function applyPracticeMoved(
         revision,
       });
   }
+}
+
+export function applyPracticeProgressed(
+  state: WorldState,
+  event: PracticeProgressedEvent,
+): WorldState {
+  const thread = state.threads.get(event.threadId);
+  if (thread === undefined || !isThreadOpen(thread)) return state;
+  return withThread(state, {
+    ...thread,
+    progress: { ...thread.progress, [event.step]: event.by },
+    revision: thread.revision + 1,
+  });
 }
 
 export function applyPracticeEnded(
@@ -579,6 +599,91 @@ function bindsOutsiders(
   );
 }
 
+// --- The mortal's side of a supplication ------------------------------------------------------
+
+/** What a mortal does about the terms a god set on its prayer, if anything now. */
+export type MortalPractice =
+  | {
+      /** Answer the offer on the table. */
+      readonly kind: "answer";
+      readonly thread: EventId;
+      readonly move: "accept" | "refuse";
+    }
+  | {
+      /** Perform the offering of a term it accepted. `urgent` when the deadline is near enough that nothing else should come first. */
+      readonly kind: "offer";
+      readonly thread: EventId;
+      readonly deity: EntityId;
+      readonly resource: string;
+      readonly amount: number;
+      readonly urgent: boolean;
+    };
+
+/**
+ * The practice step a mortal's routine would take, or nothing. A mortal answers
+ * an offer made to it once, by its drive and its means: it accepts when its
+ * piety reaches `acceptPietyPercent` and the term can still be performed (the
+ * same check the world makes at acceptance), and refuses otherwise. After
+ * accepting it performs the offering when it holds it: promptly once the boon
+ * is in hand, and on faith, ahead of everything else, when the deadline is
+ * within `urgentTicks`. It never offers what it does not hold.
+ */
+export function mortalPractice(
+  state: WorldState,
+  actorId: EntityId,
+): MortalPractice | undefined {
+  const actor = getActor(state, actorId);
+  if (!actor?.alive || actor.isDeity || actor.drives === undefined) {
+    return undefined;
+  }
+  const urgentTicks = practiceBalanceOf(state.rules, "urgentTicks");
+  const pietyNeeded = practiceBalanceOf(state.rules, "acceptPietyPercent");
+  let offering: MortalPractice | undefined;
+  for (const thread of state.threads.values()) {
+    if (
+      thread.practice !== "supplication" ||
+      thread.obligated !== actorId ||
+      thread.term.kind !== "make-offering"
+    ) {
+      continue;
+    }
+    if (thread.status === "open") {
+      if (state.tick > thread.negotiationDeadline) continue;
+      const willing =
+        Math.round(actor.drives.piety * 100) >= pietyNeeded &&
+        termObstacle(state, thread.term, thread.term.deadline - state.tick) ===
+          undefined;
+      return {
+        kind: "answer",
+        thread: thread.id,
+        move: willing ? "accept" : "refuse",
+      };
+    }
+    if (
+      thread.status === "accepted" &&
+      thread.progress?.offering === undefined &&
+      state.tick <= thread.term.deadline &&
+      getResourceAmount(actor.inventory, thread.term.resource) >=
+        thread.term.amount
+    ) {
+      const urgent = thread.term.deadline - state.tick <= urgentTicks;
+      if (urgent || thread.progress?.boon !== undefined) {
+        const step: MortalPractice = {
+          kind: "offer",
+          thread: thread.id,
+          deity: thread.term.to,
+          resource: thread.term.resource,
+          amount: thread.term.amount,
+          urgent,
+        };
+        if (urgent) return step;
+        offering ??= step;
+      }
+    }
+  }
+  return offering;
+}
+
 // --- Anti-loop ---------------------------------------------------------------------------------
 //
 // A thread is a place to make progress, so the world refuses the three ways a
@@ -720,7 +825,8 @@ export function talkAroundThread(
   linkedEventId: EventId | undefined,
 ): Obstacle | undefined {
   for (const thread of state.threads.values()) {
-    if (!isThreadOpen(thread)) continue;
+    // Talk is free around a supplication: only a settlement is a dispute to circle.
+    if (!isThreadOpen(thread) || thread.practice !== "settlement") continue;
     const other =
       thread.demander === speaker
         ? thread.obligated
@@ -819,9 +925,108 @@ function openDemand(
   };
 }
 
+/**
+ * A god answers a prayer with terms: its boon for one offering by the mortal.
+ * The petition stays what it was (open, to be answered by a bless or a strike);
+ * the thread is the bargain about it. One standing offer per petition, and the
+ * same offer is not made twice, so a god cannot circle a mortal that said no.
+ */
+function openOffer(
+  state: WorldState,
+  proposal: Extract<PracticeProposal, { move: "offer" }>,
+): PracticeVerdict {
+  const god = getActor(state, proposal.actor);
+  if (!god?.isDeity) {
+    return deny("unauthorized-claim", "only a god may offer terms on a prayer");
+  }
+  const petition = state.petitions.get(proposal.petition);
+  if (petition === undefined) {
+    return deny("malformed", `${proposal.petition} is not a petition`);
+  }
+  if (petition.god !== proposal.actor) {
+    return deny(
+      "unauthorized-claim",
+      `${proposal.petition} is not a petition addressed to ${proposal.actor}`,
+    );
+  }
+  if (
+    petition.status !== "open" ||
+    !inAnswerWindow(state, petition, state.tick)
+  ) {
+    return deny(
+      "malformed",
+      `${proposal.petition} is no longer open to an answer`,
+    );
+  }
+  if (getActor(state, petition.petitioner)?.alive !== true) {
+    return deny("dead-actor", "the petitioner is no longer living");
+  }
+  const { term } = proposal;
+  if (
+    term.kind !== "make-offering" ||
+    term.party !== petition.petitioner ||
+    term.to !== proposal.actor
+  ) {
+    return deny(
+      "unauthorized-claim",
+      "an offer on a prayer asks the one who prayed for an offering to you, and nothing else",
+    );
+  }
+  const earlier = [...state.threads.values()].filter(
+    (thread) => thread.petition === petition.id,
+  );
+  const standing = earlier.find(isThreadOpen);
+  if (standing !== undefined) {
+    return deny(
+      "no-progress",
+      `${standing.id} already holds terms on this prayer; let it be answered, or withdraw it`,
+      standing.id,
+    );
+  }
+  const tuple = termTuple(term, term.deadlineTicks);
+  const repeated = earlier.find((thread) => thread.offers.includes(tuple));
+  if (repeated !== undefined) {
+    return deny(
+      "no-progress",
+      `that offer was already made and answered (${repeated.id}); change what it asks`,
+      repeated.id,
+    );
+  }
+  let stake: Transformation | undefined;
+  if (proposal.stake !== undefined) {
+    stake = state.rules.practiceStakes?.[proposal.stake];
+    if (stake === undefined) {
+      return deny(
+        "malformed",
+        `${proposal.stake} is not a stake the world knows`,
+      );
+    }
+  }
+  const stopped = offerObstacle(state, term);
+  if (stopped !== undefined) return deny(stopped.reason, stopped.message);
+  return {
+    ok: true,
+    events: [
+      {
+        kind: "practice-opened",
+        entityId: proposal.actor,
+        practice: "supplication",
+        counterparty: petition.petitioner,
+        causes: [petition.cause],
+        petition: petition.id,
+        term: committedTerm(state, term),
+        negotiationDeadline:
+          state.tick + practiceBalanceOf(state.rules, "negotiationTicks"),
+        counterBudget: 0,
+        ...(stake === undefined ? {} : { stake }),
+      },
+    ],
+  };
+}
+
 function answer(
   state: WorldState,
-  proposal: Exclude<PracticeProposal, { move: "demand" }>,
+  proposal: Exclude<PracticeProposal, { move: "demand" | "offer" }>,
 ): PracticeVerdict {
   const thread = state.threads.get(proposal.thread);
   if (thread === undefined) {
@@ -960,10 +1165,19 @@ export function validatePractice(
 ): PracticeVerdict {
   return proposal.move === "demand"
     ? openDemand(state, proposal)
-    : answer(state, proposal);
+    : proposal.move === "offer"
+      ? openOffer(state, proposal)
+      : answer(state, proposal);
 }
 
 // --- Judging ---------------------------------------------------------------------------------
+
+/** One half of a supplication's bargain seen done this tick, to be recorded on its thread. */
+interface PracticeProgress {
+  readonly thread: PracticeThread;
+  readonly step: "boon" | "offering";
+  readonly by: EventId;
+}
 
 interface Ruling {
   readonly thread: PracticeThread;
@@ -1072,11 +1286,19 @@ export function judgePractices(
       ...(performedBy === undefined ? {} : { performedBy }),
     });
   };
-  const accepted = live.filter(
+  const acceptedAll = live.filter(
     (thread) => thread.status === "accepted" && thread.acceptance !== undefined,
+  );
+  // A settlement is judged on its one term; a supplication on both halves of its bargain, below.
+  const accepted = acceptedAll.filter(
+    (thread) => thread.practice === "settlement",
+  );
+  const supplications = live.filter(
+    (thread) => thread.practice === "supplication",
   );
   const unfinished = (thread: PracticeThread) => !rulings.has(thread.id);
   const isDead = (id: EntityId) => after.actors.get(id)?.alive !== true;
+  const progress: PracticeProgress[] = [];
 
   // 1. Performances seen after acceptance, event by event.
   let running = before;
@@ -1120,6 +1342,74 @@ export function judgePractices(
     }
   }
 
+  // 1b. A supplication: the boon and the offering, each seen once after acceptance, in either order.
+  const boons = judgeAnswers(before, primary, after, apply);
+  for (const thread of supplications) {
+    const { acceptance } = thread;
+    const answered = boons.find((boon) => boon.petition.id === thread.petition);
+    const boonEvent =
+      acceptance !== undefined &&
+      answered !== undefined &&
+      answered.answeredBy.sequence > acceptance.sequence
+        ? answered.answeredBy
+        : undefined;
+    let offeringEvent: WorldEvent | undefined;
+    if (acceptance !== undefined) {
+      let seeing = before;
+      for (const event of primary) {
+        if (
+          offeringEvent === undefined &&
+          event.sequence > acceptance.sequence &&
+          observe(seeing, thread.term, event) !== undefined
+        ) {
+          offeringEvent = event;
+        }
+        seeing = apply(seeing, event);
+      }
+    }
+    const newlySeen = [
+      ...(thread.progress?.boon === undefined && boonEvent !== undefined
+        ? [{ step: "boon" as const, event: boonEvent }]
+        : []),
+      ...(thread.progress?.offering === undefined && offeringEvent !== undefined
+        ? [{ step: "offering" as const, event: offeringEvent }]
+        : []),
+    ];
+    const boonSeen =
+      thread.progress?.boon !== undefined || boonEvent !== undefined;
+    const offeringSeen =
+      thread.progress?.offering !== undefined || offeringEvent !== undefined;
+    if (boonSeen && offeringSeen) {
+      const last = newlySeen.reduce(
+        (later, seen) =>
+          later === undefined || seen.event.sequence > later.sequence
+            ? seen.event
+            : later,
+        undefined as WorldEvent | undefined,
+      );
+      rule(thread, "fulfilled", "performed", last?.id);
+      continue;
+    }
+    // A boon the terms cannot buy: the petition was answered without them
+    // (before they were accepted), or has closed with no answer.
+    const petition =
+      thread.petition === undefined
+        ? undefined
+        : after.petitions.get(thread.petition);
+    if (
+      !boonSeen &&
+      (answered !== undefined ||
+        petition === undefined ||
+        petition.status !== "open")
+    ) {
+      rule(thread, "expired", "boon-unanswered");
+      continue;
+    }
+    for (const seen of newlySeen) {
+      progress.push({ thread, step: seen.step, by: seen.event.id });
+    }
+  }
+
   // 2. A negotiation nobody answered in time.
   for (const thread of live) {
     if (
@@ -1154,6 +1444,21 @@ export function judgePractices(
       rule(thread, "breached", "obligation-deadline");
     }
   }
+  // 4b. A supplication whose deadline has passed: breached when the boon was had and the offering was not; expired, with nothing owed, when the boon never came.
+  for (const thread of supplications) {
+    if (
+      !unfinished(thread) ||
+      thread.status !== "accepted" ||
+      after.tick <= thread.term.deadline
+    ) {
+      continue;
+    }
+    const boonHad =
+      thread.progress?.boon !== undefined ||
+      progress.some((p) => p.thread === thread && p.step === "boon");
+    if (boonHad) rule(thread, "breached", "obligation-deadline");
+    else rule(thread, "expired", "boon-unanswered");
+  }
   // 5. A party who died takes the thread with it, with no consequence.
   for (const thread of live) {
     if (
@@ -1164,7 +1469,17 @@ export function judgePractices(
     }
   }
 
-  return live.flatMap((thread) => {
+  const progressed: WorldEventDraft[] = progress
+    .filter(({ thread }) => unfinished(thread))
+    .map(({ thread, step, by }) => ({
+      kind: "practice-progressed" as const,
+      entityId: thread.demander,
+      counterparty: thread.obligated,
+      threadId: thread.id,
+      step,
+      by,
+    }));
+  const endings = live.flatMap((thread) => {
     const ruling = rulings.get(thread.id);
     if (ruling === undefined) return [];
     const draft: WorldEventDraft = {
@@ -1180,6 +1495,7 @@ export function judgePractices(
     };
     return [draft];
   });
+  return [...progressed, ...endings];
 }
 
 // --- Consequences ----------------------------------------------------------------------------

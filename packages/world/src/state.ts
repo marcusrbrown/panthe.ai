@@ -368,6 +368,13 @@ export interface PracticeThread {
   /** The cause events the thread consumed: what the opener knew when it opened. A closed thread keeps them, so a successor can be told apart by a newer cause. */
   readonly causes: readonly EventId[];
   readonly term: PracticeTerm;
+  /** The prayer a supplication answers; absent on a settlement. */
+  readonly petition?: EventId;
+  /** The halves of a supplication's bargain the world has seen done: the boon, and the offering, each by the event that showed it. Absent until one is. */
+  readonly progress?: {
+    readonly boon?: EventId;
+    readonly offering?: EventId;
+  };
   /** What the demand is about, from the demander's own memory of its cause when that names an agent. A repeat demand and talk around the thread are matched against it, never against words. */
   readonly subject?: ThreadSubject;
   /** The tuple of every offer that has been on the table, the demand and each counter, as `termTuple` keys: what a counter that changes nothing is compared with. */

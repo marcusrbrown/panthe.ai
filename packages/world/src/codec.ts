@@ -43,6 +43,7 @@ import {
   parsePetitionBalance,
   parsePetitionRequest,
   parsePracticeBalance,
+  parsePracticeStakes,
   parsePracticeTerm,
   parseRecipes,
   parseReportContent,
@@ -673,6 +674,11 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parsePracticeBalance(value.practiceBalance, `${path}.practiceBalance`);
   if (!practiceBalance.ok) return practiceBalance;
+  const practiceStakes =
+    value.practiceStakes === undefined
+      ? ok<Readonly<Record<string, Transformation>> | undefined>(undefined)
+      : parsePracticeStakes(value.practiceStakes, `${path}.practiceStakes`);
+  if (!practiceStakes.ok) return practiceStakes;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -689,6 +695,9 @@ function parseWorldRules(
     ...(practiceBalance.value === undefined
       ? {}
       : { practiceBalance: practiceBalance.value }),
+    ...(practiceStakes.value === undefined
+      ? {}
+      : { practiceStakes: practiceStakes.value }),
   });
 }
 
@@ -1122,6 +1131,37 @@ function parseThreadEntry(
       "a thread has had at least its demand on the table",
     );
   }
+  const petition =
+    record.petition === undefined
+      ? ok<EventId | undefined>(undefined)
+      : parseEventId(record.petition, `${at}.petition`);
+  if (!petition.ok) return petition;
+  if ((practice.value === "supplication") !== (petition.value !== undefined)) {
+    return fail(
+      `${at}.petition`,
+      "a supplication names the prayer it answers, and a settlement names none",
+    );
+  }
+  let progress: PracticeThread["progress"];
+  if (record.progress !== undefined) {
+    if (!isRecord(record.progress) || petition.value === undefined) {
+      return fail(`${at}.progress`, "only a supplication has progress");
+    }
+    const boon =
+      record.progress.boon === undefined
+        ? ok<EventId | undefined>(undefined)
+        : parseEventId(record.progress.boon, `${at}.progress.boon`);
+    if (!boon.ok) return boon;
+    const offering =
+      record.progress.offering === undefined
+        ? ok<EventId | undefined>(undefined)
+        : parseEventId(record.progress.offering, `${at}.progress.offering`);
+    if (!offering.ok) return offering;
+    progress = {
+      ...(boon.value === undefined ? {} : { boon: boon.value }),
+      ...(offering.value === undefined ? {} : { offering: offering.value }),
+    };
+  }
   const status = parseEnum(record.status, `${at}.status`, PRACTICE_STATUSES);
   if (!status.ok) return status;
   const openedTick = parseNonNegativeInteger(
@@ -1220,6 +1260,8 @@ function parseThreadEntry(
       causes: causes.value,
       term: term.value,
       ...(subject.value === undefined ? {} : { subject: subject.value }),
+      ...(petition.value === undefined ? {} : { petition: petition.value }),
+      ...(progress === undefined ? {} : { progress }),
       offers: offers.value,
       ...(stake.value === undefined ? {} : { stake: stake.value }),
       offeredBy,

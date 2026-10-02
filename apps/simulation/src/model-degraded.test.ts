@@ -109,6 +109,64 @@ function liveTick(): "ticked" | "halted" {
   return "ticked";
 }
 
+describe("endpoint status on the frame", () => {
+  test("a ref with no status (no models configured) serves a frame without the field", async () => {
+    expect((await frame()).modelEndpoints).toBeUndefined();
+  });
+
+  test("a model outcome updates each endpoint's status, and the frame carries it through the contract", async () => {
+    statusRef.modelEndpoints = [
+      { endpoint: "ollama", state: "untried" },
+      { endpoint: "go", state: "untried" },
+    ];
+    reportModelOutcome(statusRef, {
+      kind: "exhausted",
+      steps: [
+        {
+          endpoint: "ollama",
+          model: "m",
+          attempts: 2,
+          elapsedMs: 40,
+          reason: "network",
+          detail: "connection refused",
+        },
+      ],
+      elapsedMs: 45,
+    });
+
+    const failed = await frame();
+    expect(failed.degradedReason).toBe("model-degraded");
+    expect(failed.modelEndpoints).toEqual([
+      {
+        endpoint: "ollama",
+        state: "failed",
+        reason: "network",
+        detail: "connection refused",
+      },
+      { endpoint: "go", state: "untried" },
+    ]);
+
+    reportModelOutcome(statusRef, {
+      kind: "intent",
+      step: {
+        endpoint: "ollama",
+        model: "m",
+        attempts: 1,
+        elapsedMs: 5,
+        mode: "native",
+      },
+      failed: [],
+      elapsedMs: 5,
+    });
+    const recovered = await frame();
+    expect(recovered.status).toBe("running");
+    expect(recovered.modelEndpoints?.[0]).toEqual({
+      endpoint: "ollama",
+      state: "ok",
+    });
+  });
+});
+
 describe("reporting a model outcome", () => {
   test("an exhausted chain makes the frame degraded with the model-degraded reason, and it parses through the contract", async () => {
     reportModelOutcome(statusRef, { kind: "exhausted" });

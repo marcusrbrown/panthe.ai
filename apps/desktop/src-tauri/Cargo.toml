@@ -34,6 +34,13 @@ tauri-plugin-single-instance = "2"
 # Plain HTTP to the loopback sidecar; no TLS.
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1", default-features = false, features = ["time"] }
+# Credential storage: the app links the store crates directly (keyring 4.2's
+# own docs advise this over its `v1` convenience mode) and keeps the Apple
+# store as an instance, never as a process-global default.
+keyring-core = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 [dev-dependencies]
 tokio = { version = "=1.53.1", features = ["rt"] }

@@ -7,7 +7,7 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createRouter } from "@panthea/agents";
+import { createRouter, initialEndpointStatus } from "@panthea/agents";
 import type { GodProfile } from "@panthea/content";
 import type { EntityId } from "@panthea/contracts";
 import {
@@ -27,8 +27,8 @@ import {
   loadEmbeddedGreekGodProfiles,
   loadEmbeddedGreekWorldPack,
 } from "./greek-world-pack";
+import { type LaunchConfig, parseLaunchConfig } from "./launch-config";
 import { acquireLock, openStdinSession, startParentGuard } from "./lifecycle";
-import { loadRoutingConfig } from "./model-config";
 import { startModelPayloadPruner } from "./prune";
 import {
   applyLiveTick,
@@ -133,8 +133,17 @@ export function createHydratedStatusRef(
   return createServiceStatusRef(state, readCatchUpSummary(store.db));
 }
 
+/** No settings saved: no routing (so no god takes a turn), online, no keys. */
+const NO_LAUNCH_CONFIG: LaunchConfig = {
+  routing: undefined,
+  offline: false,
+  keys: new Map(),
+};
+
 export interface StartOptions {
   readonly token: string;
+  /** What the shell handed over at spawn. Omitted means no settings. */
+  readonly launch?: LaunchConfig;
   readonly appDataDir?: string;
   readonly parentPid?: number;
   readonly onLog?: (message: string) => void;
@@ -164,8 +173,14 @@ export function startService(options: StartOptions): ServiceHandle {
   const appDataDir = options.appDataDir ?? resolveAppDataDir();
   const parentPid = options.parentPid ?? process.ppid;
   const token = options.token;
-  // Read before anything is opened: a config that cannot be used stops startup.
-  const routing = loadRoutingConfig();
+  // An unusable launch config never stops startup (a hand-edited settings
+  // file must not crash-loop the service): the gods stay idle and the cause is
+  // logged, and the frame carries `model-degraded` once the status exists.
+  const launch = options.launch ?? NO_LAUNCH_CONFIG;
+  const routing = launch.routing;
+  if (launch.problem !== undefined) {
+    log(`panthea-simulation: ${launch.problem}; god turns are off`);
+  }
 
   ensureDirMode(appDataDir, 0o700);
   const lockPath = join(appDataDir, "lifecycle.lock");
@@ -203,6 +218,12 @@ export function startService(options: StartOptions): ServiceHandle {
 
   const tickDeps: TickDeps = { store, reducers, traceDb: store.db };
   const statusRef: ServiceStatusRef = createHydratedStatusRef(state, store);
+  if (launch.problem !== undefined) {
+    statusRef.modelDegraded = true;
+  }
+  if (routing) {
+    statusRef.modelEndpoints = initialEndpointStatus(routing);
+  }
 
   // Set synchronously at the start of every `runCatchUpNow` call, before
   // that call's first `await` -- so by the time any other code in this
@@ -245,12 +266,21 @@ export function startService(options: StartOptions): ServiceHandle {
   let queue: QueuedProposal[] = [];
 
   // The gods take turns only when the operator has configured model routing.
+  // Keys (`launch.keys`) arrive with the config and live only in this
+  // process's memory: the router reads one when it builds an endpoint's
+  // adapter, and the runner redacts every one from the trace and the log.
   // What may start a turn is stated here, once, and read by the runner; it is
   // not inferred from where the runner is called.
   let startupCatchUpComplete = false;
   const turns = routing
     ? createGodTurnRunner({
-        router: createRouter({ config: routing, offline: false }),
+        router: createRouter({
+          config: routing,
+          offline: launch.offline,
+          // Read on demand, only for an endpoint offline mode kept.
+          getKey: (keyRef) => launch.keys.get(keyRef),
+        }),
+        secrets: [...launch.keys.values()],
         profiles: loadGodProfiles(),
         store,
         getState: () => state,
@@ -399,13 +429,20 @@ export function startService(options: StartOptions): ServiceHandle {
   return { port: serverHandle.port, lockPath, shutdown };
 }
 
-/** Reads the per-launch token from stdin, then starts the service. Stdin EOF before any token line refuses to start; EOF after a token drives a graceful shutdown. */
+/**
+ * Reads the per-launch token and the launch config (two stdin lines), then
+ * starts the service. Stdin EOF before either line refuses to start; EOF after
+ * both drives a graceful shutdown. Stdin stays open after the config line: its
+ * EOF is the shutdown signal and the orphan guard.
+ */
 function main(): void {
   const session = openStdinSession(process.stdin);
   let handle: ServiceHandle | undefined;
   let tokenReceived = false;
+  let configReceived = false;
 
-  session.token.then((token) => {
+  void (async () => {
+    const token = await session.token;
     if (token === undefined) {
       // No token line ever arrived; `onClose` below decides the outcome.
       return;
@@ -415,23 +452,38 @@ function main(): void {
       console.error("panthea-simulation: empty token on stdin; exiting");
       process.exit(2);
     }
-    handle = startService({ token });
-  });
+    const line = await session.launchConfig;
+    if (line === undefined) {
+      // Stdin closed before a config line; `onClose` below decides the outcome.
+      return;
+    }
+    configReceived = true;
+    handle = startService({ token, launch: parseLaunchConfig(line) });
+  })();
 
   session.onClose(() => {
     console.log("panthea-simulation: stdin closed");
-    if (handle) {
-      handle.shutdown("stdin-eof");
-    } else if (!tokenReceived) {
-      // The real Tauri spawn path always writes a token right after
-      // spawn; this only happens on a broken launch. Refuse to start
-      // rather than exiting as if asked to shut down gracefully, since a
-      // sidecar with no token can never have been authorized to serve.
-      console.error(
-        "panthea-simulation: stdin closed before a launch token was received; refusing to start",
-      );
-      process.exit(1);
-    }
+    // Deferred so lines that arrived in the same chunk as EOF finish starting
+    // the service before the outcome is decided.
+    setTimeout(() => {
+      if (handle) {
+        handle.shutdown("stdin-eof");
+      } else if (!tokenReceived) {
+        // The real Tauri spawn path always writes a token right after
+        // spawn; this only happens on a broken launch. Refuse to start
+        // rather than exiting as if asked to shut down gracefully, since a
+        // sidecar with no token can never have been authorized to serve.
+        console.error(
+          "panthea-simulation: stdin closed before a launch token was received; refusing to start",
+        );
+        process.exit(1);
+      } else if (!configReceived) {
+        console.error(
+          "panthea-simulation: stdin closed before a launch config was received; refusing to start",
+        );
+        process.exit(1);
+      }
+    }, 0);
   });
 }
 

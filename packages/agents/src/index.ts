@@ -58,6 +58,8 @@ export type {
   StepMetadata,
 } from "./router";
 export { createRouter, DEFAULT_ROUTE_LIMITS } from "./router";
+export type { EndpointStatus, RouteOutcome } from "./status";
+export { initialEndpointStatus, recordRouteOutcome } from "./status";
 export type {
   AnsweredRequest,
   ExhaustedRequest,

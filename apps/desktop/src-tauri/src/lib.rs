@@ -5,13 +5,18 @@
 // tray-menu operator controls.
 
 mod commands;
+pub mod keys;
+pub mod launch;
 pub mod proxy;
+pub mod settings;
 pub mod sidecar;
 mod state;
 mod tray;
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
+use commands::KeyVault;
+use settings::SettingsStore;
 use state::SidecarState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,12 +32,21 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .manage(SidecarState::default())
+        .manage(KeyVault(keys::platform_key_store()))
         .invoke_handler(tauri::generate_handler![
             commands::subscribe_world,
             commands::present_event,
+            commands::read_model_settings,
+            commands::save_model_settings,
+            commands::set_endpoint_key,
+            commands::delete_endpoint_key,
+            commands::endpoint_key_status,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            // Same directory the sidecar resolves for world saves
+            // (`ai.panthe.desktop` under the platform app data dir).
+            app.manage(SettingsStore::new(app.path().app_data_dir()?));
             let tray = tray::build_tray(&handle)?;
             *handle
                 .state::<SidecarState>()

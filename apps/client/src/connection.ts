@@ -32,7 +32,17 @@ export interface Transport {
   presentEvent(eventId: string): Promise<void>;
 }
 
-export function createTauriTransport(): Transport {
+export interface ModelSettingsTransport {
+  readModelSettings(): Promise<string | null>;
+  saveModelSettings(settings: string): Promise<void>;
+  setEndpointKey(keyRef: string, key: string): Promise<void>;
+  deleteEndpointKey(keyRef: string): Promise<void>;
+  endpointKeyStatus(
+    keyRefs: readonly string[],
+  ): Promise<Record<string, "set" | "missing">>;
+}
+
+export function createTauriTransport(): Transport & ModelSettingsTransport {
   return {
     async subscribeWorld(onPayload) {
       const frames = new Channel<unknown>();
@@ -41,6 +51,23 @@ export function createTauriTransport(): Transport {
     },
     async presentEvent(eventId) {
       await invoke("present_event", { eventId });
+    },
+    async readModelSettings() {
+      return invoke<string | null>("read_model_settings");
+    },
+    async saveModelSettings(settings) {
+      await invoke("save_model_settings", { settings });
+    },
+    async setEndpointKey(keyRef, key) {
+      await invoke("set_endpoint_key", { keyRef, key });
+    },
+    async deleteEndpointKey(keyRef) {
+      await invoke("delete_endpoint_key", { keyRef });
+    },
+    async endpointKeyStatus(keyRefs) {
+      return invoke<Record<string, "set" | "missing">>("endpoint_key_status", {
+        keyRefs,
+      });
     },
   };
 }

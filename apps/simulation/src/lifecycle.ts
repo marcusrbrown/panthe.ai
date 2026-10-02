@@ -80,38 +80,47 @@ export function acquireLock(path: string): LockDecision {
 export interface StdinSession {
   /** Resolves with the trimmed first line, or `undefined` if stdin closed before any line ever arrived. */
   readonly token: Promise<string | undefined>;
+  /** Resolves with the second line (the launch config, untrimmed text), or `undefined` if stdin closed before it arrived. */
+  readonly launchConfig: Promise<string | undefined>;
   /** Registers a handler for stdin closing -- every registered handler fires exactly once, whether or not a token was ever received. */
   onClose(handler: () => void): void;
 }
 
 /**
- * Reads the per-launch token from `input`'s first line -- never argv or
- * env. `input`'s EOF (the parent closed the pipe, e.g. on force-quit)
- * fires every handler registered via `onClose`, whether or not a token
- * line ever arrived; the caller decides what "closed before any token"
- * means (the real entrypoint refuses to start, since a sidecar with no
- * token can never have been authorized to serve).
+ * Reads the per-launch token from `input`'s first line and the launch config
+ * (one JSON line of model settings and keys) from its second -- never argv or
+ * env. Later lines are ignored. `input` stays open after both: its EOF (the
+ * parent closed the pipe, e.g. on force-quit) fires every handler registered
+ * via `onClose`, whether or not either line ever arrived; the caller decides
+ * what "closed before the token" or "before the config" means (the real
+ * entrypoint refuses to start: a sidecar with no token can never have been
+ * authorized to serve, and one with no config line is a broken launch).
  */
 export function openStdinSession(input: NodeJS.ReadableStream): StdinSession {
   const rl = createInterface({ input, terminal: false });
   const closeHandlers: (() => void)[] = [];
-  let received = false;
+  let lineCount = 0;
   let resolveToken!: (token: string | undefined) => void;
+  let resolveConfig!: (line: string | undefined) => void;
   const token = new Promise<string | undefined>((resolve) => {
     resolveToken = resolve;
   });
+  const launchConfig = new Promise<string | undefined>((resolve) => {
+    resolveConfig = resolve;
+  });
 
   rl.on("line", (line) => {
-    if (received) {
-      return;
+    lineCount += 1;
+    if (lineCount === 1) {
+      resolveToken(line.trim());
+    } else if (lineCount === 2) {
+      resolveConfig(line);
     }
-    received = true;
-    resolveToken(line.trim());
   });
   rl.on("close", () => {
-    if (!received) {
-      resolveToken(undefined);
-    }
+    // A no-op for a line that already resolved its promise.
+    resolveToken(undefined);
+    resolveConfig(undefined);
     for (const handler of closeHandlers) {
       handler();
     }
@@ -119,6 +128,7 @@ export function openStdinSession(input: NodeJS.ReadableStream): StdinSession {
 
   return {
     token,
+    launchConfig,
     onClose(handler) {
       closeHandlers.push(handler);
     },

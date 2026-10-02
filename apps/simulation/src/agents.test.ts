@@ -5,7 +5,7 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1325,34 +1325,37 @@ afterEach(() => {
   }
 });
 
+/** The launch config line the shell sends: the settings' models, the offline switch, and the keys. */
+function launchLineFor(provider: Provider, override?: unknown): string {
+  return JSON.stringify(
+    override ?? {
+      models: {
+        endpoints: [
+          { id: "local", baseUrl: provider.baseUrl, model: "scripted" },
+        ],
+        roles: { zeus: { endpoint: "local" }, hera: { endpoint: "local" } },
+      },
+      offline: false,
+      keys: {},
+    },
+  );
+}
+
 async function spawnService(
   provider: Provider,
   appDataDir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-svc-")),
+  launch?: unknown,
 ): Promise<Spawned & { readonly appDataDir: string }> {
   appDirs.push(appDataDir);
-  const configPath = join(appDataDir, "models.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      endpoints: [
-        { id: "local", baseUrl: provider.baseUrl, model: "scripted" },
-      ],
-      roles: { zeus: { endpoint: "local" }, hera: { endpoint: "local" } },
-    }),
-  );
   const proc = Bun.spawn(["bun", "run", INDEX_ENTRY], {
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: {
-      ...process.env,
-      PANTHEA_APP_DATA_DIR: appDataDir,
-      PANTHEA_MODEL_CONFIG: configPath,
-    },
+    env: { ...process.env, PANTHEA_APP_DATA_DIR: appDataDir },
   });
   const writer = proc.stdin;
   if (typeof writer === "number" || !writer) throw new Error("stdin");
-  writer.write(`${TOKEN}\n`);
+  writer.write(`${TOKEN}\n${launchLineFor(provider, launch)}\n`);
   await writer.flush();
 
   let buffer = "";
@@ -1449,6 +1452,97 @@ function readStore<T>(appDataDir: string, fn: (db: Database) => T): T {
 
 const journalOf = (appDataDir: string) =>
   readStore(appDataDir, (db) => listExternalProposals(db));
+
+describe("the service's launch config", () => {
+  const SENTINEL = "sk-sentinel-DO-NOT-LEAK-0123456789";
+  const tickOf = (appDataDir: string) =>
+    readStore(appDataDir, (db) => readClock(db).tick);
+
+  test("a config line with no models: no god takes a turn, and the world runs", async () => {
+    const provider = startProvider();
+    const service = await spawnService(provider, undefined, {
+      models: null,
+      offline: false,
+      keys: {},
+    });
+    const t0 = tickOf(service.appDataDir);
+    await until("the world to tick", () =>
+      tickOf(service.appDataDir) > t0 ? true : undefined,
+    );
+    await Bun.sleep(1_500);
+    expect(provider.requests).toHaveLength(0);
+    const frame = await frameOf(service.port);
+    expect(frame.status).toBe("running");
+    expect(frame.degradedReason).toBeUndefined();
+  }, 40_000);
+
+  test("an invalid config line starts the world with god turns off under model-degraded, logs the parse error, and never logs a key", async () => {
+    const provider = startProvider();
+    const service = await spawnService(provider, undefined, {
+      models: { endpoints: 3 },
+      offline: false,
+      keys: { "zeus-key": SENTINEL },
+    });
+    const frame = await until("model-degraded", async () => {
+      const current = await frameOf(service.port);
+      return current.degradedReason === "model-degraded" ? current : undefined;
+    });
+    expect(frame.status).toBe("degraded");
+    // The world runs regardless: it keeps ticking.
+    const t0 = tickOf(service.appDataDir);
+    await until("the world to tick", () =>
+      tickOf(service.appDataDir) > t0 ? true : undefined,
+    );
+    expect(provider.requests).toHaveLength(0);
+    expect(service.output()).toMatch(
+      /model settings are not valid: .*endpoints/,
+    );
+    expect(service.output()).toContain("god turns are off");
+    expect(service.output()).not.toContain(SENTINEL);
+  }, 40_000);
+
+  test("a config line that is not JSON also degrades instead of failing startup, and does not echo the line", async () => {
+    const provider = startProvider();
+    const appDataDir = mkdtempSync(join(tmpdir(), "panthea-sim-agents-svc-"));
+    appDirs.push(appDataDir);
+    const proc = Bun.spawn(["bun", "run", INDEX_ENTRY], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, PANTHEA_APP_DATA_DIR: appDataDir },
+    });
+    const writer = proc.stdin;
+    if (typeof writer === "number" || !writer) throw new Error("stdin");
+    writer.write(`${TOKEN}\nthis is not json ${SENTINEL}\n`);
+    await writer.flush();
+    const reader = proc.stdout.getReader();
+    const decoder = new TextDecoder();
+    let output = "";
+    try {
+      await until("the service to print its port", async () => {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`service exited early:\n${output}`);
+        output += decoder.decode(value, { stream: true });
+        return /PANTHEA_PORT=\d+/.test(output) ? true : undefined;
+      });
+      expect(output).toContain("launch config is not valid JSON");
+      expect(output).not.toContain(SENTINEL);
+    } finally {
+      proc.kill();
+    }
+    expect(provider.requests).toHaveLength(0);
+  }, 40_000);
+
+  test("stdin EOF after both lines still shuts the service down gracefully", async () => {
+    const provider = startProvider();
+    const service = await spawnService(provider);
+    const stdin = service.proc.stdin;
+    if (typeof stdin === "number" || !stdin) throw new Error("stdin");
+    await stdin.end();
+    expect(await service.proc.exited).toBe(0);
+    expect(service.output()).toContain("shutting down (stdin-eof)");
+  }, 40_000);
+});
 
 describe("the service with model routing configured", () => {
   test("keeps ticking at cadence while a turn is held open for seconds, then commits the god's proposal", async () => {

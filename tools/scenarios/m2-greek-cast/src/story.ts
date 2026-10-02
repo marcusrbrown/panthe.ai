@@ -3,7 +3,7 @@
 // naming it; the first one stops the run. Facts a step hands on are its return
 // value, passed explicitly below.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -55,28 +55,27 @@ export async function runStory(
   const dataDir = join(root, "app-data");
   const provider = startProvider();
   provider.policy("hera", heraPolicy());
-  const configPath = join(root, "models.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
+  const launchConfig = {
+    models: {
       endpoints: [
         { id: "scripted", baseUrl: provider.baseUrl, model: "scripted" },
       ],
       roles: { zeus: { endpoint: "scripted" }, hera: { endpoint: "scripted" } },
-    }),
-  );
+    },
+    offline: false,
+    keys: {},
+  };
   // The scripted story is a causal chain the harness stages, so the quiet-world
   // director is off for it (a quiet window longer than any run); the real gate
   // keeps it on. Everything else is the authored pack.
   const env = {
-    PANTHEA_MODEL_CONFIG: configPath,
     PANTHEA_PETITION_BALANCE: JSON.stringify({
       directorQuietTicks: 10_000_000,
     }),
   };
   let story: Story | undefined;
   try {
-    const first = await startSidecar(binary, dataDir, { env });
+    const first = await startSidecar(binary, dataDir, { env, launchConfig });
     const running: Story = {
       options,
       binary,
@@ -85,7 +84,7 @@ export async function runStory(
       provider,
       sidecar: first,
       async restart() {
-        const next = await startSidecar(binary, dataDir, { env });
+        const next = await startSidecar(binary, dataDir, { env, launchConfig });
         running.sidecar = next;
         return next;
       },

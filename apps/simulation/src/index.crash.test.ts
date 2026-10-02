@@ -48,7 +48,7 @@ async function spawnAndWriteToken(
   if (typeof stdin === "number" || !stdin) {
     throw new Error("expected a FileSink stdin (spawned with stdin: 'pipe')");
   }
-  stdin.write(`${token}\n`);
+  stdin.write(`${token}\n{"models":null,"offline":false,"keys":{}}\n`);
   await stdin.flush();
   return proc;
 }

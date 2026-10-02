@@ -94,6 +94,8 @@ export type FailureReason =
   | "redirect"
   /** The model answered, but nothing in the reply parsed as an intent. */
   | "invalid-output"
+  /** The endpoint needs a key and none is set: nothing was sent. */
+  | "key-missing"
   | "unknown";
 
 export interface StepMetadata {
@@ -163,6 +165,14 @@ const RETRYABLE: ReadonlySet<FailureReason> = new Set([
 
 const DETAIL_LIMIT = 300;
 
+/** An endpoint with a `keyRef` has no key to send. Names the `keyRef`, never a key. */
+class KeyMissingError extends Error {
+  constructor(keyRef: string) {
+    super(`key not set (${keyRef})`);
+    this.name = "KeyMissingError";
+  }
+}
+
 function describe(error: unknown): string {
   if (APICallError.isInstance(error)) {
     const status = error.statusCode === undefined ? "" : `${error.statusCode} `;
@@ -209,10 +219,13 @@ export function createRouter(options: RouterOptions): Router {
     if (cached) {
       return cached;
     }
-    const apiKey =
-      step.endpoint.keyRef === undefined
-        ? undefined
-        : options.getKey?.(step.endpoint.keyRef);
+    const keyRef = step.endpoint.keyRef;
+    const apiKey = keyRef === undefined ? undefined : options.getKey?.(keyRef);
+    // Nothing is sent to a keyed endpoint without its key: an upstream 401
+    // would only hide that the operator has not set one.
+    if (keyRef !== undefined && (apiKey === undefined || apiKey === "")) {
+      throw new KeyMissingError(keyRef);
+    }
     const adapter = {
       model: build({
         endpoint: step.endpoint,
@@ -360,10 +373,15 @@ export function createRouter(options: RouterOptions): Router {
     const startedAt = performance.now();
     const endpoint = step.endpoint.id;
     const redact = (text: string, apiKey: string | undefined): string => {
-      const clean =
-        apiKey === undefined || apiKey === ""
-          ? text
-          : text.split(apiKey).join("[redacted]");
+      let clean = text;
+      if (apiKey !== undefined && apiKey !== "") {
+        // The key as sent, and as JSON writes it inside a string: an error
+        // body that is JSON echoes a key holding a quote or backslash escaped.
+        const escaped = JSON.stringify(apiKey).slice(1, -1);
+        for (const form of escaped === apiKey ? [apiKey] : [escaped, apiKey]) {
+          clean = clean.split(form).join("[redacted]");
+        }
+      }
       return clean.slice(0, DETAIL_LIMIT);
     };
 
@@ -371,6 +389,20 @@ export function createRouter(options: RouterOptions): Router {
     try {
       adapter = adapterFor(step);
     } catch (error) {
+      if (error instanceof KeyMissingError) {
+        return {
+          ok: false,
+          halt: false,
+          failure: {
+            endpoint,
+            model: step.model,
+            reason: "key-missing",
+            detail: error.message,
+            attempts: 0,
+            elapsedMs: performance.now() - startedAt,
+          },
+        };
+      }
       return {
         ok: false,
         halt: false,

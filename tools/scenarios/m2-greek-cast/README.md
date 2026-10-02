@@ -23,7 +23,7 @@ and runs the compiled binary directly, with no Tauri, extending the
 reads, bounded waits, and positive-control pattern. Each run uses a fresh
 temporary app-data directory. The only scripted piece is the model provider: a
 loopback OpenAI-compatible endpoint the sidecar reaches through its production
-routing path, selected by `PANTHEA_MODEL_CONFIG`. It answers each god from a
+routing path, selected by the launch config line the harness sends. It answers each god from a
 queue the harness fills, or from a policy that is a pure function of the prompt
 the god was shown (Hera's), and it records every request with when it arrived.
 Stage-setting that is not a god's choice (moving the farmer to the tavern,
@@ -100,7 +100,7 @@ Not covered:
 
 ## Findings
 
-- **S1 Gods take idle turns through the production path** (5.0 s). Asserts: With PANTHEA_MODEL_CONFIG pointing at the scripted provider, the sidecar asks each god what to do; each prompt shows that god where it stands; a wait journals nothing; the trace records each request; the world is running, not model-degraded. Measured: 5 idle turns (zeus 2, hera 3) answered wait; trace holds 5 requests, none with a proposal; status running.
+- **S1 Gods take idle turns through the production path** (5.0 s). Asserts: With the launch config line pointing at the scripted provider, the sidecar asks each god what to do; each prompt shows that god where it stands; a wait journals nothing; the trace records each request; the world is running, not model-degraded. Measured: 5 idle turns (zeus 2, hera 3) answered wait; trace holds 5 requests, none with a proposal; status running.
 - **S2 SIGKILL after a god's turn journaled** (5.1 s). Asserts: A god's turn journaled and then SIGKILLed before any tick is still pending after the restart, with the trace linking it to its request; while it waits no god is asked anything; once the world runs it commits exactly once; and only then does the god take another turn. Measured: zeus's legend journaled while paused and SIGKILLed still pending (run at tick 7 after the restart); after the restart 0 requests in 2.5 s while paused; after resume it committed once (1 legend-recorded), then zeus was asked again (request 7).
 - **S3 SIGKILL during inference** (7.0 s). Asserts: A god's turn SIGKILLed while the provider holds its reply journals nothing and leaves no request with a proposal; after the restart the god reasons afresh and exactly one proposal commits. Measured: hera's turn (request 8) killed in flight: no journal row, no trace row; after the restart she was asked again (request 9) and exactly 1 legend committed.
 - **S4 Zeus strikes the tavern; witnesses remember** (13.0 s). Asserts: Zeus, moved by scripted turns from Olympus to the tavern, strikes the farmer's tavern through a model proposal; the ignition records the strike and Zeus; exactly the two present, Zeus and the farmer, remember it, each citing the ignition event, with the harm attributed to Zeus and the farmer as its target; Hera and the woodcutter, elsewhere, do not; the farmer now holds a grudge. Measured: zeus struck from the tavern (proposal proposal-1ed0bad6-df7a-4c94-920c-8b7997dd60bd); ignition evt-28-118 cites the strike; witnesses farmer and zeus; the farmer's feeling toward Zeus: affinity -2, grudge 1.

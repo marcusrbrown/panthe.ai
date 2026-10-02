@@ -1,6 +1,7 @@
-import type { Realm } from "@panthea/contracts";
+import type { ModelEndpointStatus, Realm } from "@panthea/contracts";
 import type { ReactNode } from "react";
 
+import type { ModelSettingsTransport } from "../connection";
 import {
   listTargets,
   type ObserverTarget,
@@ -13,6 +14,7 @@ import type {
   ViewLocation,
   WorldViewModel,
 } from "../store";
+import { SettingsView } from "./settings";
 import "./surface.css";
 
 const REALM_LABEL: Record<Realm, string> = {
@@ -177,6 +179,11 @@ export interface ClientSurfaceProps {
   readonly onDismissCatchUp?: () => void;
   readonly dismissedSummary?: boolean;
   readonly receiptErrors?: readonly string[];
+  readonly settingsOpen?: boolean;
+  readonly onOpenSettings?: () => void;
+  readonly onCloseSettings?: () => void;
+  readonly settingsTransport?: ModelSettingsTransport;
+  readonly endpointStatuses?: readonly ModelEndpointStatus[];
 }
 
 export function ClientSurface({
@@ -187,6 +194,11 @@ export function ClientSurface({
   onDismissCatchUp,
   dismissedSummary = false,
   receiptErrors = [],
+  settingsOpen = false,
+  onOpenSettings,
+  onCloseSettings,
+  settingsTransport,
+  endpointStatuses = [],
 }: ClientSurfaceProps) {
   const realm =
     observation.kind === "following"
@@ -223,6 +235,14 @@ export function ClientSurface({
           <span className="meta-divider" />
           <span>Event {view?.sequence ?? "—"}</span>
         </div>
+        <button
+          className="settings-nav-button"
+          type="button"
+          onClick={onOpenSettings}
+          aria-current={settingsOpen ? "page" : undefined}
+        >
+          Settings
+        </button>
         <span className="read-only-label">
           <span aria-hidden="true">◉</span> Read only
         </span>
@@ -260,188 +280,198 @@ export function ClientSurface({
         <CatchUp view={view} onDismiss={onDismissCatchUp} />
       )}
 
-      <div className="workspace" id="world">
-        <aside className="target-rail" aria-label="Observation targets">
-          <div className="rail-heading">
-            <p className="eyebrow">Observer</p>
-            <h1>Choose a view</h1>
-          </div>
-          <div className="following-state">
-            <span className="following-indicator" aria-hidden="true" />
-            <div>
-              <small>Following</small>
-              <strong>
-                {observation.kind === "idle"
-                  ? "Nothing yet"
-                  : targetTitle(selectedTarget, view)}
-              </strong>
+      {settingsOpen && settingsTransport ? (
+        <SettingsView
+          transport={settingsTransport}
+          onBack={onCloseSettings}
+          endpointStatuses={endpointStatuses}
+        />
+      ) : (
+        <div className="workspace" id="world">
+          <aside className="target-rail" aria-label="Observation targets">
+            <div className="rail-heading">
+              <p className="eyebrow">Observer</p>
+              <h1>Choose a view</h1>
             </div>
-          </div>
-          {observation.kind === "held" && (
-            <div className="hold-banner" role="status">
-              <strong>Lost sight: {observation.reason}</strong>
-              {observation.lastKnown && (
-                <span>
-                  Holding at{" "}
-                  {locationInRealm(
-                    view,
-                    observation.lastKnown.realm,
-                    observation.lastKnown.locationId,
-                  )?.name ?? title(observation.lastKnown.locationId)}
-                </span>
+            <div className="following-state">
+              <span className="following-indicator" aria-hidden="true" />
+              <div>
+                <small>Following</small>
+                <strong>
+                  {observation.kind === "idle"
+                    ? "Nothing yet"
+                    : targetTitle(selectedTarget, view)}
+                </strong>
+              </div>
+            </div>
+            {observation.kind === "held" && (
+              <div className="hold-banner" role="status">
+                <strong>Lost sight: {observation.reason}</strong>
+                {observation.lastKnown && (
+                  <span>
+                    Holding at{" "}
+                    {locationInRealm(
+                      view,
+                      observation.lastKnown.realm,
+                      observation.lastKnown.locationId,
+                    )?.name ?? title(observation.lastKnown.locationId)}
+                  </span>
+                )}
+              </div>
+            )}
+            <TargetPicker view={view} onPick={onPick} />
+            <p className="rail-footnote">Selection changes only this view.</p>
+          </aside>
+
+          <section
+            className="scene-column"
+            aria-label={`${REALM_LABEL[realm]} world view`}
+          >
+            <div className={`scene-heading realm-${realm}`}>
+              <div>
+                <p className="eyebrow">Observed realm</p>
+                <h2>{REALM_LABEL[realm]}</h2>
+              </div>
+              <div className="scene-state">
+                <span className="scene-state-dot" />
+                {view?.status === "paused"
+                  ? "Paused"
+                  : view?.status === "degraded" &&
+                      view.degradedReason !== "model-degraded"
+                    ? "Degraded"
+                    : "Live"}
+              </div>
+            </div>
+            <div className="scene-stage" data-realm={realm}>
+              {scene ?? (
+                <div className="scene-placeholder">
+                  The world view will appear when a frame arrives.
+                </div>
               )}
-            </div>
-          )}
-          <TargetPicker view={view} onPick={onPick} />
-          <p className="rail-footnote">Selection changes only this view.</p>
-        </aside>
-
-        <section
-          className="scene-column"
-          aria-label={`${REALM_LABEL[realm]} world view`}
-        >
-          <div className={`scene-heading realm-${realm}`}>
-            <div>
-              <p className="eyebrow">Observed realm</p>
-              <h2>{REALM_LABEL[realm]}</h2>
-            </div>
-            <div className="scene-state">
-              <span className="scene-state-dot" />
-              {view?.status === "paused"
-                ? "Paused"
-                : view?.status === "degraded" &&
-                    view.degradedReason !== "model-degraded"
-                  ? "Degraded"
-                  : "Live"}
-            </div>
-          </div>
-          <div className="scene-stage" data-realm={realm}>
-            {scene ?? (
-              <div className="scene-placeholder">
-                The world view will appear when a frame arrives.
+              {location && (
+                <div className="scene-location-label">
+                  <span>Current location</span>
+                  <strong>{location.name}</strong>
+                </div>
+              )}
+              <div className="scene-scale" aria-hidden="true">
+                <span />
+                World map · {location?.edges.length ?? 0}{" "}
+                {location?.edges.length === 1 ? "path" : "paths"}
               </div>
-            )}
-            {location && (
-              <div className="scene-location-label">
-                <span>Current location</span>
-                <strong>{location.name}</strong>
+            </div>
+            <div className="location-strip">
+              <span className="location-pin" aria-hidden="true">
+                ⌖
+              </span>
+              <div className="location-name">
+                <small>Location</small>
+                <strong>{location?.name ?? "No location in view"}</strong>
               </div>
-            )}
-            <div className="scene-scale" aria-hidden="true">
-              <span />
-              World map · {location?.edges.length ?? 0}{" "}
-              {location?.edges.length === 1 ? "path" : "paths"}
+              <span className="strip-divider" />
+              <div className="population-count">
+                <small>Present</small>
+                <strong>{location?.actors.length ?? 0} actors</strong>
+              </div>
+              <div className="population-count">
+                <small>Buildings</small>
+                <strong>{location?.buildings.length ?? 0}</strong>
+              </div>
             </div>
-          </div>
-          <div className="location-strip">
-            <span className="location-pin" aria-hidden="true">
-              ⌖
-            </span>
-            <div className="location-name">
-              <small>Location</small>
-              <strong>{location?.name ?? "No location in view"}</strong>
-            </div>
-            <span className="strip-divider" />
-            <div className="population-count">
-              <small>Present</small>
-              <strong>{location?.actors.length ?? 0} actors</strong>
-            </div>
-            <div className="population-count">
-              <small>Buildings</small>
-              <strong>{location?.buildings.length ?? 0}</strong>
-            </div>
-          </div>
-        </section>
+          </section>
 
-        <aside className="detail-rail" aria-label="Observed details">
-          <section className="detail-section">
-            <p className="eyebrow">At this location</p>
-            <h2>People & places</h2>
-            {location?.actors.length ? (
-              location.actors.map((actor) => (
+          <aside className="detail-rail" aria-label="Observed details">
+            <section className="detail-section">
+              <p className="eyebrow">At this location</p>
+              <h2>People & places</h2>
+              {location?.actors.length ? (
+                location.actors.map((actor) => (
+                  <article
+                    className={`entity-row${actor.alive ? "" : " entity-dead"}`}
+                    key={actor.id}
+                  >
+                    <div className="entity-heading">
+                      <span className="entity-mark" />{" "}
+                      <strong>{title(actor.id)}</strong>
+                      {!actor.alive && <span className="dead-label">Dead</span>}
+                    </div>
+                    <p>{inventoryText(actor)}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="empty-note">No actors here.</p>
+              )}
+              {location?.buildings.map((building) => (
                 <article
-                  className={`entity-row${actor.alive ? "" : " entity-dead"}`}
-                  key={actor.id}
+                  className={`entity-row building-row status-${building.status}`}
+                  key={building.id}
                 >
                   <div className="entity-heading">
-                    <span className="entity-mark" />{" "}
-                    <strong>{title(actor.id)}</strong>
-                    {!actor.alive && <span className="dead-label">Dead</span>}
+                    <span className="building-mark" />{" "}
+                    <strong>{building.name}</strong>
+                    <span className="building-status">
+                      {title(building.status)}
+                    </span>
                   </div>
-                  <p>{inventoryText(actor)}</p>
+                  <p>
+                    {building.status === "burning" && building.fire
+                      ? `Fire ${building.fire.intensity}${building.fire.destroyAt ? ` / ${building.fire.destroyAt}` : ""} · ${building.fire.ticksBurning} ticks`
+                      : building.status === "repairing" && building.repair
+                        ? `Repair ${building.repair.progress}${building.repair.required ? ` / ${building.repair.required}` : ""}`
+                        : inventoryText(building)}
+                  </p>
                 </article>
-              ))
-            ) : (
-              <p className="empty-note">No actors here.</p>
+              ))}
+            </section>
+            <section className="detail-section event-section">
+              <p className="eyebrow">Committed events</p>
+              <h2>Recent activity</h2>
+              {recentEvents.length ? (
+                <ol className="event-list">
+                  {[...recentEvents]
+                    .slice(-5)
+                    .reverse()
+                    .map((event) => (
+                      <li key={event.id}>
+                        <span
+                          className={`event-mark event-${String(event.kind)
+                            .toLowerCase()
+                            .replace(/[^a-z0-9]+/g, "-")}`}
+                          aria-hidden="true"
+                        />
+                        <div>
+                          <strong>{title(String(event.kind))}</strong>
+                          <small>
+                            Tick {event.tick}
+                            {event.subjects.length > 0 &&
+                              ` · ${event.subjects.join(", ")}`}
+                          </small>
+                        </div>
+                      </li>
+                    ))}
+                </ol>
+              ) : (
+                <p className="empty-note">No recent events.</p>
+              )}
+            </section>
+            {receiptErrors.length > 0 && (
+              <p className="receipt-note" role="status">
+                Receipt unavailable: {receiptErrors[receiptErrors.length - 1]}
+              </p>
             )}
-            {location?.buildings.map((building) => (
-              <article
-                className={`entity-row building-row status-${building.status}`}
-                key={building.id}
-              >
-                <div className="entity-heading">
-                  <span className="building-mark" />{" "}
-                  <strong>{building.name}</strong>
-                  <span className="building-status">
-                    {title(building.status)}
-                  </span>
-                </div>
-                <p>
-                  {building.status === "burning" && building.fire
-                    ? `Fire ${building.fire.intensity}${building.fire.destroyAt ? ` / ${building.fire.destroyAt}` : ""} · ${building.fire.ticksBurning} ticks`
-                    : building.status === "repairing" && building.repair
-                      ? `Repair ${building.repair.progress}${building.repair.required ? ` / ${building.repair.required}` : ""}`
-                      : inventoryText(building)}
-                </p>
-              </article>
-            ))}
-          </section>
-          <section className="detail-section event-section">
-            <p className="eyebrow">Committed events</p>
-            <h2>Recent activity</h2>
-            {recentEvents.length ? (
-              <ol className="event-list">
-                {[...recentEvents]
-                  .slice(-5)
-                  .reverse()
-                  .map((event) => (
-                    <li key={event.id}>
-                      <span
-                        className={`event-mark event-${String(event.kind)
-                          .toLowerCase()
-                          .replace(/[^a-z0-9]+/g, "-")}`}
-                        aria-hidden="true"
-                      />
-                      <div>
-                        <strong>{title(String(event.kind))}</strong>
-                        <small>
-                          Tick {event.tick}
-                          {event.subjects.length > 0 &&
-                            ` · ${event.subjects.join(", ")}`}
-                        </small>
-                      </div>
-                    </li>
-                  ))}
-              </ol>
-            ) : (
-              <p className="empty-note">No recent events.</p>
-            )}
-          </section>
-          {receiptErrors.length > 0 && (
-            <p className="receipt-note" role="status">
-              Receipt unavailable: {receiptErrors[receiptErrors.length - 1]}
-            </p>
-          )}
-          <div className="detail-foot">
-            <span>Event {view?.sequence ?? "—"}</span>
-            <span>Local inspection</span>
-          </div>
-        </aside>
-      </div>
-      <footer className="bottomline">
-        <span>Committed world state</span>
-        <span>No world controls in this view</span>
-      </footer>
+            <div className="detail-foot">
+              <span>Event {view?.sequence ?? "—"}</span>
+              <span>Local inspection</span>
+            </div>
+          </aside>
+        </div>
+      )}
+      {!settingsOpen && (
+        <footer className="bottomline">
+          <span>Committed world state</span>
+          <span>No world controls in this view</span>
+        </footer>
+      )}
     </main>
   );
 }

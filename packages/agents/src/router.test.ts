@@ -833,6 +833,139 @@ describe("keys", () => {
   });
 });
 
+describe("a keyed endpoint whose key is not set", () => {
+  const keyed = (hostedUrl: string, local: string) =>
+    configFor(
+      [
+        { id: "go", baseUrl: hostedUrl, keyRef: "opencode-go" },
+        { id: "ollama", baseUrl: local },
+      ],
+      { roles: { zeus: { endpoint: "go", fallback: ["ollama"] } } },
+    );
+
+  test("fails with a clear key-not-set reason before any request, instead of a confusing upstream 401, and the fallback answers", async () => {
+    const local = startStub(always({ content: SAY }));
+    const hosted = scriptedHostedFetch(
+      () => new Response("401 from upstream", { status: 401 }),
+    );
+    const seen = spies(hosted.fetch);
+    const router = routerFor(keyed(HOSTED, local.baseUrl), {
+      buildModel: seen.options.buildModel,
+      getKey: () => undefined,
+    });
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    if (result.kind === "intent") {
+      expect(result.failed).toHaveLength(1);
+      expect(result.failed[0]).toMatchObject({
+        endpoint: "go",
+        reason: "key-missing",
+        attempts: 0,
+      });
+      expect(result.failed[0]?.detail).toBe("key not set (opencode-go)");
+    }
+    expect(hosted.requests).toHaveLength(0);
+  });
+
+  test("a router given no way to read keys reports the same reason", async () => {
+    const hosted = scriptedHostedFetch(() => completion(SAY));
+    const router = routerFor(
+      configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+        roles: { zeus: { endpoint: "go" } },
+      }),
+      { buildModel: spies(hosted.fetch).options.buildModel },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result).toMatchObject({
+      kind: "exhausted",
+      steps: [{ endpoint: "go", reason: "key-missing", attempts: 0 }],
+    });
+    expect(hosted.requests).toHaveLength(0);
+  });
+
+  test("an empty key is not a key", async () => {
+    const hosted = scriptedHostedFetch(() => completion(SAY));
+    const router = routerFor(
+      configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+        roles: { zeus: { endpoint: "go" } },
+      }),
+      {
+        buildModel: spies(hosted.fetch).options.buildModel,
+        getKey: () => "",
+      },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result).toMatchObject({
+      kind: "exhausted",
+      steps: [{ reason: "key-missing" }],
+    });
+  });
+
+  test("positive control: the same endpoint with its key set is reached with the bearer key", async () => {
+    const hosted = scriptedHostedFetch(() => completion(SAY));
+    const router = routerFor(
+      configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+        roles: { zeus: { endpoint: "go" } },
+      }),
+      {
+        buildModel: spies(hosted.fetch).options.buildModel,
+        getKey: () => "sk-hosted-secret",
+      },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    expect(hosted.requests[0]?.headers.get("authorization")).toBe(
+      "Bearer sk-hosted-secret",
+    );
+  });
+});
+
+describe("a key JSON escapes", () => {
+  // A quote and a backslash: an endpoint that answers with a JSON error body
+  // echoes the key with both escaped.
+  const key = 'sk-"quo\\te-0123456789';
+  const escaped = JSON.stringify(key).slice(1, -1);
+
+  test("is redacted from the failure detail whether the endpoint echoes it raw or JSON-escaped", async () => {
+    for (const body of [
+      `bad key ${key} rejected`,
+      JSON.stringify({ error: { message: `bad key ${key} rejected` } }),
+    ]) {
+      const hosted = scriptedHostedFetch(
+        () => new Response(body, { status: 401 }),
+      );
+      const router = routerFor(
+        configFor([{ id: "go", baseUrl: HOSTED, keyRef: "opencode-go" }], {
+          roles: { zeus: { endpoint: "go" } },
+        }),
+        {
+          buildModel: spies(hosted.fetch).options.buildModel,
+          getKey: () => key,
+        },
+      );
+
+      const result = await router.route("zeus", context, sayIntent);
+
+      expect(result.kind).toBe("exhausted");
+      const text = JSON.stringify(result);
+      expect(text).not.toContain(key);
+      expect(text).not.toContain(escaped);
+      expect(text).not.toContain(JSON.stringify(escaped).slice(1, -1));
+      if (result.kind === "exhausted") {
+        expect(result.steps[0]?.detail).toContain("[redacted]");
+      }
+    }
+  });
+});
+
 describe("keys and the detail limit", () => {
   /** A hosted endpoint that answers 401 with `body`, and the router that asks it with `key`. */
   async function refusedWith(key: string, body: string) {

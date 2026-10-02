@@ -3,7 +3,7 @@
 // wall time. It asserts properties (see real-analysis.ts), not exact facts,
 // and records latency and outcomes so the README can quote numbers from a run.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureEnvironment } from "@panthea/tools-probes-shared";
@@ -117,11 +117,13 @@ export async function collectRun(
 ): Promise<CollectedRun> {
   const root = mkdtempSync(join(tmpdir(), "panthea-m2-real-"));
   const dataDir = join(root, "app-data");
-  const configPath = join(root, "models.json");
-  writeFileSync(configPath, JSON.stringify(routingConfigFor(options)));
   try {
     const sidecar = await startSidecar(options.binary, dataDir, {
-      env: { PANTHEA_MODEL_CONFIG: configPath },
+      launchConfig: {
+        models: routingConfigFor(options),
+        offline: false,
+        keys: {},
+      },
     });
     const polls = { total: 0, degraded: 0 };
     const deadline = Date.now() + options.durationMs;

@@ -174,10 +174,56 @@ describe("openStdinSession", () => {
     const input = new PassThrough();
     const session = openStdinSession(input);
     input.write("first-token\n");
-    input.write("second-token\n");
+    input.write('{"models":null}\n');
     input.end();
     const token = await session.token;
     expect(token).toBe("first-token");
+  });
+
+  test("the second line is the launch config, and a third line is ignored", async () => {
+    const input = new PassThrough();
+    const session = openStdinSession(input);
+    input.write("the-token\n");
+    input.write('{"models":null,"offline":false,"keys":{}}\n');
+    input.write("a third line\n");
+    expect(await session.token).toBe("the-token");
+    expect(await session.launchConfig).toBe(
+      '{"models":null,"offline":false,"keys":{}}',
+    );
+  });
+
+  test("stdin EOF after the token but before a config line resolves the config as undefined", async () => {
+    const input = new PassThrough();
+    const session = openStdinSession(input);
+    input.write("the-token\n");
+    input.end();
+    expect(await session.token).toBe("the-token");
+    expect(await session.launchConfig).toBeUndefined();
+  });
+
+  test("stdin EOF before any line resolves both as undefined", async () => {
+    const input = new PassThrough();
+    const session = openStdinSession(input);
+    input.end();
+    expect(await session.token).toBeUndefined();
+    expect(await session.launchConfig).toBeUndefined();
+  });
+
+  test("stdin stays open after both lines: EOF still fires onClose", async () => {
+    const input = new PassThrough();
+    const session = openStdinSession(input);
+    let closed = false;
+    session.onClose(() => {
+      closed = true;
+    });
+    input.write("the-token\n");
+    input.write("{}\n");
+    await session.launchConfig;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(closed).toBe(false);
+    input.end();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(closed).toBe(true);
   });
 });
 

@@ -1,7 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "proxy",
-  "description": "Grants the main window only the sidecar-proxy commands: subscribing to the frame stream and relaying a presentation receipt. No shell, filesystem, network, or other plugin permission is granted.",
+  "description": "Grants the main window only the sidecar-proxy commands (subscribing to the frame stream, relaying a presentation receipt) and the model-settings commands (read and save settings; set, delete, and check an endpoint key). No command returns a key value. No shell, filesystem, network, or other plugin permission is granted.",
   "windows": ["main"],
-  "permissions": ["allow-subscribe-world", "allow-present-event"]
+  "permissions": [
+    "allow-subscribe-world",
+    "allow-present-event",
+    "allow-read-model-settings",
+    "allow-save-model-settings",
+    "allow-set-endpoint-key",
+    "allow-delete-endpoint-key",
+    "allow-endpoint-key-status"
+  ]
 }

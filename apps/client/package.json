@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@panthea/contracts": "workspace:*",
+    "@panthea/agents": "workspace:*",
     "@panthea/world": "workspace:*",
     "@tauri-apps/api": "2.12.0",
     "react": "19.3.0",

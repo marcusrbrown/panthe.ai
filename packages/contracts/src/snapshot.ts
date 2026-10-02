@@ -138,6 +138,49 @@ function parseRecentEvent(
   });
 }
 
+export const ENDPOINT_STATES = ["untried", "ok", "failed"] as const;
+export type EndpointState = (typeof ENDPOINT_STATES)[number];
+
+/**
+ * How one model endpoint's last request went, as the service saw it: `failed`
+ * carries the router's reason and a short account with any key redacted.
+ * Present on a frame only when model routing is configured.
+ */
+export type ModelEndpointStatus =
+  | { readonly endpoint: string; readonly state: "untried" | "ok" }
+  | {
+      readonly endpoint: string;
+      readonly state: "failed";
+      readonly reason: string;
+      readonly detail: string;
+    };
+
+function parseModelEndpointStatus(
+  value: unknown,
+  path: string,
+): ParseResult<ModelEndpointStatus> {
+  if (!isRecord(value)) {
+    return fail(path, "expected an endpoint status object");
+  }
+  const endpoint = parseString(value.endpoint, `${path}.endpoint`);
+  if (!endpoint.ok) return endpoint;
+  const state = parseEnum(value.state, `${path}.state`, ENDPOINT_STATES);
+  if (!state.ok) return state;
+  if (state.value !== "failed") {
+    return ok({ endpoint: endpoint.value, state: state.value });
+  }
+  const reason = parseString(value.reason, `${path}.reason`);
+  if (!reason.ok) return reason;
+  const detail = parseString(value.detail, `${path}.detail`);
+  if (!detail.ok) return detail;
+  return ok({
+    endpoint: endpoint.value,
+    state: "failed",
+    reason: reason.value,
+    detail: detail.value,
+  });
+}
+
 export interface SyncFrame {
   readonly schemaVersion: number;
   readonly sequence: number;
@@ -146,6 +189,8 @@ export interface SyncFrame {
   readonly status: WorldStatus;
   readonly degradedReason?: DegradedReason;
   readonly catchUpSummary?: CatchUpSummary;
+  /** Each configured model endpoint's last outcome, in config order; absent when no models are configured. */
+  readonly modelEndpoints?: readonly ModelEndpointStatus[];
   /** Committed events inside the sidecar's recent window, ascending by sequence. */
   readonly recentEvents: readonly RecentEvent[];
   /** Opaque projection payload; its shape is owned by packages/world. */
@@ -193,6 +238,17 @@ export function parseSyncFrame(input: unknown): ParseResult<SyncFrame> {
     catchUpSummary = summary.value;
   }
 
+  let modelEndpoints: readonly ModelEndpointStatus[] | undefined;
+  if (input.modelEndpoints !== undefined) {
+    const endpoints = parseArray(
+      input.modelEndpoints,
+      "modelEndpoints",
+      parseModelEndpointStatus,
+    );
+    if (!endpoints.ok) return endpoints;
+    modelEndpoints = endpoints.value;
+  }
+
   const recentEvents = parseArray(
     input.recentEvents,
     "recentEvents",
@@ -212,6 +268,7 @@ export function parseSyncFrame(input: unknown): ParseResult<SyncFrame> {
     status: status.value,
     ...(degradedReason === undefined ? {} : { degradedReason }),
     ...(catchUpSummary === undefined ? {} : { catchUpSummary }),
+    ...(modelEndpoints === undefined ? {} : { modelEndpoints }),
     recentEvents: recentEvents.value,
     state: input.state,
   });

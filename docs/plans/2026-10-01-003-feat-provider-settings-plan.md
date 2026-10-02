@@ -110,7 +110,7 @@ flowchart LR
   U4 --> U5
 ```
 
-- [ ] **Unit 1: Shell settings store and Keychain commands**
+- [x] **Unit 1: Shell settings store and Keychain commands**
 
 **Goal:** the shell persists non-secret settings and stores endpoint keys in the Keychain behind write-only commands.
 
@@ -140,7 +140,7 @@ flowchart LR
 
 **Verification:** cargo tests pass; `cargo fmt --check` and `cargo clippy -- -D warnings` clean.
 
-- [ ] **Unit 2: Spawn handoff and restart on change**
+- [x] **Unit 2: Spawn handoff and restart on change**
 
 **Goal:** the sidecar starts with settings, offline flag, and the referenced keys over stdin; any settings change restarts it.
 
@@ -174,7 +174,7 @@ flowchart LR
 
 **Verification:** `bun run check`; cargo checks; scripted `scenario:m1` and `scenario:m2` stay OK.
 
-- [ ] **Unit 3: Sidecar offline mode, keys, endpoint status, and trace redaction**
+- [x] **Unit 3: Sidecar offline mode, keys, endpoint status, and trace redaction**
 
 **Goal:** the router gets the operator's offline flag and keys; the sidecar reports per-endpoint outcomes; no key reaches prompts, traces, the journal, or logs.
 
@@ -202,7 +202,7 @@ flowchart LR
 
 **Verification:** `bun run check`.
 
-- [ ] **Unit 4: Settings view**
+- [x] **Unit 4: Settings view**
 
 **Goal:** the operator edits endpoints, roles, fallback order, keys, and offline mode in the desktop app.
 
@@ -260,6 +260,19 @@ flowchart LR
 | Dev builds re-prompt for Keychain access after each rebuild | Accepted in development; verify persistence on the packaged app |
 | Headless CI lacks an unlocked Keychain | Unit tests use the in-memory store; real Keychain checked by one manual packaged run |
 | `Cargo.lock` change | Owner approval before Unit 1 lands |
+
+## Implementation departures
+
+Units 1–4 landed with these departures from the plan above; the plan text is kept as written.
+
+- **Config line is mandatory for every spawner.** The sidecar cannot tell a missing second stdin line from one still in flight, so every launcher sends `{models, offline, keys}` after the token: the shell, the harnesses, and the test spawners (`index.test.ts`, `index.crash.test.ts`, `proxy_integration.rs`). Stdin EOF before the line refuses to start; EOF after it still shuts the sidecar down.
+- **Stored shape is `{models, offline}`.** The routing parser rejects unknown keys, so `offline` sits beside the routing config, not inside it. The shell passes both through as the client sent them; a file it cannot read or parse reaches the sidecar as models its parser rejects.
+- **Endpoint status is derived, and rides the frame.** `packages/agents/src/status.ts` derives each endpoint's last outcome from the router's own results rather than the router holding it. The status is the optional frame field `modelEndpoints` (`untried`, `ok`, or `failed` with a redacted reason), parsed by `packages/contracts/src/snapshot.ts`, so no new route, shell command, or permission was needed.
+- **A missing key fails as `key-missing` before any request.** A keyed endpoint with no key (or an empty one) is not sent unauthenticated to meet an upstream 401. Status shows it after the first god turn, not at spawn.
+- **The journal refuses an answer that contains a key.** An endpoint that echoes a loaded key into a model answer gets its request recorded (redacted) and the proposal dropped before the journal, so the "key in no journal" claim holds without trusting the provider.
+- **`keyring-core` plus the Apple Keychain store instead of keyring v1.** keyring 4.2's own docs advise applications to link the store crates, not the `v1` convenience mode. The Apple store is an owned instance (no process-global default store), is a macOS-only dependency, and other platforms report that credential storage is unsupported. The lockfile gained four packages against the plan commit.
+- **Keychain reads are off the main thread.** The spawn that reads keys runs on its own thread when started from app setup or the tray; the restart paths already ran on workers.
+- **Model existence is not checked until a request is made.** The settings view validates URLs and structure with the parser; whether an endpoint serves the named model shows only in its status after a real request.
 
 ## Sources & References
 

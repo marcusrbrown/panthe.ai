@@ -141,20 +141,29 @@ export async function endpointOptions(
 }
 
 /**
- * Whether the run's endpoint is a hosted one, for run records. Records say only
- * that: never the endpoint's host, path, key reference, or a key, since a
+ * Which kind of explicit endpoint the run used, for run records: `hosted` or
+ * `local` for any `--base-url`, nothing for the default Ollama. Records say only
+ * that: never the endpoint's host, port, path, key reference, or a key, since a
  * transcript is committed and a host can be private.
  */
-export function isHostedRun(options: RealOptions): boolean {
-  return options.baseUrl !== undefined && !isLocalUrl(options.baseUrl);
+export function endpointKind(
+  options: RealOptions,
+): "hosted" | "local" | undefined {
+  if (options.baseUrl === undefined) return undefined;
+  return isLocalUrl(options.baseUrl) ? "local" : "hosted";
 }
 
 export class OllamaUnreachable extends Error {}
 
-/** Confirms Ollama answers and has the model, loads it, and returns. Throws with the exact error otherwise. */
+/**
+ * On the default path (no `--base-url`), confirms Ollama answers and has the
+ * model, loads it, and returns; throws with the exact error otherwise. An
+ * explicit base URL, local or hosted, names an endpoint that is not necessarily
+ * Ollama (a llama-server, a LAN proxy, Ollama on another port), so nothing is
+ * checked or warmed and the default Ollama is never contacted.
+ */
 export async function prepareOllama(options: RealOptions): Promise<void> {
-  // A hosted endpoint is not Ollama: there is no model list to check or load.
-  if (options.baseUrl !== undefined && !isLocalUrl(options.baseUrl)) return;
+  if (options.baseUrl !== undefined) return;
   const tags = `${options.ollama}/api/tags`;
   let names: string[];
   try {

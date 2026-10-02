@@ -1049,7 +1049,7 @@ test("a hosted run's transcript and summary say a hosted OpenAI-compatible endpo
   const summary = renderSummary([hosted], {
     seconds: 300,
     model: "gpt-x",
-    hosted: true,
+    endpoint: "hosted",
     files: ["episode-1.md"],
   });
   for (const text of [transcript, summary]) {
@@ -1062,6 +1062,45 @@ test("a hosted run's transcript and summary say a hosted OpenAI-compatible endpo
   }
   // Control: a local run still says so.
   expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
+});
+
+test("an explicit local base URL renders as a local OpenAI-compatible endpoint, not Ollama, with no host or port; the default path still says local Ollama", () => {
+  const base = record([move("zeus", "olympus-gate", 2)]);
+  const local: EpisodeRecord = {
+    ...base,
+    settings: episodeSettings(
+      {
+        binary: "/b",
+        durationMs: 300_000,
+        ollama: "http://127.0.0.1:11434",
+        model: "local-model",
+        baseUrl: "http://192.168.1.20:8080/v1",
+      },
+      {
+        ranAt: "2026-10-02T00:00:00.000Z",
+        ticks: 300,
+        hardware: "Apple M1 Pro",
+      },
+    ),
+  };
+  const summary = renderSummary([local], {
+    seconds: 300,
+    model: "local-model",
+    endpoint: "local",
+    files: ["episode-1.md"],
+  });
+  for (const text of [renderTranscript(local), summary]) {
+    expect(text).toContain("through a local OpenAI-compatible endpoint");
+    expect(text).not.toContain("local Ollama");
+    expect(text).not.toContain("4K context");
+    expect(text).not.toContain("192.168.1.20");
+    expect(text).not.toContain("8080");
+  }
+  // Control: the default path is unchanged.
+  expect(renderTranscript(base)).toContain("through local Ollama, 4K context");
+  expect(
+    renderSummary([base], { seconds: 300, model: "m", files: [] }),
+  ).toContain("through local Ollama, 4K context");
 });
 
 // --- What the world did with every god proposal ------------------------------------------

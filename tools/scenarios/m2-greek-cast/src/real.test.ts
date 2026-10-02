@@ -83,22 +83,58 @@ test("the launch line carries the key under its key reference, online, and nowhe
   expect(launchConfigFor(options).keys).toEqual({});
 });
 
-test("a non-local base URL skips the Ollama model check, and a local one still makes it", async () => {
-  // Nothing listens on port 1: a check would throw OllamaUnreachable.
+/** A stand-in for the default Ollama that records every request it gets. */
+function countingOllama(model: string) {
+  const requests: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      requests.push(new URL(request.url).pathname);
+      return Response.json({ models: [{ name: model }] });
+    },
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    requests,
+    stop: () => server.stop(true),
+  };
+}
+
+test("Ollama preparation runs only on the default path: any explicit base URL, local or hosted, skips it", async () => {
+  // Nothing listens on port 1: preparing the default Ollama there would throw.
   const unreachable = { ...options, ollama: "http://127.0.0.1:1" };
-  await expect(
-    prepareOllama({
-      ...unreachable,
-      baseUrl: "https://hosted.example.com/v1",
-    }),
-  ).resolves.toBeUndefined();
-  // Controls: no base URL, and a local one, are still checked.
+  for (const baseUrl of [
+    "http://127.0.0.1:8080/v1",
+    "http://localhost:11434/v1",
+    "http://192.168.1.20:8080/v1",
+    "https://hosted.example.com/v1",
+  ]) {
+    await expect(
+      prepareOllama({ ...unreachable, baseUrl }),
+    ).resolves.toBeUndefined();
+  }
+  // Control: the default path still prepares Ollama, and fails when it is unreachable.
   await expect(prepareOllama(unreachable)).rejects.toBeInstanceOf(
     OllamaUnreachable,
   );
-  await expect(
-    prepareOllama({ ...unreachable, baseUrl: "http://127.0.0.1:8080/v1" }),
-  ).rejects.toBeInstanceOf(OllamaUnreachable);
+});
+
+test("a healthy custom local endpoint proceeds without a single call to the default Ollama's tags or warm-up", async () => {
+  const ollama = countingOllama(options.model);
+  try {
+    await prepareOllama({
+      ...options,
+      ollama: ollama.url,
+      baseUrl: "http://127.0.0.1:8080/v1",
+    });
+    expect(ollama.requests).toEqual([]);
+    // Control: without a base URL the same Ollama is asked for its tags and told to load the model.
+    await prepareOllama({ ...options, ollama: ollama.url });
+    expect(ollama.requests).toEqual(["/api/tags", "/api/generate"]);
+  } finally {
+    ollama.stop();
+  }
 });
 
 test("the key is read from the Keychain entry the shell writes, through an argv array, and one trailing newline is trimmed", async () => {

@@ -33,8 +33,8 @@ import {
 export interface EpisodeSettings {
   readonly model: string;
   readonly reasoningEffort?: "none";
-  /** True when the model ran on a hosted endpoint. The host is never recorded. */
-  readonly hosted?: boolean;
+  /** The kind of explicit endpoint the model ran on; absent for the default local Ollama. The host and port are never recorded. */
+  readonly endpoint?: "hosted" | "local";
   readonly seconds: number;
   readonly ranAt: string;
   readonly ticks: number;
@@ -499,15 +499,18 @@ const RUBRIC = [
   "Inspectability",
 ];
 
-/** Where the model ran: local Ollama at its 4K context, or a hosted OpenAI-compatible endpoint (never named). */
+/** Where the model ran: local Ollama at its 4K context, a local or hosted OpenAI-compatible endpoint (never named). */
 function modelLine(settings: {
   readonly model: string;
   readonly reasoningEffort?: "none";
-  readonly hosted?: boolean;
+  readonly endpoint?: "hosted" | "local";
 }): string {
-  const where = settings.hosted
-    ? "a hosted OpenAI-compatible endpoint"
-    : "local Ollama, 4K context";
+  const where =
+    settings.endpoint === "hosted"
+      ? "a hosted OpenAI-compatible endpoint"
+      : settings.endpoint === "local"
+        ? "a local OpenAI-compatible endpoint"
+        : "local Ollama, 4K context";
   return `${settings.model} through ${where}, ${reasoningText(settings.reasoningEffort)}`;
 }
 
@@ -572,8 +575,8 @@ export interface SummarySettings {
   readonly seconds: number;
   readonly model: string;
   readonly reasoningEffort?: "none";
-  /** True when the model ran on a hosted endpoint. The host is never recorded. */
-  readonly hosted?: boolean;
+  /** The kind of explicit endpoint the model ran on; absent for the default local Ollama. The host and port are never recorded. */
+  readonly endpoint?: "hosted" | "local";
   /** Transcript file names, in episode order. */
   readonly files: readonly string[];
 }

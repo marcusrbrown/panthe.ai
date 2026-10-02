@@ -9,7 +9,7 @@
 //   bun run scenario:m2 --real [--seconds=N]         both gods through local Ollama, unscripted; asserts properties, writes real-run.json
 //                                                    (rebuilds the sidecar first, unless --skip-build)
 //   bun run scenario:m2 --episodes=N --model=M --base-url=https://host/v1 [--key-ref=NAME]
-//                                                    the same gate against a hosted OpenAI-compatible endpoint (no Ollama check); --key-ref reads
+//                                                    the same gate against any OpenAI-compatible endpoint, local or hosted (no Ollama check or warm-up); --key-ref reads
 //                                                    that key from the macOS Keychain (service ai.panthe.desktop.endpoint-keys) once and sends it
 //                                                    only on the sidecar's launch line
 //   bun run scenario:m2 --episodes=N [--episode-seconds=300] [--out=DIR]

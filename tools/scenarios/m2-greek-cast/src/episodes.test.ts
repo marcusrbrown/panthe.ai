@@ -43,7 +43,7 @@ const base = {
   outDir: "/tmp/out",
 };
 
-test("a hosted run's settings say it was hosted and carry no host, key, key reference, path, or credentials", () => {
+test("a hosted run's settings say hosted and carry no host, key, key reference, path, or credentials", () => {
   const settings = episodeSettings(
     {
       ...base,
@@ -53,7 +53,7 @@ test("a hosted run's settings say it was hosted and carry no host, key, key refe
     },
     run,
   );
-  expect(settings.hosted).toBe(true);
+  expect(settings.endpoint).toBe("hosted");
   const text = JSON.stringify(settings);
   for (const secret of [
     SENTINEL,
@@ -63,10 +63,13 @@ test("a hosted run's settings say it was hosted and carry no host, key, key refe
   ]) {
     expect(text).not.toContain(secret);
   }
-  // Controls: a local run, and a local base URL, are not hosted.
-  expect(episodeSettings(base, run).hosted).toBeUndefined();
-  expect(
-    episodeSettings({ ...base, baseUrl: "http://127.0.0.1:8080/v1" }, run)
-      .hosted,
-  ).toBeUndefined();
+  // Controls: the default path says nothing; an explicit local base URL says local, with no host or port.
+  expect(episodeSettings(base, run).endpoint).toBeUndefined();
+  const local = episodeSettings(
+    { ...base, baseUrl: "http://192.168.1.20:8080/v1" },
+    run,
+  );
+  expect(local.endpoint).toBe("local");
+  expect(JSON.stringify(local)).not.toContain("192.168.1.20");
+  expect(JSON.stringify(local)).not.toContain("8080");
 });

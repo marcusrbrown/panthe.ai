@@ -9,7 +9,7 @@ import { REPO_ROOT } from "../../m1-living-world/src/sidecar";
 import { analyzeEpisode, type GodIdentity } from "./episode-analysis";
 import {
   collectRun,
-  isHostedRun,
+  endpointKind,
   prepareOllama,
   type RealOptions,
 } from "./real";
@@ -59,7 +59,7 @@ export function defaultOutDir(now: Date = new Date()): string {
   return join(REPO_ROOT, "tools/scenarios/m2-greek-cast/episodes", stamp);
 }
 
-/** What an episode's transcript records about its run: that it was hosted when it was, never the endpoint's host or a key. */
+/** What an episode's transcript records about its run: whether an explicit endpoint was hosted or local, never its host, port, or a key. */
 export function episodeSettings(
   options: RealOptions,
   run: { ranAt: string; ticks: number; hardware: string },
@@ -69,7 +69,9 @@ export function episodeSettings(
     ...(options.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: options.reasoningEffort }),
-    ...(isHostedRun(options) ? { hosted: true as const } : {}),
+    ...(endpointKind(options) === undefined
+      ? {}
+      : { endpoint: endpointKind(options) }),
     seconds: options.durationMs / 1000,
     ranAt: run.ranAt,
     ticks: run.ticks,
@@ -122,7 +124,9 @@ export async function runEpisodes(
       ...(options.reasoningEffort === undefined
         ? {}
         : { reasoningEffort: options.reasoningEffort }),
-      ...(isHostedRun(options) ? { hosted: true as const } : {}),
+      ...(endpointKind(options) === undefined
+        ? {}
+        : { endpoint: endpointKind(options) }),
       files: records.map((r) => `episode-${r.index}.md`),
     }),
   );

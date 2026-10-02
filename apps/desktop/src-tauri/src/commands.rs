@@ -33,36 +33,58 @@ async fn run_key_op<T: Send + 'static>(
         .map_err(|error| error.to_string())
 }
 
+/// Restarts the sidecar so a settings change takes effect. Detached: the
+/// command that caused it reports its own outcome, and the restart (a kill, a
+/// spawn, Keychain reads) runs off the main thread and the async workers.
+fn apply_in_background(app: AppHandle) {
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        crate::sidecar::apply_restart_sidecar(app);
+    }));
+}
+
 /// The saved settings JSON, or `null` when none were saved yet.
 #[tauri::command]
 pub fn read_model_settings(store: State<SettingsStore>) -> Result<Option<String>, String> {
     store.read().map_err(|error| error.to_string())
 }
 
-/// Stores the settings JSON verbatim. The caller validates; the shell
-/// only caps its size.
+/// Stores the settings JSON verbatim, then restarts the sidecar so the new
+/// settings apply. The caller validates; the shell only caps the size.
 #[tauri::command]
-pub fn save_model_settings(store: State<SettingsStore>, settings: String) -> Result<(), String> {
-    store.write(&settings).map_err(|error| error.to_string())
+pub fn save_model_settings(
+    app: AppHandle,
+    store: State<SettingsStore>,
+    settings: String,
+) -> Result<(), String> {
+    store.write(&settings).map_err(|error| error.to_string())?;
+    apply_in_background(app);
+    Ok(())
 }
 
-/// Stores an endpoint's key in the Keychain. The error text never
-/// includes the key.
+/// Stores an endpoint's key in the Keychain, then restarts the sidecar so it
+/// starts with the new key. The error text never includes the key.
 #[tauri::command]
 pub async fn set_endpoint_key(
+    app: AppHandle,
     vault: State<'_, KeyVault>,
     key_ref: String,
     key: String,
 ) -> Result<(), String> {
-    run_key_op(&vault, move |store| store.set(&key_ref, &key)).await
+    run_key_op(&vault, move |store| store.set(&key_ref, &key)).await?;
+    apply_in_background(app);
+    Ok(())
 }
 
+/// Removes an endpoint's key, then restarts the sidecar without it.
 #[tauri::command]
 pub async fn delete_endpoint_key(
+    app: AppHandle,
     vault: State<'_, KeyVault>,
     key_ref: String,
 ) -> Result<(), String> {
-    run_key_op(&vault, move |store| store.delete(&key_ref)).await
+    run_key_op(&vault, move |store| store.delete(&key_ref)).await?;
+    apply_in_background(app);
+    Ok(())
 }
 
 /// `set` or `missing` for each `key_ref`; never a value.

@@ -62,9 +62,10 @@ pub struct WorldStatusSnapshot {
     pub degraded_reason: Option<String>,
 }
 
-/// Every piece of state one sidecar launch and its supervision touch.
-#[derive(Default)]
-pub struct Lifecycle {
+/// Every piece of state one sidecar launch and its supervision touch. `C` is
+/// the tracked child's type: the shell's `CommandChild`, or a stand-in in the
+/// transitions' tests (a real child cannot be built outside a spawn).
+pub struct Lifecycle<C = CommandChild> {
     /// Identifies the current launch attempt. Bumped by every spawn
     /// (`begin_spawn`) and by every launch ending (`stop`, or the
     /// termination handling inside `on_terminated`). Anything belonging
@@ -75,7 +76,7 @@ pub struct Lifecycle {
     /// after its launch has ended becomes a no-op instead of touching
     /// whatever launch is current now.
     pub launch_id: u64,
-    pub child: Option<CommandChild>,
+    pub child: Option<C>,
     /// The active session's port/token, or `None` before the first
     /// `PANTHEA_PORT` line and after the child terminates.
     pub session: Option<SidecarSession>,
@@ -103,10 +104,28 @@ pub struct Lifecycle {
     pub channel: Option<Channel<serde_json::Value>>,
 }
 
+impl<C> Default for Lifecycle<C> {
+    fn default() -> Self {
+        Self {
+            launch_id: 0,
+            child: None,
+            session: None,
+            poll_task: None,
+            stopped: false,
+            exhausted: false,
+            restarts: 0,
+            last_frame: None,
+            last_frame_body: None,
+            world: WorldStatusSnapshot::default(),
+            channel: None,
+        }
+    }
+}
+
 /// True while `launch_id` is still the launch currently tracked by
 /// `lifecycle` -- false once a later spawn or a clear has bumped it
 /// past that value.
-pub fn is_current(lifecycle: &Lifecycle, launch_id: u64) -> bool {
+pub fn is_current<C>(lifecycle: &Lifecycle<C>, launch_id: u64) -> bool {
     lifecycle.launch_id == launch_id
 }
 
@@ -115,7 +134,7 @@ pub fn is_current(lifecycle: &Lifecycle, launch_id: u64) -> bool {
 /// (starting one) and the launch-ending path inside `on_terminated`/
 /// `stop` (nothing about an ended launch's world status or cached frame
 /// describes anything live anymore).
-fn reset_frame_fields(lifecycle: &mut Lifecycle) {
+fn reset_frame_fields<C>(lifecycle: &mut Lifecycle<C>) {
     lifecycle.last_frame = None;
     lifecycle.last_frame_body = None;
     lifecycle.world = Default::default();
@@ -126,7 +145,7 @@ fn reset_frame_fields(lifecycle: &mut Lifecycle) {
 /// launch id and resets the frame fields, returning the new id for the
 /// caller to carry through everything this launch's spawn, event loop,
 /// and poll task do.
-pub fn begin_spawn(lifecycle: &mut Lifecycle) -> Option<u64> {
+pub fn begin_spawn<C>(lifecycle: &mut Lifecycle<C>) -> Option<u64> {
     if lifecycle.stopped {
         return None;
     }
@@ -138,7 +157,7 @@ pub fn begin_spawn(lifecycle: &mut Lifecycle) -> Option<u64> {
 /// Whether a resolved-and-spawned child may be installed: its launch id
 /// must still be current and the sidecar must not have been stopped
 /// while the OS-level spawn and stdin write were in flight.
-pub fn should_attach(lifecycle: &Lifecycle, launch_id: u64) -> bool {
+pub fn should_attach<C>(lifecycle: &Lifecycle<C>, launch_id: u64) -> bool {
     is_current(lifecycle, launch_id) && !lifecycle.stopped
 }
 
@@ -162,22 +181,18 @@ pub fn take_if_current<T>(slot: &mut Option<T>, current: bool) -> Option<T> {
 }
 
 /// What `attach_child` decided.
-pub enum AttachOutcome {
+pub enum AttachOutcome<C = CommandChild> {
     Attached,
     /// The launch went stale while the child was being resolved,
     /// spawned, or written to -- hands the child back so the caller can
     /// kill it after unlock. Nothing else will ever kill an untracked
     /// child.
-    Refused(CommandChild),
+    Refused(C),
 }
 
 /// Installs `child` as the tracked process for `launch_id`, or refuses
 /// (see `should_attach`) and hands it back for the caller to kill.
-pub fn attach_child(
-    lifecycle: &mut Lifecycle,
-    launch_id: u64,
-    child: CommandChild,
-) -> AttachOutcome {
+pub fn attach_child<C>(lifecycle: &mut Lifecycle<C>, launch_id: u64, child: C) -> AttachOutcome<C> {
     let allowed = should_attach(lifecycle, launch_id);
     match attach_into(&mut lifecycle.child, allowed, child) {
         Ok(()) => AttachOutcome::Attached,
@@ -204,7 +219,12 @@ pub enum PortOutcome {
 /// Installs the session once `PANTHEA_PORT` is parsed, but only if
 /// `launch_id` is still current -- it must never install a dead
 /// launch's port/token as the tracked session.
-pub fn on_port(lifecycle: &mut Lifecycle, launch_id: u64, port: u16, token: String) -> PortOutcome {
+pub fn on_port<C>(
+    lifecycle: &mut Lifecycle<C>,
+    launch_id: u64,
+    port: u16,
+    token: String,
+) -> PortOutcome {
     if !is_current(lifecycle, launch_id) {
         return PortOutcome::Refused;
     }
@@ -275,8 +295,8 @@ pub struct TerminatedResult {
 /// launch (bumping the id so anything still carrying the old value is
 /// fenced out), and decides whether to retry or give up. Never retries
 /// once `quitting` or explicitly stopped.
-pub fn on_terminated(
-    lifecycle: &mut Lifecycle,
+pub fn on_terminated<C>(
+    lifecycle: &mut Lifecycle<C>,
     launch_id: u64,
     quitting: bool,
 ) -> TerminatedResult {
@@ -331,7 +351,7 @@ pub fn on_terminated(
 /// still current -- a later spawn, stop, or clear since it was
 /// scheduled refuses it before `begin_spawn`'s own stopped check ever
 /// runs.
-pub fn on_retry(lifecycle: &mut Lifecycle, launch_id: u64) -> Option<u64> {
+pub fn on_retry<C>(lifecycle: &mut Lifecycle<C>, launch_id: u64) -> Option<u64> {
     if !is_current(lifecycle, launch_id) {
         return None;
     }
@@ -340,8 +360,8 @@ pub fn on_retry(lifecycle: &mut Lifecycle, launch_id: u64) -> Option<u64> {
 
 /// The child and poll task taken out by `stop`, for the caller to kill
 /// and abort after unlock.
-pub struct StopResult {
-    pub child: Option<CommandChild>,
+pub struct StopResult<C = CommandChild> {
+    pub child: Option<C>,
     pub poll_task: Option<tauri::async_runtime::JoinHandle<()>>,
 }
 
@@ -349,7 +369,7 @@ pub struct StopResult {
 /// so anything still carrying the old value is fenced out), and takes
 /// the child and poll task handle out for the caller to kill/abort
 /// after unlock.
-pub fn stop(lifecycle: &mut Lifecycle) -> StopResult {
+pub fn stop<C>(lifecycle: &mut Lifecycle<C>) -> StopResult<C> {
     lifecycle.stopped = true;
     lifecycle.launch_id += 1;
     let child = lifecycle.child.take();
@@ -362,11 +382,51 @@ pub fn stop(lifecycle: &mut Lifecycle) -> StopResult {
 /// Restarts from a stopped or exhausted state: clears `stopped`,
 /// `exhausted`, and `restarts` (so backoff starts fresh rather than
 /// resuming where the supervisor gave up), then begins a new spawn.
-pub fn restart(lifecycle: &mut Lifecycle) -> Option<u64> {
+pub fn restart<C>(lifecycle: &mut Lifecycle<C>) -> Option<u64> {
     lifecycle.stopped = false;
     lifecycle.exhausted = false;
     lifecycle.restarts = 0;
     begin_spawn(lifecycle)
+}
+
+/// What `apply_restart` took out and decided, for the caller to carry out
+/// after unlock.
+pub struct ApplyRestartResult<C = CommandChild> {
+    /// The live child of the launch being replaced: the caller kills it.
+    pub child: Option<C>,
+    /// That launch's poll task: the caller aborts it.
+    pub poll_task: Option<tauri::async_runtime::JoinHandle<()>>,
+    /// The new launch to spawn, or `None` when the operator has stopped the
+    /// sidecar: a settings change never starts one the operator stopped.
+    pub launch_id: Option<u64>,
+}
+
+/// Replaces the current launch with a fresh one so a settings change (settings,
+/// a key, the offline switch) takes effect. Under the one lock it takes the
+/// running child and poll task, clears the session, resets the restart
+/// bookkeeping (a change is not a crash, and it revives an exhausted
+/// supervisor), and begins a new launch, bumping the id so everything the old
+/// launch still has in flight (frames, its Terminated event, a scheduled
+/// retry, an unfinished attach) becomes a no-op. The caller then kills the old
+/// child and spawns the new one after unlock. Refuses to spawn once stopped.
+pub fn apply_restart<C>(lifecycle: &mut Lifecycle<C>) -> ApplyRestartResult<C> {
+    if lifecycle.stopped {
+        return ApplyRestartResult {
+            child: None,
+            poll_task: None,
+            launch_id: None,
+        };
+    }
+    let child = lifecycle.child.take();
+    let poll_task = lifecycle.poll_task.take();
+    lifecycle.session = None;
+    lifecycle.exhausted = false;
+    lifecycle.restarts = 0;
+    ApplyRestartResult {
+        child,
+        poll_task,
+        launch_id: begin_spawn(lifecycle),
+    }
 }
 
 #[derive(Default)]
@@ -382,7 +442,11 @@ pub struct SidecarState {
 
 #[cfg(test)]
 mod tests {
+    use super::Lifecycle as GenericLifecycle;
     use super::*;
+
+    /// The shell's real lifecycle, so the older tests infer the child type.
+    type Lifecycle = GenericLifecycle<CommandChild>;
 
     fn key(sequence: u64, status: &str, session_id: &str) -> FrameKey {
         FrameKey {
@@ -899,5 +963,170 @@ mod tests {
         assert_eq!(lifecycle.last_frame, before_last_frame);
         assert_eq!(lifecycle.last_frame_body, before_last_frame_body);
         assert_eq!(lifecycle.world, before_world);
+    }
+
+    // --- apply_restart -----------------------------------------------------
+
+    fn running(child: &'static str) -> (GenericLifecycle<&'static str>, u64) {
+        let mut lifecycle: GenericLifecycle<&'static str> = GenericLifecycle::default();
+        let id = begin_spawn(&mut lifecycle).expect("spawn allowed");
+        lifecycle.child = Some(child);
+        on_port(&mut lifecycle, id, 4100, "tok-a".to_string());
+        lifecycle.last_frame_body = Some(serde_json::json!({"sequence": 1}));
+        (lifecycle, id)
+    }
+
+    #[test]
+    fn apply_restart_hands_back_the_live_child_and_poll_task_and_begins_a_new_launch() {
+        let (mut lifecycle, old_id) = running("old-child");
+        lifecycle.poll_task = Some(tauri::async_runtime::spawn(async {}));
+
+        let result = apply_restart(&mut lifecycle);
+
+        assert_eq!(result.child, Some("old-child"));
+        assert!(result.poll_task.is_some());
+        let new_id = result.launch_id.expect("a new launch begins");
+        assert_ne!(new_id, old_id);
+        assert!(is_current(&lifecycle, new_id));
+        assert!(!is_current(&lifecycle, old_id));
+        assert!(lifecycle.child.is_none());
+        assert!(lifecycle.poll_task.is_none());
+        assert_eq!(lifecycle.session, None);
+        assert_eq!(lifecycle.last_frame_body, None);
+        assert_eq!(lifecycle.world, Default::default());
+    }
+
+    #[test]
+    fn apply_restart_resets_the_crash_bookkeeping_and_revives_an_exhausted_supervisor() {
+        let (mut lifecycle, _) = running("old-child");
+        lifecycle.restarts = MAX_RESTARTS;
+        lifecycle.exhausted = true;
+
+        let result = apply_restart(&mut lifecycle);
+
+        assert!(result.launch_id.is_some());
+        assert_eq!(lifecycle.restarts, 0);
+        assert!(!lifecycle.exhausted);
+    }
+
+    #[test]
+    fn apply_restart_after_stop_spawns_nothing_and_leaves_the_sidecar_stopped() {
+        let (mut lifecycle, _) = running("old-child");
+        stop(&mut lifecycle);
+        let launch_before = lifecycle.launch_id;
+
+        let result: ApplyRestartResult<&'static str> = apply_restart(&mut lifecycle);
+
+        assert_eq!(result.launch_id, None);
+        assert_eq!(result.child, None);
+        assert!(result.poll_task.is_none());
+        assert!(lifecycle.stopped);
+        assert_eq!(lifecycle.launch_id, launch_before);
+    }
+
+    #[test]
+    fn apply_restart_before_any_child_exists_still_begins_a_launch() {
+        // A change that lands while the first spawn is still in flight.
+        let mut lifecycle: GenericLifecycle<&'static str> = GenericLifecycle::default();
+        let first = begin_spawn(&mut lifecycle).expect("spawn allowed");
+
+        let result = apply_restart(&mut lifecycle);
+
+        assert_eq!(result.child, None);
+        let second = result.launch_id.expect("a new launch begins");
+        // The in-flight spawn's child must be refused when it attaches.
+        assert!(!should_attach(&lifecycle, first));
+        assert!(should_attach(&lifecycle, second));
+    }
+
+    #[test]
+    fn the_replaced_childs_terminated_event_is_stale_and_schedules_no_retry() {
+        let (mut lifecycle, old_id) = running("old-child");
+        let result = apply_restart(&mut lifecycle);
+        let new_id = result.launch_id.expect("a new launch begins");
+        lifecycle.child = Some("new-child");
+        let restarts_before = lifecycle.restarts;
+
+        // The killed child's Terminated event arrives after the swap.
+        let terminated = on_terminated(&mut lifecycle, old_id, false);
+
+        assert_eq!(terminated.outcome, TerminatedOutcome::Stale);
+        assert_eq!(lifecycle.restarts, restarts_before);
+        assert_eq!(lifecycle.child, Some("new-child"));
+        assert!(is_current(&lifecycle, new_id));
+    }
+
+    #[test]
+    fn a_backoff_retry_scheduled_before_the_change_is_refused_when_it_fires() {
+        let (mut lifecycle, id) = running("old-child");
+        let terminated = on_terminated(&mut lifecycle, id, false);
+        let TerminatedOutcome::Retry {
+            retry_launch_id, ..
+        } = terminated.outcome
+        else {
+            panic!("expected a retry");
+        };
+
+        let result = apply_restart(&mut lifecycle);
+        assert!(result.launch_id.is_some());
+
+        assert_eq!(on_retry(&mut lifecycle, retry_launch_id), None);
+    }
+
+    // The two orders of a concurrent Stop and settings save, then two saves:
+    // never two live launches, never a spawn after Stop.
+
+    #[test]
+    fn save_then_stop_leaves_no_launch_that_may_attach() {
+        let (mut lifecycle, _) = running("old-child");
+        let spawned = apply_restart(&mut lifecycle)
+            .launch_id
+            .expect("a new launch begins");
+
+        let stopped = stop(&mut lifecycle);
+
+        assert!(stopped.child.is_none(), "the new child was never attached");
+        // The new launch's spawn is still in flight: it must be refused.
+        assert!(!should_attach(&lifecycle, spawned));
+    }
+
+    #[test]
+    fn stop_then_save_starts_nothing() {
+        let (mut lifecycle, _) = running("old-child");
+        let stopped = stop(&mut lifecycle);
+        assert_eq!(stopped.child, Some("old-child"));
+
+        let result = apply_restart(&mut lifecycle);
+
+        assert_eq!(result.launch_id, None);
+        assert_eq!(result.child, None);
+        assert!(lifecycle.stopped);
+    }
+
+    #[test]
+    fn two_saves_in_a_row_let_exactly_one_launch_attach() {
+        let (mut lifecycle, _) = running("old-child");
+        let first = apply_restart(&mut lifecycle)
+            .launch_id
+            .expect("first change begins a launch");
+        let second = apply_restart(&mut lifecycle)
+            .launch_id
+            .expect("second change begins a launch");
+
+        assert!(
+            !should_attach(&lifecycle, first),
+            "superseded: refused and killed"
+        );
+        assert!(should_attach(&lifecycle, second));
+        let mut slot = None;
+        assert_eq!(
+            attach_into(&mut slot, should_attach(&lifecycle, first), "a"),
+            Err("a")
+        );
+        assert_eq!(
+            attach_into(&mut slot, should_attach(&lifecycle, second), "b"),
+            Ok(())
+        );
+        assert_eq!(slot, Some("b"));
     }
 }

@@ -317,6 +317,9 @@ interface SpawnedService {
 }
 
 /** Spawns the service, writes `token` to stdin, and resolves once the port line is seen. */
+/** The launch config line the shell sends when no settings were saved. */
+const NO_SETTINGS_LINE = '{"models":null,"offline":false,"keys":{}}';
+
 async function spawnService(
   token: string,
   extraEnv: Record<string, string> = {},
@@ -336,7 +339,7 @@ async function spawnService(
   if (typeof writer === "number" || !writer) {
     throw new Error("expected a FileSink stdin (spawned with stdin: 'pipe')");
   }
-  writer.write(`${token}\n`);
+  writer.write(`${token}\n${NO_SETTINGS_LINE}\n`);
   await writer.flush();
 
   const reader = proc.stdout.getReader();
@@ -978,6 +981,27 @@ describe("service (bun run src/index.ts)", () => {
     expect(stdout).not.toContain("PANTHEA_PORT=");
   });
 
+  test("error path: stdin EOF after the token but before a launch config refuses to start (non-zero exit, never serves)", async () => {
+    const proc = Bun.spawn(["bun", "run", INDEX_ENTRY], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, PANTHEA_APP_DATA_DIR: appDataDir },
+    });
+    const stdin = proc.stdin;
+    if (typeof stdin === "number" || !stdin) {
+      throw new Error("expected a FileSink stdin");
+    }
+    stdin.write("token-without-config\n");
+    await stdin.end();
+    const exitCode = await proc.exited;
+    expect(exitCode).toBe(1);
+    const stdout = await new Response(proc.stdout).text();
+    expect(stdout).not.toContain("PANTHEA_PORT=");
+    const stderr = await new Response(proc.stderr).text();
+    expect(stderr).toContain("before a launch config");
+  });
+
   test("a duplicate launch against the same app data dir is refused", async () => {
     const first = await spawnService("test-token-3");
     try {
@@ -991,7 +1015,7 @@ describe("service (bun run src/index.ts)", () => {
       if (typeof secondStdin === "number" || !secondStdin) {
         throw new Error("expected a FileSink stdin");
       }
-      secondStdin.write("test-token-4\n");
+      secondStdin.write(`test-token-4\n${NO_SETTINGS_LINE}\n`);
       await secondStdin.flush();
       const exitCode = await second.exited;
       expect(exitCode).toBe(3);

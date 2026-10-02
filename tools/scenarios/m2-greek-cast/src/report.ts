@@ -44,7 +44,7 @@ and runs the compiled binary directly, with no Tauri, extending the
 reads, bounded waits, and positive-control pattern. Each run uses a fresh
 temporary app-data directory. The only scripted piece is the model provider: a
 loopback OpenAI-compatible endpoint the sidecar reaches through its production
-routing path, selected by \`PANTHEA_MODEL_CONFIG\`. It answers each god from a
+routing path, selected by the launch config line the harness sends. It answers each god from a
 queue the harness fills, or from a policy that is a pure function of the prompt
 the god was shown (Hera's), and it records every request with when it arrived.
 Stage-setting that is not a god's choice (moving the farmer to the tavern,

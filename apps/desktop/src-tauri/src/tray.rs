@@ -456,7 +456,7 @@ mod tests {
     fn a_stop_makes_the_display_stopped_regardless_of_a_running_status_from_before_it() {
         use crate::state::{begin_spawn, on_port, stop, Lifecycle};
 
-        let mut lifecycle = Lifecycle::default();
+        let mut lifecycle: Lifecycle = Lifecycle::default();
         let id = begin_spawn(&mut lifecycle).expect("spawn allowed");
         on_port(&mut lifecycle, id, 4100, "tok".to_string());
         lifecycle.world.status = Some("running".to_string()); // a frame arrived

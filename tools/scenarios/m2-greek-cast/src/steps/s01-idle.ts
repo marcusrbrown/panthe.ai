@@ -17,7 +17,7 @@ export async function stepIdle(
   await recorder.run(
     "S1",
     "Gods take idle turns through the production path",
-    "With PANTHEA_MODEL_CONFIG pointing at the scripted provider, the sidecar asks each god what to do; each prompt shows that god where it stands; a wait journals nothing; the trace records each request; the world is running, not model-degraded.",
+    "With the launch config line pointing at the scripted provider, the sidecar asks each god what to do; each prompt shows that god where it stands; a wait journals nothing; the trace records each request; the world is running, not model-degraded.",
     async (step) => {
       const { provider } = story;
       await waitFor(

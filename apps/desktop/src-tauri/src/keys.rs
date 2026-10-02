@@ -197,18 +197,27 @@ pub(crate) mod testing {
 
     use super::*;
 
-    /// In-memory store, one per test. `failing` makes every write fail
-    /// with an error that echoes the key, so a leak would show up.
+    /// In-memory store, one per test. `failing` makes every write fail and
+    /// `failing_reads` makes every read fail, each with a message that names
+    /// the key reference only.
     #[derive(Default)]
     pub struct MemoryKeyStore {
         entries: Mutex<HashMap<String, String>>,
         failing: bool,
+        failing_reads: bool,
     }
 
     impl MemoryKeyStore {
         pub fn failing() -> Self {
             Self {
                 failing: true,
+                ..Self::default()
+            }
+        }
+
+        pub fn failing_reads() -> Self {
+            Self {
+                failing_reads: true,
                 ..Self::default()
             }
         }
@@ -229,6 +238,11 @@ pub(crate) mod testing {
         }
 
         fn get(&self, key_ref: &str) -> Result<Option<String>, KeyError> {
+            if self.failing_reads {
+                return Err(KeyError::new(format!(
+                    "the Keychain is locked (while reading {key_ref})"
+                )));
+            }
             Ok(self.entries.lock().unwrap().get(key_ref).cloned())
         }
 

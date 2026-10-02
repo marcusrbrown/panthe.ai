@@ -11,6 +11,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+use panthea_desktop_lib::keys::{KeyError, UnavailableKeyStore};
+use panthea_desktop_lib::launch::build_launch_line;
 use panthea_desktop_lib::proxy;
 use panthea_desktop_lib::sidecar::parse_panthea_port;
 
@@ -63,7 +65,10 @@ fn spawn_sidecar(app_data_dir: &Path, token: &str) -> Option<(SidecarGuard, u16)
         .ok()?;
 
     let mut stdin = child.stdin.take()?;
-    writeln!(stdin, "{token}").ok()?;
+    // The token line, then the launch config line, built by the shell's own
+    // code: no settings saved, so no key is read.
+    let launch = build_launch_line(Ok(None), &UnavailableKeyStore::new(KeyError::new("unused")));
+    writeln!(stdin, "{token}\n{}", launch.line).ok()?;
 
     let stdout = child.stdout.take()?;
     let mut reader = BufReader::new(stdout);

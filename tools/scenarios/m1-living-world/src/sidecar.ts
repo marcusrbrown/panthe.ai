@@ -98,14 +98,29 @@ export interface StartOptions {
   readonly onSpawn?: (pid: number) => void | Promise<void>;
   /** Extra environment for the child, on top of this process's and `PANTHEA_APP_DATA_DIR`. */
   readonly env?: Readonly<Record<string, string>>;
+  /** The launch config line sent after the token, as the shell sends it: `{ models, offline, keys }`. Defaults to no settings, so no god takes a turn. */
+  readonly launchConfig?: LaunchConfigLine;
 }
+
+/** What the shell hands the sidecar after its token: the model settings' routing config (or null), the offline switch, and keys by `keyRef`. */
+export interface LaunchConfigLine {
+  readonly models: object | null;
+  readonly offline: boolean;
+  readonly keys: Readonly<Record<string, string>>;
+}
+
+const NO_SETTINGS: LaunchConfigLine = {
+  models: null,
+  offline: false,
+  keys: {},
+};
 
 /** How many sidecars this module started that are still running. */
 export function liveSidecarCount(): number {
   return live.size;
 }
 
-/** Launches the binary against `dataDir`, hands it a fresh token on stdin, and resolves once it prints its port. Stdin stays open: EOF makes the sidecar shut itself down. A child whose startup fails is killed before the error propagates. */
+/** Launches the binary against `dataDir`, hands it a fresh token and its launch config on stdin, and resolves once it prints its port. Stdin stays open: EOF makes the sidecar shut itself down. A child whose startup fails is killed before the error propagates. */
 export async function startSidecar(
   binary: string,
   dataDir: string,
@@ -151,7 +166,9 @@ export async function startSidecar(
   let port: number;
   try {
     try {
-      child.stdin.write(`${token}\n`);
+      child.stdin.write(
+        `${token}\n${JSON.stringify(options.launchConfig ?? NO_SETTINGS)}\n`,
+      );
       await child.stdin.flush();
     } catch (error) {
       // A child that closed its stdin or exited before reading the token breaks the pipe:

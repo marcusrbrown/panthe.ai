@@ -6,6 +6,7 @@
 
 mod commands;
 pub mod keys;
+pub mod launch;
 pub mod proxy;
 pub mod settings;
 pub mod sidecar;

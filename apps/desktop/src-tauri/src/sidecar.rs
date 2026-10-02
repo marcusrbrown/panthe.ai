@@ -16,9 +16,13 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+use crate::commands::KeyVault;
+use crate::launch::build_launch_line;
+use crate::settings::SettingsStore;
 use crate::state::{
-    attach_child, begin_spawn, on_port, on_retry, on_terminated, restart, stop, AttachOutcome,
-    PortOutcome, SidecarState, StopResult, TerminatedOutcome, MAX_RESTARTS,
+    apply_restart, attach_child, begin_spawn, on_port, on_retry, on_terminated, restart, stop,
+    ApplyRestartResult, AttachOutcome, PortOutcome, SidecarState, StopResult, TerminatedOutcome,
+    MAX_RESTARTS,
 };
 
 /// Matches the `externalBin` entry name in `tauri.conf.json` (the target
@@ -81,6 +85,42 @@ pub fn spawn_sidecar(app: AppHandle) {
     let Some(launch_id) = launch_id else {
         return;
     };
+    spawn_with_id(app, launch_id);
+}
+
+/// Applies a settings change (saved settings, a set or deleted key, the
+/// offline switch): replaces the running sidecar with a fresh launch that
+/// reads the new settings and keys. The old child is killed and its poll task
+/// aborted after unlock, never under the lock; the new launch gets a new id, so
+/// anything the old one still has in flight is dropped. Does nothing when the
+/// operator has stopped the sidecar. Blocks on the OS (kill, spawn, Keychain
+/// reads): call it off the main thread.
+pub fn apply_restart_sidecar(app: AppHandle) {
+    let ApplyRestartResult {
+        child,
+        poll_task,
+        launch_id,
+    } = {
+        let state = app.state::<SidecarState>();
+        let mut lifecycle = state
+            .lifecycle
+            .lock()
+            .expect("sidecar state mutex poisoned");
+        apply_restart(&mut lifecycle)
+    };
+
+    if let Some(child) = child {
+        if let Err(error) = child.kill() {
+            eprintln!("panthea-desktop: failed to kill the replaced sidecar: {error}");
+        }
+    }
+    if let Some(task) = poll_task {
+        task.abort();
+    }
+    let Some(launch_id) = launch_id else {
+        return;
+    };
+    crate::tray::refresh(&app);
     spawn_with_id(app, launch_id);
 }
 
@@ -161,8 +201,25 @@ fn spawn_with_id(app: AppHandle, launch_id: u64) {
         }
     };
 
-    if let Err(error) = child.write(format!("{token}\n").as_bytes()) {
-        eprintln!("panthea-desktop: failed to write launch token to sidecar stdin: {error}");
+    // The token line, then the launch config line (`{models, offline, keys}`),
+    // in one write. The config carries keys read from the credential store at
+    // this moment and nowhere else; the payload is never logged and is dropped
+    // as soon as it is written. Stdin stays open afterwards: its EOF is the
+    // sidecar's orphan guard and shutdown signal.
+    let written = {
+        let launch = build_launch_line(
+            app.state::<SettingsStore>().read(),
+            app.state::<KeyVault>().0.as_ref(),
+        );
+        for note in &launch.notes {
+            eprintln!("panthea-desktop: {note}");
+        }
+        child.write(format!("{token}\n{}\n", launch.line).as_bytes())
+    };
+    if let Err(error) = written {
+        eprintln!(
+            "panthea-desktop: failed to write launch token and config to sidecar stdin: {error}"
+        );
         // An unauthenticated child must never be tracked as healthy —
         // kill it immediately rather than leaving a live, un-tokened
         // process running with no supervisor awareness of the failure.

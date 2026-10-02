@@ -13,6 +13,7 @@ import {
   prepareOllama,
   type RealOptions,
 } from "./real";
+import { writeSamplePrompt } from "./sample-prompt";
 import {
   type EpisodeRecord,
   type EpisodeSettings,
@@ -112,6 +113,13 @@ export async function runEpisodes(
       writeFileSync(
         join(options.outDir, `episode-${index}.md`),
         renderTranscript(record),
+      );
+      // One turn as the model saw it, redacted with every key the run held.
+      writeSamplePrompt(
+        options.outDir,
+        run.sample,
+        { index, total: options.episodes },
+        Object.values(options.keys ?? {}),
       );
       records.push(record);
     });

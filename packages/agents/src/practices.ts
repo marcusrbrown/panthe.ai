@@ -9,12 +9,14 @@
 // or a cause, and one term picked from the closed checkable set. The parser is
 // the source of truth for which (move, thread) pairs are legal.
 
-import type {
-  EntityId,
-  EventId,
-  PracticeRefusedEvent,
-  PracticeTerm,
-  PracticeTermOffer,
+import {
+  createObservationId,
+  type EntityId,
+  type EventId,
+  type PracticeProposal,
+  type PracticeRefusedEvent,
+  type PracticeTerm,
+  type PracticeTermOffer,
 } from "@panthea/contracts";
 import {
   canStillPerform,
@@ -26,6 +28,7 @@ import {
   openPetitionsFor,
   practiceBalanceOf,
   termObstacle,
+  validatePractice,
   type WorldState,
 } from "@panthea/world";
 import type { ParseResult } from "./config";
@@ -131,6 +134,20 @@ export interface PracticeOptions {
   readonly offerable: readonly OfferablePrayer[];
   /** The stakes the world authored, by id: what a mortal becomes if it takes a god's boon and breaks the term. */
   readonly stakes: readonly { readonly id: string; readonly form: string }[];
+  /** For each prayer the god may set terms on that the world would take terms on, the offer written out in the intent the god would send. */
+  readonly offerTerms: Readonly<
+    Record<string, Readonly<Record<string, unknown>>>
+  >;
+  /** At most two bargains the god could begin, each legal as written; empty while a thread needs the god's answer or performance. */
+  readonly openings: readonly Opening[];
+}
+
+/** One bargain the god could begin, written out in the intent it would send. The world has already said it would take it. */
+export interface Opening {
+  readonly kind: "demand" | "offer";
+  /** What it rests on, in the god's own terms: the account it knows, or whose prayer. */
+  readonly label: string;
+  readonly intent: Readonly<Record<string, unknown>>;
 }
 
 /** A prayer a god may answer with terms. */
@@ -149,6 +166,8 @@ export const NO_PRACTICE: PracticeOptions = {
   causes: [],
   offerable: [],
   stakes: [],
+  offerTerms: {},
+  openings: [],
 };
 
 /** Whether a witnessed memory's event kind is a thread's ending, which its parties remember though no one stood at it. */
@@ -436,44 +455,253 @@ export function practiceBy(
     }
   }
   const byId = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const options: PracticeOptions = {
+    gods: [...state.actors.values()]
+      .filter((a) => a.isDeity && a.alive && a.id !== actorId)
+      .map((a) => a.id)
+      .sort(byId),
+    places: [...state.locations.keys()].sort(byId),
+    mortals: [...named]
+      .filter((id) => {
+        const actor = getActor(state, id);
+        return actor?.alive === true && actor.isDeity !== true;
+      })
+      .sort(byId),
+    resources: [...resources].sort(byId),
+    minTicks: practiceBalanceOf(state.rules, "minTermTicks"),
+    maxTicks: practiceBalanceOf(state.rules, "maxTermTicks"),
+    causes: demandCauses(shownMemories, actorId),
+    // A prayer to this god that is still open to an answer, with no terms standing on it, from a petitioner still living.
+    offerable: openPetitionsFor(state, actorId)
+      .filter(
+        (petition) =>
+          inAnswerWindow(state, petition, state.tick) &&
+          getActor(state, petition.petitioner)?.alive === true &&
+          ![...state.threads.values()].some(
+            (thread) => thread.petition === petition.id && isThreadOpen(thread),
+          ),
+      )
+      .map((petition) => ({
+        id: petition.id,
+        petitioner: petition.petitioner,
+      })),
+    stakes: Object.entries(state.rules.practiceStakes ?? {})
+      .map(([id, stake]) => ({ id, form: stake.form }))
+      .sort((a, b) => byId(a.id, b.id)),
+    offerTerms: {},
+    openings: [],
+  };
+  const offerTerms = offerTermsFor(state, actorId, options);
+  // A thread that needs this god's answer or performance leads the digest alone.
+  const needed = threads.some((view) => view.standing !== "other");
+  const demand = needed
+    ? undefined
+    : demandOpening(state, actorId, shownMemories, options);
+  const offer = needed ? undefined : offerOpening(state, options, offerTerms);
   return {
     threads,
     options: {
-      gods: [...state.actors.values()]
-        .filter((a) => a.isDeity && a.alive && a.id !== actorId)
-        .map((a) => a.id)
-        .sort(byId),
-      places: [...state.locations.keys()].sort(byId),
-      mortals: [...named]
-        .filter((id) => {
-          const actor = getActor(state, id);
-          return actor?.alive === true && actor.isDeity !== true;
-        })
-        .sort(byId),
-      resources: [...resources].sort(byId),
-      minTicks: practiceBalanceOf(state.rules, "minTermTicks"),
-      maxTicks: practiceBalanceOf(state.rules, "maxTermTicks"),
-      causes: demandCauses(shownMemories, actorId),
-      // A prayer to this god that is still open to an answer, with no terms standing on it, from a petitioner still living.
-      offerable: openPetitionsFor(state, actorId)
-        .filter(
-          (petition) =>
-            inAnswerWindow(state, petition, state.tick) &&
-            getActor(state, petition.petitioner)?.alive === true &&
-            ![...state.threads.values()].some(
-              (thread) =>
-                thread.petition === petition.id && isThreadOpen(thread),
-            ),
-        )
-        .map((petition) => ({
-          id: petition.id,
-          petitioner: petition.petitioner,
-        })),
-      stakes: Object.entries(state.rules.practiceStakes ?? {})
-        .map(([id, stake]) => ({ id, form: stake.form }))
-        .sort((a, b) => byId(a.id, b.id)),
+      ...options,
+      offerTerms,
+      openings: [
+        ...(demand === undefined ? [] : [demand]),
+        ...(offer === undefined ? [] : [offer]),
+      ],
     },
   };
+}
+
+// --- Openings --------------------------------------------------------------------------------
+
+/** A proposal the world would judge, built the way the service builds a god's: nothing here is committed. */
+const proposalBase = (actor: EntityId) => ({
+  schemaVersion: 1,
+  actor,
+  targets: [] as EntityId[],
+  expectedRevisions: [] as never[],
+  source: "model" as const,
+  observationId: createObservationId(),
+});
+
+/** How many ticks an opening's term allows: long enough to travel and act, inside the world's bounds. */
+const OPENING_TICKS = 90;
+const termTicks = (options: PracticeOptions) =>
+  Math.min(options.maxTicks, Math.max(options.minTicks, OPENING_TICKS));
+
+/**
+ * The offering a god could ask of the one who prayed: one unit of the first
+ * resource, in order, that the world would take as a term. Nothing about what
+ * the mortal holds is shown beyond that it could make it.
+ */
+function offerTermsFor(
+  state: WorldState,
+  actorId: EntityId,
+  options: PracticeOptions,
+): Record<string, Record<string, unknown>> {
+  const found: Record<string, Record<string, unknown>> = {};
+  for (const prayer of options.offerable) {
+    for (const resource of options.resources) {
+      const term = {
+        kind: "make-offering" as const,
+        party: prayer.petitioner,
+        to: actorId,
+        resource,
+        amount: 1,
+        deadlineTicks: termTicks(options),
+      };
+      const verdict = validatePractice(state, {
+        ...proposalBase(actorId),
+        kind: "practice",
+        move: "offer",
+        petition: prayer.id,
+        term,
+      } satisfies PracticeProposal);
+      if (verdict.ok) {
+        found[prayer.id] = {
+          action: "practice",
+          move: "offer",
+          prayer: prayer.id,
+          term,
+        };
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+/** The newest prayer the god may set terms on that the world would take them on. */
+function offerOpening(
+  state: WorldState,
+  options: PracticeOptions,
+  terms: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): Opening | undefined {
+  const prayer = options.offerable
+    .filter((candidate) => terms[candidate.id] !== undefined)
+    .sort(
+      (a, b) =>
+        (state.petitions.get(b.id)?.sequence ?? 0) -
+          (state.petitions.get(a.id)?.sequence ?? 0) || (a.id < b.id ? -1 : 1),
+    )[0];
+  if (prayer === undefined) return undefined;
+  return {
+    kind: "offer",
+    label: `set terms on ${prayer.petitioner}'s prayer [${prayer.id}]`,
+    intent: terms[prayer.id] as Record<string, unknown>,
+  };
+}
+
+/**
+ * A demand over a grievance the god knows: a harm one of its shown memories
+ * names, by or against another god, that the world would take a demand over.
+ * The most salient such memory comes first, then the most recent. The term is
+ * the first of these the world accepts: tell a legend where mortals are with
+ * it, come to where it stands (when the other god is not already there), ally
+ * with it, or come to where it stands regardless.
+ */
+function demandOpening(
+  state: WorldState,
+  actorId: EntityId,
+  shown: readonly MemoryEntry[],
+  options: PracticeOptions,
+): Opening | undefined {
+  const self = getActor(state, actorId);
+  if (self === undefined) return undefined;
+  const causeOf = new Map(
+    options.causes.map((cause) => [cause.memoryId, cause]),
+  );
+  const grievances = shown
+    .filter(
+      (memory) =>
+        memory.consequence?.effect === "harm" && causeOf.has(memory.id),
+    )
+    .sort(
+      (a, b) =>
+        b.salience - a.salience ||
+        b.recordedAt - a.recordedAt ||
+        (a.id < b.id ? -1 : 1),
+    );
+  const ticks = termTicks(options);
+  const here = self.locationId;
+  const mortalsHere = [...state.actors.values()].some(
+    (actor) =>
+      actor.alive && actor.isDeity !== true && actor.locationId === here,
+  );
+  for (const memory of grievances) {
+    const cause = causeOf.get(memory.id) as DemandCause;
+    const consequence = memory.consequence;
+    const named = [
+      ...(memory.kind === "told" ? [memory.teller] : []),
+      ...(consequence === undefined
+        ? []
+        : [
+            consequence.agent,
+            ...(consequence.target ? [consequence.target] : []),
+          ]),
+      ...memory.subjects,
+    ];
+    for (const god of [...new Set(named)]) {
+      if (!options.gods.includes(god)) continue;
+      const there = getActor(state, god)?.locationId === here;
+      const terms: PracticeTermOffer[] = [
+        ...(mortalsHere
+          ? [
+              {
+                kind: "tell-legend" as const,
+                party: god,
+                place: here,
+                deadlineTicks: ticks,
+              },
+            ]
+          : []),
+        ...(there
+          ? []
+          : [
+              {
+                kind: "be-at" as const,
+                party: god,
+                place: here,
+                deadlineTicks: ticks,
+              },
+            ]),
+        {
+          kind: "ally" as const,
+          party: god,
+          to: actorId,
+          deadlineTicks: ticks,
+        },
+        {
+          kind: "be-at" as const,
+          party: god,
+          place: here,
+          deadlineTicks: ticks,
+        },
+      ];
+      for (const term of terms) {
+        const verdict = validatePractice(state, {
+          ...proposalBase(actorId),
+          kind: "practice",
+          move: "demand",
+          counterparty: god,
+          cause: cause.id,
+          term,
+        } satisfies PracticeProposal);
+        if (verdict.ok) {
+          return {
+            kind: "demand",
+            label: `demand of ${god} (${cause.text} [${cause.id}])`,
+            intent: {
+              action: "practice",
+              move: "demand",
+              cause: cause.id,
+              term,
+            },
+          };
+        }
+      }
+    }
+  }
+  return undefined;
 }
 
 // --- The digest ------------------------------------------------------------------------------
@@ -567,15 +795,18 @@ const sizeOf = (lines: readonly string[]) =>
   lines.reduce((sum, line) => sum + line.length + 1, 0);
 
 /**
- * The digest that leads a god's prompt: empty when it has no open thread. Rows
- * come most urgent first. A row is shown in full while the budget lasts; after
- * that an obligation or a thread awaiting the god is compressed to one line and
- * always shown, while any other thread is shown compressed if there is room and
- * otherwise counted and cut.
+ * The digest that leads a god's prompt: empty when it has no open thread, no
+ * refusal to report, and no opening. Rows come most urgent first. A row is shown
+ * in full while the budget lasts; after that an obligation or a thread awaiting
+ * the god is compressed to one line and always shown, while any other thread is
+ * shown compressed if there is room and otherwise counted and cut. The openings
+ * (bargains the god could begin, empty while a thread needs it) and the refusal
+ * come after every row, so an obligation still leads; their size is reserved.
  */
 export function describeDigest(
   threads: readonly ThreadView[],
   refusal?: PracticeRefusalView,
+  openings: readonly Opening[] = [],
   budget = DIGEST_BUDGET_CHARS,
 ): string[] {
   // A refusal bound to an open thread is said on that thread's row; any other is a line of its own.
@@ -586,10 +817,25 @@ export function describeDigest(
     refusal === undefined || onRow
       ? []
       : [`- Your last ${refusal.attempted} was refused: ${refusal.text}.`];
-  if (threads.length === 0 && lineOf.length === 0) return [];
-  // The refusal comes after every row, so an obligation still leads the digest; its size is reserved.
+  const openingLines =
+    openings.length === 0
+      ? []
+      : [
+          "- You may begin a bargain if you wish (nothing requires it); each of these is legal as written:",
+          ...openings.map(
+            (opening) =>
+              `  ${opening.label}: ${JSON.stringify(opening.intent)}`,
+          ),
+        ];
+  if (
+    threads.length === 0 &&
+    lineOf.length === 0 &&
+    openingLines.length === 0
+  ) {
+    return [];
+  }
   const lines: string[] = [PRACTICES_HEADING];
-  let used = sizeOf(lines) + sizeOf(lineOf);
+  let used = sizeOf(lines) + sizeOf(lineOf) + sizeOf(openingLines);
   let cut = 0;
   for (const view of threads) {
     const full = fullRow(view);
@@ -609,13 +855,18 @@ export function describeDigest(
   if (cut > 0) {
     lines.push(`- (${cut} more open thread${cut === 1 ? "" : "s"} not shown)`);
   }
-  lines.push(...lineOf);
+  lines.push(...openingLines, ...lineOf);
   return lines;
 }
 
 // --- The instructions ------------------------------------------------------------------------
 
-/** What practices are and how to move in one, told only to a god that can move in one. */
+/**
+ * What a god needs to name in a practice that the rows and openings do not
+ * show: that only moves bind, which causes it may demand over, and the stakes it
+ * may add to an offer. The terms themselves are shown in full shape where they
+ * can be used (an opening, a prayer's terms, a thread's row), never as a list.
+ */
 export function describePracticeInstructions(
   threads: readonly ThreadView[],
   options: PracticeOptions,
@@ -624,21 +875,22 @@ export function describePracticeInstructions(
   const canDemand = options.causes.length > 0 && options.gods.length > 0;
   const canOffer = options.offerable.length > 0;
   if (!canAnswer && !canDemand && !canOffer) return [];
-  const lines: string[] = [];
-  if (canOffer) {
-    lines.push(
-      `You may answer a prayer on terms (action "practice", move "offer", prayer: the prayer's id): your boon for one offering by the one who prayed, to you, by a deadline. Send a make-offering term (party the one who prayed, to you, a resource, an amount, deadlineTicks), and optionally a stake: what they become if they take your boon and break the term (${options.stakes.map((stake) => stake.id).join(", ") || "none authored"}). Once they accept, the boon is still yours to give with "bless" or "strike". Prayers you may set terms on: ${options.offerable.map((prayer) => `[${prayer.id}] ${prayer.petitioner}`).join("; ")}.`,
-    );
-  }
+  const lines = [
+    'A practice (action "practice") is a bargain the world holds and judges: only moves bind, and words never do. Each carries a move, the thread, cause, or prayer it names, and one term {kind, party, deadlineTicks, and what the kind needs}; the rows and openings below show them in full.',
+  ];
   if (canDemand) {
     lines.push(
-      `You may bargain with another god through the world (action "practice"). To demand something, send move "demand" with a cause you were shown and one term for that god to do by a deadline: tell a legend at a place, be at a place, stay away from a place, give a resource, bless a mortal, make an offering, or ally with you. The world checks the term itself; only moves bind, and words never do.`,
       `Causes you may demand over: ${options.causes.map((cause) => `[${cause.id}] ${cause.text}`).join("; ")}.`,
+    );
+  }
+  if (canOffer && options.stakes.length > 0) {
+    lines.push(
+      `An offer on a prayer (move "offer") may add a stake: what the one who prayed becomes if it takes your boon and breaks the term (${options.stakes.map((stake) => stake.id).join(", ")}). The boon stays yours to give.`,
     );
   }
   if (canAnswer) {
     lines.push(
-      'Answer an open thread with action "practice", its thread id, and one of the moves its row lists. A counter or demand carries one term: {kind, party, and place, or to, or mortal, with resource and amount where it gives or offers, and deadlineTicks}.',
+      "Answer an open thread with its id and one of the moves its row lists; a counter carries a new term.",
     );
   }
   return lines;

@@ -199,6 +199,8 @@ export interface PetitionView {
   }[];
   /** Whether the petitioner stands with the god, so a bless is possible. */
   readonly petitionerHere: boolean;
+  /** The terms the god could offer on this prayer, written out in the intent it would send; absent when the world would take none. */
+  readonly offer?: Readonly<Record<string, unknown>>;
 }
 
 /** A refusal of the god's last goal change, as the prompt tells it. */
@@ -487,6 +489,12 @@ export function rememberedBy(
     petitions.map((petition) => petition.petitioner),
     refused,
   );
+  // The terms the world would take on each prayer ride with it, so the prayer can show the god its choices.
+  const prayers = petitions.map((petition) =>
+    options.offerTerms[petition.id] === undefined
+      ? petition
+      : { ...petition, offer: options.offerTerms[petition.id] },
+  );
   const lock =
     state.rules.petitionBalance === undefined
       ? undefined
@@ -499,7 +507,7 @@ export function rememberedBy(
     ).slice(-MAX_OWN_ACTIONS),
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
-    petitions,
+    petitions: prayers,
     goalLockTicks: lock,
     blessCost: petitionBalanceOf(state.rules, "blessDivinityCost"),
     refusal:
@@ -1286,23 +1294,42 @@ function targetIsHere(snapshot: PerceptionSnapshot, target: EntityId): boolean {
   );
 }
 
-/** One short line on how to answer a prayer from where the god stands: bless or strike now, or the next hop toward it first. */
+/**
+ * The ways a god may answer a prayer, as a choice and not a command: help (or
+ * punish) freely, where the way there is said only for one who chooses it; set
+ * terms, written out in full when the world would take them; or let it be.
+ */
 function answerGuidance(petition: PetitionView): string[] {
   const { request } = petition;
+  const terms =
+    petition.offer === undefined
+      ? []
+      : [
+          `  - set terms (your boon for an offering, to be judged by the world): ${JSON.stringify(petition.offer)}`,
+        ];
+  const letBe = "  - or let it be: waiting is always allowed.";
+  const free = (lines: readonly string[]) => [
+    "  Your choices:",
+    ...lines,
+    ...terms,
+    letBe,
+  ];
   if (request.kind === "help") {
     if (petition.petitionerHere) {
-      return [
-        `  ${petition.petitioner} is here: bless them now (action "bless", petition [${petition.id}]) to answer it.`,
-      ];
+      return free([
+        `  - help freely: ${petition.petitioner} is here (action "bless", petition [${petition.id}]).`,
+      ]);
     }
     const hop = petition.whereabouts.find((entry) =>
       entry.who.includes(petition.petitioner),
     )?.place.hop;
-    return hop === undefined
-      ? []
-      : [
-          `  To answer it, send action "${hop.action}" with to "${hop.id}" (${hop.name}) toward ${petition.petitioner}, and keep going each turn until you are with them; then bless them.`,
-        ];
+    return free(
+      hop === undefined
+        ? []
+        : [
+            `  - help freely: ${petition.petitioner} is not here; if you choose this, go toward them (action "${hop.action}", to "${hop.id}", ${hop.name}) turn by turn until you are with them, then bless them (action "bless", petition [${petition.id}]).`,
+          ],
+    );
   }
   const buildings = request.buildings;
   const here = petition.whereabouts.find(
@@ -1312,19 +1339,21 @@ function answerGuidance(petition: PetitionView): string[] {
   const target = (entry: { who: readonly EntityId[] }) =>
     entry.who.find((id) => buildings.includes(id));
   if (here !== undefined) {
-    return [
-      `  ${target(here)} is here: strike it (action "strike") to answer it.`,
-    ];
+    return free([
+      `  - punish freely: ${target(here)} is here (action "strike").`,
+    ]);
   }
   const away = petition.whereabouts.find(
     (entry) => entry.place.hop !== undefined && target(entry) !== undefined,
   );
   const hop = away?.place.hop;
-  return away === undefined || hop === undefined
-    ? []
-    : [
-        `  To answer it, send action "${hop.action}" with to "${hop.id}" (${hop.name}) toward ${away.place.name}, and keep going each turn until you are there; then strike ${target(away)}.`,
-      ];
+  return free(
+    away === undefined || hop === undefined
+      ? []
+      : [
+          `  - punish freely: if you choose this, go toward ${away.place.name} (action "${hop.action}", to "${hop.id}", ${hop.name}) turn by turn until you are there, then strike ${target(away)}.`,
+        ],
+  );
 }
 
 /** The heading of the prayers section: the one place the divine sense delivers petitions, found by it (with the indented and dashed lines under it) wherever a prompt is checked for another god's prayers. */
@@ -1478,7 +1507,11 @@ export function buildGodContext(
           .map((item) => `${item.resource} ${item.amount}`)
           .join(", ");
   const prompt = [
-    ...describeDigest(remembered.threads, remembered.practiceRefusal),
+    ...describeDigest(
+      remembered.threads,
+      remembered.practiceRefusal,
+      remembered.practice.openings,
+    ),
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
     ...describePetitions(remembered),

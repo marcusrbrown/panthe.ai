@@ -209,17 +209,22 @@ test("a prayer whose answer window has closed (not yet lapsed by the world) is n
   expect(run.view("zeus").remembered.practice.offerable).toEqual([]);
 });
 
-test("the instructions tell a god it may set terms, name the prayers it may set them on and the stakes it may attach, and say the boon is still its own to give", () => {
+test("the instructions name the stakes a god may attach to an offer; the prayer itself, not a list, shows the terms it may set and the boon stays its own to give", () => {
   const run = new Run();
   const petition = run.prays();
-  const { instructions } = run.view("zeus").context;
-  expect(instructions).toContain('move "offer"');
-  expect(instructions).toContain(`[${petition}] farmer`);
+  const { instructions, prompt } = run.view("zeus").context;
+  expect(instructions).toContain('(move "offer")');
+  expect(instructions).toContain("stake");
   expect(instructions).toContain("wolf");
-  expect(instructions).toContain('"bless"');
-  expect(instructions).toMatch(/stake/i);
+  expect(instructions).toContain("The boon stays yours to give");
+  // The prayer lists the farmer and its choices, with the terms written out; the instructions no longer list them.
+  expect(instructions).not.toContain(`[${petition}] farmer`);
+  expect(prompt).toContain(`[${petition}] farmer`);
+  expect(prompt).toContain("set terms");
+  expect(prompt).toContain('action "bless"');
   // Hera has no prayers: she is told nothing about offering terms.
   expect(run.view("hera").context.instructions).not.toContain('move "offer"');
+  expect(run.view("hera").context.prompt).not.toContain("set terms");
 });
 
 // --- Parsing ----------------------------------------------------------------------------------

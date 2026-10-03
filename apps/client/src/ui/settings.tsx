@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ModelSettingsTransport } from "../connection";
+import { GOD_PROFILE_ROSTER } from "./god-roster";
 import "./settings.css";
 
 type EndpointState = "untried" | "ok" | "failed";
@@ -60,13 +61,10 @@ type Validation =
   | { readonly ok: false; readonly errors: Readonly<Record<string, string>> };
 
 /** The gods an operator can assign. The id is the role key the router looks up (the lowercase actor id) and the only form ever saved; the label is for display. */
-const ROLES = [
-  { id: "zeus", label: "Zeus" },
-  { id: "hera", label: "Hera" },
-] as const;
+const ROLES = GOD_PROFILE_ROSTER;
 
 function roleLabel(id: string): string {
-  return ROLES.find((role) => role.id === id)?.label ?? id;
+  return ROLES.find((role) => role.id === id)?.name ?? id;
 }
 
 function emptyRole(): RoleFormFields {
@@ -658,87 +656,95 @@ export function SettingsView({
                 return (
                   <fieldset className="role-row" key={roleName}>
                     <legend>{roleLabel(roleName)}</legend>
-                    <label>
-                      Endpoint
-                      <select
-                        value={role.endpoint}
-                        onChange={(event) =>
-                          setForm((prior) =>
-                            updateRoleField(prior, roleName, {
-                              endpoint: event.target.value,
-                            }),
-                          )
-                        }
-                        aria-invalid={Boolean(
-                          errors[`roles.${roleName}.endpoint`],
+                    <div className="role-row-fields">
+                      <span className="role-name" aria-hidden="true">
+                        {roleLabel(roleName)}
+                      </span>
+                      <label>
+                        Endpoint
+                        <select
+                          value={role.endpoint}
+                          onChange={(event) =>
+                            setForm((prior) =>
+                              updateRoleField(prior, roleName, {
+                                endpoint: event.target.value,
+                              }),
+                            )
+                          }
+                          aria-invalid={Boolean(
+                            errors[`roles.${roleName}.endpoint`],
+                          )}
+                        >
+                          <option value="">No endpoint</option>
+                          {form.endpoints.map((endpoint) => (
+                            <option key={endpoint.uiKey} value={endpoint.id}>
+                              {endpoint.id || "Unnamed endpoint"}
+                            </option>
+                          ))}
+                        </select>
+                        <FieldError
+                          message={errors[`roles.${roleName}.endpoint`]}
+                        />
+                      </label>
+                      <label>
+                        <span>
+                          Model override{" "}
+                          <span className="optional-label">Optional</span>
+                        </span>
+                        <input
+                          value={role.model}
+                          placeholder="Endpoint model"
+                          onChange={(event) =>
+                            setForm((prior) =>
+                              updateRoleField(prior, roleName, {
+                                model: event.target.value,
+                              }),
+                            )
+                          }
+                        />
+                        {role.model && (
+                          <small className="section-hint">
+                            Model name is sent as entered and is not checked
+                            here.
+                          </small>
                         )}
-                      >
-                        <option value="">No endpoint</option>
-                        {form.endpoints.map((endpoint) => (
-                          <option key={endpoint.uiKey} value={endpoint.id}>
-                            {endpoint.id || "Unnamed endpoint"}
-                          </option>
-                        ))}
-                      </select>
-                      <FieldError
-                        message={errors[`roles.${roleName}.endpoint`]}
-                      />
-                    </label>
-                    <label>
-                      Model override{" "}
-                      <span className="optional-label">Optional</span>
-                      <input
-                        value={role.model}
-                        placeholder="Use endpoint model"
-                        onChange={(event) =>
-                          setForm((prior) =>
-                            updateRoleField(prior, roleName, {
-                              model: event.target.value,
-                            }),
-                          )
-                        }
-                      />
-                      {role.model && (
-                        <small className="section-hint">
-                          Model name is sent as entered and is not checked here.
-                        </small>
-                      )}
-                    </label>
-                    <label>
-                      Role fallback order
-                      <input
-                        value={role.fallback}
-                        placeholder="endpoint-a, endpoint-b"
-                        disabled={role.inheritFallback}
-                        onChange={(event) =>
-                          setForm((prior) =>
-                            updateRoleField(prior, roleName, {
-                              fallback: event.target.value,
-                            }),
-                          )
-                        }
-                        aria-invalid={Boolean(
-                          errors[`roles.${roleName}.fallback`],
-                        )}
-                      />
-                      <FieldError
-                        message={errors[`roles.${roleName}.fallback`]}
-                      />
-                    </label>
-                    <label className="toggle-row role-fallback-toggle">
-                      <input
-                        type="checkbox"
-                        checked={role.inheritFallback}
-                        onChange={(event) =>
-                          setForm((prior) =>
-                            updateRoleField(prior, roleName, {
-                              inheritFallback: event.target.checked,
-                            }),
-                          )
-                        }
-                      />
-                      <span>Use the global fallback</span>
-                    </label>
+                      </label>
+                      <label>
+                        Role fallback order
+                        <input
+                          value={role.fallback}
+                          placeholder="endpoint-a, endpoint-b"
+                          disabled={role.inheritFallback}
+                          onChange={(event) =>
+                            setForm((prior) =>
+                              updateRoleField(prior, roleName, {
+                                fallback: event.target.value,
+                              }),
+                            )
+                          }
+                          aria-invalid={Boolean(
+                            errors[`roles.${roleName}.fallback`],
+                          )}
+                        />
+                        <FieldError
+                          message={errors[`roles.${roleName}.fallback`]}
+                        />
+                      </label>
+                      <label className="toggle-row role-fallback-toggle">
+                        <input
+                          type="checkbox"
+                          checked={role.inheritFallback}
+                          onChange={(event) =>
+                            setForm((prior) =>
+                              updateRoleField(prior, roleName, {
+                                inheritFallback: event.target.checked,
+                              }),
+                            )
+                          }
+                        />
+                        <span>Use the global fallback</span>
+                      </label>
+                    </div>
                   </fieldset>
                 );
               })}

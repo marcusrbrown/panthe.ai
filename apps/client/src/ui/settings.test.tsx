@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
 import { parseRoutingConfig, planRoute } from "@panthea/agents/config";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { ModelSettingsTransport } from "../connection";
+import { GOD_PROFILE_ROSTER } from "./god-roster";
 import {
   deleteEndpointKey,
   formToSettings,
@@ -31,6 +33,20 @@ const models = {
   roles: { zeus: { endpoint: "local", fallback: ["hosted"] } },
   fallback: ["hosted"],
 };
+
+const GOD_PROFILES_DIR = new URL(
+  "../../../../content/greek/gods/",
+  import.meta.url,
+);
+const AUTHORED_GODS = readdirSync(GOD_PROFILES_DIR)
+  .filter((filename) => filename.endsWith(".json"))
+  .sort()
+  .map((filename) => {
+    const profile = JSON.parse(
+      readFileSync(new URL(filename, GOD_PROFILES_DIR), "utf8"),
+    ) as { id: string; name: string };
+    return { id: profile.id, name: profile.name };
+  });
 
 function fakeTransport(overrides: Partial<ModelSettingsTransport> = {}) {
   const calls: { method: string; value?: unknown }[] = [];
@@ -241,7 +257,7 @@ test("a Zeus assignment made in the form is saved as roles.zeus and routes to th
 
 test("Hera is a row of her own, and the rows show names while the settings hold ids", () => {
   let form = settingsToForm(undefined);
-  expect(Object.keys(form.roles)).toEqual(["zeus", "hera"]);
+  expect(Object.keys(form.roles)).toEqual(AUTHORED_GODS.map((god) => god.id));
   form = { ...form, endpoints: [localEndpoint] };
   form = updateRoleField(form, "hera", { endpoint: "local", model: "other" });
   expect(Object.keys(formToSettings(form).models.roles)).toEqual(["hera"]);
@@ -256,6 +272,61 @@ test("Hera is a row of her own, and the rows show names while the settings hold 
   expect(html).toContain("<legend>Hera</legend>");
 });
 
+test("every god profile in the Greek pack has a settings row", () => {
+  expect(JSON.stringify(GOD_PROFILE_ROSTER)).toBe(
+    JSON.stringify(AUTHORED_GODS),
+  );
+  const html = renderToStaticMarkup(
+    <SettingsView
+      transport={fakeTransport().transport}
+      initialSettings={{ models, offline: false }}
+    />,
+  );
+  const legends = [...html.matchAll(/<legend>([^<]+)<\/legend>/g)].map(
+    (match) => match[1],
+  );
+
+  expect(legends).toEqual(GOD_PROFILE_ROSTER.map((god) => god.name));
+});
+
+test("each profile routes from its lowercase id and role fallback choice round-trips", async () => {
+  let form = settingsToForm(undefined);
+  form = { ...form, endpoints: [localEndpoint] };
+  for (const god of AUTHORED_GODS) {
+    form = updateRoleField(form, god.id, {
+      endpoint: "local",
+      inheritFallback: god.id !== "athena",
+      fallback: god.id === "athena" ? "" : "local",
+    });
+  }
+
+  const saved = formToSettings(form);
+  const result = await persistModelSettings(saved, fakeTransport().transport);
+  expect(result).toEqual({ ok: true });
+  expect(Object.keys(saved.models.roles).sort()).toEqual(
+    AUTHORED_GODS.map((god) => god.id).sort(),
+  );
+  const parsed = parseRoutingConfig(saved.models);
+  if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+  for (const god of AUTHORED_GODS) {
+    expect(
+      planRoute(parsed.value, god.id, { offline: false }).steps.map(
+        (step) => step.endpoint.id,
+      ),
+    ).toEqual(["local"]);
+  }
+
+  const roundTripped = settingsToForm(saved);
+  expect(roundTripped.roles.athena?.inheritFallback).toBe(false);
+  expect(roundTripped.roles.athena?.fallback).toBe("");
+  for (const god of AUTHORED_GODS.filter((entry) => entry.id !== "athena")) {
+    expect(roundTripped.roles[god.id]?.inheritFallback).toBe(true);
+    expect(
+      formToSettings(roundTripped).models.roles[god.id],
+    ).not.toHaveProperty("fallback");
+  }
+});
+
 test("settings loaded keyed by id fill the matching rows and add no duplicate row", () => {
   const form = settingsToForm({
     models: {
@@ -264,7 +335,7 @@ test("settings loaded keyed by id fill the matching rows and add no duplicate ro
     },
     offline: false,
   });
-  expect(Object.keys(form.roles)).toEqual(["zeus", "hera"]);
+  expect(Object.keys(form.roles)).toEqual(AUTHORED_GODS.map((god) => god.id));
   expect(form.roles.zeus).toEqual({
     endpoint: "local",
     model: "x",
@@ -338,11 +409,19 @@ test("each role row offers a Use the global fallback checkbox, checked only whil
     />,
   );
   const boxes = html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [];
-  // Zeus has an explicit (empty) list; Hera has no assignment and so inherits. The offline toggle is the third.
-  expect(html.match(/Use the global fallback/g)).toHaveLength(2);
-  expect(boxes).toHaveLength(3);
-  expect(boxes[0]).not.toContain("checked");
-  expect(boxes[1]).toContain("checked");
+  const rows = [
+    ...html.matchAll(/<fieldset class="role-row"[\s\S]*?<\/fieldset>/g),
+  ].map((match) => match[0]);
+  const roleToggle = (name: string) =>
+    rows
+      .find((row) => row.includes(`<legend>${name}</legend>`))
+      ?.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0];
+
+  expect(html.match(/Use the global fallback/g)).toHaveLength(7);
+  expect(boxes).toHaveLength(8);
+  expect(roleToggle("Zeus")).not.toContain("checked");
+  expect(roleToggle("Hera")).toContain("checked");
+  expect(boxes.at(-1)).not.toContain("checked");
 });
 
 test("role fallback toggles expose a separate layout hook from the offline toggle", () => {
@@ -354,7 +433,7 @@ test("role fallback toggles expose a separate layout hook from the offline toggl
   );
 
   expect(html.match(/class="toggle-row role-fallback-toggle"/g)).toHaveLength(
-    2,
+    7,
   );
 });
 

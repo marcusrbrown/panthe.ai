@@ -252,23 +252,54 @@
   flex: 0 0 auto;
 }
 .role-row {
-  display: grid;
-  grid-template-columns: minmax(100px, 0.75fr) minmax(145px, 1fr) minmax(
-      180px,
-      1.25fr
-    );
-  gap: 12px;
-  margin: 0 0 11px;
-  padding: 12px 13px 13px;
+  min-width: 0;
+  margin: 0 0 3px;
+  padding: 0;
   border: 1px solid var(--line);
   background: var(--paper-raised);
 }
 .role-row legend {
-  padding: 0 7px;
-  font: 500 17px var(--serif);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.role-row-fields {
+  min-width: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(82px, 0.48fr)
+    minmax(80px, 0.65fr)
+    minmax(90px, 0.75fr)
+    minmax(120px, 0.95fr)
+    minmax(128px, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+}
+.role-name {
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--ink);
+  font: 500 15px / 1.1 var(--serif);
 }
 .role-row .role-fallback-toggle {
-  grid-column: 3;
+  grid-column: 5;
+}
+.roles-section .settings-section-heading {
+  margin-bottom: 8px;
+}
+.settings-page .role-row label {
+  gap: 2px;
+  font-size: 10px;
+}
+.settings-page .role-row input:not([type="checkbox"]),
+.settings-page .role-row select {
+  min-height: 28px;
+  padding: 5px 7px;
+  font-size: 11px;
 }
 .global-fallback {
   margin-top: 18px;
@@ -291,6 +322,11 @@
   color: var(--ink);
   font-size: 12px;
   cursor: pointer;
+}
+.settings-page .role-row .toggle-row {
+  gap: 7px;
+  padding: 2px 0;
+  font-size: 9px;
 }
 .toggle-row input {
   width: 16px;
@@ -388,8 +424,11 @@
     padding-right: 20px;
     padding-left: 20px;
   }
-  .role-row {
-    grid-template-columns: minmax(100px, 0.7fr) minmax(130px, 1fr);
+  .role-row-fields {
+    grid-template-columns: minmax(90px, 0.7fr) minmax(140px, 1fr);
+  }
+  .role-name {
+    grid-column: 1 / -1;
   }
   .role-row .role-fallback-toggle {
     grid-column: 2;
@@ -444,8 +483,11 @@
     font-size: 10px;
   }
   .endpoint-fields,
-  .role-row {
+  .role-row-fields {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .role-name {
+    grid-column: auto;
   }
   .role-row .role-fallback-toggle {
     grid-column: auto;

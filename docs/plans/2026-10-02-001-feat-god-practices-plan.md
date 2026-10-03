@@ -219,7 +219,7 @@ flowchart TB
 
 ### Phase A — Zeus and Hera settle and answer
 
-- [ ] **Unit 1: Thread core and settlement lifecycle**
+- [x] **Unit 1: Thread core and settlement lifecycle**
 
 **Goal:** a world-held thread for demand and settlement, with moves, checkable terms, deadlines, and world-judged endings.
 
@@ -261,7 +261,7 @@ flowchart TB
 
 **Verification:** lifecycle tests pass; archive round-trip equal; `bun run check` passes.
 
-- [ ] **Unit 2: God prompt, schema, and proposal builder for practices**
+- [x] **Unit 2: God prompt, schema, and proposal builder for practices**
 
 **Goal:** gods see their threads and make practice moves within 4K.
 
@@ -295,7 +295,7 @@ flowchart TB
 
 **Verification:** tests pass; prompt-size change recorded; `bun run check` passes.
 
-- [ ] **Unit 3: Anti-loop rules**
+- [x] **Unit 3: Anti-loop rules**
 
 **Goal:** the old loop cannot return inside a practice.
 
@@ -330,7 +330,7 @@ flowchart TB
 
 **Verification:** tests pass; `bun run check` passes.
 
-- [ ] **Unit 4: Endings, oath penalty, alliances, and transformation**
+- [x] **Unit 4: Endings, oath penalty, alliances, and transformation**
 
 **Goal:** endings change the world and the gods, using sourced motifs.
 
@@ -365,7 +365,7 @@ flowchart TB
 
 **Verification:** tests pass; content parses; archive round-trip equal.
 
-- [ ] **Unit 5: Supplication replaces petitions**
+- [x] **Unit 5: Supplication replaces petitions**
 
 **Goal:** mortals supplicate, gods answer or offer terms, and mortals keep or break them.
 
@@ -430,6 +430,8 @@ flowchart TB
 - Happy path: the transcript lists open threads with age and wait reason, and each obligated turn's choice.
 
 **Verification:** `scenario:m2` passes and its controls fail as required; the gate transcripts are committed and rated by the owner.
+
+Status (2026-10-03): the scenario and harness are done (34159f4). The gate ran three times with fixes between runs (cbd8c76, 81f2be1, 46ca1ea): 0 practice moves in 115 requests on 34159f4; 12 threads and 43 of 91 requests exhausted on cbd8c76; 28 threads, 27 ended (25 supplications fulfilled, 1 expired, 1 open at the end, 1 Zeus–Hera settlement fulfilled), nothing refused or breached, and 5 of 103 requests exhausted on 46ca1ea. The "supplication and settlement with at least one refused or breached" property failed in every episode, and Zeus failed influence in all three. The owner did not rate the gate, so Unit 6's verification stays open; Phase B proceeds by owner decision (2026-10-03), where rivals and stakes are expected to produce settlements and refusals. Evidence: `tools/scenarios/m2-greek-cast/episodes/2026-10-02T21-45-43/`, `2026-10-02T22-50-35/`, `2026-10-03T00-38-55/`.
 
 ### Phase B — Cast, contest, and scheduler
 

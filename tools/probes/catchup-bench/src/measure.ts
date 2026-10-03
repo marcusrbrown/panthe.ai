@@ -33,8 +33,14 @@ import {
 export interface RunResult {
   /** Wall time of the whole call, in ms. */
   readonly totalMs: number;
-  /** Time between each chunk boundary the caller was told of, in ms: compute, commit, and the yield. */
+  /**
+   * One interval per chunk, in ms: from the previous commit (the start of the
+   * call, for the first) to this chunk's commit, so compute, commit, and the
+   * event-loop yield before it. Every chunk is here, the last included.
+   */
   readonly chunkGapsMs: readonly number[];
+  /** The ending commit (the cursor's jump and the backlog's summary), which follows the last chunk with no yield between: its own interval, not part of any chunk's. */
+  readonly endingCommitMs: number;
   /** What the hour added to the log and the trace. */
   readonly added: Counts;
   readonly walPeakBytes: number;
@@ -54,7 +60,7 @@ function afterRun(
   startSequence: number,
   walPeak: number,
   dbBytesBefore: number,
-): Omit<RunResult, "totalMs" | "chunkGapsMs" | "ticks"> {
+): Omit<RunResult, "totalMs" | "chunkGapsMs" | "endingCommitMs" | "ticks"> {
   const db = world.store.db;
   const after = countRows(db);
   return {
@@ -85,7 +91,17 @@ export async function runBare(world: OpenWorld): Promise<number> {
   return totalMs;
 }
 
-/** One hour of the real `runCatchUp`. */
+/**
+ * One hour of the real `runCatchUp`.
+ *
+ * Every commit boundary is stamped, by wrapping the `commitTick` that `TickDeps`
+ * already lets a caller inject. The production `onChunkCommitted` callback
+ * cannot do this alone: `runCatchUp` calls it only while ticks remain, so it
+ * never fires for the last chunk and a measurement built on it is one chunk
+ * short. With a stamp after each of the commits (60 chunks and the ending
+ * commit for a whole hour), the chunk intervals and the ending commit tile the
+ * run exactly. The callback is kept only to sample the WAL between chunks.
+ */
 export async function runEndToEnd(world: OpenWorld): Promise<RunResult> {
   const db = world.store.db;
   const before = countRows(db);
@@ -93,28 +109,43 @@ export async function runEndToEnd(world: OpenWorld): Promise<RunResult> {
   const dbBytesBefore = fileBytes(world.path);
   const clock = readClock(db);
   let walPeak = 0;
-  const gaps: number[] = [];
-  let mark = performance.now();
-  const start = mark;
-  const result = await runCatchUp(world.state, world.prng, world.deps, {
+  const stamps: number[] = [];
+  const commit = world.deps.commitTick ?? persistCommit;
+  const deps: typeof world.deps = {
+    ...world.deps,
+    commitTick: ((store, reducers, input) => {
+      const committed = commit(store, reducers, input);
+      stamps.push(performance.now());
+      return committed;
+    }) as typeof persistCommit,
+  };
+  const start = performance.now();
+  const result = await runCatchUp(world.state, world.prng, deps, {
     nowWallMs: clock.cursorWallMs + HOUR_MS,
     onChunkCommitted: () => {
-      const now = performance.now();
-      gaps.push(now - mark);
-      mark = now;
       walPeak = Math.max(walPeak, walBytes(world.path));
       return false;
     },
   });
-  const totalMs = performance.now() - start;
+  const end = performance.now();
   if (result.degraded) {
     throw new Error(`catch-up degraded: ${result.degraded.message}`);
   }
+  const chunks = HOUR_TICKS / (world.state.rules.catchUpChunkMs / 1000);
+  if (stamps.length !== chunks + 1) {
+    throw new Error(
+      `expected ${chunks} chunk commits and the ending commit, saw ${stamps.length} commits`,
+    );
+  }
+  const gaps = stamps
+    .slice(0, chunks)
+    .map((stamp, i) => stamp - (i === 0 ? start : (stamps[i - 1] as number)));
   world.state = result.state;
   world.prng = result.prng;
   return {
-    totalMs,
+    totalMs: end - start,
     chunkGapsMs: gaps,
+    endingCommitMs: end - (stamps[chunks - 1] as number),
     ticks: result.state.tick,
     ...afterRun(world, before, startSequence, walPeak, dbBytesBefore),
   };
@@ -184,6 +215,7 @@ export async function runPhases(world: OpenWorld): Promise<PhaseRun> {
   return {
     totalMs,
     chunkGapsMs: mirror.chunkMs,
+    endingCommitMs: phases.ms("commit:ending-total"),
     chunkHeldMs: mirror.chunkMs,
     ticks: mirror.ticks,
     phases: phases.toJSON(),

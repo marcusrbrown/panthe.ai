@@ -4,37 +4,37 @@ Pack sha256 3d26995b7201ccc4ece377c2f253e4e8e0d1f7ef5b5a95beca5917cf1ea34399; 5 
 
 | Mortals | World | Runs | Median hour | Range | Median chunk gap | Worst chunk gap | Median chunk held | Worst chunk held | Events |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 4 | fresh | 5 | 0.73 s | 0.68–0.81 s | 10.4 ms | 26.9 ms | 10.9 ms | 24.7 ms | 29896 |
-| 4 | aged (6 h) | 5 | 0.8 s | 0.75–0.9 s | 11.3 ms | 38.1 ms | 12.2 ms | 38.3 ms | 29912 |
-| 20 | fresh | 5 | 2.84 s | 2.65–2.91 s | 45.5 ms | 65.3 ms | 49.6 ms | 62.8 ms | 96909 |
-| 20 | aged (6 h) | 5 | 3.84 s | 3.65–3.98 s | 60.3 ms | 124.4 ms | 61.8 ms | 136 ms | 95457 |
+| 4 | fresh | 5 | 0.71 s | 0.67–0.81 s | 10.3 ms | 23.4 ms | 10.9 ms | 26.8 ms | 29896 |
+| 4 | aged (6 h) | 5 | 0.82 s | 0.79–0.93 s | 11.4 ms | 34.5 ms | 12.5 ms | 36.9 ms | 29912 |
+| 20 | fresh | 5 | 2.97 s | 2.75–3.02 s | 46.9 ms | 67.6 ms | 51.1 ms | 64.1 ms | 96909 |
+| 20 | aged (6 h) | 5 | 3.81 s | 3.74–4.26 s | 61.4 ms | 122.6 ms | 63.8 ms | 124.3 ms | 95457 |
 
 ## 4 mortals, fresh
 
 | Phase | Median ms / hour | Share | Entries | |
 | --- | --- | --- | --- | --- |
-| sim:routine-planning | 84 | 11.2% | 3660 |  |
-| sim:step-world-tick | 134.3 | 17.8% | 3600 |  |
-| sim:event-list-copy | 4.3 | 0.6% | 3600 |  |
-| sim:screen-observations | 2.9 | 0.4% | 60 |  |
-| sim:read-pending | 1.9 | 0.3% | 60 |  |
-| commit:total | 491.9 | 65.3% | 60 |  |
-| commit:ending-total | 29.6 | 3.9% | 1 |  |
+| sim:routine-planning | 85.4 | 11.3% | 3660 |  |
+| sim:step-world-tick | 130.1 | 17.1% | 3600 |  |
+| sim:event-list-copy | 3.1 | 0.4% | 3600 |  |
+| sim:screen-observations | 3.1 | 0.4% | 60 |  |
+| sim:read-pending | 2 | 0.3% | 60 |  |
+| commit:total | 498.4 | 65.7% | 60 |  |
+| commit:ending-total | 31 | 4.1% | 1 |  |
 | yield | 1.4 | 0.2% | 59 |  |
-| **instrumented hour** | 753.3 | 100% | 1 |  |
+| **instrumented hour** | 759.1 | 100% | 1 |  |
 | *inside the commit* | | | | |
-| sql:events | 110.1 | 14.6% | 29960 |  |
-| sql:projection | 2.9 | 0.4% | 122 |  |
-| codec:decode | 13.3 | 1.8% | 61 |  |
-| reduce:applyEvent | 18 | 2.4% | 29896 |  |
+| sql:events | 111.6 | 14.7% | 29960 |  |
+| sql:projection | 2.4 | 0.3% | 122 |  |
+| codec:decode | 12.5 | 1.6% | 61 |  |
+| reduce:applyEvent | 17.2 | 2.3% | 29896 |  |
 | codec:encode | 1 | 0.1% | 61 |  |
 | json:parse-large | 0 | 0% | 0 |  |
 | json:stringify-large | 0 | 0% | 0 |  |
-| commit:on-committed | 192.3 | 25.5% | 61 |  |
-| sql:trace | 127.8 | 17% | 57015 |  |
+| commit:on-committed | 199.9 | 26.3% | 61 |  |
+| sql:trace | 129.9 | 17.1% | 57015 |  |
 | sql:other | 3.1 | 0.4% | 247 |  |
 | sql:transaction-control | 0 | 0% | 0 |  |
-| commit overhead (BEGIN, COMMIT, WAL write) | 151 | 20% | 1 |  |
+| commit overhead (BEGIN, COMMIT, WAL write) | 154.7 | 20.4% | 1 |  |
 
 | Rows added in the hour | Count | Bytes |
 | --- | --- | --- |
@@ -50,28 +50,28 @@ Pack sha256 3d26995b7201ccc4ece377c2f253e4e8e0d1f7ef5b5a95beca5917cf1ea34399; 5 
 
 | Phase | Median ms / hour | Share | Entries | |
 | --- | --- | --- | --- | --- |
-| sim:routine-planning | 83.9 | 9.3% | 3660 |  |
-| sim:step-world-tick | 125 | 13.8% | 3600 |  |
+| sim:routine-planning | 87 | 9.4% | 3660 |  |
+| sim:step-world-tick | 159.3 | 17.3% | 3600 |  |
 | sim:event-list-copy | 3 | 0.3% | 3600 |  |
-| sim:screen-observations | 4.9 | 0.5% | 60 |  |
-| sim:read-pending | 3.2 | 0.4% | 60 |  |
-| commit:total | 600.1 | 66.3% | 60 |  |
-| commit:ending-total | 31.1 | 3.4% | 1 |  |
-| yield | 14.1 | 1.6% | 59 |  |
-| **instrumented hour** | 905.5 | 100% | 1 |  |
+| sim:screen-observations | 3 | 0.3% | 60 |  |
+| sim:read-pending | 2.3 | 0.3% | 60 |  |
+| commit:total | 614.1 | 66.6% | 60 |  |
+| commit:ending-total | 32 | 3.5% | 1 |  |
+| yield | 10 | 1.1% | 59 |  |
+| **instrumented hour** | 922.1 | 100% | 1 |  |
 | *inside the commit* | | | | |
-| sql:events | 116.1 | 12.8% | 29976 |  |
-| sql:projection | 8.8 | 1% | 122 |  |
-| codec:decode | 21.5 | 2.4% | 61 |  |
-| reduce:applyEvent | 15.2 | 1.7% | 29912 |  |
-| codec:encode | 1 | 0.1% | 61 |  |
-| json:parse-large | 25.3 | 2.8% | 61 |  |
-| json:stringify-large | 7.9 | 0.9% | 61 |  |
-| commit:on-committed | 225.6 | 24.9% | 61 |  |
-| sql:trace | 151.6 | 16.7% | 57014 |  |
-| sql:other | 3.8 | 0.4% | 247 |  |
+| sql:events | 113 | 12.3% | 29976 |  |
+| sql:projection | 5.3 | 0.6% | 122 |  |
+| codec:decode | 23.2 | 2.5% | 61 |  |
+| reduce:applyEvent | 17.6 | 1.9% | 29912 |  |
+| codec:encode | 1.3 | 0.1% | 61 |  |
+| json:parse-large | 28.1 | 3% | 61 |  |
+| json:stringify-large | 8.6 | 0.9% | 61 |  |
+| commit:on-committed | 219.9 | 23.8% | 61 |  |
+| sql:trace | 152.5 | 16.5% | 57014 |  |
+| sql:other | 3.7 | 0.4% | 247 |  |
 | sql:transaction-control | 0 | 0% | 0 |  |
-| commit overhead (BEGIN, COMMIT, WAL write) | 182.7 | 20.2% | 1 |  |
+| commit overhead (BEGIN, COMMIT, WAL write) | 187.9 | 20.4% | 1 |  |
 
 | Rows added in the hour | Count | Bytes |
 | --- | --- | --- |
@@ -87,28 +87,28 @@ Pack sha256 3d26995b7201ccc4ece377c2f253e4e8e0d1f7ef5b5a95beca5917cf1ea34399; 5 
 
 | Phase | Median ms / hour | Share | Entries | |
 | --- | --- | --- | --- | --- |
-| sim:routine-planning | 440 | 14.3% | 3660 |  |
-| sim:step-world-tick | 682.1 | 22.2% | 3600 |  |
+| sim:routine-planning | 458.2 | 14.4% | 3660 |  |
+| sim:step-world-tick | 659.7 | 20.7% | 3600 |  |
 | sim:event-list-copy | 12.1 | 0.4% | 3600 |  |
-| sim:screen-observations | 10 | 0.3% | 60 |  |
-| sim:read-pending | 3.7 | 0.1% | 60 |  |
-| commit:total | 1827.6 | 59.5% | 60 |  |
-| commit:ending-total | 106.4 | 3.5% | 1 |  |
-| yield | 1.6 | 0.1% | 59 |  |
-| **instrumented hour** | 3071.7 | 100% | 1 |  |
+| sim:screen-observations | 9.6 | 0.3% | 60 |  |
+| sim:read-pending | 4.3 | 0.1% | 60 |  |
+| commit:total | 1909.9 | 60.1% | 60 |  |
+| commit:ending-total | 105.1 | 3.3% | 1 |  |
+| yield | 1.8 | 0.1% | 59 |  |
+| **instrumented hour** | 3180.1 | 100% | 1 |  |
 | *inside the commit* | | | | |
-| sql:events | 350.1 | 11.4% | 96973 |  |
-| sql:projection | 5.6 | 0.2% | 122 |  |
+| sql:events | 357.7 | 11.2% | 96973 |  |
+| sql:projection | 5.8 | 0.2% | 122 |  |
 | codec:decode | 28.1 | 0.9% | 61 |  |
-| reduce:applyEvent | 88.3 | 2.9% | 96909 |  |
-| codec:encode | 1.7 | 0.1% | 61 |  |
-| json:parse-large | 25.5 | 0.8% | 47 |  |
+| reduce:applyEvent | 99.5 | 3.1% | 96909 |  |
+| codec:encode | 1.8 | 0.1% | 61 |  |
+| json:parse-large | 26.1 | 0.8% | 47 |  |
 | json:stringify-large | 8.4 | 0.3% | 48 |  |
-| commit:on-committed | 900.9 | 29.3% | 61 |  |
-| sql:trace | 603.9 | 19.7% | 267916 |  |
-| sql:other | 4.6 | 0.2% | 247 |  |
+| commit:on-committed | 921.5 | 29% | 61 |  |
+| sql:trace | 620.2 | 19.5% | 267916 |  |
+| sql:other | 4.9 | 0.2% | 247 |  |
 | sql:transaction-control | 0 | 0% | 0 |  |
-| commit overhead (BEGIN, COMMIT, WAL write) | 452.8 | 14.7% | 1 |  |
+| commit overhead (BEGIN, COMMIT, WAL write) | 476 | 15% | 1 |  |
 
 | Rows added in the hour | Count | Bytes |
 | --- | --- | --- |
@@ -124,28 +124,28 @@ Pack sha256 3d26995b7201ccc4ece377c2f253e4e8e0d1f7ef5b5a95beca5917cf1ea34399; 5 
 
 | Phase | Median ms / hour | Share | Entries | |
 | --- | --- | --- | --- | --- |
-| sim:routine-planning | 538.7 | 13.8% | 3660 |  |
-| sim:step-world-tick | 827.2 | 21.1% | 3600 |  |
-| sim:event-list-copy | 11.4 | 0.3% | 3600 |  |
-| sim:screen-observations | 12.7 | 0.3% | 60 |  |
-| sim:read-pending | 4.5 | 0.1% | 60 |  |
-| commit:total | 2377.3 | 60.8% | 60 |  |
-| commit:ending-total | 110 | 2.8% | 1 |  |
-| yield | 16.5 | 0.4% | 59 |  |
-| **instrumented hour** | 3911.8 | 100% | 1 |  |
+| sim:routine-planning | 540 | 13.6% | 3660 |  |
+| sim:step-world-tick | 817.7 | 20.6% | 3600 |  |
+| sim:event-list-copy | 11.5 | 0.3% | 3600 |  |
+| sim:screen-observations | 11.5 | 0.3% | 60 |  |
+| sim:read-pending | 4.8 | 0.1% | 60 |  |
+| commit:total | 2438.4 | 61.4% | 60 |  |
+| commit:ending-total | 112.3 | 2.8% | 1 |  |
+| yield | 13.8 | 0.3% | 59 |  |
+| **instrumented hour** | 3973.5 | 100% | 1 |  |
 | *inside the commit* | | | | |
-| sql:events | 357.9 | 9.1% | 95521 |  |
-| sql:projection | 37.9 | 1% | 122 |  |
-| codec:decode | 112.9 | 2.9% | 61 |  |
-| reduce:applyEvent | 98.5 | 2.5% | 95457 |  |
-| codec:encode | 4 | 0.1% | 61 |  |
-| json:parse-large | 141.1 | 3.6% | 61 |  |
-| json:stringify-large | 39.7 | 1% | 61 |  |
-| commit:on-committed | 942.1 | 24.1% | 61 |  |
-| sql:trace | 647.2 | 16.5% | 271103 |  |
-| sql:other | 6.3 | 0.2% | 247 |  |
+| sql:events | 403.6 | 10.2% | 95521 |  |
+| sql:projection | 29.2 | 0.7% | 122 |  |
+| codec:decode | 116.8 | 2.9% | 61 |  |
+| reduce:applyEvent | 105.2 | 2.6% | 95457 |  |
+| codec:encode | 4.1 | 0.1% | 61 |  |
+| json:parse-large | 143.8 | 3.6% | 61 |  |
+| json:stringify-large | 42.7 | 1.1% | 61 |  |
+| commit:on-committed | 974.4 | 24.5% | 61 |  |
+| sql:trace | 666.6 | 16.8% | 271103 |  |
+| sql:other | 5.9 | 0.1% | 247 |  |
 | sql:transaction-control | 0 | 0% | 0 |  |
-| commit overhead (BEGIN, COMMIT, WAL write) | 638.5 | 16.3% | 1 |  |
+| commit overhead (BEGIN, COMMIT, WAL write) | 643.5 | 16.2% | 1 |  |
 
 | Rows added in the hour | Count | Bytes |
 | --- | --- | --- |

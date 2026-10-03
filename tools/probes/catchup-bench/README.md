@@ -4,7 +4,7 @@
 
 One simulated hour of catch-up took about 17 s with the 20-mortal world and about 2.3 s with 2 mortals. The targets are **at most 5 s per hour (stretch 3 s)** and **every chunk under 250 ms**, so the service can run it on wake without a visible stall. Where does the time go, and which of the suspected causes are real?
 
-**Status (2026-10-03):** answered and fixed. An aged 20-mortal hour went from **22.5 s to 3.8 s** and its worst chunk from 1,466 ms to 124 ms, by two changes (time-ordered trace ids; an index over petitions), with the same events, trace, and projection as before. See [Results after the fixes](#results-after-the-fixes).
+**Status (2026-10-03):** answered and fixed. An aged 20-mortal hour went from **22.5 s to 3.8 s** and its worst chunk from 1,466 ms to about 120–150 ms, by two changes (time-ordered trace ids; an index over petitions), with the same events, trace, and projection as before. See [Results after the fixes](#results-after-the-fixes).
 
 ## Method
 
@@ -12,7 +12,7 @@ One simulated hour of catch-up took about 17 s with the 20-mortal world and abou
 - **Run.** One hour is 3,600 ticks, 60 chunks of 60 ticks, which is the world's own `catchUpChunkMs`. It runs through the real `runCatchUp` on an on-disk SQLite store in the system temp directory (WAL, `synchronous=NORMAL`, as production opens it), with the trace tables in the same file. The seed is fixed (`SEED = 20261003`).
 - **Configurations.** 4 mortals and 20 mortals (the first N mortals in file order, all 7 gods, the buildings of dropped mortals removed), each from a **fresh** world and from an **aged** one: aged means 6 real one-hour catch-ups first, then the measured hour on a copy of that store. Five repetitions each; every table reports the **median**.
 - **Two ways of measuring, so the instrumentation cannot move the headline.**
-  - `runEndToEnd` runs the real `runCatchUp` with only an `onChunkCommitted` callback that notes the time at each chunk boundary. Its total and chunk gaps are the headline numbers.
+  - `runEndToEnd` runs the real `runCatchUp` and stamps every commit by wrapping the `commitTick` that `TickDeps` already lets a caller inject (60 chunk commits and the ending commit for a whole hour). Its total and chunk gaps are the headline numbers. It does not use the production `onChunkCommitted` callback for timing, because `runCatchUp` calls that only while ticks remain and so never for the last chunk (see [Correction](#correction-the-last-chunk-was-not-measured)); the callback only samples the WAL.
   - `runPhases` runs the same hour through `src/mirror.ts`, a copy of the chunk loop with a clock around each step, over a store, reducers, and trace database wrapped by `src/instrument.ts` (every SQL statement is timed into a category by its text; the transaction body is timed apart from the whole call; the reducers, the codec, and `JSON.parse`/`stringify` of projection-sized strings are timed). Nothing in `apps/` or `packages/` is edited to be measured, and nothing is imported by production code. `measure.test.ts` requires the mirror to produce the **same event stream and the same final projection** as the real function, so it does the same work. Its hour is a little longer than the real one (the clock reads); the table shows both.
   - `profile.ts` runs one hour of the real function in a child process under `bun --cpu-prof` and reads the profile back by function and by phase. It sees inside `stepWorldTick` and inside the native SQLite calls, which a timer around the whole call cannot.
 - **Counts.** Rows and payload bytes added to the log and the trace, projection size, WAL peak (sampled at each chunk boundary), and database file growth.
@@ -40,7 +40,7 @@ Apple M1 Pro, 16 GB, macOS 15.7.9, Bun 1.4.2, internal SSD, run on 2026-10-03 on
 
 ## Results: baseline (main d566975)
 
-One hour of catch-up, median of 5. "Chunk gap" is the time between chunk-commit callbacks (compute, commit, and the event-loop yield); "held" is compute plus commit for a chunk, from the instrumented run.
+One hour of catch-up, median of 5. "Chunk gap" is the time from the previous commit to this chunk's commit (compute, commit, and the event-loop yield); "held" is compute plus commit for a chunk, from the instrumented run. **The baseline's chunk-gap columns were taken before the correction below and cover 59 of the 60 chunks (the last was not timed); the held columns come from the instrumented run, which times all 60.** The baseline could not be re-measured with the corrected harness without un-fixing the code.
 
 | Mortals | World | Hour | Range | Median chunk gap | Worst chunk gap | Median chunk held | Worst chunk held | Events |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -141,12 +141,14 @@ One hour, median of 5 (`results/after.md`). Same 29,896, 29,912, 96,909, and 95,
 
 | Mortals | World | Hour before → after | Median chunk gap before → after | Worst chunk gap before → after | Worst chunk held before → after |
 | --- | --- | --- | --- | --- | --- |
-| 4 | fresh | 0.91 s → 0.73 s | 12.8 → 10.4 ms | 29.6 → 26.9 ms | 33.1 → 24.7 ms |
-| 4 | aged (6 h) | 2.88 s → 0.80 s | 46.0 → 11.3 ms | 432 → 38 ms | 133 → 38 ms |
-| 20 | fresh | 4.96 s → **2.84 s** | 81.4 → 45.5 ms | 122 → 65 ms | 136 → 63 ms |
-| 20 | aged (6 h) | 22.5 s → **3.84 s** | 355 → 60 ms | 1,466 → **124 ms** | 1,014 → 136 ms |
+| 4 | fresh | 0.91 s → 0.71 s | 12.8 → 10.3 ms | 29.6 → 23.4 ms | 33.1 → 26.8 ms |
+| 4 | aged (6 h) | 2.88 s → 0.82 s | 46.0 → 11.4 ms | 432 → 34.5 ms | 133 → 36.9 ms |
+| 20 | fresh | 4.96 s → **2.97 s** | 81.4 → 46.9 ms | 122 → 67.6 ms | 136 → 64.1 ms |
+| 20 | aged (6 h) | 22.5 s → **3.81 s** | 355 → 61.4 ms | 1,466 → **122.6 ms** | 1,014 → 124.3 ms |
 
-**Targets.** At most 5 s an hour: met in every configuration (the aged 20-mortal world, the one that was four times over, is 3.84 s). Every chunk under 250 ms: met (worst chunk gap 124 ms, worst compute-plus-commit 136 ms, in the aged 20-mortal world). Stretch of 3 s: met for the fresh 20-mortal world (2.84 s) and not for the aged one (3.84 s). The work stopped there, as asked.
+The "after" columns are all 60 chunks (the "before" gap columns are 59; see the note under the baseline table).
+
+**Targets.** At most 5 s an hour: met in every configuration (the aged 20-mortal world, the one that was four times over, is 3.81 s). Every chunk under 250 ms: met (worst chunk gap 122.6 ms, worst compute-plus-commit 124.3 ms, in the aged 20-mortal world; the worst of any single run in 10 runs of that world was 147.9 ms, see below). The ending commit (the cursor's jump and the backlog's summary, which is not a chunk) runs once after the last chunk and took up to 130 ms. Stretch of 3 s: met for the fresh 20-mortal world (2.97 s, and 2.84 s in an earlier set of runs) and not for the aged one (3.81 s). The work stopped there, as asked.
 
 ### Where the aged 20-mortal hour goes now
 
@@ -154,15 +156,15 @@ Median ms per hour, instrumented run (`results/after.md`, `results/profile-after
 
 | Phase | Before | After |
 | --- | --- | --- |
-| routine planning | 8,315 | **539** |
-| `stepWorldTick` | 1,071 | 827 |
-| chunk commits, in total | 13,481 | **2,377** |
-| · commit overhead (BEGIN, COMMIT, WAL write, checkpoints) | 8,691 | **639** |
-| · trace writes (`onCommitted`) | 4,210 | **942** (SQL statements 3,713 → 647) |
-| · event rows | 469 | 358 |
-| · projection (SQL, parse, decode, reduce, encode, stringify) | 407 | 434 |
-| the ending commit (cursor, summary) | 187 | 110 |
-| *instrumented hour* | 23,262 | **3,912** |
+| routine planning | 8,315 | **540** |
+| `stepWorldTick` | 1,071 | 818 |
+| chunk commits, in total | 13,481 | **2,438** |
+| · commit overhead (BEGIN, COMMIT, WAL write, checkpoints) | 8,691 | **644** |
+| · trace writes (`onCommitted`) | 4,210 | **974** (SQL statements 3,713 → 667) |
+| · event rows | 469 | 404 |
+| · projection (SQL, parse, decode, reduce, encode, stringify) | 407 | 442 |
+| the ending commit (cursor, summary) | 187 | 112 |
+| *instrumented hour* | 23,262 | **3,974** |
 | WAL peak | 18.7 MiB | 5.9 MiB |
 
 The profile's order is now trace JS and SQL 19%, transaction control 18%, `runTick` 16%, routine planning 14%, event rows 12%, projection 8%; nothing is above a fifth.
@@ -195,3 +197,24 @@ The profile's order is now trace JS and SQL 19%, transaction control 18%, `runTi
 - **A second catch-up pass is gone.** The first scenario's S13 used to see a second, short catch-up pass after the cap because an hour took longer than the 5 s sleep threshold. An hour is now under it: a probe of that step saw 0 later ticks and no approximate events after the summary. The step stays tolerant of one.
 - **Database growth is unchanged**, 110 MiB an hour with 20 mortals: about 72,000 routine proposals an hour are each written to the trace. That is a retention question, not a speed one, and it is not addressed here.
 - **A race in `apps/simulation/src/index.crash.test.ts`.** Once, in a full `bun run check` under whole-workspace load, its cap assertion saw 3,601 ticks, because a live tick ran in the second between the "startup catch-up complete" log line and the test's SIGTERM. It passed 10 of 10 alone and on the rerun. The assertion treats a live tick after catch-up as catch-up; it predates this work and is unchanged.
+
+## Correction: the last chunk was not measured
+
+*Added after review of the first version of this record.* `runEndToEnd` first timed chunks from the production `onChunkCommitted` callback. `runCatchUp` calls that callback only while ticks remain (`ticksDone < totalTicks`), so for a whole hour of 3,600 ticks in 60 chunks it fires 59 times and never for the last chunk. The first version's "worst chunk" figures (124 ms aged) came from 59 of the 60 chunks per run.
+
+**The fix** stamps every commit instead, by wrapping the `commitTick` that `TickDeps` already injects, and times the **ending commit** (the cursor jump and the summary, which follows the last chunk with no yield between) as its own interval. It is the simpler of the two options: it needs no change to production code and cannot miss a boundary. `measure.test.ts` holds it: a real run of 3,600 ticks at 60-tick chunks must record 60 gaps, the last included, which together with the ending commit tile the whole run to within 5 ms; the same assertion failed with 59 on the old measurement, and `runEndToEnd` now throws if the commits it sees are not the 60 chunks and the ending one.
+
+**What the last chunk showed.** It is an ordinary chunk, not a spike. Over the 10 runs of the 20-mortal worlds measured since the fix, the last chunk's gap was 41–52 ms fresh and 61–78 ms aged, against median chunk gaps of 46.9 and 61.4 ms. The first version's worst-chunk figures were therefore not hiding a slow final chunk.
+
+**Why the worst chunk still moved.** The worst chunk is a maximum over 300 chunks per configuration, so it varies between sets of five runs, and it falls on a different chunk each run (in four of five aged runs in one set it was chunk 1, the second). Two complete sets of five runs of the 20-mortal world with the corrected measurement gave:
+
+| 20 mortals | Hour (median) | Worst chunk gap | Worst chunk held (instrumented) |
+| --- | --- | --- | --- |
+| fresh, first set | 3.09 s | 123 ms | 104.9 ms |
+| fresh, second set (the table above) | 2.97 s | 67.6 ms | 64.1 ms |
+| aged, first set | 3.78 s | 147.9 ms | 143.2 ms |
+| aged, second set (the table above) | 3.81 s | 122.6 ms | 124.3 ms |
+
+So the aged worst chunk is **123–148 ms**, not a single number, and always under the 250 ms target. The record keeps the second set as the table because it also re-measured the 4-mortal worlds in the same session; the first set's results were not kept as files (the second replaced `results/after.json` and `results/after.md`).
+
+**What else used the old measurement.** `results/after-ordered-ids.md` and `results/after-petition-index.md` (each fix measured alone, 3 repetitions) and the baseline's chunk-gap columns were taken with the 59-gap method; their hour totals are not affected (the total was always the whole call), their chunk-gap columns exclude the last chunk, and they are kept as the record of those runs. The instrumented run's per-chunk "held" times (`runPhases`) always included every chunk.

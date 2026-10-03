@@ -16,6 +16,7 @@ import {
   type TickResult,
 } from "./actions";
 import { decode, encode } from "./codec";
+import { perceive } from "./perception";
 import { routePetition } from "./petitions";
 import {
   createInitialWorldState,
@@ -1112,6 +1113,38 @@ test("a mortal with no affinity of its own who lives at the place prays to the g
   expect(String(routePetition(town.state, id("m1")))).toBe("poseidon");
   // Standing is the place's: a mortal who lives elsewhere is not moved by it.
   expect(String(routePetition(town.state, id("far-one")))).toBe("athena");
+});
+
+test("a blessing given where Athena was not is not in her view when the blessed later walks to her: perception places it where it happened (W04)", () => {
+  const town = new Town();
+  town.place("athena", "altar");
+  const act = town.blessing("poseidon", "m1");
+  expect(town.state.services.at(-1)?.perceivedBy).not.toContain("athena");
+  // Control: while m1 is still at the square, Hera, who stands there, sees the blessing.
+  expect(
+    (perceive(town.state, id("hera"), town.log)?.events ?? []).map((e) => e.id),
+  ).toContain(act.id);
+  // m1 walks to the altar, where Athena stands.
+  town.tick({ actor: "m1", kind: "move", to: "altar" });
+  expect(String(getActor(town.state, id("m1"))?.locationId)).toBe("altar");
+  const seen = perceive(town.state, id("athena"), town.log)?.events ?? [];
+  expect(seen.map((e) => e.id)).not.toContain(act.id);
+  expect(seen.some((e) => e.kind === "entity-moved")).toBe(true);
+  // The ledger said at the time who perceived it (Hera, at the square), and the walk adds no one to it.
+  expect(town.state.services.find((a) => a.id === act.id)?.perceivedBy).toEqual(
+    [id("hera")],
+  );
+  town.tick(town.contest("athena", act.id as EventId));
+  expect(town.rejected()).toEqual(["unauthorized-claim"]);
+  expect(town.contests()).toEqual([]);
+  // Nor does Athena's own walk to the square, where the blessing was given, add her to those who perceived it.
+  town.tick({ actor: "athena", kind: "move", to: "square" });
+  expect(String(getActor(town.state, id("athena"))?.locationId)).toBe("square");
+  expect(town.state.services.find((a) => a.id === act.id)?.perceivedBy).toEqual(
+    [id("hera")],
+  );
+  town.tick(town.contest("athena", act.id as EventId));
+  expect(town.rejected()).toEqual(["unauthorized-claim"]);
 });
 
 test("a contest closes at the same tick and with the same result whether the world is live or catching up", () => {

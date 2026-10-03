@@ -573,3 +573,79 @@ test("a god's goal is its own: no snapshot carries a goal-set or goal-ended even
     expect(JSON.stringify(snapshot)).not.toContain("devotion");
   }
 });
+
+// --- A blessing stays where it was given ---------------------------------------------------------
+
+const blessed = (recipient: string, sequence?: number) =>
+  event(
+    {
+      kind: "blessing-granted",
+      entityId: "zeus",
+      recipient,
+      petitionId: "evt-1",
+      resource: "currency",
+      amount: 1,
+    },
+    sequence,
+  );
+
+test("a blessing is placed where the blessed one stood when it was given: an observer at the place the recipient walked to later does not see it", () => {
+  // The farmer was at the tavern, was blessed there, then walked to the square. The woodcutter, at the square, sees the farmer
+  // arrive; the blessing happened in the tavern and he was not there.
+  const afterWalk = actorAt(fixtureState(), "farmer", "square");
+  const events = [
+    moved("farmer", "tavern", 300),
+    blessed("farmer", 301),
+    moved("farmer", "square", 302),
+  ];
+  const seen = perceive(afterWalk, id("woodcutter"), events);
+  expect(seen?.events.map((e) => e.sequence)).toEqual([302]);
+  expect(seen?.events.map((e) => e.kind)).not.toContain("blessing-granted");
+});
+
+test("positive control: an observer who was at the place when it was given still sees the blessing there, after the recipient has left", () => {
+  // Zeus stood in the tavern throughout; the farmer arrived, was blessed in front of him, and left.
+  const afterWalk = actorAt(fixtureState(), "farmer", "square");
+  const events = [
+    moved("farmer", "tavern", 310),
+    blessed("farmer", 311),
+    moved("farmer", "square", 312),
+  ];
+  const seen = perceive(afterWalk, id("zeus"), events);
+  expect(seen?.events.map((e) => [e.sequence, e.kind])).toEqual([
+    [310, "entity-moved"],
+    [311, "blessing-granted"],
+  ]);
+});
+
+test("a blessing of one who has not moved within the window is placed where the recipient stands, like any actor's event", () => {
+  const events = [blessed("farmer", 320)];
+  expect(
+    perceive(fixtureState(), id("zeus"), events)?.events.map((e) => e.sequence),
+  ).toEqual([320]);
+  expect(
+    perceive(fixtureState(), id("woodcutter"), events)?.events ?? [],
+  ).toEqual([]);
+});
+
+test("when the window cannot say where the recipient was, the blessing is visible to no one: not where the recipient is now, not where it may have been", () => {
+  // The window holds the farmer's later move to the square but never where he came from.
+  const afterWalk = actorAt(fixtureState(), "farmer", "square");
+  const events = [blessed("farmer", 330), moved("farmer", "square", 331)];
+  for (const observer of ["zeus", "woodcutter", "farmer"]) {
+    const seen = perceive(afterWalk, id(observer), events)?.events ?? [];
+    expect(seen.map((e) => e.kind)).not.toContain("blessing-granted");
+  }
+  // The woodcutter, who is at the square the farmer walked to, still sees him arrive.
+  expect(
+    perceive(afterWalk, id("woodcutter"), events)?.events.map(
+      (e) => e.sequence,
+    ),
+  ).toEqual([331]);
+});
+
+test("a blessing is still seen by the recipient itself at the place it was given, and by a god standing there", () => {
+  const events = [blessed("farmer", 340)];
+  const farmer = perceive(fixtureState(), id("farmer"), events);
+  expect(farmer?.events.map((e) => e.sequence)).toEqual([340]);
+});

@@ -391,7 +391,7 @@ export function petitionFor(
 
 /** Whether `actor` may pray: a living mortal. */
 export function canPray(actor: ActorState | undefined): actor is ActorState {
-  return actor !== undefined && actor.alive && actor.isDeity !== true;
+  return actor?.alive === true && actor.isDeity !== true;
 }
 
 /** The petitions addressed to `god` that are still open. This is the divine sense: the god's own petitions, read from world state, whatever it can perceive. */

@@ -251,7 +251,7 @@ export function applyPracticeEnded(
  * transformation changes form and capabilities and nothing else, so identity,
  * memory, and relationships stay with the actor. Both bump the actor's
  * revision, so a proposal it made before the change goes stale. A standing
- * record changes no state: standing itself is a later unit's.
+ * record changes the god's standing at the place for good.
  */
 export function applyMotifApplied(
   state: WorldState,

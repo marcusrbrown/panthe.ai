@@ -921,13 +921,28 @@ test("the codec round-trips an open contest, a closed one, the ledger, the stand
       c.contests[0][1].status = "open";
     },
     (c: Loose) => {
-      c.standing = [["athena-square", 2]];
+      c.standing = [["athena", "square"]];
     },
     (c: Loose) => {
-      c.standing = [["athena@nowhere", 2]];
+      c.standing = [["athena", "nowhere", 2]];
     },
     (c: Loose) => {
-      c.standing = [["athena@square", 1.5]];
+      c.standing = [["athena", "square", 1.5]];
+    },
+    (c: Loose) => {
+      c.standing = [["nobody", "square", 2]];
+    },
+    (c: Loose) => {
+      c.standing = [["athena", "square", 0]];
+    },
+    (c: Loose) => {
+      c.standing = [
+        ["athena", "square", 2],
+        ["athena", "square", 3],
+      ];
+    },
+    (c: Loose) => {
+      c.standing = [["athena@square", 2]];
     },
     (c: Loose) => {
       c.services[0].god = "nobody";
@@ -950,6 +965,51 @@ test("the codec round-trips an open contest, a closed one, the ledger, the stand
   ]) {
     expect(() => decode(corrupt(change))).toThrow();
   }
+});
+
+test("standing is kept by god and place as a structure, so ids containing @ neither collide nor fail to decode: (a@b, c) and (a, b@c) stay distinct and round-trip", () => {
+  const base = pack();
+  const odd: ContentPack = {
+    ...base,
+    locations: [
+      ...base.locations,
+      { id: "c", realm: "mortal", name: "C", edges: [] },
+      { id: "b@c", realm: "mortal", name: "B at C", edges: [] },
+    ],
+    inhabitants: [
+      ...base.inhabitants,
+      { id: "a@b", name: "A at B", locationId: "c", deity: true },
+      { id: "a", name: "A", locationId: "c", deity: true },
+    ],
+  };
+  const town = new Town();
+  town.state = createInitialWorldState(odd);
+  const motif = (god: string, place: string, delta: number) =>
+    town.apply({
+      kind: "motif-applied",
+      entityId: god,
+      motif: delta > 0 ? "standing-won" : "standing-lost",
+      effect: "standing",
+      place,
+      delta,
+      threadId: "evt-1-1",
+      cause: "evt-1-1",
+    });
+  motif("a@b", "c", 3);
+  motif("a", "b@c", -2);
+  expect(town.standing("a@b", "c")).toBe(3);
+  expect(town.standing("a", "b@c")).toBe(-2);
+  // The crossed pairs hold nothing.
+  expect(town.standing("a@b", "b@c")).toBe(0);
+  expect(town.standing("a", "c")).toBe(0);
+  const decoded = decode(JSON.parse(JSON.stringify(encode(town.state))));
+  expect(standingOf(decoded, id("a@b"), id("c"))).toBe(3);
+  expect(standingOf(decoded, id("a"), id("b@c"))).toBe(-2);
+  expect(standingOf(decoded, id("a@b"), id("b@c"))).toBe(0);
+  expect(encode(decoded)).toEqual(encode(town.state));
+  expect(applyEvents(createInitialWorldState(odd), town.log).standing).toEqual(
+    town.state.standing,
+  );
 });
 
 test("a contest closes at the same tick and with the same result whether the world is live or catching up", () => {

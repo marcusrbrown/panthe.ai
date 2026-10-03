@@ -37,7 +37,7 @@ import {
   getBuilding,
   isContestOpen,
   type ServiceAct,
-  standingKey,
+  standingOf,
   type WorldEventDraft,
   type WorldState,
 } from "./state";
@@ -391,11 +391,13 @@ export function changeStanding(
   place: EntityId,
   delta: number,
 ): WorldState {
-  const key = standingKey(god, place);
-  const next = (state.standing.get(key) ?? 0) + delta;
+  const next = standingOf(state, god, place) + delta;
+  const places = new Map(state.standing.get(god));
+  if (next === 0) places.delete(place);
+  else places.set(place, next);
   const standing = new Map(state.standing);
-  if (next === 0) standing.delete(key);
-  else standing.set(key, next);
+  if (places.size === 0) standing.delete(god);
+  else standing.set(god, places);
   return { ...state, standing };
 }
 

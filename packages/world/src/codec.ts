@@ -86,7 +86,6 @@ import {
   type RelationshipState,
   relationshipKey,
   type ServiceAct,
-  standingKey,
   type WithheldCapability,
   type WorldState,
 } from "./state";
@@ -113,7 +112,8 @@ export interface EncodedWorldState {
   readonly threads: readonly (readonly [EventId, PracticeThread])[];
   readonly contests: readonly (readonly [EventId, Contest])[];
   readonly services: readonly ServiceAct[];
-  readonly standing: readonly (readonly [string, number])[];
+  /** `[god, place, standing]`, one entry per nonzero standing, in the order the world holds them. */
+  readonly standing: readonly (readonly [EntityId, EntityId, number])[];
   readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
   readonly noticed: readonly (readonly [string, NoticedLoss])[];
   readonly director: { readonly lastConsequentialTick: number };
@@ -168,7 +168,9 @@ export function encode(state: WorldState): EncodedWorldState {
     threads: [...state.threads.entries()],
     contests: [...state.contests.entries()],
     services: state.services,
-    standing: [...state.standing.entries()],
+    standing: [...state.standing].flatMap(([god, places]) =>
+      [...places].map(([place, amount]) => [god, place, amount] as const),
+    ),
     repairGrants: [...state.repairGrants.entries()],
     noticed: [...state.noticed.entries()],
     director: state.director,
@@ -1307,36 +1309,25 @@ function parseStandingEntry(
   path: string,
   knownActorIds: ReadonlySet<EntityId>,
   knownLocationIds: ReadonlySet<EntityId>,
-): ParseResult<readonly [string, number]> {
-  if (!Array.isArray(value) || value.length !== 2) {
-    return fail(path, "expected a [key, standing] entry");
+): ParseResult<readonly [EntityId, EntityId, number]> {
+  if (!Array.isArray(value) || value.length !== 3) {
+    return fail(path, "expected a [god, place, standing] entry");
   }
-  const key = parseString(value[0], `${path}[0]`);
-  if (!key.ok) return key;
-  const [god, place, ...rest] = key.value.split("@");
-  if (
-    god === undefined ||
-    place === undefined ||
-    rest.length > 0 ||
-    god === "" ||
-    place === ""
-  ) {
-    return fail(`${path}[0]`, `"${key.value}" is not a god@place key`);
+  const god = parseEntityId(value[0], `${path}[0]`);
+  if (!god.ok) return god;
+  if (!knownActorIds.has(god.value)) {
+    return fail(`${path}[0]`, `standing names unknown god: ${god.value}`);
   }
-  if (!knownActorIds.has(god as EntityId)) {
-    return fail(`${path}[0]`, `standing names unknown god: ${god}`);
+  const place = parseEntityId(value[1], `${path}[1]`);
+  if (!place.ok) return place;
+  if (!knownLocationIds.has(place.value)) {
+    return fail(`${path}[1]`, `standing is at unknown place: ${place.value}`);
   }
-  if (!knownLocationIds.has(place as EntityId)) {
-    return fail(`${path}[0]`, `standing is at unknown place: ${place}`);
-  }
-  if (key.value !== standingKey(god as EntityId, place as EntityId)) {
-    return fail(`${path}[0]`, `"${key.value}" is not a god@place key`);
-  }
-  const amount = value[1];
+  const amount = value[2];
   if (typeof amount !== "number" || !Number.isInteger(amount) || amount === 0) {
-    return fail(`${path}[1]`, "expected a nonzero whole number");
+    return fail(`${path}[2]`, "expected a nonzero whole number");
   }
-  return ok([key.value, amount] as const);
+  return ok([god.value, place.value, amount] as const);
 }
 
 function parseThreadEntry(
@@ -1845,11 +1836,22 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     parseStandingEntry(item, path, knownActorIds, knownLocationIds),
   );
   if (!standingEntries.ok) return standingEntries;
-  const duplicateStanding = findDuplicateKey(standingEntries.value);
-  if (duplicateStanding !== undefined) {
-    return fail("standing", `duplicate standing: ${duplicateStanding}`);
+  const standingMap = new Map<EntityId, Map<EntityId, number>>();
+  for (const [index, [god, place, amount]] of standingEntries.value.entries()) {
+    const places = standingMap.get(god) ?? new Map<EntityId, number>();
+    if (places.has(place)) {
+      return fail(
+        `standing[${index}]`,
+        `duplicate standing: ${god} at ${place}`,
+      );
+    }
+    places.set(place, amount);
+    standingMap.set(god, places);
   }
-  const standing = new Map(standingEntries.value);
+  const standing: ReadonlyMap<
+    EntityId,
+    ReadonlyMap<EntityId, number>
+  > = standingMap;
 
   const grantEntries = parseArray(
     value.repairGrants,

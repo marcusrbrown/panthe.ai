@@ -12,6 +12,7 @@
 // god was shown, so Athena names only the act she saw); the mortals decide for
 // themselves, and the world counts, judges, and changes standing.
 
+import { standingOf, toEntityId } from "@panthea/world";
 import { WAIT } from "../provider";
 import type { Recorder, Story } from "./context";
 import { eventsOfKind, godMoves, nextPrompt, walkTo } from "./practice";
@@ -196,8 +197,8 @@ export async function stepContest(
         JSON.stringify(standing),
       );
       const after = await stateOf(story);
-      const rise = after.standing.get(`athena@${DOCK}` as never) ?? 0;
-      const fall = after.standing.get(`poseidon@${DOCK}` as never) ?? 0;
+      const rise = standingOf(after, toEntityId("athena"), toEntityId(DOCK));
+      const fall = standingOf(after, toEntityId("poseidon"), toEntityId(DOCK));
       check(
         rise > 0 && fall < 0,
         "the committed state holds the new standing: it outlasts the window",

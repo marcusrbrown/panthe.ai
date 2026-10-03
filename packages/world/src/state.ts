@@ -459,18 +459,13 @@ export interface PracticeThread {
   readonly revision: number;
 }
 
-/** The key of a god's standing at a place. */
-export function standingKey(god: EntityId, place: EntityId): string {
-  return `${god}@${place}`;
-}
-
 /** A god's lasting standing at a place: 0 until something there has changed it. */
 export function standingOf(
   state: WorldState,
   god: EntityId,
   place: EntityId,
 ): number {
-  return state.standing.get(standingKey(god, place)) ?? 0;
+  return state.standing.get(god)?.get(place) ?? 0;
 }
 
 /** Whether a contest is still open: the window has not closed it. */
@@ -548,8 +543,8 @@ export interface WorldState {
   readonly contests: ReadonlyMap<EventId, Contest>;
   /** The acts a rival can still contest, oldest first. */
   readonly services: readonly ServiceAct[];
-  /** Each god's lasting standing at each place, keyed `standingKey(god, place)`: moved by what a contest, a settlement's performance, or a breach there decided. Absent means 0. */
-  readonly standing: ReadonlyMap<string, number>;
+  /** Each god's lasting standing at each place, god then place (never a joined string, so no id can collide with another's): moved by what a contest, a settlement's performance, or a breach there decided. Absent means 0. */
+  readonly standing: ReadonlyMap<EntityId, ReadonlyMap<EntityId, number>>;
   /** The losses each owner has already noticed, keyed `owner|causeEventId`: what makes noticing once per loss. */
   readonly noticed: ReadonlyMap<string, NoticedLoss>;
   /** The quiet-world director's timer: the tick of the last consequential event. */

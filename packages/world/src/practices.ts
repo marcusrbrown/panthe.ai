@@ -1377,10 +1377,12 @@ export function judgePractices(
   for (const thread of supplications) {
     const { acceptance } = thread;
     const answered = boons.find((boon) => boon.petition.id === thread.petition);
+    // The boon counts toward the bargain only when it came after the acceptance and by the deadline (inclusive). A later bless still answers the petition, which is the god's to answer; it is simply not what the offering was bought with.
     const boonEvent =
       acceptance !== undefined &&
       answered !== undefined &&
-      answered.answeredBy.sequence > acceptance.sequence
+      answered.answeredBy.sequence > acceptance.sequence &&
+      answered.answeredBy.tick <= thread.term.deadline
         ? answered.answeredBy
         : undefined;
     let offeringEvent: WorldEvent | undefined;
@@ -1421,7 +1423,7 @@ export function judgePractices(
       continue;
     }
     // A boon the terms cannot buy: the petition was answered without them
-    // (before they were accepted), or has closed with no answer.
+    // (before they were accepted, or after the deadline), or has closed with no answer.
     const petition =
       thread.petition === undefined
         ? undefined

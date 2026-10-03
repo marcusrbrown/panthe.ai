@@ -13,7 +13,13 @@ import type {
   PracticeTermOffer,
   WorldEvent,
 } from "@panthea/contracts";
-import { applyEvent, applyEvents, runTick, submitProposal } from "./actions";
+import {
+  applyEvent,
+  applyEvents,
+  runTick,
+  submitProposal,
+  type TickOptions,
+} from "./actions";
 import { decode, encode } from "./codec";
 import { getMemories } from "./memory";
 import { decideRoutineProposal } from "./routines";
@@ -122,6 +128,8 @@ class World {
   readonly log: WorldEvent[] = [];
   readonly initial: WorldState;
   last: ReturnType<typeof runTick> | undefined;
+  /** Catch-up and the like: what every tick is run with. */
+  tickOptions: TickOptions = {};
   constructor(
     balance: Record<string, number> = {},
     mortal: Partial<{ piety: number; gathers: string }> = {},
@@ -158,7 +166,7 @@ class World {
         return decision && !claimed ? [decision.proposal] : [];
       }),
     ];
-    const result = runTick(this.state, this.prng, proposals);
+    const result = runTick(this.state, this.prng, proposals, this.tickOptions);
     this.state = result.state;
     this.prng = result.prng;
     this.log.push(...result.events);
@@ -902,6 +910,129 @@ test("talk between the god and the mortal around a supplication is free even whe
     ),
   ).toBe(true);
   expect(world.rejected()).toEqual([]);
+});
+
+// --- A boon only counts by the deadline ----------------------------------------------------------------------
+
+/** An accepted supplication on a 5-tick term with the wolf as stake, the farmer unable to offer unless `canOffer`. */
+function staked(canOffer: boolean) {
+  const set = accepted({
+    stake: "wolf",
+    term: offering("farmer", "hera", 5),
+  });
+  if (!canOffer) set.world.setInventory("farmer", "wood", 0);
+  return set;
+}
+
+/** Runs the clock to the tick the term is due, with no boon given. */
+function toDeadline(set: ReturnType<typeof staked>) {
+  set.world.until(() => set.world.state.tick >= set.thread.term.deadline);
+  expect(set.world.state.tick).toBe(set.thread.term.deadline);
+  expect(set.world.thread().status).toBe("accepted");
+}
+
+test("a boon one tick past the deadline, with no offering made, expires the thread with nothing owed: no breach, no transformation, no motif; and the late bless still answers the petition", () => {
+  const set = staked(false);
+  toDeadline(set);
+  const { world, petition } = set;
+  const late = world.tick(bless(petition.id));
+  expect(late.rejected).toEqual([]);
+  expect(world.state.tick).toBe(set.thread.term.deadline + 1);
+  // The petition is answered all the same: the bless is the god's to give.
+  expect(world.state.petitions.get(petition.id)?.status).toBe("answered");
+  expect(late.events.some((e) => e.kind === "blessing-granted")).toBe(true);
+  // The bargain is not: the boon came too late to be what the offering was for.
+  expect(world.thread().status).toBe("expired");
+  expect(world.ended().at(-1)).toMatchObject({
+    outcome: "expired",
+    reason: "boon-unanswered",
+    tick: set.thread.term.deadline + 1,
+  });
+  expect(world.thread().progress).toBeUndefined();
+  expect(world.log.some((e) => e.kind === "practice-progressed")).toBe(false);
+  expect(world.log.some((e) => e.kind === "motif-applied")).toBe(false);
+  expect(getActor(world.state, id("farmer"))?.form).toBeUndefined();
+});
+
+test("a boon one tick past the deadline after an earlier offering expires the thread too: it is not fulfilled", () => {
+  const set = staked(true);
+  // The farmer's routine offers on faith, ahead of the deadline.
+  set.world.tick();
+  expect(set.world.thread().progress?.offering).toBeDefined();
+  toDeadline(set);
+  set.world.tick(bless(set.petition.id));
+  expect(set.world.state.petitions.get(set.petition.id)?.status).toBe(
+    "answered",
+  );
+  expect(set.world.thread().status).toBe("expired");
+  expect(set.world.ended().at(-1)).toMatchObject({
+    outcome: "expired",
+    reason: "boon-unanswered",
+  });
+  expect(set.world.ended().some((e) => e.outcome === "fulfilled")).toBe(false);
+  expect(set.world.log.some((e) => e.kind === "motif-applied")).toBe(false);
+});
+
+test("a boon exactly on the deadline counts: fulfilled when the offering was made, breached and staked when it was not", () => {
+  const made = staked(true);
+  made.world.tick();
+  made.world.until(
+    () => made.world.state.tick >= made.thread.term.deadline - 1,
+  );
+  expect(made.world.state.tick).toBe(made.thread.term.deadline - 1);
+  made.world.tick(bless(made.petition.id));
+  expect(made.world.state.tick).toBe(made.thread.term.deadline);
+  expect(made.world.thread().status).toBe("fulfilled");
+
+  const missed = staked(false);
+  missed.world.until(
+    () => missed.world.state.tick >= missed.thread.term.deadline - 1,
+  );
+  missed.world.tick(bless(missed.petition.id));
+  expect(missed.world.state.tick).toBe(missed.thread.term.deadline);
+  expect(missed.world.thread().progress?.boon).toBeDefined();
+  expect(missed.world.thread().status).toBe("accepted");
+  missed.world.tick();
+  expect(missed.world.thread().status).toBe("breached");
+  expect(
+    missed.world.log.find(
+      (e) => e.kind === "motif-applied" && e.effect === "transformation",
+    ),
+  ).toMatchObject({ entityId: "farmer", form: "wolf" });
+});
+
+test("the late boon is judged the same in catch-up: the same ruling on the same tick, marked approximate", () => {
+  const rulings = (approximate: boolean) => {
+    const world = new World();
+    if (approximate)
+      world.tickOptions = { approximate: true, elapsedMs: 60_000 };
+    const { petition } = prayed(world);
+    world.place(
+      "hera",
+      String(getActor(world.state, id("farmer"))?.locationId),
+    );
+    world.tick(
+      offer(petition.id, offering("farmer", "hera", 5), { stake: "wolf" }),
+    );
+    world.tick();
+    const thread = world.thread();
+    world.setInventory("farmer", "wood", 0);
+    world.until(() => world.state.tick >= thread.term.deadline);
+    world.tick(bless(petition.id));
+    return world
+      .ended()
+      .map((e) => [e.outcome, e.reason, e.tick, e.approximate]);
+  };
+  const live = rulings(false);
+  const catchUp = rulings(true);
+  expect(live.map((r) => r.slice(0, 3))).toEqual([
+    ["expired", "boon-unanswered", expect.any(Number)],
+  ]);
+  expect(catchUp.map((r) => r.slice(0, 3))).toEqual(
+    live.map((r) => r.slice(0, 3)),
+  );
+  expect(live[0]?.[3]).toBe(false);
+  expect(catchUp[0]?.[3]).toBe(true);
 });
 
 // --- What a mortal could have by the deadline ----------------------------------------------------------------

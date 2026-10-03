@@ -4,6 +4,8 @@
 
 One simulated hour of catch-up took about 17 s with the 20-mortal world and about 2.3 s with 2 mortals. The targets are **at most 5 s per hour (stretch 3 s)** and **every chunk under 250 ms**, so the service can run it on wake without a visible stall. Where does the time go, and which of the suspected causes are real?
 
+**Status (2026-10-03):** answered and fixed. An aged 20-mortal hour went from **22.5 s to 3.8 s** and its worst chunk from 1,466 ms to 124 ms, by two changes (time-ordered trace ids; an index over petitions), with the same events, trace, and projection as before. See [Results after the fixes](#results-after-the-fixes).
+
 ## Method
 
 - **World.** The Unit 7 pack (7 gods, 20 mortals) frozen as `fixtures/unit7-pack.json`, cut from main `d566975` by `src/snapshot-pack.ts`. The file's sha256 is checked on every load (`PACK_SHA256`), so a changed fixture is an error, not a different benchmark. Biome ignores the fixture and the results.
@@ -25,6 +27,7 @@ bun run bench -- --label=after --out=results/after.json   # also writes after.js
 bun run bench -- --reps=3 --mortals=20 --worlds=aged --aged-hours=6
 bun run bench:profile -- --mortals=20 --world=aged --aged-hours=6 --out=results/profile-after-aged.md
 bun run src/pragmas.ts --mortals=20 --aged-hours=4        # what the commit overhead is
+bun run src/index-locality.ts                             # why trace writes were slow: key order, not statements
 bun run src/fingerprint.ts --compare=results/fingerprint-baseline.json   # exits 1 if anything differs
 bun test                                         # the harness's own tests
 ```
@@ -118,5 +121,77 @@ So the ranking by the numbers is: **routine planning's scans** (aged, 36%), **ch
 | `src/measure.ts`, `src/mirror.ts`, `src/instrument.ts`, `src/phases.ts` | the two measurements and their timers |
 | `src/profile.ts`, `src/cpuprofile.ts` | the CPU profile run and reader |
 | `src/pragmas.ts` | the commit-overhead diagnostic |
+| `src/index-locality.ts` | the microbenchmark behind the first fix |
 | `src/fingerprint.ts`, `src/world.ts` | the digests and the world helpers |
-| `results/` | `baseline.{md,json}`, `profile-baseline-*.md`, `pragmas-baseline.md`, `fingerprint-baseline.json` |
+| `results/` | `baseline.md` and `after.md` (the matrix), `after-ordered-ids.md` and `after-petition-index.md` (each fix on its own, 20 mortals), `profile-baseline-*.md` and `profile-after-aged.md`, `pragmas-baseline.md`, `index-locality.md`, `fingerprint-baseline.json` |
+
+## Results after the fixes
+
+Two changes, in the order the numbers asked for them, each measured on its own (3 repetitions, `results/after-ordered-ids.md`, `results/after-petition-index.md`) and then together (5 repetitions, `results/after.md`).
+
+| Change | Aged 20-mortal hour | Fresh 20-mortal hour |
+| --- | --- | --- |
+| baseline (main `d566975`) | 22.5 s | 4.96 s |
+| **1. time-ordered observation and proposal ids** (`timeOrderedIdFactory`, a UUIDv7 under the same `obs-` and `proposal-` prefixes) | 12.1 s | 3.79 s |
+| **2. petition index** (`prayableCauses` and the prayer cooldown read an index kept once per `petitions` Map) | **3.78 s** | **2.99 s** |
+
+### Before and after, every configuration
+
+One hour, median of 5 (`results/after.md`). Same 29,896, 29,912, 96,909, and 95,457 events as the baseline in each row.
+
+| Mortals | World | Hour before → after | Median chunk gap before → after | Worst chunk gap before → after | Worst chunk held before → after |
+| --- | --- | --- | --- | --- | --- |
+| 4 | fresh | 0.91 s → 0.73 s | 12.8 → 10.4 ms | 29.6 → 26.9 ms | 33.1 → 24.7 ms |
+| 4 | aged (6 h) | 2.88 s → 0.80 s | 46.0 → 11.3 ms | 432 → 38 ms | 133 → 38 ms |
+| 20 | fresh | 4.96 s → **2.84 s** | 81.4 → 45.5 ms | 122 → 65 ms | 136 → 63 ms |
+| 20 | aged (6 h) | 22.5 s → **3.84 s** | 355 → 60 ms | 1,466 → **124 ms** | 1,014 → 136 ms |
+
+**Targets.** At most 5 s an hour: met in every configuration (the aged 20-mortal world, the one that was four times over, is 3.84 s). Every chunk under 250 ms: met (worst chunk gap 124 ms, worst compute-plus-commit 136 ms, in the aged 20-mortal world). Stretch of 3 s: met for the fresh 20-mortal world (2.84 s) and not for the aged one (3.84 s). The work stopped there, as asked.
+
+### Where the aged 20-mortal hour goes now
+
+Median ms per hour, instrumented run (`results/after.md`, `results/profile-after-aged.md`).
+
+| Phase | Before | After |
+| --- | --- | --- |
+| routine planning | 8,315 | **539** |
+| `stepWorldTick` | 1,071 | 827 |
+| chunk commits, in total | 13,481 | **2,377** |
+| · commit overhead (BEGIN, COMMIT, WAL write, checkpoints) | 8,691 | **639** |
+| · trace writes (`onCommitted`) | 4,210 | **942** (SQL statements 3,713 → 647) |
+| · event rows | 469 | 358 |
+| · projection (SQL, parse, decode, reduce, encode, stringify) | 407 | 434 |
+| the ending commit (cursor, summary) | 187 | 110 |
+| *instrumented hour* | 23,262 | **3,912** |
+| WAL peak | 18.7 MiB | 5.9 MiB |
+
+The profile's order is now trace JS and SQL 19%, transaction control 18%, `runTick` 16%, routine planning 14%, event rows 12%, projection 8%; nothing is above a fifth.
+
+### Why these two, and why they work
+
+**1. Time-ordered ids (`packages/contracts/src/ids.ts`, `packages/telemetry/src/trace.ts`).** The trace keys three indexes by ids that were random UUIDs (`trace_observations.id`, `trace_proposal_outcomes.proposal_id`, `trace_outcome_events.proposal_id`). A random key lands on a random page of an index that gains 72,000 entries an hour and never shrinks, so every 60-second chunk dirtied pages across the whole of three multi-megabyte B-trees; each commit then wrote them, and each automatic checkpoint wrote and synced them again into a 110 MiB-larger file. That was the commit overhead (37%) and most of the trace's SQL time, and it is why age mattered. `index-locality.ts` isolates it: 72,000 inserts into a 500,000-row table take 2.5–2.7 s however the statement is prepared (a cached statement, `ON CONFLICT DO NOTHING`, or a 64 MiB page cache change them by under 6%) and **0.2–0.3 s with time-ordered keys**. A UUIDv7 keeps the shape every consumer already saw, sorts in creation order, and uses a 12-bit counter so ids made in one millisecond still increase; a clock reading that goes backwards is clamped. Only observation and proposal ids changed; every other id is still random.
+
+**2. Petition index (`packages/world/src/petitions.ts`).** `prayableCauses` answered "may this mortal pray, and about what" by walking every petition three times, for every mortal, every tick; petitions are never pruned (about 325 an hour, 1,957 after six hours). The answer is a pure function of the `petitions` Map, so the index (causes already prayed about, each petitioner's newest petition tick, each petitioner's open subjects) is built once per Map object and kept in a `WeakMap` keyed by it. That is sound because a `WorldState` is never changed in place: every reducer that touches a petition copies the Map first, and the old Map and its index are garbage. Nothing is stored on the state, so nothing is persisted, encoded, or compared. The newest-tick rule is equivalent to the old "any petition younger than the cooldown" because the age is monotone in the tick.
+
+### What was proved for each
+
+- **Same events, same trace, same world.** `src/fingerprint.ts` digests the whole event log, the whole trace (every observation, outcome, and link, in insert order), and the stored projection for three worlds, with the ids minted fresh each run renamed in order of first appearance. After each fix and at the end the digests equal `results/fingerprint-baseline.json`. The matrix agrees too: the same event and projection digests as the baseline in all four configurations, and the same observation, outcome, and link counts. The digests are sensitive (`harness.test.ts` changes a field, a link, a reason, or an order and each digest moves).
+- **Trace causality.** Every run of the matrix checks that every outcome has its observation and proposal, every link names an event in the log whose correlation matches the outcome's, and every event a proposal produced has an outcome: zero violations in all 40 runs.
+- **Archive export/import, replay equals live, a write failure rolls the whole chunk back.** Unchanged code paths with their existing tests, all passing: the archive and import suites, `world-store.test.ts` (live equals reopened equals rebuilt, with threads and supplications), the catch-up commit-failure and trace-failure tests, scenario S14 (export, corrupt copy, import, restore), and `restore-memory` and its control in the second scenario.
+- **New tests, red then green.** `ids.test.ts` and `trace.test.ts` (time-ordered ids: shape, strictly increasing in a burst of 10,000, across a clock that steps backwards, distinct across factories, and other ids still random) were red on the missing factory and on random order; `catchup.test.ts` ("catch-up appends to the trace in id order") was red on the old ids and green on the new; `petition-index.test.ts` (equivalence with the plain scan over the cases that decide the answer, a scan-count bound that stays at one however often it is asked, and a change to the petitions being seen at once) was red on the scan count, and five mutations of the index are each caught.
+
+### What was not needed
+
+| Planned fix | Why it was not done |
+| --- | --- |
+| 1. Prepared, batched event and trace inserts | `index-locality.ts` shows a cached or multi-row statement moves the cost by about 6%, and multi-row is slower. After the two fixes the trace's SQL is 0.65 s and the event rows 0.36 s of 3.9 s, so the most it could return is a few percent. |
+| 2. Persist the computed projection | The projection costs about 0.43 s of 3.9 s (11%): it would remove the parse, decode, and re-reduce (about 0.35 s) but not the encode and write. It was 1.7% of the 22.5 s hour and is not needed for the target; it is the next thing to try for the 3 s stretch, with the sequence and base-revision checks the plan describes. |
+| 3. Chunk event-list recopy, summary in SQL | 11 ms and 97–110 ms an hour. |
+| 4. More indexes or dirty sets | The two above were the indexes the numbers asked for. |
+| `wal_autocheckpoint` | Not needed once the pages stopped being scattered: the commit overhead fell from 8.7 s to 0.6 s with the default. |
+
+### Side effects and things to know
+
+- **A second catch-up pass is gone.** The first scenario's S13 used to see a second, short catch-up pass after the cap because an hour took longer than the 5 s sleep threshold. An hour is now under it: a probe of that step saw 0 later ticks and no approximate events after the summary. The step stays tolerant of one.
+- **Database growth is unchanged**, 110 MiB an hour with 20 mortals: about 72,000 routine proposals an hour are each written to the trace. That is a retention question, not a speed one, and it is not addressed here.
+- **A race in `apps/simulation/src/index.crash.test.ts`.** Once, in a full `bun run check` under whole-workspace load, its cap assertion saw 3,601 ticks, because a live tick ran in the second between the "startup catch-up complete" log line and the test's SIGTERM. It passed 10 of 10 alone and on the rerun. The assertion treats a live tick after catch-up as catch-up; it predates this work and is unchanged.

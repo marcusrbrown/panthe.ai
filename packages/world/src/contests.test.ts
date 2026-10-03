@@ -1012,6 +1012,108 @@ test("standing is kept by god and place as a structure, so ids containing @ neit
   );
 });
 
+// --- Standing is capped like affinity ---------------------------------------------------------------
+
+/** A standing motif for `god` at the square, `delta` up or down. */
+function standingMotif(
+  town: Town,
+  god: string,
+  delta: number,
+  place = "square",
+) {
+  return town.apply({
+    kind: "motif-applied",
+    entityId: god,
+    motif: delta > 0 ? "standing-won" : "standing-lost",
+    effect: "standing",
+    place,
+    delta,
+    threadId: "evt-1-1",
+    cause: "evt-1-1",
+  });
+}
+
+test("standing stops at the affinity limit in both directions: repeated wins and losses never go past it", () => {
+  const town = new Town();
+  for (let n = 0; n < 8; n += 1) standingMotif(town, "athena", 3);
+  expect(town.standing("athena")).toBe(10);
+  for (let n = 0; n < 8; n += 1) standingMotif(town, "poseidon", -3);
+  expect(town.standing("poseidon")).toBe(-10);
+  // Coming back from the limit moves it off the limit, not off the overshoot.
+  standingMotif(town, "athena", -3);
+  expect(town.standing("athena")).toBe(7);
+  standingMotif(town, "poseidon", 3);
+  expect(town.standing("poseidon")).toBe(-7);
+  // A closed contest is held to it too: its win at the limit changes nothing more.
+  const { town: held, contest } = opened();
+  for (let n = 0; n < 8; n += 1) standingMotif(held, "athena", 3);
+  held.blessing("athena", "m2");
+  held.until(() => held.state.contests.get(contest.id)?.status !== "open");
+  expect(held.standing("athena")).toBe(10);
+});
+
+test("the cap is the pack's own affinity limit, the one rule affinity keeps", () => {
+  const town = new Town({}, {}, { affinityLimit: 3 });
+  for (let n = 0; n < 5; n += 1) standingMotif(town, "athena", 2);
+  expect(town.standing("athena")).toBe(3);
+  for (let n = 0; n < 5; n += 1) standingMotif(town, "athena", -2);
+  expect(town.standing("athena")).toBe(-3);
+  // A raised limit raises it.
+  const wide = new Town({}, {}, { affinityLimit: 20 });
+  for (let n = 0; n < 5; n += 1) standingMotif(wide, "athena", 6);
+  expect(wide.standing("athena")).toBe(20);
+});
+
+test("the codec refuses a stored standing outside the pack's own limit, and holds one at it", () => {
+  const town = new Town();
+  standingMotif(town, "athena", 10);
+  const stored = JSON.parse(JSON.stringify(encode(town.state)));
+  expect(decode(stored).standing).toEqual(town.state.standing);
+  for (const amount of [11, -11, 1000]) {
+    const copy = JSON.parse(JSON.stringify(stored));
+    copy.standing = [["athena", "square", amount]];
+    expect(() => decode(copy)).toThrow(/limit of 10/);
+  }
+  // Under a narrower limit of its own, 10 is out of range.
+  const narrow = JSON.parse(JSON.stringify(stored));
+  narrow.rules.memoryBalance = {
+    ...narrow.rules.memoryBalance,
+    affinityLimit: 5,
+  };
+  expect(() => decode(narrow)).toThrow(/limit of 5/);
+});
+
+// --- Standing routes a mortal's prayers ----------------------------------------------------------
+
+test("a mortal with no affinity of its own who lives at the place prays to the god with the most standing there; a mortal devoted to another god keeps to it", () => {
+  const base = pack();
+  const town = new Town();
+  town.state = createInitialWorldState({
+    ...base,
+    inhabitants: [
+      ...base.inhabitants,
+      {
+        id: "m8",
+        name: "m8",
+        locationId: "square",
+        drives: { thrift: 0, appetite: 0, greed: 0, piety: 0 },
+        startingInventory: [{ resource: "food", amount: 50 }],
+      },
+    ],
+  });
+  // No standing, no affinity: the old tie-break (the fewest petitions, then the first id) picks Athena, so Poseidon is a choice standing alone could make.
+  expect(String(routePetition(town.state, id("m8")))).toBe("athena");
+  standingMotif(town, "poseidon", 2);
+  expect(String(routePetition(town.state, id("m8")))).toBe("poseidon");
+  // Control: m1 is devoted to Hera at affinity 3, and Poseidon's 2 does not move it.
+  expect(String(routePetition(town.state, id("m1")))).toBe("hera");
+  // Enough standing outweighs the devotion.
+  standingMotif(town, "poseidon", 2);
+  expect(String(routePetition(town.state, id("m1")))).toBe("poseidon");
+  // Standing is the place's: a mortal who lives elsewhere is not moved by it.
+  expect(String(routePetition(town.state, id("far-one")))).toBe("athena");
+});
+
 test("a contest closes at the same tick and with the same result whether the world is live or catching up", () => {
   const run = (options: TickOptions) => {
     const town = new Town({}, options);

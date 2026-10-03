@@ -1962,6 +1962,18 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     }
   }
 
+  // Standing is held within the same limit: a stored world holds what its own rules allow.
+  for (const [god, places] of standing) {
+    for (const [place, amount] of places) {
+      if (Math.abs(amount) > affinityLimit) {
+        return fail(
+          "standing",
+          `${god} has standing ${amount} at ${place}, beyond the world's limit of ${affinityLimit}`,
+        );
+      }
+    }
+  }
+
   const recipes = parseRecipes(value.recipes, "recipes");
   if (!recipes.ok) return recipes;
 

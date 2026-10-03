@@ -18,6 +18,7 @@
 // close it at the same tick with the same result.
 
 import {
+  affinityLimitOf,
   type ContestClosedEvent,
   type ContestFavour,
   type ContestOpenedEvent,
@@ -384,14 +385,22 @@ export function applyContestClosed(
   return { ...state, contests: new Map(state.contests).set(closed.id, closed) };
 }
 
-/** `state` with `delta` added to `god`'s standing at `place`; a standing back at 0 is absent. */
+/**
+ * `state` with `delta` added to `god`'s standing at `place`, held within the pack's own affinity limit
+ * either way (the one rule affinity keeps), so a win at the limit changes nothing more; a standing
+ * back at 0 is absent.
+ */
 export function changeStanding(
   state: WorldState,
   god: EntityId,
   place: EntityId,
   delta: number,
 ): WorldState {
-  const next = standingOf(state, god, place) + delta;
+  const limit = affinityLimitOf(state.rules);
+  const next = Math.max(
+    -limit,
+    Math.min(limit, standingOf(state, god, place) + delta),
+  );
   const places = new Map(state.standing.get(god));
   if (next === 0) places.delete(place);
   else places.set(place, next);

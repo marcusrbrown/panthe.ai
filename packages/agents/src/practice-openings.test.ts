@@ -164,8 +164,17 @@ const prayersOf = (prompt: string) => sectionOf(prompt, PRAYERS_HEADING);
 /** The intent objects written out in a section, in order. */
 function intentsIn(lines: readonly string[]): Record<string, unknown>[] {
   return lines.flatMap((line) => {
-    const match = /(\{"action":"practice".*\})\s*$/.exec(line);
-    return match === null ? [] : [JSON.parse(match[1] as string)];
+    const start = line.indexOf('{"action":"practice"');
+    if (start < 0) return [];
+    // The object is the balanced braces from there; a note may follow it.
+    let depth = 0;
+    for (let at = start; at < line.length; at += 1) {
+      if (line[at] === "{") depth += 1;
+      if (line[at] === "}" && --depth === 0) {
+        return [JSON.parse(line.slice(start, at + 1))];
+      }
+    }
+    return [];
   });
 }
 
@@ -199,7 +208,7 @@ test("an offerable prayer shows the god its choices: help freely, set terms in f
   const prayers = prayersOf(context.prompt).join("\n");
   expect(prayers).toContain(`[${petition}] farmer`);
   expect(prayers).toContain("help freely");
-  expect(prayers).toContain(`action "bless", petition [${petition}]`);
+  expect(prayers).toContain(`{"action":"bless","petition":"${petition}"}`);
   expect(prayers).toContain("set terms");
   expect(prayers).toContain("let it be");
   expect(prayers).not.toContain("bless them now");
@@ -224,7 +233,7 @@ test("from afar the travel hint belongs to the choice of helping, said as a cond
   expect(prayers).toContain("take ");
   expect(prayers).toMatch(/help freely: .*if you choose this/);
   expect(prayers).toContain(
-    `then bless them (action "bless", petition [${petition}])`,
+    `then bless them {"action":"bless","petition":"${petition}"}`,
   );
   expect(prayers).not.toContain("bless them now");
   expect(prayers).not.toContain("keep going each turn");
@@ -256,7 +265,7 @@ test("a punish prayer is a choice too: strike freely where the offender's buildi
   const prayers = prayersOf(run.view("zeus").context.prompt).join("\n");
   expect(prayers).toContain("punish freely");
   expect(prayers).toContain(
-    'punish freely: woodshed is here (action "strike")',
+    'punish freely: woodshed is here: {"action":"strike","target":"woodshed"}',
   );
   expect(prayers).toContain("set terms");
   expect(prayers).not.toContain("to answer it");
@@ -421,7 +430,10 @@ test("with a thread that needs the god, the openings yield to the digest rows; a
   const awaiting = digestOf(asked.view("zeus").context.prompt).join("\n");
   expect(awaiting).toContain("AWAITING YOUR ANSWER");
   expect(awaiting).not.toContain("You may begin a bargain");
-  expect(intentsIn(digestOf(asked.view("zeus").context.prompt))).toEqual([]);
+  // What is written out are Zeus's answers to the thread, never a demand or an offer to begin.
+  expect(
+    intentsIn(digestOf(asked.view("zeus").context.prompt)).map((i) => i.move),
+  ).toEqual(["accept", "counter", "refuse", "withdraw"]);
 
   // Zeus owes: no opening either.
   const owing = new Run();

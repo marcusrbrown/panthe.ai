@@ -221,7 +221,7 @@ test("the instructions name the stakes a god may attach to an offer; the prayer 
   expect(instructions).not.toContain(`[${petition}] farmer`);
   expect(prompt).toContain(`[${petition}] farmer`);
   expect(prompt).toContain("set terms");
-  expect(prompt).toContain('action "bless"');
+  expect(prompt).toContain('"action":"bless"');
   // Hera has no prayers: she is told nothing about offering terms.
   expect(run.view("hera").context.instructions).not.toContain('move "offer"');
   expect(run.view("hera").context.prompt).not.toContain("set terms");
@@ -240,7 +240,6 @@ test("an offer parses against the shown prayer and one offering term by the one 
     offerFields("evt-404" as EventId),
     offerFields(petition, gift("woodcutter")),
     offerFields(petition, gift("zeus")),
-    offerFields(petition, gift("farmer", "hera")),
     offerFields(petition, gift("farmer", "zeus", 80, { resource: "gold" })),
     offerFields(petition, gift("farmer", "zeus", 80, { amount: 0 })),
     offerFields(petition, gift("farmer", "zeus", 80, { amount: 1.5 })),

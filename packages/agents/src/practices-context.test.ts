@@ -230,7 +230,7 @@ test("the digest shows a thread's cause as this god knows it, the last answered 
   for (const move of ["accept", "counter", "refuse", "withdraw"]) {
     expect(zeus).toContain(`"${move}"`);
   }
-  expect(zeus).toContain(`thread "${thread.id}"`);
+  expect(zeus).toContain(`"thread":"${thread.id}"`);
 });
 
 test("after a counter, the answer is the other god's: the countering god may only withdraw, and the one who made the demand may accept the counter", () => {
@@ -781,7 +781,8 @@ test("a term outside the checkable set, or with a missing or unlisted field, is 
   // Not in the closed set, or malformed.
   for (const bad of [
     { kind: "swear-fealty", party: "zeus", deadlineTicks: 50 },
-    { kind: "tell-legend", party: "zeus", deadlineTicks: 50 },
+    // A counter of the standing term's own kind keeps the place that stands (see practice-legality.test.ts); another kind has none to keep.
+    { kind: "be-at", party: "zeus", deadlineTicks: 50 },
     { kind: "tell-legend", party: "zeus", place: "nowhere", deadlineTicks: 50 },
     { kind: "tell-legend", party: "athena", place: "altar", deadlineTicks: 50 },
     { kind: "tell-legend", party: "zeus", place: "altar" },
@@ -1018,8 +1019,9 @@ test("an alliance is a term a god may offer: it is in the schema, parses in a de
   expect(demand(ally("zeus", "zeus"))).toBe(false);
   expect(demand(ally("zeus", "athena"))).toBe(false);
   expect(demand(ally("hera", "zeus"))).toBe(false);
+  // The recipient of an alliance is fixed by who is making it, so leaving it out is not a reason to refuse.
   expect(demand({ kind: "ally", party: "zeus", deadlineTicks: 100 })).toBe(
-    false,
+    true,
   );
 
   const thread = run.demand(cause, { term: ally("zeus", "hera") });
@@ -1100,7 +1102,7 @@ test("a god is offered swear only on a thread whose term it must perform: the sc
     }).ok,
   ).toBe(true);
   const zeusRow = rowsOf(digestOf(zeus.context.prompt))[0] as string;
-  expect(zeusRow).toContain("swear true");
+  expect(zeusRow).toContain('"swear":true');
 
   // Hera answers Zeus's counter, which binds Zeus: she does not owe it, so she may not swear it.
   run.move("zeus", "counter", owedToHera.id, { term: tell("zeus", 150) });

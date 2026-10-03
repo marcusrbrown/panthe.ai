@@ -190,3 +190,37 @@ test("the properties of the practice run appear in the model run section, and th
   );
   expect(practices).toContain("| 1 | 4 | 4 | 0 | 3 | 1 | 3 |");
 });
+
+test("the model run section lists the replies the world refused, with whose turn and how many attempts, so a gate with exhausted requests can be read", () => {
+  const { input } = episode();
+  const refused: RealInput = {
+    ...input,
+    requests: [
+      ...input.requests,
+      {
+        proposalId: undefined,
+        role: "zeus",
+        outcome: "exhausted",
+        elapsedMs: 9000,
+        promptPayload: "p",
+        steps: [
+          {
+            reason: "invalid-output",
+            detail: "move: move is missing; legal here: accept",
+            attempts: 2,
+            output: '{"action":"practice","thread":"evt-1-5"}',
+            schema: "{}",
+          },
+        ],
+      },
+    ],
+  };
+  const text = section(renderTranscript(recordOf(refused)), "Model run");
+  expect(text).toContain(
+    '- zeus was refused after 2 attempts (move: move is missing; legal here: accept); it sent {"action":"practice","thread":"evt-1-5"}',
+  );
+  // An episode with none lists none.
+  expect(section(renderTranscript(recordOf(input)), "Model run")).not.toContain(
+    "was refused after",
+  );
+});

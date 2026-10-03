@@ -26,8 +26,10 @@ import {
   isThreadOpen,
   type MemoryEntry,
   openPetitionsFor,
+  type PracticeThread,
   practiceBalanceOf,
   termObstacle,
+  termTuple,
   validatePractice,
   type WorldState,
 } from "@panthea/world";
@@ -71,6 +73,10 @@ export interface ThreadView {
   };
   /** The answers this god may give now. */
   readonly moves: readonly AnswerMove[];
+  /** Each of those answers written out in the intent the god would send, for the answers the world would take as written. A counter is the standing term with a different deadline. */
+  readonly intents: Readonly<
+    Partial<Record<AnswerMove, Readonly<Record<string, unknown>>>>
+  >;
   /** Whether this god may swear its acceptance: only the god who must perform the term may. */
   readonly canSwear: boolean;
   /** Why an obligation of this god's cannot be performed now, when it cannot. */
@@ -367,6 +373,23 @@ export function practiceBy(
       moves.push("withdraw");
     }
 
+    const intents: Partial<Record<AnswerMove, Record<string, unknown>>> = {};
+    for (const move of moves) {
+      if (move === "counter") {
+        const term = counterTerm(state, actorId, thread);
+        if (term !== undefined) {
+          intents.counter = {
+            action: "practice",
+            move: "counter",
+            thread: thread.id,
+            term,
+          };
+        }
+      } else {
+        intents[move] = { action: "practice", move, thread: thread.id };
+      }
+    }
+
     const accepter =
       thread.demander === thread.offeredBy ? thread.obligated : thread.demander;
     const lastMove =
@@ -397,6 +420,7 @@ export function practiceBy(
       counterBudgetLeft: thread.counterBudgetLeft,
       tick: state.tick,
       moves,
+      intents,
       ...(thread.practice === "supplication" && thread.petition !== undefined
         ? {
             supplication: {
@@ -527,6 +551,39 @@ const proposalBase = (actor: EntityId) => ({
 const OPENING_TICKS = 90;
 const termTicks = (options: PracticeOptions) =>
   Math.min(options.maxTicks, Math.max(options.minTicks, OPENING_TICKS));
+
+/**
+ * A counter the world would take on `thread`, to write out for the god: the
+ * standing term with a different deadline, the one change that is always a
+ * different offer, and never one already made. `undefined` when no such counter
+ * is legal, in which case none is written out.
+ */
+function counterTerm(
+  state: WorldState,
+  actorId: EntityId,
+  thread: PracticeThread,
+): PracticeTermOffer | undefined {
+  const min = practiceBalanceOf(state.rules, "minTermTicks");
+  const max = practiceBalanceOf(state.rules, "maxTermTicks");
+  const { deadline, ...spec } = thread.term;
+  const remaining = Math.max(min, deadline - state.tick);
+  const clamp = (ticks: number) => Math.min(max, Math.max(min, ticks));
+  const tries = [remaining + 30, remaining + 60, remaining - 30, max, min];
+  for (const ticks of tries.map(clamp)) {
+    if (thread.offers.includes(termTuple(spec as PracticeTerm, ticks)))
+      continue;
+    const term = { ...spec, deadlineTicks: ticks } as PracticeTermOffer;
+    const verdict = validatePractice(state, {
+      ...proposalBase(actorId),
+      kind: "practice",
+      move: "counter",
+      thread: thread.id,
+      term,
+    } satisfies PracticeProposal);
+    if (verdict.ok) return term;
+  }
+  return undefined;
+}
 
 /**
  * The offering a god could ask of the one who prayed: one unit of the first
@@ -706,11 +763,39 @@ function demandOpening(
 
 // --- The digest ------------------------------------------------------------------------------
 
-const quoted = (moves: readonly AnswerMove[]) =>
-  moves.map((move) => `"${move}"`).join(", ");
-
 const ticksLeft = (deadline: number, now: number) =>
   Math.max(0, deadline - now);
+
+const json = (value: unknown) => JSON.stringify(value);
+
+/** The withdrawal of a thread, as the object to send. */
+function withdrawLine(view: ThreadView): string {
+  return `  You may withdraw it: ${json(view.intents.withdraw ?? { action: "practice", move: "withdraw", thread: view.id })}`;
+}
+
+/**
+ * The answers a thread awaiting the god allows, each written out as the object
+ * to send, the exact legal (move, thread) pairs. A move the world would not
+ * take as written (a counter with no legal term) is named without an object.
+ */
+function answerLines(view: ThreadView): string[] {
+  const lines = ["  Answer with exactly one of these:"];
+  for (const move of view.moves) {
+    const intent = view.intents[move];
+    const note =
+      move === "accept" && view.canSwear
+        ? ' (add "swear":true to swear it by the Styx)'
+        : move === "counter"
+          ? ` (${view.counterBudgetLeft} left; change what it asks)`
+          : "";
+    lines.push(
+      intent === undefined
+        ? `  move "${move}" on thread "${view.id}"${note}`
+        : `  ${json(intent)}${note}`,
+    );
+  }
+  return lines;
+}
 
 /** One thread as a full row: its role, term and deadline, last move, cause, and exactly what the god may answer with. */
 function fullRow(view: ThreadView): string[] {
@@ -732,9 +817,9 @@ function fullRow(view: ThreadView): string[] {
     case "awaiting":
       lines.push(
         `- [${view.id}] AWAITING YOUR ANSWER: ${view.lastMove}: ${term}, ${by}. ${answerBy} Cause: ${view.cause}.`,
-        respond
-          ? `  Answer with action "practice", thread "${view.id}", and move ${quoted(view.moves)}${view.canSwear ? " (add swear true to swear it by the Styx)" : ""}${view.moves.includes("counter") ? `; a counter carries a new term (${view.counterBudgetLeft} left)` : ""}.`
-          : `  The window to answer has closed; it ends on its own.`,
+        ...(respond
+          ? answerLines(view)
+          : ["  The window to answer has closed; it ends on its own."]),
       );
       break;
     case "other":
@@ -750,9 +835,7 @@ function fullRow(view: ThreadView): string[] {
             `- [${view.id}] OPEN, waiting on ${view.other}: you offered terms on its prayer [${petition}]: ${term}, ${by}. Its answer is due by tick ${view.negotiationDeadline}.`,
           );
           if (view.moves.includes("withdraw")) {
-            lines.push(
-              `  You may withdraw it: action "practice", thread "${view.id}", move "withdraw".`,
-            );
+            lines.push(withdrawLine(view));
           }
         }
         break;
@@ -763,9 +846,7 @@ function fullRow(view: ThreadView): string[] {
           : `- [${view.id}] OPEN, waiting on ${view.other}: ${view.lastMove}: ${term}, ${by}. Their answer is due by tick ${view.negotiationDeadline}. Cause: ${view.cause}.`,
       );
       if (view.moves.includes("withdraw")) {
-        lines.push(
-          `  You may withdraw it: action "practice", thread "${view.id}", move "withdraw".`,
-        );
+        lines.push(withdrawLine(view));
       }
       break;
   }
@@ -783,7 +864,7 @@ function compactRow(view: ThreadView): string {
     case "obligation":
       return `- [${view.id}] YOU OWE ${view.other}: ${term}, ${by}.${view.unperformable === undefined ? "" : " UNPERFORMABLE now."}`;
     case "awaiting":
-      return `- [${view.id}] AWAITING YOUR ANSWER: ${term}, ${by}. thread "${view.id}", move ${quoted(view.moves)}; answer by tick ${view.negotiationDeadline}.`;
+      return `- [${view.id}] AWAITING YOUR ANSWER: ${term}, ${by}. Answer by tick ${view.negotiationDeadline} with ${view.moves.map((move) => json(view.intents[move] ?? { action: "practice", move, thread: view.id })).join(" or ")}.`;
     case "other":
       return view.supplication !== undefined
         ? `- [${view.id}] ${view.status === "accepted" ? `${view.other} ACCEPTED your terms` : `OPEN, terms offered to ${view.other}`}: ${term}, ${by}.`
@@ -876,7 +957,7 @@ export function describePracticeInstructions(
   const canOffer = options.offerable.length > 0;
   if (!canAnswer && !canDemand && !canOffer) return [];
   const lines = [
-    'A practice (action "practice") is a bargain the world holds and judges: only moves bind, and words never do. Each carries a move, the thread, cause, or prayer it names, and one term {kind, party, deadlineTicks, and what the kind needs}; the rows and openings below show them in full.',
+    'A practice (action "practice") is a bargain the world holds and judges: only moves bind, and words never do. Copy one of the objects the rows and openings below show; each names its move, and only a demand, an offer, and a counter carry a term {kind, party, deadlineTicks, and what the kind needs}.',
   ];
   if (canDemand) {
     lines.push(
@@ -950,6 +1031,8 @@ export interface PracticeOffer {
   readonly otherOf: ReadonlyMap<EventId, EntityId>;
   /** The threads this god may swear its acceptance of: those whose term it must perform. */
   readonly swearable: readonly EventId[];
+  /** The term on the table of each thread, so a counter that changes only what it names can leave the rest as it stands. */
+  readonly standing: ReadonlyMap<EventId, PracticeTerm>;
 }
 
 /** The practice offer, or `undefined` when the god has nothing to say in a practice now. */
@@ -981,6 +1064,7 @@ export function practiceOffer(
     offerable: options.offerable,
     otherOf: new Map(threads.map((view) => [view.id, view.other])),
     swearable: threads.filter((view) => view.canSwear).map((view) => view.id),
+    standing: new Map(threads.map((view) => [view.id, view.term])),
   };
 }
 
@@ -995,6 +1079,57 @@ export function offeredMoves(offer: PracticeOffer): readonly string[] {
   return moves;
 }
 
+/** `if` every named property matches, `then` these keys are required: one flat condition, no branches of the schema. */
+function when(
+  matches: Record<string, { const: string } | { enum: readonly string[] }>,
+  required: readonly string[],
+) {
+  return {
+    if: { properties: matches, required: Object.keys(matches) },
+    // biome-ignore lint/suspicious/noThenProperty: `then` is JSON Schema's conditional keyword; this is a schema fragment, never awaited.
+    then: { required: [...required] },
+  };
+}
+
+/**
+ * What a practice must carry, as conditions on the one flat schema: a practice
+ * names its move, and each move names what it acts on (a thread, a cause, a
+ * prayer) and a term where it has one. Only what is on offer this turn is
+ * required, so a field that is not a property is never demanded. A decoder
+ * that cannot hold conditions ignores them, and the parser still refuses a
+ * practice that lacks what its move needs.
+ */
+export function practiceConditions(offer: PracticeOffer): object[] {
+  const conditions: object[] = [
+    when({ action: { const: "practice" } }, ["move"]),
+  ];
+  const plain = (["accept", "refuse", "withdraw"] as const).filter(
+    (move) => offer.answers[move].length > 0,
+  );
+  if (plain.length > 0) {
+    conditions.push(when({ move: { enum: plain } }, ["thread"]));
+  }
+  if (offer.answers.counter.length > 0) {
+    conditions.push(when({ move: { const: "counter" } }, ["thread", "term"]));
+  }
+  if (offer.canDemand) {
+    conditions.push(when({ move: { const: "demand" } }, ["cause", "term"]));
+  }
+  if (offer.offerable.length > 0) {
+    conditions.push(when({ move: { const: "offer" } }, ["prayer", "term"]));
+  }
+  return conditions;
+}
+
+/** What a term of each kind must carry beyond its kind, party, and deadline; the recipient is not asked for, since the parser fills it in. */
+const TERM_CONDITIONS = [
+  when({ kind: { enum: ["tell-legend", "be-at", "stay-away"] } }, ["place"]),
+  when({ kind: { enum: ["give-resource", "make-offering"] } }, [
+    "resource",
+    "amount",
+  ]),
+];
+
 /** The schema properties a practice adds: flat, so the 4K budget holds. */
 export function practiceProperties(
   offer: PracticeOffer,
@@ -1003,9 +1138,7 @@ export function practiceProperties(
   const properties: Record<string, unknown> = {
     move: { type: "string", enum: [...offeredMoves(offer)] },
   };
-  const threadIds = [
-    ...new Set(Object.values(offer.answers).flatMap((ids) => ids)),
-  ];
+  const threadIds = [...new Set(Object.values(offer.answers).flat())];
   if (threadIds.length > 0) {
     properties.thread = { type: "string", enum: threadIds };
   }
@@ -1063,6 +1196,12 @@ export function practiceProperties(
         },
       },
       required: ["kind", "party", "deadlineTicks"],
+      allOf: [
+        ...TERM_CONDITIONS,
+        ...(offer.mortals.length > 0
+          ? [when({ kind: { const: "bless-mortal" } }, ["mortal"])]
+          : []),
+      ],
       additionalProperties: false,
     };
   }
@@ -1092,6 +1231,23 @@ function member<T extends string>(
 }
 
 /**
+ * `member`, except that a field the model left out is filled in when the world
+ * leaves only one value it could be: a recipient the target already fixes is not
+ * something to refuse a whole turn over. A value that is present is still checked.
+ */
+function memberOrOnly<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+  what: string,
+): ParseResult<T> {
+  if ((value === undefined || value === null) && allowed.length === 1) {
+    return { ok: true, value: allowed[0] as T };
+  }
+  return member(value, path, allowed, what);
+}
+
+/**
  * A term as the god offers it, against what it may name. `participants` are
  * the two gods of the thread: a term binds one of them, and a gift goes to the
  * other. A demand's participants are the god and the one it binds.
@@ -1101,11 +1257,34 @@ function parseTerm(
   participants: readonly EntityId[],
   raw: unknown,
   demand: boolean,
+  standing?: PracticeTerm,
 ): ParseResult<PracticeTermOffer> {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return invalid("term", "term must be an object");
   }
-  const fields = raw as Record<string, unknown>;
+  const sent = raw as Record<string, unknown>;
+  // A counter of the standing term's own kind, for the party it binds, that leaves a field out keeps what stands: it changes what it names and nothing else. Anything else is read as sent.
+  const keeps =
+    standing !== undefined &&
+    sent.kind === standing.kind &&
+    sent.party === standing.party
+      ? (standing as unknown as Record<string, unknown>)
+      : undefined;
+  const fields =
+    keeps === undefined
+      ? sent
+      : {
+          ...Object.fromEntries(
+            ["place", "mortal", "resource", "amount", "to"].flatMap((key) =>
+              keeps[key] === undefined ? [] : [[key, keeps[key]]],
+            ),
+          ),
+          ...Object.fromEntries(
+            Object.entries(sent).filter(
+              ([, value]) => value !== undefined && value !== null,
+            ),
+          ),
+        };
   const { options } = offer;
   const kind = member(fields.kind, "term.kind", TERM_KINDS, "kind");
   if (!kind.ok) return kind;
@@ -1161,7 +1340,7 @@ function parseTerm(
     }
     case "ally": {
       // An alliance is between the two gods of the thread: the party and the other.
-      const to = member(
+      const to = memberOrOnly(
         fields.to,
         "term.to",
         pair.filter((p) => p !== base.party),
@@ -1180,7 +1359,7 @@ function parseTerm(
         kind.value === "give-resource"
           ? pair.filter((p) => p !== base.party)
           : [offer.self, ...options.gods].filter((g) => g !== base.party);
-      const to = member(fields.to, "term.to", recipients, "to");
+      const to = memberOrOnly(fields.to, "term.to", recipients, "to");
       if (!to.ok) return to;
       const resource = member(
         fields.resource,
@@ -1235,8 +1414,8 @@ function parseOfferTerm(
     "party",
   );
   if (!party.ok) return party;
-  const to = member(fields.to, "term.to", [offer.self], "to");
-  if (!to.ok) return to;
+  // The recipient of an offering on a prayer is always the god making the offer, so whatever `to` names (or nothing) is that god.
+  const to = { ok: true as const, value: offer.self };
   const resource = member(
     fields.resource,
     "term.resource",
@@ -1272,12 +1451,84 @@ function parseOfferTerm(
   };
 }
 
+/** The answers this god may give on `thread`, in order; none when the thread is not one it may answer. */
+function legalOn(offer: PracticeOffer, thread: unknown): AnswerMove[] {
+  if (typeof thread !== "string") return [];
+  return (["accept", "counter", "refuse", "withdraw"] as const).filter((move) =>
+    (offer.answers[move] as readonly string[]).includes(thread),
+  );
+}
+
+const describeLegal = (moves: readonly AnswerMove[], thread: string) =>
+  `${moves.map((move) => `"${move}"`).join(", ")} on thread ${thread}`;
+
+/** Every legal (move, thread or cause or prayer) pair this god has now, for the refusal of a practice that names none. */
+function legalPairs(offer: PracticeOffer): string {
+  const pairs: string[] = [];
+  const threads = [...new Set(Object.values(offer.answers).flat())];
+  for (const thread of threads) {
+    pairs.push(describeLegal(legalOn(offer, thread), thread));
+  }
+  if (offer.canDemand) {
+    pairs.push(
+      `"demand" over a cause (${offer.options.causes.map((cause) => cause.id).join(", ")})`,
+    );
+  }
+  if (offer.offerable.length > 0) {
+    pairs.push(
+      `"offer" on a prayer (${offer.offerable.map((prayer) => prayer.id).join(", ")})`,
+    );
+  }
+  return pairs.join("; ");
+}
+
+const named = (value: unknown) =>
+  value !== undefined && value !== null && value !== "";
+
+/**
+ * The move of a practice. A model that leaves `move` out is read only where the
+ * fields it did send say which move it is: a cause is a demand, a prayer an
+ * offer, a term on a thread a counter, a swear an accept (each only where that
+ * move is legal). Anything the fields do not settle is refused, with the exact
+ * legal pairs, rather than guessed at.
+ */
+function resolveMove(
+  offer: PracticeOffer,
+  fields: Record<string, unknown>,
+): ParseResult<string> {
+  if (named(fields.move)) {
+    const found = member(fields.move, "move", offeredMoves(offer), "move");
+    return found.ok
+      ? found
+      : invalid("move", `${found.message}; legal here: ${legalPairs(offer)}`);
+  }
+  const hasCause = named(fields.cause);
+  const hasPrayer = named(fields.prayer);
+  const hasThread = named(fields.thread);
+  if (Number(hasCause) + Number(hasPrayer) + Number(hasThread) === 1) {
+    if (hasCause && offer.canDemand) return { ok: true, value: "demand" };
+    if (hasPrayer && offer.offerable.length > 0) {
+      return { ok: true, value: "offer" };
+    }
+    if (hasThread) {
+      const legal = legalOn(offer, fields.thread);
+      if (named(fields.term) && legal.includes("counter")) {
+        return { ok: true, value: "counter" };
+      }
+      if (fields.swear === true && legal.includes("accept")) {
+        return { ok: true, value: "accept" };
+      }
+    }
+  }
+  return invalid("move", `move is missing; legal here: ${legalPairs(offer)}`);
+}
+
 /** Parses a `practice` action against the offer: the move, the thread, prayer, or cause it names, and its term. */
 export function parsePractice(
   offer: PracticeOffer,
   fields: Record<string, unknown>,
 ): ParseResult<PracticeIntent> {
-  const move = member(fields.move, "move", offeredMoves(offer), "move");
+  const move = resolveMove(offer, fields);
   if (!move.ok) return move;
   // A stake belongs to an offer on a prayer and to no other move.
   if (
@@ -1351,12 +1602,26 @@ export function parsePractice(
     offer.answers[answer],
     "thread",
   );
-  if (!thread.ok) return thread;
+  if (!thread.ok) {
+    const allowed = legalOn(offer, fields.thread);
+    return allowed.length === 0
+      ? thread
+      : invalid(
+          "thread",
+          `${describeLegal(allowed, String(fields.thread))} allows only these; "${answer}" is not one of them`,
+        );
+  }
   const id = thread.value as EventId;
   switch (answer) {
     case "counter": {
       const other = offer.otherOf.get(id) as EntityId;
-      const term = parseTerm(offer, [offer.self, other], fields.term, false);
+      const term = parseTerm(
+        offer,
+        [offer.self, other],
+        fields.term,
+        false,
+        offer.standing.get(id),
+      );
       if (!term.ok) return term;
       return {
         ok: true,

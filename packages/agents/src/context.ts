@@ -52,6 +52,7 @@ import {
   type PracticeRefusalView,
   parsePractice,
   practiceBy,
+  practiceConditions,
   practiceOffer,
   practiceProperties,
   refusalView,
@@ -1094,9 +1095,21 @@ export function godIntentSchema(
     action: { type: "string", enum: [...actions] },
   };
   const to = [...new Set([...offer.moves, ...offer.transitions])];
-  if (to.length > 0) properties.to = { type: "string", enum: to };
+  if (to.length > 0) {
+    properties.to = {
+      type: "string",
+      enum: to,
+      description:
+        'Where to go: one of your ways out, for the action "move" or "realm-transition" (name it here, not in "target").',
+    };
+  }
   if (offer.strikeCap >= 1) {
-    properties.target = { type: "string", enum: [...offer.strikeTargets] };
+    properties.target = {
+      type: "string",
+      enum: [...offer.strikeTargets],
+      description:
+        'The building a strike hits: for the action "strike" only, never a place to go.',
+    };
     properties.power = {
       type: "integer",
       minimum: 1,
@@ -1133,6 +1146,8 @@ export function godIntentSchema(
   if (offer.blessPetitions.length > 0) {
     properties.petition = { type: "string", enum: [...offer.blessPetitions] };
   }
+  const conditions =
+    offer.practice === undefined ? [] : practiceConditions(offer.practice);
   if (offer.practice !== undefined) {
     Object.assign(properties, practiceProperties(offer.practice));
   }
@@ -1179,6 +1194,8 @@ export function godIntentSchema(
       type: "object",
       properties,
       required: ["action"],
+      // Conditions are flat and only present when a practice is on offer; see `practiceConditions`.
+      ...(conditions.length === 0 ? {} : { allOf: conditions }),
       additionalProperties: false,
     },
     // The one place an intent is branded: only a candidate that passed every
@@ -1298,14 +1315,17 @@ function targetIsHere(snapshot: PerceptionSnapshot, target: EntityId): boolean {
  * The ways a god may answer a prayer, as a choice and not a command: help (or
  * punish) freely, where the way there is said only for one who chooses it; set
  * terms, written out in full when the world would take them; or let it be.
+ * Every action is written out as the object to send, since a model copies what
+ * it is shown whole and leaves out fields it is only told about.
  */
 function answerGuidance(petition: PetitionView): string[] {
   const { request } = petition;
+  const send = (intent: Record<string, unknown>) => JSON.stringify(intent);
   const terms =
     petition.offer === undefined
       ? []
       : [
-          `  - set terms (your boon for an offering, to be judged by the world): ${JSON.stringify(petition.offer)}`,
+          `  - set terms (your boon for an offering, to be judged by the world): ${send(petition.offer)}`,
         ];
   const letBe = "  - or let it be: waiting is always allowed.";
   const free = (lines: readonly string[]) => [
@@ -1315,9 +1335,10 @@ function answerGuidance(petition: PetitionView): string[] {
     letBe,
   ];
   if (request.kind === "help") {
+    const bless = { action: "bless", petition: petition.id };
     if (petition.petitionerHere) {
       return free([
-        `  - help freely: ${petition.petitioner} is here (action "bless", petition [${petition.id}]).`,
+        `  - help freely: ${petition.petitioner} is here: ${send(bless)}`,
       ]);
     }
     const hop = petition.whereabouts.find((entry) =>
@@ -1327,7 +1348,7 @@ function answerGuidance(petition: PetitionView): string[] {
       hop === undefined
         ? []
         : [
-            `  - help freely: ${petition.petitioner} is not here; if you choose this, go toward them (action "${hop.action}", to "${hop.id}", ${hop.name}) turn by turn until you are with them, then bless them (action "bless", petition [${petition.id}]).`,
+            `  - help freely: ${petition.petitioner} is not here; if you choose this, go toward them ${send({ action: hop.action, to: hop.id })} (${hop.name}) turn by turn until you are with them, then bless them ${send(bless)}.`,
           ],
     );
   }
@@ -1340,7 +1361,7 @@ function answerGuidance(petition: PetitionView): string[] {
     entry.who.find((id) => buildings.includes(id));
   if (here !== undefined) {
     return free([
-      `  - punish freely: ${target(here)} is here (action "strike").`,
+      `  - punish freely: ${target(here)} is here: ${send({ action: "strike", target: target(here) })} (with a power, from 1 to your limit).`,
     ]);
   }
   const away = petition.whereabouts.find(
@@ -1351,7 +1372,7 @@ function answerGuidance(petition: PetitionView): string[] {
     away === undefined || hop === undefined
       ? []
       : [
-          `  - punish freely: if you choose this, go toward ${away.place.name} (action "${hop.action}", to "${hop.id}", ${hop.name}) turn by turn until you are there, then strike ${target(away)}.`,
+          `  - punish freely: if you choose this, go toward ${away.place.name} ${send({ action: hop.action, to: hop.id })} (${hop.name}) turn by turn until you are there, then strike ${target(away)}.`,
         ],
   );
 }

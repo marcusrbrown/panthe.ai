@@ -115,6 +115,10 @@ export interface StepFailure {
   readonly detail: string;
   readonly attempts: number;
   readonly elapsedMs: number;
+  /** For an invalid reply: the last reply the model gave, redacted and bounded, so a refusal can be read for what it was. */
+  readonly output?: string;
+  /** For an invalid reply: the intent schema this request was made with, redacted and bounded (the world moves on; the schema it was asked under does not). */
+  readonly schema?: string;
 }
 
 export type RouteResult<T> =
@@ -154,6 +158,8 @@ type Attempt<T> =
       readonly ok: false;
       readonly reason: FailureReason;
       readonly detail: string;
+      /** The reply refused, for `invalid-output`. */
+      readonly output?: string;
     };
 
 const RETRYABLE: ReadonlySet<FailureReason> = new Set([
@@ -164,6 +170,16 @@ const RETRYABLE: ReadonlySet<FailureReason> = new Set([
 ]);
 
 const DETAIL_LIMIT = 300;
+/** How much of a refused reply, and of the schema it was asked under, a failure keeps. */
+const OUTPUT_LIMIT = 1_000;
+const SCHEMA_LIMIT = 8_000;
+/** How much of a refusal's reason a retry is told. */
+const FEEDBACK_LIMIT = 400;
+
+/** What a retry after an invalid reply adds to the prompt: why it was refused, and what to do about it. */
+function feedbackFor(detail: string): string {
+  return `Your last reply was refused: ${detail.slice(0, FEEDBACK_LIMIT)}. Reply with one corrected JSON object.`;
+}
 
 /** An endpoint with a `keyRef` has no key to send. Names the `keyRef`, never a key. */
 class KeyMissingError extends Error {
@@ -283,6 +299,7 @@ export function createRouter(options: RouterOptions): Router {
     chain: AbortSignal,
     caller: AbortSignal | undefined,
     reasoningEffort: "none" | undefined,
+    feedback?: string,
   ): Promise<Attempt<T>> {
     const startedAt = performance.now();
     const request = (timeoutMs: number) => ({
@@ -301,17 +318,22 @@ export function createRouter(options: RouterOptions): Router {
       timeout: timeoutMs,
       maxRetries: 0,
     });
-    const invalid = (message: string): Attempt<T> => ({
+    const invalid = (message: string, output?: string): Attempt<T> => ({
       ok: false,
       reason: "invalid-output",
       detail: message,
+      ...(output === undefined ? {} : { output }),
     });
+    const asked =
+      feedback === undefined
+        ? context.prompt
+        : `${context.prompt}\n\n${feedback}`;
 
     let text: string | undefined;
     try {
       const result = await generateText({
         ...request(limits.attemptTimeoutMs),
-        prompt: context.prompt,
+        prompt: asked,
         output: Output.object({ schema: jsonSchema(schema.jsonSchema) }),
       });
       const parsed = schema.parse(result.output);
@@ -319,6 +341,7 @@ export function createRouter(options: RouterOptions): Router {
         ? { ok: true, intent: parsed.value, mode: "native" }
         : invalid(
             `${parsed.path === "" ? "" : `${parsed.path}: `}${parsed.message}`,
+            JSON.stringify(result.output),
           );
     } catch (error) {
       if (NoObjectGeneratedError.isInstance(error)) {
@@ -341,7 +364,7 @@ export function createRouter(options: RouterOptions): Router {
         );
         const result = await generateText({
           ...request(remaining),
-          prompt: `${context.prompt}\n\n${schemaInstruction(schema)}`,
+          prompt: `${asked}\n\n${schemaInstruction(schema)}`,
         });
         text = result.text;
       } catch (error) {
@@ -352,7 +375,7 @@ export function createRouter(options: RouterOptions): Router {
     const repaired = repairIntent(text, schema.parse);
     return repaired.ok
       ? { ok: true, intent: repaired.value, mode: "repaired" }
-      : invalid(repaired.message);
+      : invalid(repaired.message, text);
   }
 
   async function tryStep<T>(
@@ -372,7 +395,11 @@ export function createRouter(options: RouterOptions): Router {
   > {
     const startedAt = performance.now();
     const endpoint = step.endpoint.id;
-    const redact = (text: string, apiKey: string | undefined): string => {
+    const redact = (
+      text: string,
+      apiKey: string | undefined,
+      limit = DETAIL_LIMIT,
+    ): string => {
       let clean = text;
       if (apiKey !== undefined && apiKey !== "") {
         // The key as sent, and as JSON writes it inside a string: an error
@@ -382,7 +409,7 @@ export function createRouter(options: RouterOptions): Router {
           clean = clean.split(form).join("[redacted]");
         }
       }
-      return clean.slice(0, DETAIL_LIMIT);
+      return clean.slice(0, limit);
     };
 
     let adapter: { model: LanguageModel; apiKey?: string };
@@ -422,6 +449,8 @@ export function createRouter(options: RouterOptions): Router {
 
     let attempts = 0;
     let last: Extract<Attempt<T>, { ok: false }>;
+    // What the last attempt was refused for, told to the next one: only an invalid reply earns it, since a transport failure has nothing to correct.
+    let feedback: string | undefined;
     for (;;) {
       attempts += 1;
       const outcome = await attempt(
@@ -431,6 +460,7 @@ export function createRouter(options: RouterOptions): Router {
         chain,
         caller,
         step.endpoint.reasoningEffort,
+        feedback,
       );
       if (outcome.ok) {
         return {
@@ -446,6 +476,10 @@ export function createRouter(options: RouterOptions): Router {
         };
       }
       last = outcome;
+      feedback =
+        outcome.reason === "invalid-output"
+          ? feedbackFor(outcome.detail)
+          : undefined;
       if (!RETRYABLE.has(outcome.reason) || attempts >= limits.maxAttempts) {
         break;
       }
@@ -474,6 +508,20 @@ export function createRouter(options: RouterOptions): Router {
         detail: redact(last.detail, adapter.apiKey),
         attempts,
         elapsedMs: performance.now() - startedAt,
+        ...(last.reason === "invalid-output"
+          ? {
+              ...(last.output === undefined
+                ? {}
+                : {
+                    output: redact(last.output, adapter.apiKey, OUTPUT_LIMIT),
+                  }),
+              schema: redact(
+                JSON.stringify(schema.jsonSchema),
+                adapter.apiKey,
+                SCHEMA_LIMIT,
+              ),
+            }
+          : {}),
       },
     };
   }

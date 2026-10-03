@@ -143,3 +143,60 @@ test("the sample is written beside the episode as episode-N-sample-prompt.md, wi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const REFUSED = row({
+  outcome: "exhausted",
+  outputPayload: undefined,
+  promptPayload: WITH_PRACTICES,
+  steps: [
+    {
+      reason: "invalid-output",
+      detail: "move: move is missing; legal here: accept",
+      attempts: 2,
+      output: '{"action":"practice","thread":"evt-1-5"}',
+      schema: '{"type":"object","title":"as asked"}',
+    },
+  ],
+});
+
+test("an exhausted request is sampled too, with what the model sent, how many attempts it had, and the schema it was asked under, not the end-of-run schema", () => {
+  const text = renderSamplePrompt(
+    source([row(), REFUSED], { type: "object", title: "end of run" }),
+    { index: 1, total: 3 },
+    [],
+  );
+  const refused = text.split("## A refused turn")[1] ?? "";
+  expect(refused).toContain("zeus");
+  expect(refused).toContain("2 attempts");
+  expect(refused).toContain("move: move is missing; legal here: accept");
+  expect(refused).toContain('{"action":"practice","thread":"evt-1-5"}');
+  expect(refused).toContain('"title":"as asked"');
+  expect(refused).not.toContain("end of run");
+  expect(refused).toContain("as it was when the request was made");
+});
+
+test("the refused turn's reply and schema are redacted like the rest", () => {
+  const leaky = {
+    ...REFUSED,
+    steps: [
+      {
+        reason: "invalid-output",
+        detail: "no",
+        attempts: 2,
+        output: `echo ${KEY}`,
+        schema: `{"d":"${KEY}"}`,
+      },
+    ],
+  };
+  const text = renderSamplePrompt(source([leaky]), { index: 1, total: 1 }, [
+    KEY,
+  ]);
+  expect(text).not.toContain(KEY);
+  expect(text).toContain("[redacted]");
+});
+
+test("with no refused request there is no refused section", () => {
+  expect(
+    renderSamplePrompt(source([row()]), { index: 1, total: 1 }, []),
+  ).not.toContain("## A refused turn");
+});

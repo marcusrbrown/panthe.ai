@@ -76,6 +76,7 @@ test("a real run adds its numbers, its properties, and its limits; without one t
         exhaustion: [
           { reason: "invalid-output", detail: "content too long", count: 5 },
         ],
+        refusals: [],
         degradedShare: 0.1,
         properties: [
           { name: "valid actions", ok: true, detail: "10 proposals" },

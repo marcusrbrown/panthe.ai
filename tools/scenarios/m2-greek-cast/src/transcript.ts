@@ -611,6 +611,10 @@ function renderModelRun(record: EpisodeRecord): string {
           `- exhaustion: ${a.exhaustion.map((e) => `${e.count} × ${e.detail}`).join("; ")}`,
         ]
       : []),
+    ...a.refusals.map(
+      (r) =>
+        `- ${r.god} was refused after ${r.attempts} attempts (${r.detail}); it sent ${r.output}`,
+    ),
     ...a.properties.map(
       (p) => `- ${p.name}: ${p.ok ? "held" : "FAILED"} (${p.detail})`,
     ),

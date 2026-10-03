@@ -760,7 +760,7 @@ test("a help prayer from a petitioner who is here offers bless as one of the cho
   run.state = actorAt(run.state, god, "altar");
   const prayers = prayersOf(run.prompt(god));
   expect(prayers).toContain(
-    `help freely: farmer is here (action "bless", petition [${opened.id}])`,
+    `help freely: farmer is here: {"action":"bless","petition":"${opened.id}"}`,
   );
   expect(prayers).toContain("let it be");
   expect(prayers).not.toContain("bless them now");
@@ -779,7 +779,9 @@ test("a punish prayer offers striking the offender's building as a choice: go to
   expect(afar).not.toContain("To answer it");
   run.state = actorAt(run.state, god, "town-square");
   const near = prayersOf(run.prompt(god));
-  expect(near).toContain('punish freely: woodshed is here (action "strike")');
+  expect(near).toContain(
+    'punish freely: woodshed is here: {"action":"strike","target":"woodshed"}',
+  );
 });
 
 test("the instructions say a goal change can ride with a move or an answer in the same turn", () => {

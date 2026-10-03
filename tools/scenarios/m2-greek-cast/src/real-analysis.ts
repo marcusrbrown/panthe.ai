@@ -13,6 +13,12 @@ export interface RealStep {
   readonly mode?: string;
   readonly reason?: string;
   readonly detail?: string;
+  /** Attempts the step made before it gave up or answered. */
+  readonly attempts?: number;
+  /** For an invalid reply: the last reply refused, as the trace kept it (redacted, bounded). */
+  readonly output?: string;
+  /** For an invalid reply: the schema the request was made under. */
+  readonly schema?: string;
 }
 
 export interface RealRequest {
@@ -72,9 +78,20 @@ export interface RealAnalysis {
     readonly detail: string;
     readonly count: number;
   }[];
+  /** Each refused reply an exhausted request kept, up to `MAX_REFUSALS`: whose turn, why, how many attempts, and what the model sent. */
+  readonly refusals: readonly {
+    readonly god: string;
+    readonly reason: string;
+    readonly detail: string;
+    readonly attempts: number;
+    readonly output: string;
+  }[];
   readonly degradedShare: number;
   readonly properties: readonly Property[];
 }
+
+/** How many refused replies an analysis lists. */
+export const MAX_REFUSALS = 12;
 
 export const GOD_ACTIONS: ReadonlySet<string> = new Set([
   "move",
@@ -504,6 +521,23 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       ),
     ),
     exhaustion: [...exhaustion.values()].sort((a, b) => b.count - a.count),
+    refusals: exhausted
+      .flatMap((request) =>
+        request.steps.flatMap((step) =>
+          step.output === undefined
+            ? []
+            : [
+                {
+                  god: request.role,
+                  reason: step.reason ?? "unknown",
+                  detail: (step.detail ?? "").slice(0, 160),
+                  attempts: step.attempts ?? 1,
+                  output: step.output,
+                },
+              ],
+        ),
+      )
+      .slice(0, MAX_REFUSALS),
     degradedShare:
       input.polls.total === 0 ? 0 : input.polls.degraded / input.polls.total,
     properties: [

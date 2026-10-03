@@ -615,6 +615,62 @@ describe("redaction at the write boundary (ADR-0006)", () => {
     expect(row?.steps[0]?.detail).toBe("401 bad key [redacted] rejected");
   });
 
+  test("an exhausted step's refused reply and request-time schema are stored with the step, redacted", () => {
+    const redact = createRedactor([KEY]);
+    const id = recordModelRequest(
+      db,
+      {
+        role: "zeus",
+        route: {
+          kind: "exhausted",
+          steps: [
+            {
+              endpoint: "ollama",
+              model: "m",
+              attempts: 2,
+              elapsedMs: 9,
+              reason: "invalid-output",
+              detail: "move must be one of: demand",
+              output: `{"action":"practice","note":"${KEY}"}`,
+              schema: `{"type":"object","description":"${KEY}"}`,
+            },
+          ],
+          elapsedMs: 10,
+        },
+        prompt: "p",
+      },
+      1_000,
+      redact,
+    );
+    expect(everythingStored()).not.toContain(KEY);
+    const [step] = getModelRequest(db, id)?.steps ?? [];
+    expect(step).toMatchObject({
+      attempts: 2,
+      output: '{"action":"practice","note":"[redacted]"}',
+      schema: '{"type":"object","description":"[redacted]"}',
+    });
+    // Control: with no redactor the key reaches the row, so the scan above is the redaction's doing.
+    recordModelRequest(db, {
+      role: "zeus",
+      route: {
+        kind: "exhausted",
+        steps: [
+          {
+            endpoint: "o",
+            model: "m",
+            attempts: 1,
+            elapsedMs: 1,
+            reason: "invalid-output",
+            output: KEY,
+          },
+        ],
+        elapsedMs: 1,
+      },
+      prompt: "p",
+    });
+    expect(everythingStored()).toContain(KEY);
+  });
+
   test("the digests cover the redacted text, so a stored digest is never a hash of text holding a key", () => {
     const redact = createRedactor([KEY]);
     const proposalId = createProposalId();

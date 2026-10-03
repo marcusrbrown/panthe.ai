@@ -370,6 +370,8 @@ interface RouteStepLike {
 interface FailedRouteStepLike extends RouteStepLike {
   readonly reason: string;
   readonly detail?: string;
+  readonly output?: string;
+  readonly schema?: string;
 }
 
 /**
@@ -401,6 +403,10 @@ export interface ModelRequestStep {
   readonly mode?: "native" | "repaired";
   readonly reason?: string;
   readonly detail?: string;
+  /** For an invalid reply: the last reply refused, redacted and bounded. */
+  readonly output?: string;
+  /** For an invalid reply: the intent schema the request was made under, redacted and bounded. */
+  readonly schema?: string;
 }
 
 interface ModelRequestBase {
@@ -495,6 +501,8 @@ function stepsOf(
     elapsedMs: Math.round(step.elapsedMs),
     reason: step.reason,
     ...(step.detail === undefined ? {} : { detail: redact(step.detail) }),
+    ...(step.output === undefined ? {} : { output: redact(step.output) }),
+    ...(step.schema === undefined ? {} : { schema: redact(step.schema) }),
   }));
   if (route.kind === "intent") {
     steps.push({

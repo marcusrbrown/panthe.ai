@@ -96,6 +96,41 @@ function sectionOf(prompt: string, heading: string): string {
   return [heading, ...rest.slice(0, end < 0 ? rest.length : end)].join("\n");
 }
 
+/** The first exhausted request: what the model sent that the world refused, with the schema it was asked under. */
+function refusedSection(
+  row: SampleRow,
+  position: number,
+  total: number,
+): string[] {
+  const step =
+    row.steps.find((candidate) => candidate.output !== undefined) ??
+    row.steps.at(-1);
+  return [
+    "## A refused turn",
+    "",
+    `- Request ${position + 1} of ${total}, ${row.role}: refused after ${step?.attempts ?? 1} attempts (${step?.reason ?? "unknown"}: ${step?.detail ?? "no detail"}).`,
+    "",
+    "What the model sent last:",
+    "",
+    "```json",
+    step?.output ?? "(not kept: the failure was not an invalid reply)",
+    "```",
+    "",
+    "The intent schema, as it was when the request was made:",
+    "",
+    "```json",
+    step?.schema ?? "(not kept)",
+    "```",
+    "",
+    "The prompt it was shown:",
+    "",
+    "```text",
+    row.promptPayload ?? "(none recorded)",
+    "```",
+    "",
+  ];
+}
+
 /** The sample as a document; `secrets` are every key the run held. */
 export function renderSamplePrompt(
   source: SampleSource,
@@ -108,6 +143,9 @@ export function renderSamplePrompt(
     return `# Episode ${episode.index} of ${episode.total}: no sample\n\nNo model request recorded a prompt.\n`;
   }
   const { row, position, why } = chosen;
+  const refused = source.rows.find(
+    (candidate) => candidate.outcome === "exhausted",
+  );
   const prompt = row.promptPayload ?? "";
   const schema = source.schemaFor(row.role);
   const steps = row.steps
@@ -152,6 +190,13 @@ export function renderSamplePrompt(
     prompt,
     "```",
     "",
+    ...(refused === undefined
+      ? []
+      : refusedSection(
+          refused,
+          source.rows.indexOf(refused),
+          source.rows.length,
+        )),
   ].join("\n");
   return redact(document);
 }

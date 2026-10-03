@@ -417,6 +417,122 @@ describe("route: repair", () => {
     }
   });
 
+  test("the retry after an invalid reply tells the model why it was refused; the first request does not, and nothing else is added", async () => {
+    const stub = startStub(
+      sequence({ content: '{"kind":"fly"}' }, { content: SAY }),
+    );
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    if (result.kind === "intent") {
+      expect(result.step).toMatchObject({ attempts: 2, mode: "native" });
+    }
+    const text = (n: number) => JSON.stringify(stub.seen[n]?.body.messages);
+    expect(text(0)).not.toContain("not a say intent");
+    expect(text(1)).toContain("not a say intent");
+    expect(text(1)).toContain("What do you do?");
+    // The instructions and the schema request are unchanged.
+    expect(text(1)).toContain("You are Zeus.");
+    expect(JSON.stringify(stub.seen[1]?.body.response_format)).toContain(
+      '"kind"',
+    );
+  });
+
+  test("a retry for any other failure repeats the same prompt: only an invalid reply earns feedback", async () => {
+    const stub = startStub(sequence({ status: 500 }, { content: SAY }));
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("intent");
+    expect(JSON.stringify(stub.seen[1]?.body.messages)).toBe(
+      JSON.stringify(stub.seen[0]?.body.messages),
+    );
+  });
+
+  test("the feedback is bounded: a long refusal reason is cut, and a second retry never stacks the first's", async () => {
+    const long = `${"x".repeat(5_000)} tail`;
+    const picky: IntentSchema<Say> = {
+      ...sayIntent,
+      parse: () => ({ ok: false, path: "", message: long }),
+    };
+    const stub = startStub(always({ content: SAY }));
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+      { limits: { maxAttempts: 3 } },
+    );
+
+    await router.route("zeus", context, picky);
+
+    expect(stub.seen).toHaveLength(3);
+    const second = JSON.stringify(stub.seen[1]?.body.messages);
+    const third = JSON.stringify(stub.seen[2]?.body.messages);
+    expect(second.length).toBeLessThan(2_000);
+    expect(third.length).toBeLessThan(2_000);
+    expect(second).not.toContain("tail");
+    // One refusal quoted, not two.
+    expect(third.split("was refused").length).toBe(2);
+  });
+
+  test("an exhausted step keeps what was refused: the last reply, redacted and bounded, the request-time schema, and the attempt count", async () => {
+    const KEY = "sk-live-0123456789abcdef";
+    const stub = startStub(
+      always({ content: `{"kind":"fly","note":"${KEY}"}` }),
+    );
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl, keyRef: "k" }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+      { getKey: () => KEY },
+    );
+
+    const result = await router.route("zeus", context, sayIntent);
+
+    expect(result.kind).toBe("exhausted");
+    if (result.kind !== "exhausted") return;
+    const [step] = result.steps;
+    expect(step).toMatchObject({ reason: "invalid-output", attempts: 2 });
+    expect(step?.output).toContain('"kind":"fly"');
+    expect(step?.output).not.toContain(KEY);
+    expect(step?.output).toContain("[redacted]");
+    expect(step?.schema).toBe(JSON.stringify(sayIntent.jsonSchema));
+  });
+
+  test("an invalid reply that is not JSON is kept as the text it was, and an outage keeps no reply", async () => {
+    const garbage = startStub(always({ content: "I cannot help with that" }));
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: garbage.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    );
+    const refused = await router.route("zeus", context, sayIntent);
+    if (refused.kind !== "exhausted") throw new Error("expected exhausted");
+    expect(refused.steps[0]?.output).toContain("I cannot help with that");
+
+    const down = startStub(always({ status: 500 }));
+    const outage = await routerFor(
+      configFor([{ id: "ollama", baseUrl: down.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    ).route("zeus", context, sayIntent);
+    if (outage.kind !== "exhausted") throw new Error("expected exhausted");
+    expect(outage.steps[0]?.reason).toBe("http-5xx");
+    expect(outage.steps[0]?.output).toBeUndefined();
+    expect(outage.steps[0]?.schema).toBeUndefined();
+  });
+
   test("unrepairable output is retried a bounded number of times, then falls through to the next step", async () => {
     const bad = startStub(always({ content: "no json, sorry" }));
     const good = startStub(always({ content: SAY }));

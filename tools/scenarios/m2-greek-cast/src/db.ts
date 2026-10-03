@@ -183,7 +183,14 @@ export interface SampleRow {
   readonly outcome: "intent" | "exhausted";
   readonly promptPayload: string | undefined;
   readonly outputPayload: string | undefined;
-  readonly steps: readonly { mode?: string; reason?: string }[];
+  readonly steps: readonly {
+    mode?: string;
+    reason?: string;
+    detail?: string;
+    attempts?: number;
+    output?: string;
+    schema?: string;
+  }[];
   readonly elapsedMs: number;
 }
 

@@ -904,6 +904,200 @@ test("talk between the god and the mortal around a supplication is free even whe
   expect(world.rejected()).toEqual([]);
 });
 
+// --- What a mortal could have by the deadline ----------------------------------------------------------------
+
+test("a gatherer is held only to what it could gather by the deadline: an offering beyond held plus gatherAmount per remaining tick is refused at the offer, and no stake can ever fall on it", () => {
+  // The woodcutter holds 3 wood and gathers wood, one a tick (gatherAmount defaults to 1).
+  const { world, petition } = prayed(
+    new World({}, { gathers: "wood" }),
+    "woodcutter",
+    "zeus",
+  );
+  world.place(
+    "zeus",
+    String(getActor(world.state, id("woodcutter"))?.locationId),
+  );
+  const attempt = (amount: number, ticks: number) => {
+    world.tick(
+      offer(
+        petition.id,
+        offering("woodcutter", "zeus", ticks, amount),
+        { stake: "wolf" },
+        "zeus",
+      ),
+    );
+    return world.rejected();
+  };
+  // The exploit: a million units due in 25 ticks.
+  expect(attempt(1_000_000, 25)).toEqual(["insufficient-resources"]);
+  expect(world.threads()).toEqual([]);
+  // 3 held + 20 ticks of gathering is 23: 24 is out of reach, 23 is not.
+  expect(attempt(24, 20)).toEqual(["insufficient-resources"]);
+  expect(attempt(23, 20)).toEqual([]);
+  expect(world.threads()).toHaveLength(1);
+  // Nothing was breached, so nothing was transformed.
+  expect(world.log.some((e) => e.kind === "motif-applied")).toBe(false);
+});
+
+test("a gatherer holding nothing can still be asked for what it can gather in time, and a longer deadline reaches more", () => {
+  const { world, petition } = prayed(
+    new World({}, { gathers: "wood" }),
+    "woodcutter",
+    "zeus",
+  );
+  world.place(
+    "zeus",
+    String(getActor(world.state, id("woodcutter"))?.locationId),
+  );
+  world.setInventory("woodcutter", "wood", 0);
+  world.tick(
+    offer(petition.id, offering("woodcutter", "zeus", 20, 21), {}, "zeus"),
+  );
+  expect(world.rejected()).toEqual(["insufficient-resources"]);
+  world.tick(
+    offer(petition.id, offering("woodcutter", "zeus", 20, 20), {}, "zeus"),
+  );
+  expect(world.rejected()).toEqual([]);
+  // The same amount with more time is reachable.
+  const slow = prayed(new World({}, { gathers: "wood" }), "woodcutter", "zeus");
+  slow.world.place(
+    "zeus",
+    String(getActor(slow.world.state, id("woodcutter"))?.locationId),
+  );
+  slow.world.setInventory("woodcutter", "wood", 0);
+  slow.world.tick(
+    offer(slow.petition.id, offering("woodcutter", "zeus", 60, 50), {}, "zeus"),
+  );
+  expect(slow.world.rejected()).toEqual([]);
+});
+
+test("gatherAmount is the world's: a larger gather reaches more in the same time, and a missing setting is one a tick", () => {
+  const big = prayed(new World({}, { gathers: "wood" }), "woodcutter", "zeus");
+  big.world.state = {
+    ...big.world.state,
+    rules: {
+      ...big.world.state.rules,
+      economyBalance: {
+        ...big.world.state.rules.economyBalance,
+        gatherAmount: 5,
+      },
+    },
+  };
+  big.world.place(
+    "zeus",
+    String(getActor(big.world.state, id("woodcutter"))?.locationId),
+  );
+  big.world.setInventory("woodcutter", "wood", 0);
+  big.world.tick(
+    offer(big.petition.id, offering("woodcutter", "zeus", 20, 100), {}, "zeus"),
+  );
+  expect(big.world.rejected()).toEqual([]);
+  const small = prayed(
+    new World({}, { gathers: "wood" }),
+    "woodcutter",
+    "zeus",
+  );
+  small.world.place(
+    "zeus",
+    String(getActor(small.world.state, id("woodcutter"))?.locationId),
+  );
+  small.world.setInventory("woodcutter", "wood", 0);
+  small.world.tick(
+    offer(
+      small.petition.id,
+      offering("woodcutter", "zeus", 20, 100),
+      {},
+      "zeus",
+    ),
+  );
+  expect(small.world.rejected()).toEqual(["insufficient-resources"]);
+});
+
+test("a mortal that does not gather is held to what it holds: the held amount opens, one more does not, and gathering a different resource does not help", () => {
+  const plain = prayed();
+  plain.world.place(
+    "hera",
+    String(getActor(plain.world.state, id("farmer"))?.locationId),
+  );
+  plain.world.tick(offer(plain.petition.id, offering("farmer", "hera", 60, 4)));
+  expect(plain.world.rejected()).toEqual(["insufficient-resources"]);
+  plain.world.tick(offer(plain.petition.id, offering("farmer", "hera", 60, 3)));
+  expect(plain.world.rejected()).toEqual([]);
+  // The woodcutter gathers food, not wood: its wood is what it holds.
+  const other = prayed(
+    new World({}, { gathers: "food" }),
+    "woodcutter",
+    "zeus",
+  );
+  other.world.place(
+    "zeus",
+    String(getActor(other.world.state, id("woodcutter"))?.locationId),
+  );
+  other.world.tick(
+    offer(other.petition.id, offering("woodcutter", "zeus", 60, 4), {}, "zeus"),
+  );
+  expect(other.world.rejected()).toEqual(["insufficient-resources"]);
+});
+
+test("accepting is judged on the time left, not the time offered: once the deadline is too near for what the mortal could gather, it cannot accept", () => {
+  const { world, thread } = offeredBy(new World({}, { gathers: "wood" }), 20);
+  // Time passes with nothing gathered: too little is left for 20 more wood.
+  world.state = { ...world.state, tick: thread.term.deadline - 5 };
+  world.setInventory("woodcutter", "wood", 0);
+  world.tick({
+    actor: "woodcutter",
+    kind: "practice",
+    move: "accept",
+    thread: thread.id,
+    source: "routine",
+  });
+  expect(world.rejected()).toEqual(["insufficient-resources"]);
+  expect(world.thread().status).toBe("open");
+  // The mortal's own routine declines it rather than promise it.
+  expect(
+    decideRoutineProposal(world.state, id("woodcutter"))?.proposal,
+  ).toMatchObject({
+    kind: "practice",
+    move: "refuse",
+  });
+});
+
+test("an accepted obligation the mortal can no longer meet is seen as unperformable, so the god's digest can say so", async () => {
+  const { canStillPerform } = await import("./practices");
+  const { world } = offeredBy(new World({}, { gathers: "wood" }), 15);
+  world.tick();
+  expect(world.thread().status).toBe("accepted");
+  expect(canStillPerform(world.state, world.thread())).toBe(true);
+  // Nothing held and no longer gathering: it cannot meet it.
+  const mortal = getActor(world.state, id("woodcutter"));
+  if (!mortal) throw new Error("woodcutter");
+  world.state = withActor(world.state, {
+    ...mortal,
+    gathers: undefined,
+    inventory: new Map(mortal.inventory).set("wood", 0),
+  });
+  expect(canStillPerform(world.state, world.thread())).toBe(false);
+});
+
+/** Zeus offers the woodcutter 20-ish wood in 20 ticks, terms standing (not yet answered). */
+function offeredBy(world: World, amount: number) {
+  const { petition } = prayedTo(world);
+  world.place(
+    "zeus",
+    String(getActor(world.state, id("woodcutter"))?.locationId),
+  );
+  world.setInventory("woodcutter", "wood", 0);
+  const ran = world.tick(
+    offer(petition.id, offering("woodcutter", "zeus", 20, amount), {}, "zeus"),
+  );
+  expect(ran.rejected).toEqual([]);
+  return { world, petition, thread: world.thread() };
+}
+
+function prayedTo(world: World) {
+  return prayed(world, "woodcutter", "zeus");
+}
+
 // --- Replay, codec ---------------------------------------------------------------------------
 
 test("a supplication, its progress, its stake, and its ending replay from the log and survive a JSON round trip", () => {

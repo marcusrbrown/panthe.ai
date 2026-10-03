@@ -634,6 +634,49 @@ test("a prayer's terms are an opening when the god has no grievance, and only th
   expect(digestOf(hera.context.prompt)).toEqual([]);
 });
 
+test("an opening never suggests an amount the mortal could not have by the deadline: what is shown is one the world's own term check accepts, for a gatherer holding nothing and for one with a long way to go", async () => {
+  const { termObstacle } = await import("@panthea/world");
+  const run = new Run();
+  run.state = actorAt(run.state, "zeus", "altar");
+  run.prays("farmer", "zeus");
+  const farmer = getActor(run.state, id("farmer"));
+  if (!farmer) throw new Error("farmer");
+  // Nothing held, but gathering food: one unit is within reach in the ticks the term allows.
+  run.state = withActor(run.state, {
+    ...farmer,
+    inventory: new Map(),
+    gathers: "food",
+  });
+  const [opening] = run.view("zeus").remembered.practice.openings;
+  expect(opening).toMatchObject({ kind: "offer" });
+  if (opening === undefined) throw new Error("no opening");
+  const { term } = opening.intent as {
+    term: { resource: string; amount: number; deadlineTicks: number } & Record<
+      string,
+      unknown
+    >;
+  };
+  expect(term).toMatchObject({ resource: "food", amount: 1 });
+  const { deadlineTicks, ...spec } = term;
+  expect(termObstacle(run.state, spec as never, deadlineTicks)).toBeUndefined();
+  // With the bound set so low no gathering reaches it, no offer is shown at all.
+  run.state = {
+    ...run.state,
+    rules: {
+      ...run.state.rules,
+      practiceBalance: {
+        ...run.state.rules.practiceBalance,
+        minTermTicks: 1,
+        maxTermTicks: 1,
+      },
+    },
+  };
+  const gatherer = getActor(run.state, id("farmer"));
+  if (!gatherer) throw new Error("farmer");
+  run.state = withActor(run.state, { ...gatherer, gathers: undefined });
+  expect(run.view("zeus").remembered.practice.openings).toEqual([]);
+});
+
 test("the schema stays flat and the openings change none of what the god may parse: practice is still one object", () => {
   const run = new Run();
   run.accused("zeus", "hera", { agent: "zeus", target: "hera" });

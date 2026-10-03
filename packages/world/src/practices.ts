@@ -37,7 +37,11 @@ import type {
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
-import { debitActorInventory, getResourceAmount } from "./economy";
+import {
+  debitActorInventory,
+  gatherAmountOf,
+  getResourceAmount,
+} from "./economy";
 import { routeLength } from "./geography";
 import { getMemories } from "./memory";
 import { inAnswerWindow, judgeAnswers, petitionBalanceOf } from "./petitions";
@@ -383,19 +387,28 @@ function ticksNeeded(
   }
 }
 
-/** Whether `holder` can have `amount` of `resource` by the deadline: it holds it now, or it is what the holder gathers. */
+/**
+ * Whether `holder` can have `amount` of `resource` within `remaining` more
+ * ticks: it holds that much now, or it holds some and gathers this resource, one
+ * `gatherAmount` a tick for each tick left. An upper bound (the ticks it would
+ * also spend acting on the term are not taken off), so it refuses only what no
+ * run of gathering could reach. A holder that does not gather this resource is
+ * held to what it holds: no one is assumed to be given or to earn anything else.
+ */
 function canHave(
   state: WorldState,
   holder: EntityId,
   resource: string,
   amount: number,
+  remaining: number,
 ): boolean {
   const actor = getActor(state, holder);
   if (actor === undefined) return false;
-  return (
-    getResourceAmount(actor.inventory, resource) >= amount ||
+  const gathered =
     actor.gathers === resource
-  );
+      ? gatherAmountOf(state.rules) * Math.max(0, remaining)
+      : 0;
+  return getResourceAmount(actor.inventory, resource) + gathered >= amount;
 }
 
 /**
@@ -403,7 +416,9 @@ function canHave(
  * ticks, or `undefined` when nothing does. One rule for the offer, the
  * acceptance, and the digest of an accepted obligation, so what could be
  * offered and what can still be performed cannot drift apart. It looks at the
- * world as it stands: no one is assumed to earn, gather, or be given anything.
+ * world as it stands and the time left: what a party holds counts, and so does
+ * what it would gather in `remaining` ticks if it gathers that resource; no one
+ * is assumed to be given or to earn anything else.
  */
 export function termObstacle(
   state: WorldState,
@@ -427,10 +442,10 @@ export function termObstacle(
     if (!to?.alive) {
       return obstacle("dead-actor", `${term.to} is not a living actor`);
     }
-    if (!canHave(state, term.party, term.resource, term.amount)) {
+    if (!canHave(state, term.party, term.resource, term.amount, remaining)) {
       return obstacle(
         "insufficient-resources",
-        `${term.party} cannot have ${term.amount} ${term.resource} by the deadline`,
+        `${term.party} cannot have ${term.amount} ${term.resource} by the deadline (${remaining} ticks)`,
       );
     }
   }
@@ -453,10 +468,10 @@ export function termObstacle(
         `${term.to} is not a living deity to offer to`,
       );
     }
-    if (!canHave(state, term.party, term.resource, term.amount)) {
+    if (!canHave(state, term.party, term.resource, term.amount, remaining)) {
       return obstacle(
         "insufficient-resources",
-        `${term.party} cannot have ${term.amount} ${term.resource} to offer by the deadline`,
+        `${term.party} cannot have ${term.amount} ${term.resource} to offer by the deadline (${remaining} ticks)`,
       );
     }
   }

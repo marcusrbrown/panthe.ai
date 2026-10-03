@@ -41,6 +41,17 @@ export const PRACTICES_HEADING = "Your open practices:";
 /** Characters of digest shown in full. Rows beyond it are compressed, and only threads that need nothing from this god are cut. */
 export const DIGEST_BUDGET_CHARS = 1600;
 
+/**
+ * Characters the prayers section may use, heading and the closing "and N more" line included.
+ * Ollama silently drops the start of a prompt (the system instructions) past about 4,090 tokens, and a
+ * crowd of prayers is the one section that grows without bound: measured on qwen3-8b-4k at about 3.3
+ * characters a token, the busiest seven-god prompt had 3,212 characters of prayers in 9,227 and 2,770
+ * tokens, so about seven more would have crossed it. At 2,400 characters (three or four prayers with
+ * their choices) the same prompt is about 8,400 characters and 2,500 tokens, with some 1,500 tokens
+ * of headroom for a longer digest, memories, and the answer. A prayer a live practice names is never cut.
+ */
+export const PRAYERS_BUDGET_CHARS = 2400;
+
 /** The answers a thread can take from the god. A demand opens one and is not an answer. */
 export type AnswerMove = "accept" | "counter" | "refuse" | "withdraw";
 
@@ -329,6 +340,8 @@ export function practiceBy(
   shownMemories: readonly MemoryEntry[],
   shownPetitioners: readonly EntityId[],
   refusal?: PracticeRefusalView,
+  /** The prayers the prompt shows, when it cannot show them all: only these may be offered terms, so the schema, the parser, and the openings name nothing the god cannot see. Absent means every prayer. */
+  shownPrayers?: ReadonlySet<EventId>,
 ): { threads: readonly ThreadView[]; options: PracticeOptions } {
   const self = getActor(state, actorId);
   if (!self?.isDeity) return { threads: [], options: NO_PRACTICE };
@@ -499,6 +512,7 @@ export function practiceBy(
     offerable: openPetitionsFor(state, actorId)
       .filter(
         (petition) =>
+          (shownPrayers === undefined || shownPrayers.has(petition.id)) &&
           inAnswerWindow(state, petition, state.tick) &&
           getActor(state, petition.petitioner)?.alive === true &&
           ![...state.threads.values()].some(

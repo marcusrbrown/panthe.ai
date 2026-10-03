@@ -552,9 +552,16 @@ test("a refusal from before the current goal was set is not shown", () => {
   expect(`${none.instructions}\n${none.prompt}`).not.toContain("refused");
 });
 
-// --- R7: every open petition is listed ------------------------------------------------------------
+// --- The prayers section is budgeted: the newest are listed, the rest are counted -------------------
+//
+// R7 once said every open petition is listed, however many there are. Owner decision 2026-10-03
+// (Unit 7): a crowd of prayers pushes the instructions out of the model's context (Ollama drops the
+// start of a prompt silently past about 4,090 tokens), so the section has a budget and the prayers
+// it cannot hold become one line. The world still keeps every petition. prayer-budget.test.ts
+// holds the budget, the order, and the schema and parser agreement; this keeps the original
+// seven-petition case honest.
 
-test("every open petition addressed to the god is listed, however many there are, oldest first, and the prompt's growth is measured", () => {
+test("seven open petitions to one god: the newest are listed within the budget, the rest are counted, none is lost from the world, and answering one changes the count; the prompt's growth is measured", () => {
   const run = greek();
   const bare = run.prompt("hera");
   // Each prayer is about a different resource, since a mortal holds one open petition per resource.
@@ -586,14 +593,29 @@ test("every open petition addressed to the god is listed, however many there are
     );
   });
   expect(new Set(opened.map((o) => String(o.god))).size).toBe(1);
+  const idsOf = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => /^- \[evt-/.test(line))
+      .map((line) => /\[(evt-[^\]]+)\]/.exec(line)?.[1]);
   const text = run.prompt("hera");
-  const shown = text.split("\n").filter((line) => /^- \[evt-/.test(line));
-  // All seven, in the order they were opened.
-  expect(shown).toHaveLength(opened.length);
-  expect(shown.map((line) => /\[(evt-[^\]]+)\]/.exec(line)?.[1])).toEqual(
-    opened.map((o) => o.id),
+  const shown = idsOf(text);
+  // The newest, newest first: a prefix of the prayers in reverse order of opening.
+  expect(shown.length).toBeGreaterThan(0);
+  expect(shown.length).toBeLessThan(opened.length);
+  expect(shown).toEqual(
+    [...opened]
+      .reverse()
+      .slice(0, shown.length)
+      .map((o) => o.id),
   );
-  // Control: once one is answered, it is no longer listed and the rest all are.
+  const more = opened.length - shown.length;
+  expect(text).toContain(`- and ${more} more prayers to you.`);
+  // The world keeps all of them.
+  expect(
+    [...run.state.petitions.values()].filter((p) => p.status === "open"),
+  ).toHaveLength(opened.length);
+  // Control: answering the oldest (a hidden one) leaves what is shown as it was and the count one lower.
   const first = run.state.petitions.get(opened[0]?.id as never);
   if (!first) throw new Error("petition");
   run.state = {
@@ -603,12 +625,9 @@ test("every open petition addressed to the god is listed, however many there are
       status: "answered",
     }),
   };
-  expect(
-    run
-      .prompt("hera")
-      .split("\n")
-      .filter((l) => /^- \[evt-/.test(l)),
-  ).toHaveLength(opened.length - 1);
+  const after = run.prompt("hera");
+  expect(idsOf(after)).toEqual(shown);
+  expect(after).toContain(`- and ${more - 1} more prayers to you.`);
   // Measured on the authored world: what seven petitions add to the prompt, in characters.
   console.log(
     `PROMPT_GROWTH_SEVEN_PETITIONS ${text.length - bare.length} total ${text.length}`,

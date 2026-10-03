@@ -215,6 +215,58 @@ export function idFactory<TBrand extends string>(
   return () => `${prefix}-${crypto.randomUUID()}` as Brand<string, TBrand>;
 }
 
+/**
+ * An id factory whose ids sort in the order they were made: a UUIDv7 under
+ * `prefix` (48-bit millisecond timestamp, a 12-bit counter that makes ids made
+ * in one millisecond increase, and 62 random bits). It is the same shape as a
+ * random id, so nothing that stores or compares ids changes, and two ids made
+ * anywhere still differ by their random bits.
+ *
+ * It exists for ids that are the key of an index on a table that only grows
+ * (the trace's observations and proposals). A random key puts each new row on
+ * a random page of that index, so an hour of catch-up dirties and writes pages
+ * all through a multi-megabyte B-tree; an ordered key puts every row at its
+ * end. Measured on the benchmark's world, 72,000 inserts fell from 2.5 s to
+ * 0.2 s (tools/probes/catchup-bench).
+ *
+ * The clock never runs the timestamp backwards: a reading earlier than the last
+ * one is treated as the last one, so a stepped clock cannot make a later id
+ * sort before an earlier one.
+ */
+export function timeOrderedIdFactory<TBrand extends string>(
+  prefix: string,
+  now: () => number = Date.now,
+): () => Brand<string, TBrand> {
+  let lastMs = 0;
+  let counter = 0;
+  const random = new Uint8Array(8);
+  return () => {
+    const reading = Math.max(now(), lastMs);
+    if (reading === lastMs) {
+      counter += 1;
+      if (counter > 0xfff) {
+        // 4,096 ids in one millisecond: borrow the next one rather than repeat.
+        lastMs += 1;
+        counter = 0;
+      }
+    } else {
+      lastMs = reading;
+      counter = 0;
+    }
+    crypto.getRandomValues(random);
+    const hex = (n: number, width: number) =>
+      n.toString(16).padStart(width, "0");
+    const ms = hex(lastMs, 12);
+    const tail = Array.from(random, (byte) => hex(byte, 2));
+    // The variant's top two bits are 10; the rest of that byte is random.
+    tail[0] = hex(((random[0] as number) & 0x3f) | 0x80, 2);
+    return `${prefix}-${ms.slice(0, 8)}-${ms.slice(8)}-7${hex(counter, 3)}-${tail[0]}${tail[1]}-${tail.slice(2).join("")}` as Brand<
+      string,
+      TBrand
+    >;
+  };
+}
+
 export type WorldId = Brand<string, "WorldId">;
 export const parseWorldId = idParser<"WorldId">();
 export const createWorldId = idFactory<"WorldId">("world");

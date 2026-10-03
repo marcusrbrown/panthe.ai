@@ -103,6 +103,67 @@ test("a trace write failure rolls back the whole chunk: the clock is unchanged a
   }
 });
 
+test("catch-up appends to the trace in id order: every observation, outcome, and link lands at the end of its index, never in the middle of it", async () => {
+  const storeDir = tempDir("panthea-sim-catchup-order-");
+  try {
+    const storePath = join(storeDir, "world.sqlite");
+    const seeded = loadGreekWorldState();
+    const reducers = createWorldProjectionReducers(seeded);
+    const store = openStore(storePath, reducers);
+    ensureTraceSchema(store.db);
+
+    const nowWallMs = readClock(store.db).cursorWallMs + 4 * 60 * 1000;
+    const result = await runCatchUp(
+      seeded,
+      createPrng(1),
+      { store, reducers, traceDb: store.db },
+      { nowWallMs },
+    );
+    expect(result.degraded).toBeUndefined();
+
+    const inInsertOrder = (sql: string) =>
+      (store.db.query(sql).all() as { id: string }[]).map((row) => row.id);
+    const observations = inInsertOrder(
+      "SELECT id FROM trace_observations ORDER BY rowid",
+    );
+    const outcomes = inInsertOrder(
+      "SELECT proposal_id AS id FROM trace_proposal_outcomes ORDER BY rowid",
+    );
+    // Enough rows that a random key could not satisfy this by luck.
+    expect(observations.length).toBeGreaterThan(200);
+    expect(outcomes.length).toBeGreaterThan(200);
+    const links = store.db
+      .query(
+        "SELECT proposal_id AS id FROM trace_outcome_events ORDER BY rowid",
+      )
+      .all() as { id: string }[];
+    // A tick writes its committed proposals before its rejected ones, so within one
+    // tick the order is not exact. What matters is that nothing lands far behind the
+    // tail: each row sorts after every row written more than two ticks' worth (60,
+    // at 27 proposals a tick at most) before it.
+    const WINDOW = 60;
+    const behindTheTail = (ids: readonly string[]) => {
+      let worst = 0;
+      let bar = "";
+      ids.forEach((id, at) => {
+        if (at >= WINDOW) {
+          const older = ids[at - WINDOW] as string;
+          if (older > bar) bar = older;
+        }
+        if (id < bar) worst += 1;
+      });
+      return worst;
+    };
+    expect(behindTheTail(observations)).toBe(0);
+    expect(behindTheTail(outcomes)).toBe(0);
+    expect(behindTheTail(links.map((link) => link.id))).toBe(0);
+
+    closeStore(store);
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+});
+
 test("missed time above the cap: exactly one hour is applied and the excess is reported as skipped", async () => {
   const storeDir = tempDir("panthea-sim-catchup-cap-");
   try {

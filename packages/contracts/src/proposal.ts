@@ -26,7 +26,6 @@ import {
   type EntityRevision,
   type EventId,
   fail,
-  idFactory,
   idParser,
   isRecord,
   ok,
@@ -43,6 +42,7 @@ import {
   parseSchemaVersion,
   parseString,
   type ResourceAmount,
+  timeOrderedIdFactory,
 } from "./ids";
 import {
   PRACTICE_MOVES,
@@ -54,7 +54,7 @@ import {
 
 export type ObservationId = Brand<string, "ObservationId">;
 export const parseObservationId = idParser<"ObservationId">();
-export const createObservationId = idFactory<"ObservationId">("obs");
+export const createObservationId = timeOrderedIdFactory<"ObservationId">("obs");
 
 export const OBSERVATION_SCHEMA_VERSIONS = [1] as const;
 

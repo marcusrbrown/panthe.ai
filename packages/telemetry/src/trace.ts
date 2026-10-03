@@ -32,12 +32,13 @@ import {
   type Proposal,
   type RejectionReasonCode,
   type SessionId,
+  timeOrderedIdFactory,
   type WorldEvent,
 } from "@panthea/contracts";
 
 export type ProposalId = Brand<string, "ProposalId">;
 export const parseProposalId = idParser<"ProposalId">();
-export const createProposalId = idFactory<"ProposalId">("proposal");
+export const createProposalId = timeOrderedIdFactory<"ProposalId">("proposal");
 
 export type ModelRequestId = Brand<string, "ModelRequestId">;
 export const parseModelRequestId = idParser<"ModelRequestId">();

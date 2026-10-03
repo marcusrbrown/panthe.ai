@@ -45,4 +45,4 @@ keyring-core = "1"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 [dev-dependencies]
-tokio = { version = "=1.53.1", features = ["rt"] }
+tokio = { version = "=1.53.2", features = ["rt"] }

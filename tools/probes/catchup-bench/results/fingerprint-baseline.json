@@ -1,0 +1,23 @@
+[
+  {
+    "name": "4 mortals, fresh",
+    "events": 29896,
+    "eventDigest": "b701313c449d4ca9330dfcda5dc71e99d41c3d28209fd576eb297c231528bcbf",
+    "traceDigest": "a4ae435d9730d6741601ca44949af10adc43dd242506b8de64e6cccedbeda113",
+    "projectionDigest": "c0d049c6d1e6ca7e467bec41563ae66abf677d2f002c2e48f62165b9da480c9e"
+  },
+  {
+    "name": "20 mortals, fresh",
+    "events": 96909,
+    "eventDigest": "5fbf4a8d5c5d3103b736de42b812c2f303f6df88e5d36e30c8df8e29afed2c38",
+    "traceDigest": "2895b39ffdcc224922f73651da952beaee0879b88be660f4a8ac841b9af0a151",
+    "projectionDigest": "03e850377a46334127e256f6d674a1e3c666dbaf09220169a4dccb2396057f78"
+  },
+  {
+    "name": "20 mortals, aged 3 h",
+    "events": 391001,
+    "eventDigest": "d539a278340f077617f217f146777b1fa64a2334776cf11deeed05cb78d23313",
+    "traceDigest": "cdec88451373bf8a46815ecb152636cf6a93aa395633e1025373ca3cba1b006a",
+    "projectionDigest": "83772caa0be9fa2e7b06e6684c74359d8b4a1137eca840014e3a86ba597e0667"
+  }
+]

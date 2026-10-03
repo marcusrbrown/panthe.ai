@@ -1,0 +1,1126 @@
+{
+  "schemaVersion": 1,
+  "realms": [
+    "mortal",
+    "olympus",
+    "underworld"
+  ],
+  "resources": [
+    {
+      "resource": "currency",
+      "amount": 0
+    },
+    {
+      "resource": "food",
+      "amount": 0
+    },
+    {
+      "resource": "wood",
+      "amount": 0
+    },
+    {
+      "resource": "wine",
+      "amount": 0
+    },
+    {
+      "resource": "planks",
+      "amount": 0
+    },
+    {
+      "resource": "fish",
+      "amount": 0
+    },
+    {
+      "resource": "olives",
+      "amount": 0
+    },
+    {
+      "resource": "wool",
+      "amount": 0
+    },
+    {
+      "resource": "cloth",
+      "amount": 0
+    },
+    {
+      "resource": "ore",
+      "amount": 0
+    },
+    {
+      "resource": "tools",
+      "amount": 0
+    }
+  ],
+  "locations": [
+    {
+      "id": "wilderness-grove",
+      "realm": "mortal",
+      "name": "Wilderness Grove",
+      "edges": [
+        {
+          "to": "ancient-olive-tree",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "wilderness-path",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "ancient-olive-tree",
+      "realm": "mortal",
+      "name": "The Ancient Olive Tree",
+      "edges": []
+    },
+    {
+      "id": "wilderness-path",
+      "realm": "mortal",
+      "name": "Wilderness Path",
+      "edges": [
+        {
+          "to": "town-square",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "town-square",
+      "realm": "mortal",
+      "name": "Town Square",
+      "edges": [
+        {
+          "to": "tavern",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "inn",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "shop",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "altar",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "ferry-dock",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "mountain-path",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "forge",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "tavern",
+      "realm": "mortal",
+      "name": "The Tavern",
+      "edges": []
+    },
+    {
+      "id": "inn",
+      "realm": "mortal",
+      "name": "The Traveler's Rest Inn",
+      "edges": []
+    },
+    {
+      "id": "shop",
+      "realm": "mortal",
+      "name": "The Agora Shop",
+      "edges": []
+    },
+    {
+      "id": "altar",
+      "realm": "mortal",
+      "name": "Altar of Zeus",
+      "edges": []
+    },
+    {
+      "id": "ferry-dock",
+      "realm": "mortal",
+      "name": "Styx Ferry Dock",
+      "edges": [
+        {
+          "to": "underworld-shore",
+          "transport": "divine-transport",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "mountain-path",
+      "realm": "mortal",
+      "name": "Mountain Path to Olympus",
+      "edges": [
+        {
+          "to": "olympus-gate",
+          "transport": "divine-transport",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "underworld-shore",
+      "realm": "underworld",
+      "name": "Shore of the Styx",
+      "edges": [
+        {
+          "to": "asphodel-meadow",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "asphodel-meadow",
+      "realm": "underworld",
+      "name": "Asphodel Meadow",
+      "edges": [
+        {
+          "to": "judgment-hall",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ]
+    },
+    {
+      "id": "judgment-hall",
+      "realm": "underworld",
+      "name": "Hall of Judgment",
+      "edges": [],
+      "requiredCapability": "divine"
+    },
+    {
+      "id": "olympus-gate",
+      "realm": "olympus",
+      "name": "Gates of Olympus",
+      "edges": [
+        {
+          "to": "great-hall",
+          "transport": "path",
+          "bidirectional": true
+        }
+      ],
+      "requiredCapability": "divine"
+    },
+    {
+      "id": "great-hall",
+      "realm": "olympus",
+      "name": "Hall of the Gods",
+      "edges": []
+    },
+    {
+      "id": "forge",
+      "realm": "mortal",
+      "name": "The Forge",
+      "edges": []
+    }
+  ],
+  "buildings": [
+    {
+      "id": "agora-shop",
+      "locationId": "shop",
+      "name": "The Agora Shop",
+      "material": "stone",
+      "combustible": false,
+      "services": [
+        "trade"
+      ],
+      "inventory": [
+        {
+          "resource": "food",
+          "amount": 5
+        }
+      ],
+      "owner": "farmer"
+    },
+    {
+      "id": "the-tavern",
+      "locationId": "tavern",
+      "name": "The Tavern",
+      "material": "wood",
+      "combustible": true,
+      "services": [
+        "drink"
+      ],
+      "inventory": [
+        {
+          "resource": "wine",
+          "amount": 4
+        }
+      ],
+      "owner": "farmer"
+    },
+    {
+      "id": "old-oak",
+      "locationId": "town-square",
+      "name": "The Old Oak",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": []
+    },
+    {
+      "id": "woodshed",
+      "locationId": "town-square",
+      "name": "The Woodshed",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "wood",
+          "amount": 4
+        }
+      ],
+      "owner": "woodcutter"
+    },
+    {
+      "id": "fish-landing",
+      "locationId": "ferry-dock",
+      "name": "The Fish Landing",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "fish",
+          "amount": 4
+        }
+      ],
+      "owner": "ferryman"
+    },
+    {
+      "id": "olive-press",
+      "locationId": "ancient-olive-tree",
+      "name": "The Olive Press",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "olives",
+          "amount": 4
+        }
+      ],
+      "owner": "olive-grower-aristo"
+    },
+    {
+      "id": "loom-house",
+      "locationId": "ancient-olive-tree",
+      "name": "The Loom House",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ],
+      "owner": "weaver-ismene"
+    },
+    {
+      "id": "the-forge",
+      "locationId": "forge",
+      "name": "The Forge",
+      "material": "stone",
+      "combustible": false,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "tools",
+          "amount": 2
+        }
+      ],
+      "owner": "smith-ktesias"
+    }
+  ],
+  "inhabitants": [
+    {
+      "id": "woodcutter",
+      "name": "The Woodcutter",
+      "locationId": "town-square",
+      "drives": {
+        "thrift": 0.6,
+        "appetite": 0.3,
+        "greed": 0.4,
+        "piety": 0.1
+      },
+      "gathers": "wood",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 5
+        }
+      ],
+      "devotion": {
+        "god": "zeus",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "farmer",
+      "name": "The Farmer",
+      "locationId": "town-square",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.5,
+        "greed": 0.2,
+        "piety": 0.1
+      },
+      "gathers": "food",
+      "wants": "planks",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 10
+        }
+      ],
+      "devotion": {
+        "god": "hera",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "market-trader-iris",
+      "name": "Iris the Market Trader",
+      "locationId": "town-square",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "wine",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 30
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        }
+      ],
+      "devotion": {
+        "god": "hermes",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "ferryman",
+      "name": "The Ferryman",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "food",
+      "wants": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 30
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        },
+        {
+          "resource": "fish",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "hades",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "fisher-kallias",
+      "name": "Kallias the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 4
+      }
+    },
+    {
+      "id": "fisher-melina",
+      "name": "Melina the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "fisher-stavros",
+      "name": "Stavros the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "fisher-eleni",
+      "name": "Eleni the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "fisher-dion",
+      "name": "Dion the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.3
+      },
+      "gathers": "fish",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "hermes",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "olive-grower-aristo",
+      "name": "Aristo the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "olive-grower-phoebe",
+      "name": "Phoebe the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "olive-grower-leon",
+      "name": "Leon the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.4
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "weaver-ismene",
+      "name": "Ismene the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.6
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "weaver-zoe",
+      "name": "Zoe the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "weaver-xenia",
+      "name": "Xenia the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ],
+      "devotion": {
+        "god": "hera",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "herdsman-damon",
+      "name": "Damon the Herdsman",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "food",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 10
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "hermes",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "smith-ktesias",
+      "name": "Ktesias the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.4
+      },
+      "gathers": "ore",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "hephaestus",
+        "affinity": 4
+      }
+    },
+    {
+      "id": "smith-brontes",
+      "name": "Brontes the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.4
+      },
+      "gathers": "ore",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "hephaestus",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "smith-delia",
+      "name": "Delia the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "ore",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ],
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "provisioner-nikanor",
+      "name": "Nikanor the Provisioner",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "food",
+      "wants": "tools",
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 20
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        },
+        {
+          "resource": "tools",
+          "amount": 1
+        }
+      ],
+      "devotion": {
+        "god": "hermes",
+        "affinity": 2
+      }
+    },
+    {
+      "id": "zeus",
+      "name": "Zeus",
+      "locationId": "great-hall",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hera",
+      "name": "Hera",
+      "locationId": "great-hall",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "athena",
+      "name": "Athena",
+      "locationId": "ancient-olive-tree",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "locationId": "ferry-dock",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hephaestus",
+      "name": "Hephaestus",
+      "locationId": "forge",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "poseidon",
+      "name": "Poseidon",
+      "locationId": "ferry-dock",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hades",
+      "name": "Hades",
+      "locationId": "underworld-shore",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    }
+  ],
+  "rules": {
+    "catchUpCapMs": 3600000,
+    "catchUpChunkMs": 60000,
+    "checkpointIntervalMs": 60000,
+    "maxProposalsPerTick": 50,
+    "fireBalance": {
+      "spreadChancePerTick": 0.1,
+      "maxSpreadPerTick": 2,
+      "igniteThreshold": 3,
+      "intensityGrowthPerTick": 1,
+      "destroyIntensity": 3
+    },
+    "economyBalance": {
+      "priceFloor": 1,
+      "priceCeiling": 100,
+      "gatherAmount": 2,
+      "consumeAmount": 1,
+      "value_currency": 1,
+      "value_wood": 1,
+      "value_food": 3,
+      "value_planks": 2,
+      "repairCostPlanks": 3,
+      "repairAmountPerTick": 1,
+      "worshipCapacityGain": 1,
+      "favorDurationTicks": 10,
+      "favorGatherBonus": 1,
+      "incomePerTick": 1,
+      "value_fish": 2,
+      "value_olives": 2,
+      "value_wool": 1,
+      "value_cloth": 3,
+      "value_ore": 1,
+      "value_tools": 3,
+      "value_wine": 2
+    },
+    "memoryBalance": {
+      "capacity": 24,
+      "salience_building-damaged": 5,
+      "salience_building-ignited": 8,
+      "salience_building-destroyed": 9,
+      "salience_building-repaired": 4,
+      "salience_worship-performed": 4,
+      "salience_told": 4,
+      "salience_sign": 6,
+      "salience_theft": 6,
+      "salience_noticed": 5,
+      "salience_practice-ended": 7,
+      "harmAffinity": 2,
+      "kindnessAffinity": 1,
+      "refusalAffinity": 1,
+      "toldShare": 0.5,
+      "affinityLimit": 10,
+      "grudgeLimit": 10
+    },
+    "petitionBalance": {
+      "answerWindowTicks": 250,
+      "causePrayableTicks": 150,
+      "prayerCooldownTicks": 20,
+      "blessDivinityCost": 2,
+      "blessPlanks": 3,
+      "blessResourceAmount": 2,
+      "blessResourceCap": 4,
+      "directorQuietTicks": 120,
+      "goalLockTicks": 40
+    },
+    "practiceBalance": {
+      "negotiationTicks": 200,
+      "counterBudget": 3,
+      "minTermTicks": 25,
+      "maxTermTicks": 500,
+      "oathDivinityLoss": 3,
+      "oathAccessTicks": 100,
+      "standingDelta": 1,
+      "acceptPietyPercent": 10,
+      "urgentTicks": 20
+    },
+    "practiceStakes": {
+      "wolf": {
+        "form": "wolf",
+        "capabilitiesGained": [
+          "beast"
+        ],
+        "capabilitiesLost": []
+      }
+    }
+  },
+  "recipes": {
+    "planks": {
+      "inputs": [
+        {
+          "resource": "wood",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "planks",
+          "amount": 1
+        }
+      ]
+    },
+    "cloth": {
+      "inputs": [
+        {
+          "resource": "wool",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "cloth",
+          "amount": 1
+        }
+      ]
+    },
+    "tools": {
+      "inputs": [
+        {
+          "resource": "ore",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "tools",
+          "amount": 1
+        }
+      ]
+    }
+  }
+}

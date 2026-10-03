@@ -149,3 +149,50 @@ test("parseResourceAmount parses a well-formed entry and rejects a negative amou
   const bad = parseResourceAmount({ resource: "wood", amount: -1 }, "costs[0]");
   expect(bad.ok).toBe(false);
 });
+
+// --- Time-ordered ids ----------------------------------------------------------------------------
+
+import { timeOrderedIdFactory } from "./ids";
+import { createObservationId } from "./proposal";
+
+test("a time-ordered id is a UUIDv7 under its prefix: the shape a random id has, with the version and variant a v7 carries", () => {
+  const id = timeOrderedIdFactory<"X">("obs")();
+  expect(id).toMatch(
+    /^obs-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+});
+
+test("time-ordered ids sort in the order they were made, however fast they are made: ten thousand in a burst are strictly increasing and all different", () => {
+  const make = timeOrderedIdFactory<"X">("obs");
+  const ids = Array.from({ length: 10_000 }, () => make());
+  expect(new Set(ids).size).toBe(ids.length);
+  expect([...ids].sort()).toEqual(ids);
+});
+
+test("ids made across milliseconds keep their order, and an earlier clock reading never makes a later id sort before an earlier one", () => {
+  const readings = [1_000, 1_000, 1_001, 5_000, 4_999, 4_000, 5_001];
+  let at = 0;
+  const make = timeOrderedIdFactory<"X">("obs", () => readings[at++] as number);
+  const ids = readings.map(() => make());
+  expect([...ids].sort()).toEqual(ids);
+  // The ids made at 1,000 ms and 5,000 ms are far apart in their timestamp; the clock going back at 4,999 and 4,000 changes nothing.
+  expect(ids[3]?.slice(4, 16)).not.toBe(ids[0]?.slice(4, 16));
+  expect(ids[4]?.slice(4, 16)).toBe(ids[3]?.slice(4, 16));
+});
+
+test("two factories do not make the same id: the random part, not the clock, keeps them apart", () => {
+  const a = timeOrderedIdFactory<"X">("obs", () => 7);
+  const b = timeOrderedIdFactory<"X">("obs", () => 7);
+  const first = Array.from({ length: 200 }, () => a());
+  const second = Array.from({ length: 200 }, () => b());
+  expect(new Set([...first, ...second]).size).toBe(400);
+});
+
+test("observation ids are time-ordered, and every other id stays random", () => {
+  const obs = Array.from({ length: 500 }, () => createObservationId());
+  expect([...obs].sort()).toEqual(obs);
+  expect(obs[0]?.startsWith("obs-")).toBe(true);
+  // A random id is not in order (the chance that 500 are is nil).
+  const random = Array.from({ length: 500 }, () => createEntityId());
+  expect([...random].sort()).not.toEqual(random);
+});

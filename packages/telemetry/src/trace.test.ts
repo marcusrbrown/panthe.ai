@@ -928,3 +928,10 @@ describe("an exhausted chain cannot claim a proposal or an output, by type", () 
     expect(getModelRequest(db, id)?.outcome).toBe("exhausted");
   });
 });
+
+test("proposal ids are time-ordered, so the trace's outcome rows and their links are appended at the end of their indexes and not scattered through them", () => {
+  const ids = Array.from({ length: 500 }, () => createProposalId());
+  expect([...ids].sort()).toEqual(ids);
+  expect(ids[0]?.startsWith("proposal-")).toBe(true);
+  expect(new Set(ids).size).toBe(ids.length);
+});

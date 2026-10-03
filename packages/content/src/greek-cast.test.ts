@@ -220,6 +220,39 @@ test("every livelihood gives at least two gods a stake the town can feel: its pe
   expect(devotedTo("woodcutter")).toBe("zeus");
 });
 
+test("every god has at least one devotee, Hades included: a god no mortal prays to never enters a practice (R20)", () => {
+  const { pack } = loaded();
+  const gods = pack.inhabitants
+    .filter((i) => i.deity === true)
+    .map((i) => i.id);
+  const mortals = pack.inhabitants.filter((i) => i.deity !== true);
+  for (const god of gods) {
+    expect(
+      mortals.filter((m) => m.devotion?.god === god).length,
+    ).toBeGreaterThanOrEqual(1);
+  }
+  // The ferryman, whose ferry is the road to the dead, keeps Hades's rites; Hermes keeps others.
+  expect(mortals.find((m) => m.id === "ferryman")?.devotion?.god).toBe("hades");
+  expect(
+    mortals.filter((m) => m.devotion?.god === "hermes").length,
+  ).toBeGreaterThanOrEqual(2);
+  // The twenty mortals are still twenty.
+  expect(mortals).toHaveLength(20);
+});
+
+test("the profile says the ferryman's rites are the game's, not the sources': Hades's sources name no ferryman", () => {
+  const { profiles } = loaded();
+  const hades = profiles.find((p) => p.id === "hades");
+  const invention = hades?.inventions.find((i) => i.id === "ferryman-rites");
+  expect(invention).toBeDefined();
+  expect(invention?.statement).toContain("ferryman");
+  // Nothing in his lore or variants cites a ferryman: the claim is labeled invention, not lore.
+  const lore = [...(hades?.lore ?? []), ...(hades?.variants ?? [])].map(
+    (entry) => ("statement" in entry ? entry.statement : entry.note),
+  );
+  expect(lore.some((text) => text.toLowerCase().includes("ferry"))).toBe(false);
+});
+
 test("every resource a livelihood gathers, wants, or makes is declared and priced", () => {
   const { pack } = loaded();
   const declared = new Set(pack.resources.map((r) => r.resource));

@@ -147,3 +147,12 @@ test("mortals who go short pray to the god they revere, so the day's prayers nam
       expect(String(petition.god)).toBe(String(devotion));
   }
 });
+
+test("Hades hears prayers: over the scripted day a mortal who reveres him prays to him, so he can enter a practice (R20)", () => {
+  const toHades = of("petition-opened").filter(
+    (e) => String(e.god) === "hades",
+  );
+  expect(toHades.length).toBeGreaterThan(0);
+  // The ferryman, who keeps his rites at the dock, is one of them: a prayer reaches the god its mortal reveres.
+  expect(toHades.some((e) => String(e.entityId) === "ferryman")).toBe(true);
+});

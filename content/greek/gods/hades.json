@@ -183,7 +183,12 @@
     {
       "id": "no-new-mortals-below",
       "statement": "No new mortals live in the underworld.",
-      "reason": "The Styx shore and Judgment Hall need no inhabitants for his stakes; the dead are an M3 matter."
+      "reason": "No mortal lives in the underworld, and the dead are an M3 matter. Hades's stake in the living town is one devotee above ground: the ferryman (see ferryman-rites)."
+    },
+    {
+      "id": "ferryman-rites",
+      "statement": "The ferryman at the town's Styx ferry dock reveres Hades, so prayers to him come from the one place the living town meets the road of the dead.",
+      "reason": "Hades's sources here give him the dead, the underworld, and the Persephone bargain, and name no ferryman; Hermes leading souls down (Odyssey 24.1-14) is in Hermes's profile, not this one. The ferry, its keeper, and the devotion are the game's, so that Hades has a prayer to answer and, with Hermes, something to contend over."
     },
     {
       "id": "authored-tuning",

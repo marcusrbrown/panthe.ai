@@ -31,6 +31,7 @@ import {
   noticedKey,
   type Petition,
   type PetitionCause,
+  standingOf,
   type WorldEventDraft,
   type WorldState,
 } from "./state";
@@ -391,7 +392,11 @@ function petitionsReceivedBy(state: WorldState, god: EntityId): number {
   return count;
 }
 
-/** The god `mortal` prays to: the living deity it has the highest affinity toward; on a tie, the one that has received the fewest petitions; then by id. */
+/**
+ * The god `mortal` prays to: the living deity it weighs most, which is how it feels toward it (its affinity)
+ * plus the god's lasting standing at the place the mortal lives, which a contest, a settlement performed there,
+ * or a breach moves for good. On a tie, the one that has received the fewest petitions; then by id.
+ */
 export function routePetition(
   state: WorldState,
   mortal: EntityId,
@@ -400,18 +405,23 @@ export function routePetition(
     .filter((actor) => actor.alive && actor.isDeity === true)
     .map((actor) => actor.id)
     .sort();
+  const actor = getActor(state, mortal);
+  const place =
+    actor === undefined ? undefined : (actor.home ?? actor.locationId);
   let best: EntityId | undefined;
-  let bestAffinity = Number.NEGATIVE_INFINITY;
+  let bestWeight = Number.NEGATIVE_INFINITY;
   let bestReceived = Number.POSITIVE_INFINITY;
   for (const god of gods) {
-    const affinity = getRelationship(state, mortal, god)?.affinity ?? 0;
+    const weight =
+      (getRelationship(state, mortal, god)?.affinity ?? 0) +
+      (place === undefined ? 0 : standingOf(state, god, place));
     const received = petitionsReceivedBy(state, god);
     if (
-      affinity > bestAffinity ||
-      (affinity === bestAffinity && received < bestReceived)
+      weight > bestWeight ||
+      (weight === bestWeight && received < bestReceived)
     ) {
       best = god;
-      bestAffinity = affinity;
+      bestWeight = weight;
       bestReceived = received;
     }
   }

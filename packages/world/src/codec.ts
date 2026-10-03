@@ -14,6 +14,8 @@
 // a known actor).
 
 import {
+  CONTEST_END_REASONS,
+  CONTEST_RESULTS,
   ENDING_EVENT_KINDS,
   type EntityId,
   type EventId,
@@ -53,6 +55,7 @@ import {
   parseTransformation,
   REALMS,
   type RejectionReasonCode,
+  SERVICE_KINDS,
   TRANSPORT_KINDS,
   type Transformation,
   UNMET_NEED_REASONS,
@@ -67,6 +70,8 @@ import {
   type BuildingIgnition,
   type BuildingState,
   type BuildingStatus,
+  type Contest,
+  type ContestTally,
   type FavorState,
   type LegendRecord,
   type LocationState,
@@ -80,6 +85,8 @@ import {
   type PracticeThread,
   type RelationshipState,
   relationshipKey,
+  type ServiceAct,
+  standingKey,
   type WithheldCapability,
   type WorldState,
 } from "./state";
@@ -104,6 +111,9 @@ export interface EncodedWorldState {
   readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
   readonly petitions: readonly (readonly [EventId, Petition])[];
   readonly threads: readonly (readonly [EventId, PracticeThread])[];
+  readonly contests: readonly (readonly [EventId, Contest])[];
+  readonly services: readonly ServiceAct[];
+  readonly standing: readonly (readonly [string, number])[];
   readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
   readonly noticed: readonly (readonly [string, NoticedLoss])[];
   readonly director: { readonly lastConsequentialTick: number };
@@ -156,6 +166,9 @@ export function encode(state: WorldState): EncodedWorldState {
     causes: [...state.causes.entries()],
     petitions: [...state.petitions.entries()],
     threads: [...state.threads.entries()],
+    contests: [...state.contests.entries()],
+    services: state.services,
+    standing: [...state.standing.entries()],
     repairGrants: [...state.repairGrants.entries()],
     noticed: [...state.noticed.entries()],
     director: state.director,
@@ -406,6 +419,11 @@ function parseActorState(
   if (!favors.ok) return favors;
   const form = parseOptionalString(value.form, `${path}.form`);
   if (!form.ok) return form;
+  const rivals =
+    value.rivals === undefined
+      ? ok<readonly EntityId[] | undefined>(undefined)
+      : parseArray(value.rivals, `${path}.rivals`, parseEntityId);
+  if (!rivals.ok) return rivals;
   const withheld = parseWithheld(value.withheld, `${path}.withheld`);
   if (!withheld.ok) return withheld;
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
@@ -423,6 +441,7 @@ function parseActorState(
     ...(wants.value === undefined ? {} : { wants: wants.value }),
     ...(favors.value === undefined ? {} : { favors: favors.value }),
     ...(form.value === undefined ? {} : { form: form.value }),
+    ...(rivals.value === undefined ? {} : { rivals: rivals.value }),
     ...(withheld.value === undefined ? {} : { withheld: withheld.value }),
     revision: revision.value,
   });
@@ -1052,6 +1071,274 @@ function parsePetitionEntry(
   ] as const);
 }
 
+function parseContestTallies(
+  value: unknown,
+  path: string,
+  gods: readonly EntityId[],
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly ContestTally[]> {
+  return parseArray(value, path, (item, at) => {
+    if (!isRecord(item)) return fail(at, "expected a tally");
+    const god = parseEntityId(item.god, `${at}.god`);
+    if (!god.ok) return god;
+    if (!gods.includes(god.value)) {
+      return fail(`${at}.god`, "a tally weighs one of the contest's two gods");
+    }
+    const mortal = parseEntityId(item.mortal, `${at}.mortal`);
+    if (!mortal.ok) return mortal;
+    if (!knownActorIds.has(mortal.value)) {
+      return fail(`${at}.mortal`, `tally names unknown actor: ${mortal.value}`);
+    }
+    if (typeof item.weight !== "number" || !Number.isInteger(item.weight)) {
+      return fail(`${at}.weight`, "expected a whole number");
+    }
+    return ok({ god: god.value, mortal: mortal.value, weight: item.weight });
+  });
+}
+
+function parseContestEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+  knownLocationIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EventId, Contest]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [id, contest] entry");
+  }
+  const key = parseEventId(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a contest");
+  const at = `${path}[1]`;
+  const id = parseEventId(record.id, `${at}.id`);
+  if (!id.ok) return id;
+  if (id.value !== key.value) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${key.value}" does not match its own id`,
+    );
+  }
+  const gods: EntityId[] = [];
+  for (const field of ["opener", "rival"] as const) {
+    const god = parseEntityId(record[field], `${at}.${field}`);
+    if (!god.ok) return god;
+    if (!knownActorIds.has(god.value)) {
+      return fail(
+        `${at}.${field}`,
+        `contest names unknown actor: ${god.value}`,
+      );
+    }
+    gods.push(god.value);
+  }
+  const [opener, rival] = gods as [EntityId, EntityId];
+  if (opener === rival) {
+    return fail(at, "a contest is between two gods, not one");
+  }
+  const place = parseEntityId(record.place, `${at}.place`);
+  if (!place.ok) return place;
+  if (!knownLocationIds.has(place.value)) {
+    return fail(
+      `${at}.place`,
+      `contest is held at unknown place: ${place.value}`,
+    );
+  }
+  const cause = parseEventId(record.cause, `${at}.cause`);
+  if (!cause.ok) return cause;
+  const openedTick = parseNonNegativeInteger(
+    record.openedTick,
+    `${at}.openedTick`,
+  );
+  if (!openedTick.ok) return openedTick;
+  const openedSequence = parseNonNegativeInteger(
+    record.openedSequence,
+    `${at}.openedSequence`,
+  );
+  if (!openedSequence.ok) return openedSequence;
+  const closesAt = parseNonNegativeInteger(record.closesAt, `${at}.closesAt`);
+  if (!closesAt.ok) return closesAt;
+  const succeeds =
+    record.succeeds === undefined
+      ? ok<EventId | undefined>(undefined)
+      : parseEventId(record.succeeds, `${at}.succeeds`);
+  if (!succeeds.ok) return succeeds;
+  const status = parseEnum(record.status, `${at}.status`, [
+    "open",
+    ...CONTEST_RESULTS,
+  ] as const);
+  if (!status.ok) return status;
+  const tallies = parseContestTallies(
+    record.tallies,
+    `${at}.tallies`,
+    gods,
+    knownActorIds,
+  );
+  if (!tallies.ok) return tallies;
+  const closedTick =
+    record.closedTick === undefined
+      ? ok<number | undefined>(undefined)
+      : parseNonNegativeInteger(record.closedTick, `${at}.closedTick`);
+  if (!closedTick.ok) return closedTick;
+  const closedSequence =
+    record.closedSequence === undefined
+      ? ok<number | undefined>(undefined)
+      : parseNonNegativeInteger(record.closedSequence, `${at}.closedSequence`);
+  if (!closedSequence.ok) return closedSequence;
+  const reason =
+    record.reason === undefined
+      ? ok<(typeof CONTEST_END_REASONS)[number] | undefined>(undefined)
+      : parseEnum(record.reason, `${at}.reason`, CONTEST_END_REASONS);
+  if (!reason.ok) return reason;
+  const winner =
+    record.winner === undefined
+      ? ok<EntityId | undefined>(undefined)
+      : parseEntityId(record.winner, `${at}.winner`);
+  if (!winner.ok) return winner;
+  // An open contest has no ending; a closed one has when and why, and a decision a winner of the two.
+  const open = status.value === "open";
+  if (
+    open !==
+    (closedTick.value === undefined &&
+      closedSequence.value === undefined &&
+      reason.value === undefined &&
+      winner.value === undefined)
+  ) {
+    return fail(at, "a contest is open exactly when it has no ending recorded");
+  }
+  if (!open) {
+    if (
+      closedTick.value === undefined ||
+      closedSequence.value === undefined ||
+      reason.value === undefined
+    ) {
+      return fail(at, "a closed contest records when and why it closed");
+    }
+    if (status.value === "decided") {
+      if (winner.value === undefined || !gods.includes(winner.value)) {
+        return fail(
+          `${at}.winner`,
+          "a decided contest has one of its two gods as winner",
+        );
+      }
+    } else if (winner.value !== undefined) {
+      return fail(`${at}.winner`, "an expired contest has no winner");
+    }
+  }
+  return ok([
+    key.value,
+    {
+      id: id.value,
+      opener,
+      rival,
+      place: place.value,
+      cause: cause.value,
+      openedTick: openedTick.value,
+      openedSequence: openedSequence.value,
+      closesAt: closesAt.value,
+      ...(succeeds.value === undefined ? {} : { succeeds: succeeds.value }),
+      status: status.value,
+      tallies: tallies.value,
+      ...(closedTick.value === undefined
+        ? {}
+        : { closedTick: closedTick.value }),
+      ...(closedSequence.value === undefined
+        ? {}
+        : { closedSequence: closedSequence.value }),
+      ...(reason.value === undefined ? {} : { reason: reason.value }),
+      ...(winner.value === undefined ? {} : { winner: winner.value }),
+    },
+  ] as const);
+}
+
+function parseServiceAct(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+  knownLocationIds: ReadonlySet<EntityId>,
+): ParseResult<ServiceAct> {
+  if (!isRecord(value)) return fail(path, "expected a service act");
+  const id = parseEventId(value.id, `${path}.id`);
+  if (!id.ok) return id;
+  const kind = parseEnum(value.kind, `${path}.kind`, SERVICE_KINDS);
+  if (!kind.ok) return kind;
+  const god = parseEntityId(value.god, `${path}.god`);
+  if (!god.ok) return god;
+  if (!knownActorIds.has(god.value)) {
+    return fail(`${path}.god`, `act names unknown actor: ${god.value}`);
+  }
+  const place = parseEntityId(value.place, `${path}.place`);
+  if (!place.ok) return place;
+  if (!knownLocationIds.has(place.value)) {
+    return fail(`${path}.place`, `act is at unknown place: ${place.value}`);
+  }
+  const tick = parseNonNegativeInteger(value.tick, `${path}.tick`);
+  if (!tick.ok) return tick;
+  const sequence = parseNonNegativeInteger(value.sequence, `${path}.sequence`);
+  if (!sequence.ok) return sequence;
+  const people = (field: "reached" | "perceivedBy") =>
+    parseArray(value[field], `${path}.${field}`, (item, at) => {
+      const actor = parseEntityId(item, at);
+      if (!actor.ok) return actor;
+      if (!knownActorIds.has(actor.value)) {
+        return fail(at, `act names unknown actor: ${actor.value}`);
+      }
+      return actor;
+    });
+  const reached = people("reached");
+  if (!reached.ok) return reached;
+  if (reached.value.length === 0) {
+    return fail(`${path}.reached`, "an act the world keeps reached someone");
+  }
+  const perceivedBy = people("perceivedBy");
+  if (!perceivedBy.ok) return perceivedBy;
+  return ok({
+    id: id.value,
+    kind: kind.value,
+    god: god.value,
+    place: place.value,
+    tick: tick.value,
+    sequence: sequence.value,
+    reached: reached.value,
+    perceivedBy: perceivedBy.value,
+  });
+}
+
+function parseStandingEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+  knownLocationIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [string, number]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected a [key, standing] entry");
+  }
+  const key = parseString(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const [god, place, ...rest] = key.value.split("@");
+  if (
+    god === undefined ||
+    place === undefined ||
+    rest.length > 0 ||
+    god === "" ||
+    place === ""
+  ) {
+    return fail(`${path}[0]`, `"${key.value}" is not a god@place key`);
+  }
+  if (!knownActorIds.has(god as EntityId)) {
+    return fail(`${path}[0]`, `standing names unknown god: ${god}`);
+  }
+  if (!knownLocationIds.has(place as EntityId)) {
+    return fail(`${path}[0]`, `standing is at unknown place: ${place}`);
+  }
+  if (key.value !== standingKey(god as EntityId, place as EntityId)) {
+    return fail(`${path}[0]`, `"${key.value}" is not a god@place key`);
+  }
+  const amount = value[1];
+  if (typeof amount !== "number" || !Number.isInteger(amount) || amount === 0) {
+    return fail(`${path}[1]`, "expected a nonzero whole number");
+  }
+  return ok([key.value, amount] as const);
+}
+
 function parseThreadEntry(
   value: unknown,
   path: string,
@@ -1539,6 +1826,31 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const threads = new Map(threadEntries.value);
 
+  const contestEntries = parseArray(value.contests, "contests", (item, path) =>
+    parseContestEntry(item, path, knownActorIds, knownLocationIds),
+  );
+  if (!contestEntries.ok) return contestEntries;
+  const duplicateContest = findDuplicateKey(contestEntries.value);
+  if (duplicateContest !== undefined) {
+    return fail("contests", `duplicate contest: ${duplicateContest}`);
+  }
+  const contests = new Map(contestEntries.value);
+
+  const services = parseArray(value.services, "services", (item, path) =>
+    parseServiceAct(item, path, knownActorIds, knownLocationIds),
+  );
+  if (!services.ok) return services;
+
+  const standingEntries = parseArray(value.standing, "standing", (item, path) =>
+    parseStandingEntry(item, path, knownActorIds, knownLocationIds),
+  );
+  if (!standingEntries.ok) return standingEntries;
+  const duplicateStanding = findDuplicateKey(standingEntries.value);
+  if (duplicateStanding !== undefined) {
+    return fail("standing", `duplicate standing: ${duplicateStanding}`);
+  }
+  const standing = new Map(standingEntries.value);
+
   const grantEntries = parseArray(
     value.repairGrants,
     "repairGrants",
@@ -1666,6 +1978,9 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     causes,
     petitions,
     threads,
+    contests,
+    services: services.value,
+    standing,
     repairGrants,
     noticed,
     director,

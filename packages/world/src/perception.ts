@@ -195,6 +195,9 @@ function eventLocation(
     case "theft":
     case "stock-spoiled":
       return actorLocationAt(state, event.entityId, event, window);
+    // A blessing is given where the blessed one stands, before whoever is there: a rival may see it.
+    case "blessing-granted":
+      return getActor(state, event.recipient)?.locationId;
     // A prayer is made at the altar, wherever else its named god is.
     case "petition-opened":
       return getLocation(state, ALTAR)?.id;

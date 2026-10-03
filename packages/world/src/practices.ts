@@ -37,6 +37,7 @@ import type {
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
+import { changeStanding, validateContest } from "./contests";
 import {
   debitActorInventory,
   gatherAmountOf,
@@ -77,12 +78,20 @@ export const DEFAULT_PRACTICE_BALANCE: Readonly<Record<string, number>> = {
   oathDivinityLoss: 3,
   /** Ticks a sworn breacher is shut out of Olympus: four decisions at the slowest god pace measured. Banishment is M3 (M08). */
   oathAccessTicks: 100,
-  /** What a recorded gain or loss of standing at a place weighs. Standing itself is a later unit's state. */
+  /** What a recorded gain or loss of standing at a place weighs (a settlement performed or breached there). */
   standingDelta: 1,
   /** How pious a mortal's drive must be, as a percent, to take the terms a god offers it. The authored mortals sit at 10, so by default they take what they can afford. */
   acceptPietyPercent: 10,
   /** Ticks before an accepted term's deadline when performing it outranks every other routine choice. A mortal acts every tick, so this leaves it many chances, and it is under the shortest term a god may set (25). */
   urgentTicks: 20,
+  /** Ticks a contest runs: acts after it opens and by this many ticks later count. Five minutes: a god takes a turn about once a minute at seven gods on the local baseline. */
+  contestWindowTicks: 300,
+  /** Ticks a rival's act can still be contested after it was done: a god sees it on its next turn, which at seven gods and about ten seconds a turn is over a minute away. */
+  contestActTicks: 120,
+  /** Most recent acts the world remembers as contestable, so the ledger and a prompt about it stay small. */
+  contestLedgerMax: 48,
+  /** What a closed contest moves each god's standing at the place by, in the units of the affinity a mortal weighs it against. */
+  contestStanding: 1,
 };
 
 /** A practice tunable from `rules`, or its default. */
@@ -298,7 +307,8 @@ export function applyMotifApplied(
       });
     }
     case "standing":
-      return state;
+      // Standing is a state the world holds: changed for good, by a contest closing or a settlement performed or breached there.
+      return changeStanding(state, event.entityId, event.place, event.delta);
   }
 }
 
@@ -1077,7 +1087,7 @@ function openOffer(
 
 function answer(
   state: WorldState,
-  proposal: Exclude<PracticeProposal, { move: "demand" | "offer" }>,
+  proposal: Exclude<PracticeProposal, { move: "demand" | "offer" | "contest" }>,
 ): PracticeVerdict {
   const thread = state.threads.get(proposal.thread);
   if (thread === undefined) {
@@ -1216,7 +1226,9 @@ export function validatePractice(
     ? openDemand(state, proposal)
     : proposal.move === "offer"
       ? openOffer(state, proposal)
-      : answer(state, proposal);
+      : proposal.move === "contest"
+        ? validateContest(state, proposal)
+        : answer(state, proposal);
 }
 
 // --- Judging ---------------------------------------------------------------------------------

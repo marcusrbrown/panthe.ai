@@ -19,6 +19,7 @@
 
 import {
   type CausationId,
+  type ContestClosedEvent,
   type CorrelationId,
   type EntityId,
   type EventId,
@@ -30,6 +31,13 @@ import {
   type RejectionReasonCode,
   type WorldEvent,
 } from "@panthea/contracts";
+import {
+  applyContestClosed,
+  applyContestOpened,
+  judgeContests,
+  noteService,
+  planContestStanding,
+} from "./contests";
 import { noteConsequential, planDirectorStep } from "./director";
 import {
   applyRecipe,
@@ -305,6 +313,12 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "access-restored":
       next = applyAccessRestored(state, event);
       break;
+    case "contest-opened":
+      next = applyContestOpened(state, event);
+      break;
+    case "contest-closed":
+      next = applyContestClosed(state, event);
+      break;
     case "goal-change-refused":
     case "practice-refused":
       // Private records of a refusal: what the god's next prompt says, and no world state.
@@ -320,7 +334,12 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
   // What an event leaves in a mortal's memory of causes, judged against the
   // world it happened in (a building's owner does not change with the event).
   return {
-    ...noteConsequential(recordCauses(next, event), event),
+    // An act a rival can contest is noted against the world it found.
+    ...noteService(
+      state,
+      noteConsequential(recordCauses(next, event), event),
+      event,
+    ),
     lastSequence: event.sequence,
   };
 }
@@ -614,7 +633,8 @@ export function runTick(
       thread ??
       (proposal.kind === "practice" &&
       proposal.move !== "demand" &&
-      proposal.move !== "offer"
+      proposal.move !== "offer" &&
+      proposal.move !== "contest"
         ? proposal.thread
         : undefined);
     const completed = completePrimary(
@@ -757,6 +777,20 @@ export function runTick(
   ].map((draft) => completePrimary(draft, environmentCause));
   working = applyEvents(working, consequenceEvents);
 
+  // The contest judge: a contest closes at the end of its last tick, or at once when its place has emptied.
+  // A decision's standing changes follow as the sourced motifs, citing the closing event.
+  const contestEvents = judgeContests(working).map((draft) =>
+    completePrimary(draft, environmentCause),
+  );
+  working = applyEvents(working, contestEvents);
+  const standingEvents = planContestStanding(
+    working,
+    contestEvents.filter(
+      (event): event is ContestClosedEvent => event.kind === "contest-closed",
+    ),
+  ).map((draft) => completePrimary(draft, environmentCause));
+  working = applyEvents(working, standingEvents);
+
   const environmentEvents = [
     ...incomeEvents,
     ...fireEvents,
@@ -765,6 +799,8 @@ export function runTick(
     ...noticeEvents,
     ...practiceEvents,
     ...consequenceEvents,
+    ...contestEvents,
+    ...standingEvents,
   ];
 
   // Derivation phase: with the primary events numbered and applied, memories

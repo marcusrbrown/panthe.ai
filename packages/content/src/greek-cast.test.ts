@@ -150,6 +150,30 @@ test("relationships name only sourced ties between gods in the pack, and the riv
   expect(rivals.has("poseidon>hera")).toBe(true);
 });
 
+test("the rivalries the world judges are the ones the profiles source: a contest opens only between gods whose profile names a rivalry, read both ways (R16)", () => {
+  const { pack, profiles } = loaded();
+  const pairs = (list: [string, string][]) =>
+    [...new Set(list.map(([a, b]) => [a, b].sort().join("|")))].sort();
+  const fromProfiles: [string, string][] = profiles.flatMap((profile) =>
+    profile.relationships
+      .filter((tie) => tie.kind.includes("rival"))
+      .map((tie): [string, string] => [profile.id, tie.target]),
+  );
+  const fromPack: [string, string][] = pack.inhabitants.flatMap((inhabitant) =>
+    (inhabitant.rivals ?? []).map((rival): [string, string] => [
+      inhabitant.id,
+      rival,
+    ]),
+  );
+  expect(pairs(fromPack)).toEqual(pairs(fromProfiles));
+  // The two contests over a place's people: Athens (Athena, Poseidon) and Argos (Poseidon, Hera).
+  expect(pairs(fromPack)).toEqual(["athena|poseidon", "hera|poseidon"]);
+  // Only gods have rivals.
+  for (const inhabitant of pack.inhabitants) {
+    if (inhabitant.rivals !== undefined) expect(inhabitant.deity).toBe(true);
+  }
+});
+
 test("each god starts where its stakes are, and the places the pack already had are kept", () => {
   const { pack } = loaded();
   const at = (id: string) =>

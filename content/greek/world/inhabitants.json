@@ -587,7 +587,8 @@
           "resource": "divinity",
           "amount": 10
         }
-      ]
+      ],
+      "rivals": ["poseidon"]
     },
     {
       "id": "hermes",
@@ -623,7 +624,8 @@
           "resource": "divinity",
           "amount": 10
         }
-      ]
+      ],
+      "rivals": ["athena", "hera"]
     },
     {
       "id": "hades",

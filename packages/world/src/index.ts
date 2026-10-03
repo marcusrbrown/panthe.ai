@@ -10,6 +10,7 @@
 
 export * from "./actions";
 export * from "./codec";
+export * from "./contests";
 export * from "./director";
 export * from "./economy";
 export * from "./fire";

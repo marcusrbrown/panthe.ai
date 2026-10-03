@@ -285,6 +285,11 @@ export type PracticeProposal = ProposalBase & { readonly kind: "practice" } & (
         readonly swear?: boolean;
       }
     | { readonly move: "refuse" | "withdraw"; readonly thread: EventId }
+    | {
+        /** A god opens a contest for a place's people over a rival's bless, strike, or legend it perceived: `cause` is that act. The world finds the rival, the place, and the window. */
+        readonly move: "contest";
+        readonly cause: EventId;
+      }
   );
 
 /** A turn that does nothing but change the god's goal: what a wait with a goal change becomes. */
@@ -619,6 +624,29 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       // A stake belongs to an offer to a supplicant, and to no other move.
       if (input.stake !== undefined && input.move !== "offer") {
         return fail("stake", "only an offer to a supplicant may carry a stake");
+      }
+      // A contest rests on the rival's act and names nothing more: the world finds the rival, the place, and the window.
+      if (input.move === "contest") {
+        for (const key of [
+          "place",
+          "counterparty",
+          "term",
+          "thread",
+          "petition",
+          "swear",
+        ]) {
+          if (input[key] !== undefined) {
+            return fail(key, "a contest names only the rival act it rests on");
+          }
+        }
+        const cause = parseEventId(input.cause, "cause");
+        if (!cause.ok) return cause;
+        return ok({
+          ...base,
+          kind: "practice",
+          move: "contest",
+          cause: cause.value,
+        });
       }
       switch (input.move) {
         case "offer": {

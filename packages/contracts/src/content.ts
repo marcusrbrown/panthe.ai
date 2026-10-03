@@ -95,6 +95,12 @@ export interface Inhabitant {
    * Absent means no starting feeling. Only a mortal has one; a god prays to no one.
    */
   readonly devotion?: Devotion;
+  /**
+   * The gods this god contests with for a place's people (ids of other deities in the pack). A rivalry
+   * holds both ways: either god naming the other lets a contest open between them. Only a god has rivals.
+   * Absent means none, so the god contests no one.
+   */
+  readonly rivals?: readonly string[];
 }
 
 /** A mortal's starting reverence for one god. */
@@ -312,6 +318,11 @@ function parseInhabitant(
       ? ok<Devotion | undefined>(undefined)
       : parseDevotion(value.devotion, `${path}.devotion`);
   if (!devotion.ok) return devotion;
+  const rivals =
+    value.rivals === undefined
+      ? ok<readonly string[] | undefined>(undefined)
+      : parseArray(value.rivals, `${path}.rivals`, parseString);
+  if (!rivals.ok) return rivals;
   return ok({
     id: id.value,
     name: name.value,
@@ -324,6 +335,9 @@ function parseInhabitant(
       ? {}
       : { startingInventory: startingInventory.value }),
     ...(devotion.value === undefined ? {} : { devotion: devotion.value }),
+    ...(rivals.value === undefined || rivals.value.length === 0
+      ? {}
+      : { rivals: rivals.value }),
   });
 }
 
@@ -458,6 +472,14 @@ export const PRACTICE_BALANCE_KEYS = [
   "acceptPietyPercent",
   /** How many ticks before an accepted term's deadline performing it outranks the mortal's other choices. */
   "urgentTicks",
+  /** Ticks a contest runs: acts after it opens and by this many ticks later count. */
+  "contestWindowTicks",
+  /** Ticks a rival's act can still be contested after it was done. */
+  "contestActTicks",
+  /** Most recent acts the world remembers as contestable. */
+  "contestLedgerMax",
+  /** What a closed contest moves each god's standing at the place by. */
+  "contestStanding",
 ] as const;
 
 /**
@@ -671,6 +693,30 @@ function checkReferentialIntegrity(
     pack.inhabitants.filter((i) => i.deity === true).map((i) => i.id),
   );
   for (const [index, inhabitant] of pack.inhabitants.entries()) {
+    const rivals = inhabitant.rivals ?? [];
+    if (rivals.length > 0 && inhabitant.deity !== true) {
+      return fail(
+        `inhabitants[${index}].rivals`,
+        `"${inhabitant.id}" is a mortal, and only a god has rivals`,
+      );
+    }
+    const seenRivals = new Set<string>();
+    for (const [at, rival] of rivals.entries()) {
+      const path = `inhabitants[${index}].rivals[${at}]`;
+      if (rival === inhabitant.id) {
+        return fail(path, `"${inhabitant.id}" cannot be its own rival`);
+      }
+      if (!deityIds.has(rival)) {
+        return fail(
+          path,
+          `"${inhabitant.id}" contests "${rival}", who is not a god in the pack`,
+        );
+      }
+      if (seenRivals.has(rival)) {
+        return fail(path, `"${rival}" is named twice`);
+      }
+      seenRivals.add(rival);
+    }
     if (inhabitant.devotion === undefined) continue;
     if (inhabitant.deity === true) {
       return fail(

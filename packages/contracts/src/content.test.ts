@@ -370,6 +370,75 @@ test("the effective affinity limit is one rule: the pack's own value, else the d
   expect(DEFAULT_AFFINITY_LIMIT).toBe(10);
 });
 
+/** A pack with two gods, for the rivalry tests; `rivals` goes on the first. */
+function packWithRivals(
+  rivals: unknown,
+  extra: Record<string, unknown>[] = [],
+) {
+  const pack = validPack();
+  const inhabitants = pack.inhabitants as Record<string, unknown>[];
+  inhabitants.push(
+    { id: "athena", name: "Athena", locationId: "agora", deity: true, rivals },
+    { id: "poseidon", name: "Poseidon", locationId: "agora", deity: true },
+    ...extra,
+  );
+  return pack;
+}
+
+test("a god may name the gods it contests for a place's people; the pack carries the rivalry the world judges", () => {
+  const ok = parseContentPack(packWithRivals(["poseidon"]));
+  expect(ok.ok).toBe(true);
+  if (ok.ok) {
+    const athena = ok.value.inhabitants.find((i) => i.id === "athena");
+    expect(athena?.rivals).toEqual(["poseidon"]);
+  }
+  expect(parseContentPack(packWithRivals(undefined)).ok).toBe(true);
+  expect(parseContentPack(packWithRivals([])).ok).toBe(true);
+});
+
+test("a rival must be another god in the pack, named once; a mortal has no rivals", () => {
+  for (const [rivals, path] of [
+    [["nike"], "inhabitants[1].rivals[0]"],
+    [["athena"], "inhabitants[1].rivals[0]"],
+    [["poseidon", "poseidon"], "inhabitants[1].rivals[1]"],
+    // a mortal is not a god to contest for
+    [["npc-1"], "inhabitants[1].rivals[0]"],
+    ["poseidon", "inhabitants[1].rivals"],
+    [[7], "inhabitants[1].rivals[0]"],
+  ] as const) {
+    const result = parseContentPack(packWithRivals(rivals));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.path).toBe(path);
+  }
+  const pack = validPack();
+  const inhabitants = pack.inhabitants as Record<string, unknown>[];
+  inhabitants[0] = { ...inhabitants[0], rivals: ["athena"] };
+  inhabitants.push({
+    id: "athena",
+    name: "Athena",
+    locationId: "agora",
+    deity: true,
+  });
+  const mortal = parseContentPack(pack);
+  expect(mortal.ok).toBe(false);
+  if (!mortal.ok) expect(mortal.path).toBe("inhabitants[0].rivals");
+});
+
+test("the contest tunables are practice tunables: positive whole numbers, and no others", () => {
+  for (const key of [
+    "contestWindowTicks",
+    "contestActTicks",
+    "contestLedgerMax",
+    "contestStanding",
+  ]) {
+    const pack = validPack();
+    (pack.rules as Record<string, unknown>).practiceBalance = { [key]: 5 };
+    expect(parseContentPack(pack).ok).toBe(true);
+    (pack.rules as Record<string, unknown>).practiceBalance = { [key]: 0 };
+    expect(parseContentPack(pack).ok).toBe(false);
+  }
+});
+
 test("a valid recipe converting inputs to outputs parses", () => {
   const pack = validPack();
   pack.recipes = {

@@ -163,7 +163,11 @@
       "oathAccessTicks": 100,
       "standingDelta": 1,
       "acceptPietyPercent": 10,
-      "urgentTicks": 20
+      "urgentTicks": 20,
+      "contestWindowTicks": 300,
+      "contestActTicks": 120,
+      "contestLedgerMax": 48,
+      "contestStanding": 1
     },
     "practiceStakes": {
       "wolf": {

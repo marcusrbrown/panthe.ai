@@ -433,7 +433,7 @@ test("with a thread that needs the god, the openings yield to the digest rows; a
   // What is written out are Zeus's answers to the thread, never a demand or an offer to begin.
   expect(
     intentsIn(digestOf(asked.view("zeus").context.prompt)).map((i) => i.move),
-  ).toEqual(["accept", "counter", "refuse", "withdraw"]);
+  ).toEqual(["accept", "refuse", "withdraw"]);
 
   // Zeus owes: no opening either.
   const owing = new Run();

@@ -476,9 +476,10 @@ export function createRouter(options: RouterOptions): Router {
         };
       }
       last = outcome;
+      // Redacted before it is built, so a key a parser's reason echoes (raw or as JSON writes it) never reaches the retried prompt.
       feedback =
         outcome.reason === "invalid-output"
-          ? feedbackFor(outcome.detail)
+          ? feedbackFor(redact(outcome.detail, adapter.apiKey, FEEDBACK_LIMIT))
           : undefined;
       if (!RETRYABLE.has(outcome.reason) || attempts >= limits.maxAttempts) {
         break;

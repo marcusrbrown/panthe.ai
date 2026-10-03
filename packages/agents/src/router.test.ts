@@ -486,6 +486,49 @@ describe("route: repair", () => {
     expect(third.split("was refused").length).toBe(2);
   });
 
+  test("a key echoed in a parser's reason, raw or as JSON escapes it, never reaches the retried prompt", async () => {
+    // A key holding a quote and a backslash, so its JSON-escaped form differs from the raw one.
+    const KEY = 'sk-"live"\\key-0123456789';
+    const escaped = JSON.stringify(KEY).slice(1, -1);
+    expect(escaped).not.toBe(KEY);
+    const leaky: IntentSchema<Say> = {
+      ...sayIntent,
+      parse: () => ({
+        ok: false,
+        path: "text",
+        message: `refused near ${KEY} and ${escaped}`,
+      }),
+    };
+    const stub = startStub(always({ content: SAY }));
+    const router = routerFor(
+      configFor([{ id: "ollama", baseUrl: stub.baseUrl, keyRef: "k" }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+      { getKey: () => KEY },
+    );
+
+    const result = await router.route("zeus", context, leaky);
+
+    expect(result.kind).toBe("exhausted");
+    expect(stub.seen).toHaveLength(2);
+    const retried = JSON.stringify(stub.seen[1]?.body.messages);
+    expect(retried).toContain("was refused");
+    expect(retried).toContain("[redacted]");
+    expect(retried).not.toContain(KEY);
+    expect(retried).not.toContain(escaped);
+    expect(
+      JSON.stringify(stub.seen[1]?.body.messages).includes("refused near"),
+    ).toBe(true);
+    // Control: with no key loaded, the same reason reaches the retry whole, so the redaction is what removed it.
+    const open = startStub(always({ content: SAY }));
+    await routerFor(
+      configFor([{ id: "ollama", baseUrl: open.baseUrl }], {
+        roles: { zeus: { endpoint: "ollama" } },
+      }),
+    ).route("zeus", context, leaky);
+    expect(JSON.stringify(open.seen[1]?.body.messages)).toContain("sk-");
+  });
+
   test("an exhausted step keeps what was refused: the last reply, redacted and bounded, the request-time schema, and the attempt count", async () => {
     const KEY = "sk-live-0123456789abcdef";
     const stub = startStub(

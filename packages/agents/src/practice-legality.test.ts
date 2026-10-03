@@ -176,6 +176,16 @@ function zeusAwaiting() {
   return { run, thread: run.latest() };
 }
 
+/** The offering Zeus may ask of the woodcutter. */
+const gift = () => ({
+  kind: "make-offering",
+  party: "woodcutter",
+  to: "zeus",
+  resource: "currency",
+  amount: 1,
+  deadlineTicks: 90,
+});
+
 const parses = (run: Run, god: string, intent: unknown) =>
   run.view(god).schema.parse(intent);
 
@@ -216,7 +226,7 @@ test("an offer on a prayer whose term leaves out `to` (the model's own output) p
   );
 });
 
-test("a wrong `to` on an offer to a supplicant is ignored, since the recipient is always the god offering; the party, resource, and bounds are still refused when wrong", () => {
+test("an offer to a supplicant is to the god offering: an omitted `to` is filled in, and an explicit one that names anyone else is refused, not turned into something the god did not say", () => {
   const run = new Run();
   const petition = run.prays("woodcutter", "zeus");
   const offer = (over: Record<string, unknown>) => ({
@@ -233,12 +243,23 @@ test("a wrong `to` on an offer to a supplicant is ignored, since the recipient i
       ...over,
     },
   });
+  // The recipient said or left out: the god offering.
+  expect(parses(run, "zeus", offer({}))).toMatchObject({
+    ok: true,
+    value: { term: { to: "zeus" } },
+  });
+  const omitted = offer({});
+  delete (omitted.term as Record<string, unknown>).to;
+  expect(parses(run, "zeus", omitted)).toMatchObject({
+    ok: true,
+    value: { term: { to: "zeus" } },
+  });
+  // A recipient that contradicts it is refused.
   for (const to of ["woodcutter", "hera", "nobody", 7]) {
-    const parsed = parses(run, "zeus", offer({ to }));
-    expect([
+    expect([String(to), parses(run, "zeus", offer({ to })).ok]).toEqual([
       String(to),
-      parsed.ok && (parsed.value as { term: { to: string } }).term.to,
-    ]).toEqual([String(to), "zeus"]);
+      false,
+    ]);
   }
   // What the target does not fix stays refused.
   for (const over of [
@@ -411,46 +432,109 @@ test("a practice that names its cause or its prayer and leaves out `move` has on
   ).toBe(false);
 });
 
-test("a practice that names a thread and a term, with no move, is a counter; one that names a thread and swears is an accept; either only where that move is legal on that thread", () => {
+test("no decision on an existing thread is ever inferred: a thread with a term and a swear, a term alone, a swear alone, or nothing, and no move, binds and changes nothing", () => {
   const { run, thread } = zeusAwaiting();
+  // A prayer on offer too: a thread alone is still not read as an offer on it.
+  run.prays("woodcutter", "zeus");
   const base = { action: "practice", thread: thread.id };
-  const counter = parses(run, "zeus", { ...base, term: tell("zeus", 120) });
-  expect(counter).toMatchObject({
-    ok: true,
-    value: { move: "counter", thread: thread.id },
-  });
-  const accept = parses(run, "zeus", { ...base, swear: true });
-  expect(accept).toMatchObject({
-    ok: true,
-    value: { move: "accept", swear: true },
-  });
-  // Zeus's own offer allows only a withdrawal: a term or a swear with no move is not read as a counter or an accept there.
-  const waiting = new Run();
-  const hCause = waiting.accused("hera", "zeus", {
-    agent: "hera",
-    target: "zeus",
-  });
-  waiting.tick({
-    actor: "hera",
-    kind: "practice",
-    move: "demand",
-    counterparty: "zeus",
-    cause: hCause,
-    term: tell("zeus"),
-  });
-  const mine = waiting.latest();
+  for (const extra of [
+    { term: tell("zeus", 120), swear: true },
+    { term: tell("zeus", 120) },
+    { swear: true },
+    {},
+  ]) {
+    const refused = parses(run, "zeus", { ...base, ...extra });
+    expect([JSON.stringify(extra), refused.ok]).toEqual([
+      JSON.stringify(extra),
+      false,
+    ]);
+    if (refused.ok) continue;
+    expect(refused.path).toBe("move");
+    expect(refused.message).toContain(
+      `"accept", "counter", "refuse", "withdraw" on thread ${thread.id}`,
+    );
+  }
+  // Said outright, each is what it says.
   expect(
-    parses(waiting, "hera", {
-      action: "practice",
-      thread: mine.id,
+    parses(run, "zeus", { ...base, move: "counter", term: tell("zeus", 120) }),
+  ).toMatchObject({ ok: true, value: { move: "counter" } });
+  expect(
+    parses(run, "zeus", { ...base, move: "accept", swear: true }),
+  ).toMatchObject({ ok: true, value: { move: "accept", swear: true } });
+});
+
+test("a payload whose fields contradict its move is refused: a selector or a term the move does not take", () => {
+  const { run, thread } = zeusAwaiting();
+  const cause = run.accused("zeus", "hera", { agent: "zeus", target: "hera" });
+  const petition = run.prays("woodcutter", "zeus");
+  const bad: Record<string, unknown>[] = [
+    { move: "accept", thread: thread.id, term: tell("zeus") },
+    { move: "accept", thread: thread.id, cause },
+    { move: "refuse", thread: thread.id, term: tell("zeus") },
+    { move: "refuse", thread: thread.id, swear: true },
+    { move: "withdraw", thread: thread.id, prayer: petition },
+    {
+      move: "counter",
+      thread: thread.id,
       term: tell("zeus", 120),
-    }).ok,
-  ).toBe(false);
-  expect(
-    parses(waiting, "hera", {
-      action: "practice",
-      thread: mine.id,
       swear: true,
+    },
+    { move: "counter", thread: thread.id, term: tell("zeus", 120), cause },
+    { move: "demand", cause, thread: thread.id, term: tell("hera") },
+    { move: "demand", cause, prayer: petition, term: tell("hera") },
+    { move: "demand", cause, swear: true, term: tell("hera") },
+    { move: "offer", prayer: petition, cause, term: gift() },
+    { move: "offer", prayer: petition, thread: thread.id, term: gift() },
+  ];
+  for (const fields of bad) {
+    expect([
+      JSON.stringify(fields),
+      parses(run, "zeus", { action: "practice", ...fields }).ok,
+    ]).toEqual([JSON.stringify(fields), false]);
+  }
+  // Control: each with only what it takes.
+  const good: Record<string, unknown>[] = [
+    { move: "accept", thread: thread.id, swear: true },
+    { move: "accept", thread: thread.id, swear: false },
+    { move: "refuse", thread: thread.id },
+    { move: "counter", thread: thread.id, term: tell("zeus", 120) },
+  ];
+  for (const fields of good) {
+    expect([
+      JSON.stringify(fields),
+      parses(run, "zeus", { action: "practice", ...fields }).ok,
+    ]).toEqual([JSON.stringify(fields), true]);
+  }
+});
+
+test("only a cause or a prayer alone settles a missing move; either with anything that contradicts it, or both together, is refused", () => {
+  const run = new Run();
+  const cause = run.accused("zeus", "hera", { agent: "zeus", target: "hera" });
+  const petition = run.prays("woodcutter", "zeus");
+  const ally = { kind: "ally", party: "hera", deadlineTicks: 90 };
+  expect(
+    parses(run, "zeus", { action: "practice", cause, term: ally }),
+  ).toMatchObject({ ok: true, value: { move: "demand" } });
+  expect(
+    parses(run, "zeus", { action: "practice", prayer: petition, term: gift() }),
+  ).toMatchObject({ ok: true, value: { move: "offer" } });
+  for (const extra of [
+    { prayer: petition },
+    { swear: true },
+    { stake: "wolf" },
+  ]) {
+    expect([
+      JSON.stringify(extra),
+      parses(run, "zeus", { action: "practice", cause, term: ally, ...extra })
+        .ok,
+    ]).toEqual([JSON.stringify(extra), false]);
+  }
+  expect(
+    parses(run, "zeus", {
+      action: "practice",
+      prayer: petition,
+      term: gift(),
+      cause,
     }).ok,
   ).toBe(false);
 });
@@ -543,12 +627,8 @@ test("a thread awaiting the god lists each legal answer as an object to copy, an
   const { run, thread } = zeusAwaiting();
   const text = run.view("zeus").context.prompt;
   const intents = rowIntents(text, thread.id);
-  expect(intents.map((i) => i.move)).toEqual([
-    "accept",
-    "counter",
-    "refuse",
-    "withdraw",
-  ]);
+  // The counter is available but not advertised as an object: nothing about this situation calls for one.
+  expect(intents.map((i) => i.move)).toEqual(["accept", "refuse", "withdraw"]);
   for (const intent of intents) {
     const { snapshot, remembered, schema } = run.view("zeus");
     const parsed = schema.parse(intent);
@@ -571,16 +651,108 @@ test("a thread awaiting the god lists each legal answer as an object to copy, an
   expect(digestOf(text).join("\n")).toContain('"swear":true');
 });
 
-test("the counter written out changes what the world would hold: it is not the offer already on the table", () => {
+test("an unchanged, performable demand advertises no counter example: the counter stays in the move list with its shape described, and the schema still offers it", () => {
   const { run, thread } = zeusAwaiting();
-  const [, counter] = rowIntents(run.view("zeus").context.prompt, thread.id);
-  const term = (counter as { term: { deadlineTicks: number } }).term;
-  expect(term).toMatchObject({
-    kind: "tell-legend",
-    party: "zeus",
-    place: "altar",
+  const view = run.view("zeus");
+  expect(view.remembered.threads[0]?.moves).toContain("counter");
+  expect(view.remembered.threads[0]?.intents.counter).toBeUndefined();
+  const row = digestOf(view.context.prompt).join("\n");
+  expect(row).not.toContain('"move":"counter"');
+  expect(row).toContain(`"counter" on thread "${thread.id}"`);
+  expect(row).toContain("fields you leave out keep the standing term");
+  const moves = (
+    view.schema.jsonSchema as { properties: { move: { enum: string[] } } }
+  ).properties.move.enum;
+  expect(moves).toContain("counter");
+  // And a counter said outright still parses.
+  expect(
+    parses(run, "zeus", {
+      action: "practice",
+      move: "counter",
+      thread: thread.id,
+      term: tell("zeus", 130),
+    }).ok,
+  ).toBe(true);
+});
+
+/** Zeus has been asked to be at the altar with time on the clock; run the clock until too little is left to get there. */
+function tooLate() {
+  const { run, thread } = zeusAwaiting();
+  const short = new Run();
+  const cause = short.accused("hera", "zeus", {
+    agent: "zeus",
+    target: "hera",
   });
-  expect(term.deadlineTicks).not.toBe(100);
+  short.tick({
+    actor: "hera",
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause,
+    term: { kind: "be-at", party: "zeus", place: "altar", deadlineTicks: 25 },
+  });
+  const asked = short.latest();
+  while (asked.term.deadline - short.state.tick > 2) short.tick();
+  void run;
+  void thread;
+  return { run: short, thread: asked };
+}
+
+test("when Zeus can no longer get there in time, the digest shows the counter that fixes it: a longer deadline the world would take, and no accept", () => {
+  const { run, thread } = tooLate();
+  const view = run.view("zeus");
+  const [row] = view.remembered.threads;
+  expect(row?.moves).not.toContain("accept");
+  expect(row?.moves).toContain("counter");
+  const counter = row?.intents.counter as
+    | { term: { deadlineTicks: number } }
+    | undefined;
+  expect(counter).toBeDefined();
+  // It gives more time than is left, and it is legal as written.
+  expect(counter?.term.deadlineTicks).toBeGreaterThan(
+    thread.term.deadline - run.state.tick,
+  );
+  const parsed = view.schema.parse(counter);
+  if (!parsed.ok) throw new Error(parsed.message);
+  const built = buildModelProposal(
+    id("zeus"),
+    view.snapshot,
+    parsed.value,
+    view.remembered,
+  );
+  if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+  expect(runTick(run.state, createPrng(1), [built.proposal]).rejected).toEqual(
+    [],
+  );
+  expect(digestOf(view.context.prompt).join("\n")).toContain(
+    "you cannot do this in the time left",
+  );
+});
+
+test("an obstacle no deadline can fix (no way there at all) advertises no counter example either", () => {
+  const far = new Run();
+  const cause = far.accused("hera", "zeus", { agent: "zeus", target: "hera" });
+  far.tick({
+    actor: "hera",
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause,
+    term: tell("zeus"),
+  });
+  const square = far.state.locations.get(id("town-square"));
+  if (!square) throw new Error("town-square");
+  far.state = {
+    ...far.state,
+    locations: new Map(far.state.locations).set(id("town-square"), {
+      ...square,
+      edges: square.edges.filter((e) => e.to !== "altar"),
+    }),
+  };
+  const [row] = far.view("zeus").remembered.threads;
+  expect(row?.moves).not.toContain("accept");
+  expect(row?.moves).toContain("counter");
+  expect(row?.intents.counter).toBeUndefined();
 });
 
 test("when the god cannot accept (the term cannot be performed) or has no counteroffers left, those answers are not written out", () => {
@@ -962,4 +1134,43 @@ test("a counter that names the standing term's kind and leaves out the place it 
     ok: true,
     value: { term: { resource: "divinity", amount: 2, to: "hera" } },
   });
+});
+
+test("the practice conditions apply only to a practice: another action carrying stray practice fields still meets the schema", () => {
+  const { run, thread } = zeusAwaiting();
+  const conditions = allOfOf(run.view("zeus").schema.jsonSchema);
+  const stray = {
+    move: "accept",
+    thread: thread.id,
+    term: {},
+    cause: "evt-1",
+    prayer: "evt-2",
+  };
+  for (const action of [
+    { action: "wait" },
+    { action: "move", to: "altar" },
+    { action: "report", listener: "hera", content: "x" },
+  ]) {
+    // `move: "accept"` alone would demand a thread of a practice; here it is a stray field on another action.
+    expect([
+      action.action,
+      meets(conditions, { ...action, move: "accept" }),
+    ]).toEqual([action.action, true]);
+    expect([action.action, meets(conditions, { ...action, ...stray })]).toEqual(
+      [action.action, true],
+    );
+  }
+  // Control: the same stray move on a practice does demand what it needs.
+  expect(meets(conditions, { action: "practice", move: "accept" })).toBe(false);
+  // Every condition names the action it is for.
+  for (const condition of conditions) {
+    expect(condition.if.properties.action).toEqual({ const: "practice" });
+  }
+});
+
+test("the counter guidance says omitted fields keep the standing term", () => {
+  const { run } = zeusAwaiting();
+  expect(run.view("zeus").context.instructions).toContain(
+    "a counter may leave out what the standing term already fixes",
+  );
 });

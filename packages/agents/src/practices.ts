@@ -655,7 +655,7 @@ function heldContestsOf(state: WorldState, actorId: EntityId): HeldContest[] {
     .slice(0, 2)
     .map((contest) => {
       const rival = contest.opener === actorId ? contest.rival : contest.opener;
-      const favoured = favourOf(contest);
+      const favoured = favourOf(state, contest);
       const mine = favoured.filter((f) => f.god === actorId).length;
       return {
         id: contest.id,

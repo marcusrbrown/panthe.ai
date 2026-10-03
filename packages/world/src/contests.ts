@@ -401,10 +401,18 @@ export function changeStanding(
 
 // --- Closing ---------------------------------------------------------------------------------------
 
-/** What each mortal in `tallies` favours: the god it weighs strictly more than the other, and only if that weight is positive. */
-export function favourOf(contest: Contest): ContestFavour[] {
+/**
+ * What each mortal in `tallies` favours: the god it weighs strictly more than the other, and only if that
+ * weight is positive. Only the living who still belong to the contest's place vote (the same rule as
+ * `mortalsOf`: home, else where it stands), so a mortal who died or moved away after it was served no
+ * longer decides the place.
+ */
+export function favourOf(state: WorldState, contest: Contest): ContestFavour[] {
   const favoured: ContestFavour[] = [];
-  const mortals = [...new Set(contest.tallies.map((t) => t.mortal))].sort(byId);
+  const voters = new Set(mortalsOf(state, contest.place).map((a) => a.id));
+  const mortals = [...new Set(contest.tallies.map((t) => t.mortal))]
+    .filter((mortal) => voters.has(mortal))
+    .sort(byId);
   for (const mortal of mortals) {
     const weigh = (god: EntityId) =>
       contest.tallies.find((t) => t.god === god && t.mortal === mortal)
@@ -444,7 +452,7 @@ export function judgeContests(after: WorldState): readonly WorldEventDraft[] {
       continue;
     }
     if (after.tick < contest.closesAt) continue;
-    const favoured = favourOf(contest);
+    const favoured = favourOf(after, contest);
     const openers = favoured.filter((f) => f.god === contest.opener).length;
     const rivals = favoured.length - openers;
     if (openers === rivals) {

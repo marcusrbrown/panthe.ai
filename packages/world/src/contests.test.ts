@@ -683,6 +683,122 @@ test("a place whose people all die is as empty as one they left", () => {
   });
 });
 
+// --- Who votes: only the living who still belong to the place ----------------------------------------
+
+/** `who` dies, or leaves the place for good (home and standing place both elsewhere). */
+function remove(town: Town, who: string, how: "die" | "leave") {
+  const actor = getActor(town.state, id(who));
+  if (!actor) throw new Error(who);
+  town.state = withActor(
+    town.state,
+    how === "die"
+      ? { ...actor, alive: false }
+      : { ...actor, locationId: id("far"), home: id("far") },
+  );
+}
+
+test("a mortal who died before the close does not decide the contest: only the living who still belong to the place are counted", () => {
+  const { town, contest } = opened();
+  town.blessing("athena", "m1");
+  town.blessing("poseidon", "m2");
+  town.blessing("poseidon", "m3");
+  remove(town, "m1", "die");
+  // Counted with m1 alive, Athena has 1 and Poseidon 2: Poseidon would win. Make it matter the other way too.
+  town.until(() => town.state.contests.get(contest.id)?.status !== "open");
+  const ending = town.contestLog().find((e) => e.kind === "contest-closed");
+  if (ending?.kind !== "contest-closed" || ending.result !== "decided") {
+    throw new Error("expected a decision");
+  }
+  expect(String(ending.winner)).toBe("poseidon");
+  // The dead one's favour is not in the record.
+  expect(plain(ending.favoured)).toEqual([
+    { mortal: "m2", god: "poseidon" },
+    { mortal: "m3", god: "poseidon" },
+  ]);
+
+  // With Athena's only favoured mortal dead and none else, nothing decides: it expires, no standing moves.
+  const alone = opened();
+  alone.town.blessing("athena", "m1");
+  remove(alone.town, "m1", "die");
+  alone.town.until(
+    () => alone.town.state.contests.get(alone.contest.id)?.status !== "open",
+  );
+  expect(alone.town.state.contests.get(alone.contest.id)).toMatchObject({
+    status: "expired",
+    reason: "no-favour",
+  });
+  expect(alone.town.standing("athena")).toBe(0);
+  expect(alone.town.standing("poseidon")).toBe(0);
+});
+
+test("a mortal who left the place before the close is not counted either, by the same rule that says who lives there", () => {
+  const { town, contest } = opened();
+  town.blessing("athena", "m1");
+  town.blessing("poseidon", "m2");
+  town.blessing("poseidon", "m3");
+  remove(town, "m1", "leave");
+  town.until(() => town.state.contests.get(contest.id)?.status !== "open");
+  expect(String(town.state.contests.get(contest.id)?.winner)).toBe("poseidon");
+  // A mortal whose home is elsewhere but who stands at the place does not belong to it: home decides.
+  const visitor = opened();
+  visitor.town.blessing("athena", "m1");
+  visitor.town.blessing("athena", "m4");
+  visitor.town.blessing("poseidon", "m2");
+  visitor.town.blessing("poseidon", "m5");
+  const m1 = getActor(visitor.town.state, id("m1"));
+  if (!m1) throw new Error("m1");
+  visitor.town.state = withActor(visitor.town.state, {
+    ...m1,
+    home: id("far"),
+  });
+  visitor.town.until(
+    () =>
+      visitor.town.state.contests.get(visitor.contest.id)?.status !== "open",
+  );
+  const ending = visitor.town
+    .contestLog()
+    .find((e) => e.kind === "contest-closed");
+  if (ending?.kind !== "contest-closed" || ending.result !== "decided") {
+    throw new Error("expected a decision");
+  }
+  // With m1 (homed elsewhere) out, Athena has m4 and Poseidon m2 and m5; counting m1 it would have been a draw.
+  expect(String(ending.winner)).toBe("poseidon");
+  expect(plain(ending.favoured)).toEqual([
+    { mortal: "m2", god: "poseidon" },
+    { mortal: "m4", god: "athena" },
+    { mortal: "m5", god: "poseidon" },
+  ]);
+});
+
+test("control: the favoured mortal alive and still at the place decides the contest", () => {
+  const { town, contest } = opened();
+  town.blessing("athena", "m1");
+  town.blessing("poseidon", "m2");
+  town.blessing("poseidon", "m3");
+  // Everyone alive: Poseidon, with two, wins; and if m2 and m3 are the ones who died, Athena's m1 decides.
+  town.until(() => town.state.contests.get(contest.id)?.status !== "open");
+  expect(String(town.state.contests.get(contest.id)?.winner)).toBe("poseidon");
+
+  const flipped = opened();
+  flipped.town.blessing("athena", "m1");
+  flipped.town.blessing("poseidon", "m2");
+  remove(flipped.town, "m2", "die");
+  flipped.town.until(
+    () =>
+      flipped.town.state.contests.get(flipped.contest.id)?.status !== "open",
+  );
+  expect(
+    String(flipped.town.state.contests.get(flipped.contest.id)?.winner),
+  ).toBe("athena");
+  const ending = flipped.town
+    .contestLog()
+    .find((e) => e.kind === "contest-closed");
+  if (ending?.kind !== "contest-closed" || ending.result !== "decided") {
+    throw new Error("expected a decision");
+  }
+  expect(plain(ending.favoured)).toEqual([{ mortal: "m1", god: "athena" }]);
+});
+
 // --- The loser may not reopen without a new cause ---------------------------------------------------
 
 test("a contest already open at the place holds the matter: neither god opens another until it closes", () => {

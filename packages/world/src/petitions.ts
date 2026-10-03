@@ -225,6 +225,67 @@ function aboutPetition(
     : { ...base, kind: "need", resource: request.need.resource };
 }
 
+/**
+ * What the petitions say about one mortal and about every cause, read once per
+ * `petitions` Map and not once per question.
+ *
+ * Petitions are never pruned, so a long-lived world holds thousands, while every
+ * mortal asks "may I pray now, and about what" on every tick. Answering from the
+ * Map each time walked all of them three times per question (the prayer
+ * cooldown, the causes already prayed about, the subjects with a petition open),
+ * which in an hour of catch-up on a world six hours old was most of the time the
+ * routines took.
+ *
+ * The index is a pure function of the Map's contents and is kept in a WeakMap
+ * keyed by the Map object. That is sound because a `WorldState` is never
+ * changed in place: every reducer that changes a petition builds a new Map
+ * (`applyPetitionOpened`, `closePetition`) and the old one is garbage. Nothing is
+ * stored on the state, so it is not persisted, not encoded, and not compared.
+ */
+interface PetitionIndex {
+  /** Every cause some petition cites. */
+  readonly causes: ReadonlySet<EventId>;
+  /** The tick of each petitioner's newest petition. */
+  readonly newestTick: ReadonlyMap<EntityId, number>;
+  /** The subjects (`resource:…`, `building:…`) each petitioner has a petition open about. */
+  readonly openSubjects: ReadonlyMap<EntityId, ReadonlySet<string>>;
+}
+
+const petitionIndexes = new WeakMap<
+  ReadonlyMap<EventId, Petition>,
+  PetitionIndex
+>();
+
+function petitionIndex(state: WorldState): PetitionIndex {
+  let index = petitionIndexes.get(state.petitions);
+  if (index === undefined) {
+    const causes = new Set<EventId>();
+    const newestTick = new Map<EntityId, number>();
+    const openSubjects = new Map<EntityId, Set<string>>();
+    for (const petition of state.petitions.values()) {
+      causes.add(petition.cause);
+      const newest = newestTick.get(petition.petitioner);
+      if (newest === undefined || petition.tick > newest) {
+        newestTick.set(petition.petitioner, petition.tick);
+      }
+      if (petition.status === "open") {
+        const subject = subjectOfCause(petition.about);
+        if (subject !== undefined) {
+          const held = openSubjects.get(petition.petitioner);
+          if (held === undefined) {
+            openSubjects.set(petition.petitioner, new Set([subject]));
+          } else {
+            held.add(subject);
+          }
+        }
+      }
+    }
+    index = { causes, newestTick, openSubjects };
+    petitionIndexes.set(state.petitions, index);
+  }
+  return index;
+}
+
 /** What a mortal could pray about now, newest first: the causes it knows (`knownCause`) and its open unmet needs, minus any already prayed about or older than the prayable window. Empty during the prayer cooldown. */
 export function prayableCauses(
   state: WorldState,
@@ -232,21 +293,12 @@ export function prayableCauses(
 ): readonly PetitionCause[] {
   if (inCooldown(state, actorId)) return [];
   const window = petitionBalanceOf(state.rules, "causePrayableTicks");
-  const prayedAbout = new Set(
-    [...state.petitions.values()].map((petition) => petition.cause),
-  );
+  const { causes: prayedAbout, openSubjects: allOpen } = petitionIndex(state);
   // One open petition per resource or building: while the mortal's own petition
   // about a subject is open, a new cause about the same subject is not prayed
   // about (it is still a cause of its own, and once the petition is answered or
   // lapses a later cause can lead to a prayer).
-  const openSubjects = new Set(
-    [...state.petitions.values()]
-      .filter(
-        (petition) =>
-          petition.petitioner === actorId && petition.status === "open",
-      )
-      .flatMap((petition) => subjectOfCause(petition.about) ?? []),
-  );
+  const openSubjects = allOpen.get(actorId);
   return [...(state.causes.get(actorId) ?? []), ...needCauses(state, actorId)]
     .flatMap((cause) => {
       const known = knownCause(state, actorId, cause);
@@ -256,7 +308,7 @@ export function prayableCauses(
       (cause) =>
         state.tick - cause.tick <= window &&
         !prayedAbout.has(cause.eventId) &&
-        !openSubjects.has(subjectOfCause(cause) ?? "") &&
+        !(openSubjects?.has(subjectOfCause(cause) ?? "") ?? false) &&
         requestFor(state, cause) !== undefined,
     )
     .sort(
@@ -266,17 +318,11 @@ export function prayableCauses(
     );
 }
 
+/** Whether `actorId` has prayed within the prayer cooldown: its newest petition is younger than the cooldown, and so any other of its petitions is no younger than that. */
 function inCooldown(state: WorldState, actorId: EntityId): boolean {
   const cooldown = petitionBalanceOf(state.rules, "prayerCooldownTicks");
-  for (const petition of state.petitions.values()) {
-    if (
-      petition.petitioner === actorId &&
-      state.tick - petition.tick < cooldown
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const newest = petitionIndex(state).newestTick.get(actorId);
+  return newest !== undefined && state.tick - newest < cooldown;
 }
 
 /** The buildings `owner` holds, in id order. */

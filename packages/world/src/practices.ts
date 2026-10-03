@@ -586,6 +586,27 @@ function committedTerm(
   return { ...spec, deadline: state.tick + deadlineTicks } as PracticeTerm;
 }
 
+/**
+ * A term to be where its party already stands asks nothing and changes nothing.
+ * The reason is no-progress: the god is told the world's own message, which says
+ * exactly that, where a generic refusal would not.
+ */
+export function alreadyThere(
+  state: WorldState,
+  term: PracticeTermSpec,
+): Obstacle | undefined {
+  if (
+    term.kind === "be-at" &&
+    getActor(state, term.party)?.locationId === term.place
+  ) {
+    return obstacle(
+      "no-progress",
+      `${term.party} already stands at ${term.place}, so a term to be there asks nothing; ask for something that takes doing`,
+    );
+  }
+  return undefined;
+}
+
 /** Checks an offered term against the world's bounds and its party's reach; the parties it may name are the caller's to check. */
 function offerObstacle(
   state: WorldState,
@@ -599,7 +620,10 @@ function offerObstacle(
       `a term allows between ${min} and ${max} ticks, not ${offer.deadlineTicks}`,
     );
   }
-  return termObstacle(state, offer, offer.deadlineTicks);
+  return (
+    alreadyThere(state, offer) ??
+    termObstacle(state, offer, offer.deadlineTicks)
+  );
 }
 
 /** Who a term may bind and benefit: the two gods of the thread, never a third. */
@@ -1116,11 +1140,9 @@ function answer(
           "only the god who must perform the term may swear it",
         );
       }
-      const stopped = termObstacle(
-        state,
-        thread.term,
-        thread.term.deadline - state.tick,
-      );
+      const stopped =
+        alreadyThere(state, thread.term) ??
+        termObstacle(state, thread.term, thread.term.deadline - state.tick);
       if (stopped !== undefined) return deny(stopped.reason, stopped.message);
       return {
         ok: true,
@@ -1332,28 +1354,21 @@ export function judgePractices(
       rule(thread, "fulfilled", "sealed");
     }
   }
-  // Being at a place is read from where the party stands now.
+  // Being at a place is performed by arriving: a move or a crossing into it after the acceptance. Standing there is not enough, since a party already there (or put there some other way) arrived at nothing.
   for (const thread of accepted.filter(unfinished)) {
     const { term } = thread;
-    if (
-      term.kind === "be-at" &&
-      after.tick <= term.deadline &&
-      after.actors.get(term.party)?.alive === true &&
-      after.actors.get(term.party)?.locationId === term.place
-    ) {
-      let arrival: WorldEvent | undefined;
-      for (const event of primary) {
-        if (
-          (event.kind === "entity-moved" ||
-            event.kind === "realm-transitioned") &&
-          event.entityId === term.party &&
-          event.to === term.place &&
-          event.sequence > (thread.acceptance?.sequence ?? Infinity)
-        ) {
-          arrival = event;
-        }
-      }
-      rule(thread, "fulfilled", "performed", arrival?.id);
+    if (term.kind !== "be-at") continue;
+    const arrival = primary.find(
+      (event) =>
+        (event.kind === "entity-moved" ||
+          event.kind === "realm-transitioned") &&
+        event.entityId === term.party &&
+        event.to === term.place &&
+        event.tick <= term.deadline &&
+        event.sequence > (thread.acceptance?.sequence ?? Infinity),
+    );
+    if (arrival !== undefined && after.actors.get(term.party)?.alive === true) {
+      rule(thread, "fulfilled", "performed", arrival.id);
     }
   }
 

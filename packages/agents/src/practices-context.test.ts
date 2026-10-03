@@ -1294,11 +1294,13 @@ test("each way a thread can end is remembered as what it was and who decided it:
     term: {
       kind: "be-at",
       party: "zeus",
-      place: "great-hall",
+      place: "olympus-gate",
       deadlineTicks: 30,
     },
   });
   kept.move("zeus", "accept", keep.id);
+  // Keeping it is arriving: he walks to the gate.
+  kept.tick({ actor: "zeus", kind: "move", to: "olympus-gate" });
   expect(endingLine(kept, "zeus")).toContain("you fulfilled the term to hera");
   expect(endingLine(kept, "hera")).toContain("zeus fulfilled the term to you");
 

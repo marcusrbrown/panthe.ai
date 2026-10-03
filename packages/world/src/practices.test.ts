@@ -1723,6 +1723,103 @@ test("penalties, forms, stakes, and alliances replay from the log and survive a 
   expect(() => decode(stored)).toThrow();
 });
 
+// --- Being somewhere counts only after the promise to be there ---------------------------------------------
+
+test("a term to be where the party already stands asks nothing: it is refused at the demand and at a counter, as no-progress, and the god is told why in the world's own words", () => {
+  // Zeus stands at the altar.
+  const world = new World();
+  world.tick(demand(world.hears(), beAt("zeus", "altar")));
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.last?.rejected[0]?.message).toContain("already stands at altar");
+  expect(world.threads()).toEqual([]);
+  expect(
+    world.log.filter((e) => e.kind === "practice-refused").at(-1),
+  ).toMatchObject({
+    attempted: "demand",
+    reason: "no-progress",
+    why: expect.stringContaining("already stands at altar"),
+  });
+
+  // A counter binding Hera to the square she is in, and Zeus to the altar he is at, is refused alike.
+  const { world: countered } = opened(tell("zeus", "altar"));
+  countered.tick(
+    move(countered, "zeus", "counter", { term: beAt("hera", "square") }),
+  );
+  expect(countered.rejected()).toEqual(["no-progress"]);
+  countered.tick(
+    move(countered, "zeus", "counter", { term: beAt("zeus", "altar", 120) }),
+  );
+  expect(countered.rejected()).toEqual(["no-progress"]);
+  expect(countered.thread().status).toBe("open");
+  // Control: the same kind of term for a place the party is not at is taken.
+  countered.tick(
+    move(countered, "zeus", "counter", { term: beAt("zeus", "tavern", 120) }),
+  );
+  expect(countered.rejected()).toEqual([]);
+});
+
+test("a be-at accepted while the party is elsewhere is fulfilled only by a later arrival; standing there without having arrived fulfils nothing, and the deadline breaches", () => {
+  const { world, thread } = accepted(beAt("zeus", "tavern", 20));
+  // Zeus is put at the tavern by the fixture, with no move after the acceptance.
+  world.place("zeus", "tavern");
+  world.tick();
+  world.tick();
+  expect(world.thread().status).toBe("accepted");
+  world.until(() => world.thread().status !== "accepted");
+  expect(world.thread().status).toBe("breached");
+  expect(world.ended().at(-1)).toMatchObject({
+    outcome: "breached",
+    reason: "obligation-deadline",
+    tick: thread.term.deadline + 1,
+  });
+
+  // The honest way: he walks there after accepting, and the arrival is what is cited.
+  const walked = accepted(beAt("zeus", "tavern", 60));
+  walked.world.tick({ actor: "zeus", kind: "move", to: "square" });
+  expect(walked.world.thread().status).toBe("accepted");
+  const arriving = walked.world.tick({
+    actor: "zeus",
+    kind: "move",
+    to: "tavern",
+  });
+  const arrival = arriving.events.find((e) => e.kind === "entity-moved");
+  expect(walked.world.thread().status).toBe("fulfilled");
+  expect(walked.world.ended().at(-1)).toMatchObject({
+    outcome: "fulfilled",
+    reason: "performed",
+    performedBy: arrival?.id,
+  });
+});
+
+test("an arrival that came before the promise does not count, even when the party is still there: it has to arrive again after accepting", () => {
+  const { world } = opened(beAt("zeus", "tavern", 100));
+  // He walks to the tavern while the demand is still open, then accepts there.
+  world.tick({ actor: "zeus", kind: "move", to: "square" });
+  world.tick({ actor: "zeus", kind: "move", to: "tavern" });
+  world.tick(move(world, "zeus", "accept"));
+  // Standing where the term asks, accepting would be free: the world refuses it.
+  expect(world.rejected()).toEqual(["no-progress"]);
+  expect(world.thread().status).toBe("open");
+  // Leaving and coming back after accepting is the performance.
+  const away = opened(beAt("zeus", "tavern", 100));
+  away.world.tick({ actor: "zeus", kind: "move", to: "square" });
+  away.world.tick(move(away.world, "zeus", "accept"));
+  expect(away.world.thread().status).toBe("accepted");
+  away.world.tick({ actor: "zeus", kind: "move", to: "tavern" });
+  expect(away.world.thread().status).toBe("fulfilled");
+});
+
+test("an ally or a legend or any other term is untouched: only a term to be where one already is asks nothing", () => {
+  // Telling a legend at the altar Zeus stands at is still a term: there is something to do.
+  const world = new World();
+  world.tick(demand(world.hears(), tell("zeus", "altar")));
+  expect(world.rejected()).toEqual([]);
+  // Staying away from the place one stands at is not a free term either: it is kept by leaving, and breached by not.
+  const stay = new World();
+  stay.tick(demand(stay.hears(), stayAway("zeus", "altar")));
+  expect(stay.rejected()).toEqual([]);
+});
+
 // --- Anti-loop: nothing is gained by repeating, restating, or talking around a thread ---------
 
 const WRONG = { effect: "harm", agent: "zeus", target: "farmer" } as const;
@@ -1941,7 +2038,7 @@ test("Zeus counters, Hera counters, and Zeus's counter restating his first on th
 
   // A materially changed counter is progress, and it spends the last counteroffer.
   const last = world.tick(
-    move(world, "zeus", "counter", { term: beAt("zeus", "altar", 150) }),
+    move(world, "zeus", "counter", { term: beAt("zeus", "tavern", 150) }),
   );
   expect(last.rejected).toEqual([]);
   expect(world.thread()).toMatchObject({
@@ -1967,7 +2064,7 @@ test("a counter that restates the offer on the table, or one already answered, m
     tell("zeus", "altar", 101),
     tell("hera", "altar", 100),
     tell("zeus", "hall", 100),
-    beAt("zeus", "altar", 100),
+    beAt("zeus", "tavern", 100),
   ]) {
     const fresh = new World({ counterBudget: 3 });
     fresh.tick(demand(sees(fresh), tell("zeus", "altar", 100)));

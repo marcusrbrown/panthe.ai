@@ -1,6 +1,7 @@
 ---
 title: A god's travel choices broke when the action word and the destination had to match
 date: 2026-10-02
+last_updated: 2026-10-03
 category: logic-errors
 module: simulation-core
 problem_type: logic_error
@@ -12,7 +13,7 @@ symptoms:
 root_cause: logic_error
 resolution_type: code_fix
 severity: high
-tags: [god-intent, movement, realm-transition, action-schema, petitions, o08, small-models, context-budget]
+tags: [god-intent, movement, realm-transition, action-schema, petitions, practices, o08, small-models, context-budget, schema-parser-mismatch, retry-feedback]
 ---
 
 # A god's travel choices broke when the action word and the destination had to match
@@ -31,6 +32,7 @@ A god at Olympus Gate can see two kinds of exit: a `move` to `great-hall` and a 
 
 - Travel guidance in plain words ("take Mountain Path toward the town square") told the model where to go but not which action gets there.
 - A strict JSON schema with one `anyOf` branch per action kind would enforce valid pairs, but by the estimate in PR #83 it roughly triples the schema inside a 4K context. It was not measured separately.
+  - **Superseded 2026-10-03:** on Ollama the schema costs no prompt tokens, because it is applied as a grammar (see [ollama-4k-prompts-truncate-silently-2026-10-03.md](../best-practices/ollama-4k-prompts-truncate-silently-2026-10-03.md)). Schema size is not a reason to avoid a stricter schema on Ollama. Hosted endpoints may differ.
 
 ## Solution
 
@@ -75,9 +77,61 @@ After the fix, qwen3 8B exhausted 0 of 153 requests (`episodes/2026-10-02T00-13-
 
 - Keep a positive control for each valid pair and each tolerated swap (`move` + `mountain-path` parses as `realm-transition`), as in `packages/agents/src/petitions-context.test.ts`.
 - When a gate run exhausts many requests, bucket the exhaustion reasons before changing behaviour. Here one dominant, fixable error stood out from the rest.
+- Keep the model-facing schema at least as strict as the parser on required fields. If the parser needs a field, the schema requires it, or the parser has a tested rule that fills it.
+- Fill an omitted field only when the world leaves exactly one legal value. Refuse an explicit contradiction rather than correcting it.
+- Never infer consent. A decision on an existing thread (accept, counter, refuse, withdraw) must name its move.
+- On retry, send the refusal reason back to the model, redacted. Re-parsing JSON does not help when the JSON is valid and the intent is not.
+- When retries run out, keep the refused reply and the schema it was asked under, both redacted, so the next fix compares what was allowed with what was refused.
+- Write out legal objects for the model to copy, but not a default that invites churn, such as a deadline-only counter on a term that can already be performed.
+- Keep conditional requirements top-level and scoped to their action (`if action is practice`). In a local probe, Ollama 0.34.4 enforced top-level conditions but not ones nested inside `term`; no committed test covers that, so the parser stays the authority.
+
+## Recurrence (2026-10-03): practice moves
+
+The same failure returned with practices. In the Phase A gate on qwen3-8b-4k (`tools/scenarios/m2-greek-cast/episodes/2026-10-02T22-50-35/`), 43 of 91 requests ran out of retries. In each case the schema had admitted a reply the parser then refused:
+
+- an offering with `term.to` omitted;
+- a practice with no `move`;
+- a move sent with `target` and no `to`;
+- an accept on a thread the god could not accept.
+
+Retries learned nothing. The router's repair only re-parsed JSON, so each retry resampled the same context with no feedback. The gate also kept no refused replies, so the classes had to be rebuilt by sending real prompts to the model and parsing its answers.
+
+The fix, in `packages/agents/src/practices.ts` and `router.ts` (PR #97):
+
+- `move` is required, and each move requires its own fields through flat conditions scoped to practices:
+
+  ```ts
+  const conditions: object[] = [whenPractice({}, ["move"])];
+  conditions.push(whenPractice({ move: { const: "counter" } }, ["thread", "term"]));
+  conditions.push(whenPractice({ move: { const: "demand" } }, ["cause", "term"]));
+  conditions.push(whenPractice({ move: { const: "offer" } }, ["prayer", "term"]));
+  ```
+
+- An omitted recipient is filled only when exactly one is legal:
+
+  ```ts
+  if ((value === undefined || value === null) && allowed.length === 1) {
+    return { ok: true, value: allowed[0] as T };
+  }
+  ```
+
+- A missing move on an existing thread is refused with the legal pairs, never guessed: `move is missing; legal here: …`. Only a cause alone (demand) and a prayer alone (offer) are read as shorthand.
+- Every legal answer to a thread is written out as an object to copy.
+- A retry after an invalid reply adds the redacted reason:
+
+  ```ts
+  return `Your last reply was refused: ${detail.slice(0, FEEDBACK_LIMIT)}. Reply with one corrected JSON object.`;
+  ```
+
+- An exhausted step stores the redacted last reply, the request-time schema and the attempt count in the trace.
+
+After the fix, the next gate exhausted 5 of 103 requests, and none were schema/parser mismatches. Tests: `packages/agents/src/practice-legality.test.ts`, which reproduces each class from a real model reply, and the router retry tests.
 
 ## Related Issues
 
 - [PR #83: a god's travel options pair each destination with its action](https://github.com/marcusrbrown/panthea/pull/83)
 - [An unawaited god-turn promise crashed the sidecar on a store fault](../runtime-errors/unawaited-god-turn-store-fault-2026-09-29.md): same god-turn pipeline, different failure
 - [A headless scenario needs a positive control per negative claim](../best-practices/end-to-end-scenario-with-positive-controls-2026-09-28.md): the before/after gate evidence follows this practice
+- [A prompt that commands the old action hides a new option](../best-practices/prompt-commanding-old-action-hides-new-option-2026-10-03.md): the step before this one, when the model never proposes the new option at all
+- [Knowledge leaks through perception timing and citations](knowledge-leaks-through-perception-timing-and-citations-2026-09-29.md): citations are provenance only, the same no-inferred-intent rule
+- PR #97 (squash `c7b0f39`): the practices recurrence

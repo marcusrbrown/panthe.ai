@@ -14,6 +14,7 @@ import {
   runTick,
   submitProposal,
   toEntityId,
+  validatePractice,
   type WorldState,
   withActor,
 } from "@panthea/world";
@@ -675,6 +676,47 @@ test("an opening never suggests an amount the mortal could not have by the deadl
   if (!gatherer) throw new Error("farmer");
   run.state = withActor(run.state, { ...gatherer, gathers: undefined });
   expect(run.view("zeus").remembered.practice.openings).toEqual([]);
+});
+
+test("with only a punish prayer before him, Zeus is shown no opening that asks a god to bless the one who prayed, and the world refuses such a demand if one is made", () => {
+  const run = new Run();
+  run.state = actorAt(run.state, "zeus", "altar");
+  const cause = run.accused("zeus", "hera", { agent: "zeus", target: "hera" });
+  run.apply({
+    kind: "petition-opened",
+    entityId: "farmer",
+    god: "zeus",
+    cause,
+    request: { kind: "punish", offender: "hera", buildings: ["woodshed"] },
+  });
+  const view = run.view("zeus");
+  expect(JSON.stringify(view.remembered.practice.openings)).not.toContain(
+    "bless-mortal",
+  );
+  // The demand itself, if a god made it, is refused by the world's own check.
+  const heraCause = run.accused("hera", "zeus", {
+    agent: "hera",
+    target: "zeus",
+  });
+  const refused = validatePractice(run.state, {
+    schemaVersion: 1,
+    actor: id("hera"),
+    targets: [],
+    expectedRevisions: [],
+    source: "model",
+    observationId: "obs-x" as never,
+    kind: "practice",
+    move: "demand",
+    counterparty: id("zeus"),
+    cause: heraCause,
+    term: {
+      kind: "bless-mortal",
+      party: id("zeus"),
+      mortal: id("farmer"),
+      deadlineTicks: 90,
+    },
+  });
+  expect(refused).toMatchObject({ ok: false, reason: "malformed" });
 });
 
 test("the schema stays flat and the openings change none of what the god may parse: practice is still one object", () => {

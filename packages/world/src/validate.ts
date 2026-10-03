@@ -42,9 +42,8 @@ import { igniteThresholdOf } from "./fire";
 import { ALTAR, crossesRealm, findEdge, isAdjacent } from "./geography";
 import { getMemories } from "./memory";
 import {
-  blessingFor,
+  blessability,
   canPray,
-  inAnswerWindow,
   petitionBalanceOf,
   petitionFor,
 } from "./petitions";
@@ -640,22 +639,9 @@ function handleBless(state: WorldState, proposal: BlessProposal): RuleOutcome {
   if (!god?.isDeity) {
     return reject("unauthorized-claim", "only a deity may bless");
   }
-  const petition = state.petitions.get(proposal.petition);
-  if (
-    petition === undefined ||
-    petition.god !== proposal.actor ||
-    petition.status !== "open" ||
-    !inAnswerWindow(state, petition, state.tick)
-  ) {
-    return reject(
-      "malformed",
-      `${proposal.petition} is not an open petition addressed to this god`,
-    );
-  }
-  const blessing = blessingFor(state, petition.request);
-  if (blessing === undefined) {
-    return reject("malformed", "a punish petition is answered by a strike");
-  }
+  const blessable = blessability(state, proposal.petition, proposal.actor);
+  if (!blessable.ok) return reject("malformed", blessable.message);
+  const { petition, blessing } = blessable;
   const petitioner = getActor(state, petition.petitioner);
   if (!petitioner?.alive) {
     return reject("dead-actor", "the petitioner is no longer living");

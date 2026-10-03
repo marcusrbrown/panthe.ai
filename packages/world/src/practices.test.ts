@@ -961,6 +961,139 @@ test("a blessing term needs a god with the divinity for it: a god who cannot pay
   expect(world.rejected()).toEqual(["insufficient-power"]);
 });
 
+const blessFarmer = (deadlineTicks = 50): Term => ({
+  kind: "bless-mortal",
+  party: "zeus",
+  mortal: "farmer",
+  deadlineTicks,
+});
+
+/** The farmer prays to Zeus to punish Hera: a punish petition, which a strike answers and a bless never can. */
+function punishPrayer(world: World) {
+  return world.apply({
+    kind: "petition-opened",
+    entityId: "farmer",
+    god: "zeus",
+    cause: "evt-0-1",
+    request: { kind: "punish", offender: "hera", buildings: ["woodshed"] },
+  });
+}
+
+test("a term to bless a mortal whose only prayer is a punish petition is refused at the demand: a blessing cannot answer it, and the god is told what answers it", () => {
+  const world = new World();
+  punishPrayer(world);
+  world.tick(demand(world.hears(), blessFarmer()));
+  expect(world.rejected()).toEqual(["malformed"]);
+  expect(world.last?.rejected[0]?.message).toContain("strike");
+  expect(world.threads()).toEqual([]);
+  // A mortal with no prayer at all is refused too, as before.
+  const none = new World();
+  none.tick(demand(none.hears(), blessFarmer()));
+  expect(none.rejected()).toEqual(["malformed"]);
+});
+
+test("the same refusal at a counter and at acceptance: a thread cannot be moved onto a bless term nothing could fulfil, nor accepted once the prayer behind it turns out to be a punish one", () => {
+  // Counter: Hera demands a legend of Zeus; Zeus counters with a blessing for the farmer, who has only a punish prayer.
+  const countered = new World();
+  punishPrayer(countered);
+  countered.tick(demand(countered.hears()));
+  countered.tick(
+    move(countered, "zeus", "counter", { term: blessFarmer(120) }),
+  );
+  expect(countered.rejected()).toEqual(["malformed"]);
+  expect(countered.thread().status).toBe("open");
+
+  // Accept: the demand is taken while a help prayer stands; the prayer is then a punish one when Zeus answers.
+  const world = new World();
+  const help = world.apply({
+    kind: "petition-opened",
+    entityId: "farmer",
+    god: "zeus",
+    cause: "evt-0-1",
+    request: {
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: 2 },
+    },
+  });
+  world.tick(demand(world.hears(), blessFarmer()));
+  expect(world.rejected()).toEqual([]);
+  const prayer = world.state.petitions.get(help.id);
+  if (!prayer) throw new Error("no prayer");
+  world.state = {
+    ...world.state,
+    petitions: new Map(world.state.petitions).set(help.id, {
+      ...prayer,
+      request: {
+        kind: "punish",
+        offender: id("hera"),
+        buildings: [id("woodshed")],
+      },
+    }),
+  };
+  world.tick(move(world, "zeus", "accept"));
+  expect(world.rejected()).toEqual(["malformed"]);
+  expect(world.thread().status).toBe("open");
+});
+
+test("control: a help prayer still opens a bless term and it is accepted and fulfilled by the blessing", () => {
+  const world = new World();
+  const prayer = world.apply({
+    kind: "petition-opened",
+    entityId: "farmer",
+    god: "zeus",
+    cause: "evt-0-1",
+    request: {
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: 2 },
+    },
+  });
+  world.tick(demand(world.hears(), blessFarmer()));
+  expect(world.rejected()).toEqual([]);
+  world.tick(move(world, "zeus", "accept"));
+  expect(world.rejected()).toEqual([]);
+  expect(world.thread().status).toBe("accepted");
+  world.tick({ actor: "zeus", kind: "bless", petition: prayer.id });
+  expect(world.thread().status).toBe("fulfilled");
+});
+
+test("a bless term is held to the same prayer a bless is: one addressed to another god, one out of its window, or one already answered does not count either", () => {
+  const help = (god: string) => ({
+    kind: "petition-opened",
+    entityId: "farmer",
+    god,
+    cause: "evt-0-1",
+    request: {
+      kind: "help",
+      need: { kind: "resource", resource: "food", amount: 2 },
+    },
+  });
+  // Addressed to Athena: Zeus cannot bless it.
+  const other = new World();
+  other.apply(help("athena"));
+  other.tick(demand(other.hears(), blessFarmer()));
+  expect(other.rejected()).toEqual(["malformed"]);
+  // Out of its answer window.
+  const stale = new World();
+  stale.apply(help("zeus"));
+  stale.state = { ...stale.state, tick: 400 };
+  stale.tick(demand(stale.hears(), blessFarmer()));
+  expect(stale.rejected()).toEqual(["malformed"]);
+  // Already answered.
+  const answered = new World();
+  const prayer = answered.apply(help("zeus"));
+  const held = answered.state.petitions.get(prayer.id);
+  if (!held) throw new Error("no prayer");
+  answered.state = {
+    ...answered.state,
+    petitions: new Map(answered.state.petitions).set(prayer.id, {
+      ...held,
+      status: "answered",
+    }),
+  };
+  answered.tick(demand(answered.hears(), blessFarmer()));
+  expect(answered.rejected()).toEqual(["malformed"]);
+});
+
 test("acceptance re-checks the term: once Zeus can no longer reach the place, he cannot accept it", () => {
   const { world } = opened(tell("zeus", "tavern"));
   cutRoute(world);

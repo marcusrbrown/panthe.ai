@@ -44,7 +44,12 @@ import {
 } from "./economy";
 import { routeLength } from "./geography";
 import { getMemories } from "./memory";
-import { inAnswerWindow, judgeAnswers, petitionBalanceOf } from "./petitions";
+import {
+  blessability,
+  inAnswerWindow,
+  judgeAnswers,
+  petitionBalanceOf,
+} from "./petitions";
 import {
   type ActorState,
   DIVINE_CAPABILITY,
@@ -490,17 +495,24 @@ export function termObstacle(
         `${term.party} lacks the ${cost} divinity a blessing costs`,
       );
     }
-    const asked = [...state.petitions.values()].some(
+    // The prayer a blessing could answer, by the rule a bless is validated by: a punish petition is not one.
+    const prayers = [...state.petitions.values()].filter(
       (petition) =>
-        petition.status === "open" &&
-        petition.god === term.party &&
-        petition.petitioner === term.mortal &&
-        inAnswerWindow(state, petition, state.tick),
+        petition.god === term.party && petition.petitioner === term.mortal,
     );
-    if (!asked) {
+    const verdicts = prayers.map((petition) =>
+      blessability(state, petition.id, term.party),
+    );
+    if (!verdicts.some((verdict) => verdict.ok)) {
+      const refused = verdicts.find(
+        (verdict) =>
+          !verdict.ok && verdict.message.startsWith("a punish petition"),
+      );
       return obstacle(
         "malformed",
-        `${term.mortal} has no open petition before ${term.party}, so a blessing cannot answer anything`,
+        refused !== undefined && !refused.ok
+          ? `${term.mortal}'s prayer before ${term.party} asks for a punishment, and ${refused.message}, so a blessing cannot answer it`
+          : `${term.mortal} has no open petition before ${term.party}, so a blessing cannot answer anything`,
       );
     }
   }

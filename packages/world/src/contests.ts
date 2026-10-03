@@ -402,7 +402,7 @@ export function changeStanding(
 // --- Closing ---------------------------------------------------------------------------------------
 
 /** What each mortal in `tallies` favours: the god it weighs strictly more than the other, and only if that weight is positive. */
-function favourOf(contest: Contest): ContestFavour[] {
+export function favourOf(contest: Contest): ContestFavour[] {
   const favoured: ContestFavour[] = [];
   const mortals = [...new Set(contest.tallies.map((t) => t.mortal))].sort(byId);
   for (const mortal of mortals) {

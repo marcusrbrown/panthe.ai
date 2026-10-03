@@ -17,9 +17,12 @@ import {
   type PracticeRefusedEvent,
   type PracticeTerm,
   type PracticeTermOffer,
+  type ServiceKind,
 } from "@panthea/contracts";
 import {
   canStillPerform,
+  contestableActs,
+  favourOf,
   getActor,
   getMemories,
   inAnswerWindow,
@@ -51,6 +54,20 @@ export const DIGEST_BUDGET_CHARS = 1600;
  * of headroom for a longer digest, memories, and the answer. A prayer a live practice names is never cut.
  */
 export const PRAYERS_BUDGET_CHARS = 2400;
+
+/**
+ * The heading of the contests section: the contests the god is in and the rival acts it may open one over, as
+ * choices. Found by it (with the dashed and indented lines under it) wherever a prompt is checked.
+ */
+export const CONTESTS_HEADING = "Contests for a place's people:";
+
+/**
+ * Characters the contests section may use, heading and the closing "and N more" line included. Measured on
+ * qwen3-8b-4k at about 3.3 characters a token, the prompt of the busiest god is about 8,500 characters and
+ * 2,500 tokens, and Ollama silently drops the start of a prompt past about 4,090 tokens; 600 characters
+ * (two held contests and two or three acts, each with its copyable object) adds under 200 tokens.
+ */
+export const CONTESTS_BUDGET_CHARS = 600;
 
 /** The answers a thread can take from the god. A demand opens one and is not an answer. */
 export type AnswerMove = "accept" | "counter" | "refuse" | "withdraw";
@@ -157,6 +174,12 @@ export interface PracticeOptions {
   >;
   /** At most two bargains the god could begin, each legal as written; empty while a thread needs the god's answer or performance. */
   readonly openings: readonly Opening[];
+  /** The rival acts the god may open a contest over and the prompt shows, newest first, within `CONTESTS_BUDGET_CHARS`: the schema and the parser name these and no others. Empty while a thread needs the god's answer or performance. */
+  readonly contests: readonly ContestAct[];
+  /** How many such acts the budget left out. */
+  readonly moreActs: number;
+  /** The open contests the god is in, newest first (at most two). */
+  readonly heldContests: readonly HeldContest[];
 }
 
 /** One bargain the god could begin, written out in the intent it would send. The world has already said it would take it. */
@@ -165,6 +188,27 @@ export interface Opening {
   /** What it rests on, in the god's own terms: the account it knows, or whose prayer. */
   readonly label: string;
   readonly intent: Readonly<Record<string, unknown>>;
+}
+
+/** A rival's act the god perceived and may open a contest over: the world has already said it would take it. */
+export interface ContestAct {
+  readonly id: EventId;
+  /** The rival that did it. */
+  readonly god: EntityId;
+  readonly place: EntityId;
+  readonly placeName: string;
+  readonly kind: ServiceKind;
+}
+
+/** A contest the god is in, as it sees it: where, against whom, until when, and how many mortals favour each of you so far. */
+export interface HeldContest {
+  readonly id: EventId;
+  readonly place: EntityId;
+  readonly placeName: string;
+  readonly rival: EntityId;
+  readonly closesAt: number;
+  readonly mine: number;
+  readonly theirs: number;
 }
 
 /** A prayer a god may answer with terms. */
@@ -185,6 +229,9 @@ export const NO_PRACTICE: PracticeOptions = {
   stakes: [],
   offerTerms: {},
   openings: [],
+  contests: [],
+  moreActs: 0,
+  heldContests: [],
 };
 
 /** Whether a witnessed memory's event kind is a thread's ending, which its parties remember though no one stood at it. */
@@ -528,6 +575,9 @@ export function practiceBy(
       .sort((a, b) => byId(a.id, b.id)),
     offerTerms: {},
     openings: [],
+    contests: [],
+    moreActs: 0,
+    heldContests: [],
   };
   const offerTerms = offerTermsFor(state, actorId, options);
   // A thread that needs this god's answer or performance leads the digest alone.
@@ -536,17 +586,139 @@ export function practiceBy(
     ? undefined
     : demandOpening(state, actorId, shownMemories, options);
   const offer = needed ? undefined : offerOpening(state, options, offerTerms);
+  const heldContests = heldContestsOf(state, actorId);
+  const { shown, more } = needed
+    ? { shown: [], more: 0 }
+    : chooseActs(state, actorId, heldContests);
   return {
     threads,
     options: {
       ...options,
       offerTerms,
+      contests: shown,
+      moreActs: more,
+      heldContests,
       openings: [
         ...(demand === undefined ? [] : [demand]),
         ...(offer === undefined ? [] : [offer]),
       ],
     },
   };
+}
+
+// --- Contests --------------------------------------------------------------------------------
+
+/** What a rival's act was, in a few words. */
+const ACT_WORDS: Readonly<Record<ServiceKind, string>> = {
+  bless: "blessed a mortal",
+  strike: "struck a building",
+  legend: "told a legend",
+};
+
+const placeLabel = (name: string, place: EntityId) => `${name} [${place}]`;
+
+const countFavour = (count: number, who: string) =>
+  count === 1 ? `1 favours ${who}` : `${count} mortals favour ${who}`;
+
+/** One held contest's line: where, against whom, until when, and how the mortals who have weighed it lean so far. */
+function heldLine(held: HeldContest): string {
+  return `- [${held.id}] at ${placeLabel(held.placeName, held.place)} against ${held.rival} until tick ${held.closesAt}: so far ${countFavour(held.mine, "you")} and ${countFavour(held.theirs, held.rival)}.`;
+}
+
+/** One rival act's line: who did what where, with the object that would open a contest over it. */
+function actLine(act: ContestAct): string {
+  return `- ${act.god} ${ACT_WORDS[act.kind]} at ${placeLabel(act.placeName, act.place)} [${act.id}]: ${JSON.stringify(contestIntent(act.id))}`;
+}
+
+/** The object a god sends to open a contest over `act`. */
+const contestIntent = (act: EventId) => ({
+  action: "practice",
+  move: "contest",
+  act,
+});
+
+const CONTEST_CHOICES =
+  "You saw rivals act where mortals live. Each of these is a choice (nothing requires it; waiting is always allowed):";
+
+const moreActsLine = (count: number) =>
+  `- and ${count} more acts of rivals you saw.`;
+
+/** The open contests `actorId` is in, newest first, at most two, with how many mortals favour each side so far. */
+function heldContestsOf(state: WorldState, actorId: EntityId): HeldContest[] {
+  return [...state.contests.values()]
+    .filter(
+      (contest) =>
+        contest.status === "open" &&
+        (contest.opener === actorId || contest.rival === actorId),
+    )
+    .sort((a, b) => b.openedSequence - a.openedSequence)
+    .slice(0, 2)
+    .map((contest) => {
+      const rival = contest.opener === actorId ? contest.rival : contest.opener;
+      const favoured = favourOf(contest);
+      const mine = favoured.filter((f) => f.god === actorId).length;
+      return {
+        id: contest.id,
+        place: contest.place,
+        placeName: state.locations.get(contest.place)?.name ?? contest.place,
+        rival,
+        closesAt: contest.closesAt,
+        mine,
+        theirs: favoured.length - mine,
+      };
+    });
+}
+
+/**
+ * The rival acts the prompt offers: those the world would take a contest over (each one validated), newest
+ * first, as many as the section's budget holds after the contests the god holds and its framing lines; the
+ * first that does not fit ends the list, and the rest are counted.
+ */
+function chooseActs(
+  state: WorldState,
+  actorId: EntityId,
+  held: readonly HeldContest[],
+): { shown: ContestAct[]; more: number } {
+  const acts = [...contestableActs(state, actorId)].reverse().map(
+    (act): ContestAct => ({
+      id: act.id,
+      god: act.god,
+      place: act.place,
+      placeName: state.locations.get(act.place)?.name ?? act.place,
+      kind: act.kind,
+    }),
+  );
+  if (acts.length === 0) return { shown: [], more: 0 };
+  let used =
+    sizeOf([CONTESTS_HEADING, ...held.map(heldLine), CONTEST_CHOICES]) +
+    moreActsLine(acts.length).length +
+    1;
+  const shown: ContestAct[] = [];
+  for (const act of acts) {
+    const cost = actLine(act).length + 1;
+    if (shown.length > 0 && used + cost > CONTESTS_BUDGET_CHARS) break;
+    shown.push(act);
+    used += cost;
+  }
+  return { shown, more: acts.length - shown.length };
+}
+
+/** The contests section: the contests the god is in, and the rival acts it may open one over, as choices. Empty when it has neither. */
+export function describeContests(options: PracticeOptions): string[] {
+  if (options.heldContests.length === 0 && options.contests.length === 0) {
+    return [];
+  }
+  return [
+    CONTESTS_HEADING,
+    ...options.heldContests.map(heldLine),
+    ...(options.contests.length === 0
+      ? []
+      : [
+          CONTEST_CHOICES,
+          ...options.contests.map(actLine),
+          ...(options.moreActs > 0 ? [moreActsLine(options.moreActs)] : []),
+        ]),
+  ];
 }
 
 // --- Openings --------------------------------------------------------------------------------
@@ -980,7 +1152,8 @@ export function describePracticeInstructions(
   const canAnswer = threads.some((view) => view.moves.length > 0);
   const canDemand = options.causes.length > 0 && options.gods.length > 0;
   const canOffer = options.offerable.length > 0;
-  if (!canAnswer && !canDemand && !canOffer) return [];
+  const canContest = options.contests.length > 0;
+  if (!canAnswer && !canDemand && !canOffer && !canContest) return [];
   const lines = [
     'A practice (action "practice") is a bargain the world holds and judges: only moves bind, and words never do. Copy one of the objects the rows and openings below show; each names its move, and only a demand, an offer, and a counter carry a term {kind, party, deadlineTicks, and what the kind needs}.',
   ];
@@ -992,6 +1165,11 @@ export function describePracticeInstructions(
   if (canOffer && options.stakes.length > 0) {
     lines.push(
       `An offer on a prayer (move "offer") may add a stake: what the one who prayed becomes if it takes your boon and breaks the term (${options.stakes.map((stake) => stake.id).join(", ")}). The boon stays yours to give.`,
+    );
+  }
+  if (canContest) {
+    lines.push(
+      'A contest (move "contest", naming a rival\'s act you saw as "act") claims a place\'s people: over a window the world counts what each of you does for the mortals there (a bless or a legend for them, a strike against them), each mortal favours the god that did more for it, and the god more of them favour gains standing there for good while the other loses it. It is one choice among the others.',
     );
   }
   if (canAnswer) {
@@ -1039,6 +1217,7 @@ export type PracticeIntent = { readonly action: "practice" } & (
       readonly swear?: boolean;
     }
   | { readonly move: "refuse" | "withdraw"; readonly thread: EventId }
+  | { readonly move: "contest"; readonly cause: EventId }
 );
 
 /** Everything a `practice` action may name: the threads each answer is legal on, the causes, and what a term may hold. */
@@ -1058,6 +1237,8 @@ export interface PracticeOffer {
   readonly swearable: readonly EventId[];
   /** The term on the table of each thread, so a counter that changes only what it names can leave the rest as it stands. */
   readonly standing: ReadonlyMap<EventId, PracticeTerm>;
+  /** The rival acts this god may open a contest over: the ones the prompt shows. */
+  readonly contests: readonly ContestAct[];
 }
 
 /** The practice offer, or `undefined` when the god has nothing to say in a practice now. */
@@ -1077,7 +1258,12 @@ export function practiceOffer(
   };
   const canDemand = options.causes.length > 0 && options.gods.length > 0;
   const canAnswer = Object.values(answers).some((ids) => ids.length > 0);
-  if (!canDemand && !canAnswer && options.offerable.length === 0) {
+  if (
+    !canDemand &&
+    !canAnswer &&
+    options.offerable.length === 0 &&
+    options.contests.length === 0
+  ) {
     return undefined;
   }
   return {
@@ -1090,6 +1276,7 @@ export function practiceOffer(
     otherOf: new Map(threads.map((view) => [view.id, view.other])),
     swearable: threads.filter((view) => view.canSwear).map((view) => view.id),
     standing: new Map(threads.map((view) => [view.id, view.term])),
+    contests: options.contests,
   };
 }
 
@@ -1098,6 +1285,7 @@ export function offeredMoves(offer: PracticeOffer): readonly string[] {
   const moves: string[] = [];
   if (offer.canDemand) moves.push("demand");
   if (offer.offerable.length > 0) moves.push("offer");
+  if (offer.contests.length > 0) moves.push("contest");
   for (const move of ["accept", "counter", "refuse", "withdraw"] as const) {
     if (offer.answers[move].length > 0) moves.push(move);
   }
@@ -1153,6 +1341,9 @@ export function practiceConditions(offer: PracticeOffer): object[] {
       whenPractice({ move: { const: "offer" } }, ["prayer", "term"]),
     );
   }
+  if (offer.contests.length > 0) {
+    conditions.push(whenPractice({ move: { const: "contest" } }, ["act"]));
+  }
   return conditions;
 }
 
@@ -1181,6 +1372,13 @@ export function practiceProperties(
     properties.cause = {
       type: "string",
       enum: options.causes.map((cause) => cause.id),
+    };
+  }
+  if (offer.contests.length > 0) {
+    // The rival act a contest rests on. Its own field, not a demand's `cause`: the two name different things, and one list for both would offer each what only the other could take.
+    properties.act = {
+      type: "string",
+      enum: offer.contests.map((act) => act.id),
     };
   }
   if (offer.swearable.length > 0) properties.swear = { type: "boolean" };
@@ -1515,6 +1713,11 @@ function legalPairs(offer: PracticeOffer): string {
       `"offer" on a prayer (${offer.offerable.map((prayer) => prayer.id).join(", ")})`,
     );
   }
+  if (offer.contests.length > 0) {
+    pairs.push(
+      `"contest" over a rival's act (${offer.contests.map((act) => act.id).join(", ")})`,
+    );
+  }
   return pairs.join("; ");
 }
 
@@ -1560,6 +1763,7 @@ const MOVE_FIELDS: Readonly<Record<string, readonly string[]>> = {
   accept: ["thread", "swear"],
   refuse: ["thread"],
   withdraw: ["thread"],
+  contest: ["act"],
 };
 
 /** The first field the payload carries that its move does not take (`swear: false` is no swear). */
@@ -1568,7 +1772,7 @@ function contradiction(
   fields: Record<string, unknown>,
 ): string | undefined {
   const takes = MOVE_FIELDS[move] ?? [];
-  return ["cause", "prayer", "thread", "term", "swear", "stake"].find(
+  return ["cause", "prayer", "thread", "term", "swear", "stake", "act"].find(
     (key) =>
       !takes.includes(key) &&
       named(fields[key]) &&
@@ -1626,6 +1830,23 @@ export function parsePractice(
         petition: prayer.id,
         term: term.value,
         ...(stake === undefined ? {} : { stake }),
+      },
+    };
+  }
+  if (move.value === "contest") {
+    const act = member(
+      fields.act,
+      "act",
+      offer.contests.map((candidate) => candidate.id),
+      "act",
+    );
+    if (!act.ok) return act;
+    return {
+      ok: true,
+      value: {
+        action: "practice",
+        move: "contest",
+        cause: act.value as EventId,
       },
     };
   }

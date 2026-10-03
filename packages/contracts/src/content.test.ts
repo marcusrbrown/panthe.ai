@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { parseContentPack } from "./content";
+import {
+  affinityLimitOf,
+  DEFAULT_AFFINITY_LIMIT,
+  parseContentPack,
+} from "./content";
 
 function validRules(): Record<string, unknown> {
   return {
@@ -322,6 +326,48 @@ test("a devotion must name a deity in the pack, and an affinity that is a whole 
   const godly = parseContentPack(pack);
   expect(godly.ok).toBe(false);
   if (!godly.ok) expect(godly.path).toBe("inhabitants[1].devotion");
+});
+
+/** `packWithDevotion` under a pack whose own rules set the affinity limit. */
+function packWithLimit(limit: number | undefined, affinity: number) {
+  const pack = packWithDevotion({ god: "athena", affinity });
+  const rules = pack.rules as Record<string, unknown>;
+  if (limit !== undefined) rules.memoryBalance = { affinityLimit: limit };
+  return pack;
+}
+
+test("a devotion is held to the pack's own affinity limit, not a fixed 10: a limit of 3 refuses a devotion of 4, naming the mortal and the limit", () => {
+  const refused = parseContentPack(packWithLimit(3, 4));
+  expect(refused.ok).toBe(false);
+  if (!refused.ok) {
+    expect(refused.path).toBe("inhabitants[0].devotion.affinity");
+    expect(refused.message).toContain(
+      (
+        (packWithLimit(3, 4).inhabitants as { id: string }[])[0] as {
+          id: string;
+        }
+      ).id,
+    );
+    expect(refused.message).toContain("limit of 3");
+  }
+  // At or under the limit parses, and the limit's default is the world's: 10.
+  expect(parseContentPack(packWithLimit(3, 3)).ok).toBe(true);
+  expect(parseContentPack(packWithLimit(3, 1)).ok).toBe(true);
+  expect(parseContentPack(packWithLimit(undefined, 10)).ok).toBe(true);
+  expect(parseContentPack(packWithLimit(undefined, 11)).ok).toBe(false);
+  // A pack that raises the limit may state a larger devotion than the default allows.
+  expect(parseContentPack(packWithLimit(20, 15)).ok).toBe(true);
+  // A devotion of zero is never a devotion, whatever the limit.
+  expect(parseContentPack(packWithLimit(3, 0)).ok).toBe(false);
+});
+
+test("the effective affinity limit is one rule: the pack's own value, else the default the world uses", () => {
+  expect(affinityLimitOf({})).toBe(DEFAULT_AFFINITY_LIMIT);
+  expect(affinityLimitOf({ memoryBalance: { affinityLimit: 4 } })).toBe(4);
+  expect(affinityLimitOf({ memoryBalance: { capacity: 9 } })).toBe(
+    DEFAULT_AFFINITY_LIMIT,
+  );
+  expect(DEFAULT_AFFINITY_LIMIT).toBe(10);
 });
 
 test("a valid recipe converting inputs to outputs parses", () => {

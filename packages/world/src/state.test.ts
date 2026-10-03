@@ -420,3 +420,35 @@ test("a devotion seeds the mortal's affinity toward its god and nothing else, so
   // Without a devotion the old tie-break holds: the god with the fewest petitions, then the first id.
   expect(routePetition(state, toEntityId("idler"))).toBe(toEntityId("athena"));
 });
+
+test("a pack that parses always yields an initial world that decodes: a devotion at the pack's own affinity limit round-trips through JSON, and the world's limit is the contract's", async () => {
+  const { memoryBalanceOf } = await import("./memory");
+  const { decode, encode } = await import("./codec");
+  const { affinityLimitOf, parseContentPack } = await import(
+    "@panthea/contracts"
+  );
+  for (const [limit, affinity] of [
+    [3, 3],
+    [3, 1],
+    [undefined, 10],
+    [20, 15],
+  ] as const) {
+    const source = devotionPack();
+    const raw = JSON.parse(JSON.stringify(source));
+    raw.rules.memoryBalance =
+      limit === undefined ? undefined : { affinityLimit: limit };
+    raw.inhabitants.find((i: { id: string }) => i.id === "fisher").devotion = {
+      god: "poseidon",
+      affinity,
+    };
+    const parsed = parseContentPack(raw);
+    if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+    const state = createInitialWorldState(parsed.value);
+    // One rule: what the pack parser enforces is what the world's rules and codec enforce.
+    expect(memoryBalanceOf(state.rules, "affinityLimit")).toBe(
+      affinityLimitOf(parsed.value.rules),
+    );
+    const decoded = decode(JSON.parse(JSON.stringify(encode(state))));
+    expect(encode(decoded)).toEqual(encode(state));
+  }
+});

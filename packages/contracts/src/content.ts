@@ -100,7 +100,7 @@ export interface Inhabitant {
 /** A mortal's starting reverence for one god. */
 export interface Devotion {
   readonly god: string;
-  /** Whole number from 1 to 10: the affinity the mortal starts with toward the god. */
+  /** Whole number from 1 to the pack's affinity limit: the affinity the mortal starts with toward the god. */
   readonly affinity: number;
 }
 
@@ -252,8 +252,19 @@ function parseInhabitantDrives(
   });
 }
 
-/** The largest starting affinity a devotion may state: the default `affinityLimit`. */
-const MAX_DEVOTION_AFFINITY = 10;
+/**
+ * Affinity never goes beyond plus or minus this unless the pack's own `memoryBalance.affinityLimit` says
+ * otherwise. The world's memory rules take their default from here, so the pack parser and the world's
+ * codec enforce one limit.
+ */
+export const DEFAULT_AFFINITY_LIMIT = 10;
+
+/** The affinity limit a pack's world will hold: its own `memoryBalance.affinityLimit`, else the default. */
+export function affinityLimitOf(
+  rules: Pick<WorldRules, "memoryBalance">,
+): number {
+  return rules.memoryBalance?.affinityLimit ?? DEFAULT_AFFINITY_LIMIT;
+}
 
 function parseDevotion(value: unknown, path: string): ParseResult<Devotion> {
   if (!isRecord(value)) return fail(path, "expected a devotion object");
@@ -261,11 +272,9 @@ function parseDevotion(value: unknown, path: string): ParseResult<Devotion> {
   if (!god.ok) return god;
   const affinity = parseNonNegativeInteger(value.affinity, `${path}.affinity`);
   if (!affinity.ok) return affinity;
-  if (affinity.value < 1 || affinity.value > MAX_DEVOTION_AFFINITY) {
-    return fail(
-      `${path}.affinity`,
-      `expected a whole number from 1 to ${MAX_DEVOTION_AFFINITY}`,
-    );
+  // The upper bound is the pack's own affinity limit, known only once its rules are parsed: see parseContentPack's checks.
+  if (affinity.value < 1) {
+    return fail(`${path}.affinity`, "expected a whole number of at least 1");
   }
   return ok({ god: god.value, affinity: affinity.value });
 }
@@ -673,6 +682,14 @@ function checkReferentialIntegrity(
       return fail(
         `inhabitants[${index}].devotion.god`,
         `"${inhabitant.id}" reveres "${inhabitant.devotion.god}", who is not a god in the pack`,
+      );
+    }
+    // Held to what the world will hold: a devotion over the pack's own limit would parse, and then its initial world would not decode.
+    const limit = affinityLimitOf(pack.rules);
+    if (inhabitant.devotion.affinity > limit) {
+      return fail(
+        `inhabitants[${index}].devotion.affinity`,
+        `"${inhabitant.id}" starts with affinity ${inhabitant.devotion.affinity} toward "${inhabitant.devotion.god}", beyond the pack's affinity limit of ${limit}`,
       );
     }
   }

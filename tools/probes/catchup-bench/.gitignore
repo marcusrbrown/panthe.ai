@@ -1,0 +1,5 @@
+# The root .gitignore ignores a probe's results; these are the ones kept:
+# the tables a README cites, and the baseline fingerprint that every later run
+# is compared against. The raw per-repetition JSON stays out.
+!results/*.md
+!results/fingerprint-*.json

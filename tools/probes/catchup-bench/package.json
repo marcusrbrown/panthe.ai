@@ -1,0 +1,19 @@
+{
+  "name": "@panthea/tools-probes-catchup-bench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "bench": "bun run src/run.ts",
+    "bench:profile": "bun run src/profile.ts"
+  },
+  "dependencies": {
+    "@panthea/contracts": "workspace:*",
+    "@panthea/persistence": "workspace:*",
+    "@panthea/telemetry": "workspace:*",
+    "@panthea/tools-probes-shared": "workspace:*",
+    "@panthea/world": "workspace:*"
+  }
+}

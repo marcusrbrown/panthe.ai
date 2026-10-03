@@ -123,6 +123,17 @@
         "@panthea/tools-probes-shared": "workspace:*",
       },
     },
+    "tools/probes/catchup-bench": {
+      "name": "@panthea/tools-probes-catchup-bench",
+      "version": "0.1.0",
+      "dependencies": {
+        "@panthea/contracts": "workspace:*",
+        "@panthea/persistence": "workspace:*",
+        "@panthea/telemetry": "workspace:*",
+        "@panthea/tools-probes-shared": "workspace:*",
+        "@panthea/world": "workspace:*",
+      },
+    },
     "tools/probes/coexistence": {
       "name": "@panthea/tools-probes-coexistence",
       "version": "0.1.0",
@@ -348,6 +359,8 @@
     "@panthea/tools-probes-art-local": ["@panthea/tools-probes-art-local@workspace:tools/probes/art-local"],
 
     "@panthea/tools-probes-backend-lifecycle": ["@panthea/tools-probes-backend-lifecycle@workspace:tools/probes/backend-lifecycle"],
+
+    "@panthea/tools-probes-catchup-bench": ["@panthea/tools-probes-catchup-bench@workspace:tools/probes/catchup-bench"],
 
     "@panthea/tools-probes-coexistence": ["@panthea/tools-probes-coexistence@workspace:tools/probes/coexistence"],
 

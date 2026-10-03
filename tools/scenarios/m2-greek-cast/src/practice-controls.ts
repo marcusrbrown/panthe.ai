@@ -15,6 +15,7 @@ export const PRACTICE_CONTROLS = [
   "ending-no-consequence",
   "practices-missing",
   "consequence-no-effect",
+  "contest-no-standing",
 ] as const;
 export type PracticeControl = (typeof PRACTICE_CONTROLS)[number];
 
@@ -27,6 +28,7 @@ export const CONTROLLED_PROPERTY: Readonly<Record<PracticeControl, string>> = {
   "ending-no-consequence": "god thread endings",
   "practices-missing": "supplication and settlement",
   "consequence-no-effect": "consequence changes a later choice",
+  "contest-no-standing": "contest endings",
 };
 
 export const SABOTAGE: Readonly<Record<PracticeControl, string>> = {
@@ -44,6 +46,8 @@ export const SABOTAGE: Readonly<Record<PracticeControl, string>> = {
     "The harness deletes the supplication threads, as if the run had had no supplication.",
   "consequence-no-effect":
     "The harness removes the endings from every prompt the gods were shown afterwards, as if no consequence had reached a later choice.",
+  "contest-no-standing":
+    "The harness deletes the standing changes a decided contest left behind, as if the world had closed a contest and changed no one's standing.",
 };
 
 type Loose = Record<string, unknown>;
@@ -160,6 +164,23 @@ export function sabotage(
               e.kind.startsWith("practice-") &&
               (supplications.has(e.id as string) ||
                 supplications.has(e.threadId as string))
+            ),
+        ),
+      );
+    }
+    case "contest-no-standing": {
+      const closings = new Set(
+        events
+          .filter((e) => e.kind === "contest-closed" && e.result === "decided")
+          .map((e) => String(e.id)),
+      );
+      return withEvents(input, (all) =>
+        all.filter(
+          (e) =>
+            !(
+              e.kind === "motif-applied" &&
+              e.effect === "standing" &&
+              closings.has(String(e.cause))
             ),
         ),
       );

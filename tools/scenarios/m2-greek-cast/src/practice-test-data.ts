@@ -158,6 +158,8 @@ export function prompt(
 export interface Episode {
   readonly input: RealInput;
   readonly ids: {
+    readonly contest: string;
+    readonly contestClosing: string;
     readonly refused: string;
     readonly successor: string;
     readonly kept: string;
@@ -677,6 +679,57 @@ export function episode(): Episode {
     [{ entityId: "zeus", toward: "woodcutter", affinityDelta: -1 }],
   );
 
+  // A contest for favour. Poseidon tells a legend before the fishers at the dock; Athena, who heard it, opens
+  // a contest over it, out-tells him, and wins: her standing there rises and his falls, each citing the closing.
+  const rival = log.add("legend-recorded", 110, {
+    entityId: "poseidon",
+    assertion: "The sea feeds the dock.",
+    hearers: ["fisher-kallias", "fisher-melina", "athena"],
+  });
+  const contest = log.add("contest-opened", 112, {
+    entityId: "athena",
+    rival: "poseidon",
+    place: "ferry-dock",
+    cause: rival.id,
+    closesAt: 140,
+  });
+  log.add("legend-recorded", 120, {
+    entityId: "athena",
+    assertion: "The olive feeds the dock better.",
+    hearers: ["fisher-kallias", "fisher-melina", "poseidon"],
+  });
+  const closed = log.add("contest-closed", 140, {
+    entityId: "athena",
+    rival: "poseidon",
+    place: "ferry-dock",
+    contestId: contest.id,
+    result: "decided",
+    reason: "window",
+    winner: "athena",
+    favoured: [
+      { mortal: "fisher-kallias", god: "athena" },
+      { mortal: "fisher-melina", god: "athena" },
+    ],
+  });
+  log.add("motif-applied", 140, {
+    entityId: "athena",
+    motif: "standing-won",
+    threadId: contest.id,
+    cause: closed.id,
+    effect: "standing",
+    place: "ferry-dock",
+    delta: 1,
+  });
+  log.add("motif-applied", 140, {
+    entityId: "poseidon",
+    motif: "standing-lost",
+    threadId: contest.id,
+    cause: closed.id,
+    effect: "standing",
+    place: "ferry-dock",
+    delta: -1,
+  });
+
   return {
     input: {
       requests,
@@ -685,6 +738,8 @@ export function episode(): Episode {
       polls: { total: 10, degraded: 0 },
     },
     ids: {
+      contest: contest.id,
+      contestClosing: closed.id,
       refused: refused.id,
       successor: successor.id,
       kept: kept.id,

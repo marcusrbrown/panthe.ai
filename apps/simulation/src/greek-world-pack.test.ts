@@ -116,6 +116,43 @@ test("the Greek pack states the practice tunables the world rules default to, st
   expect(pack.value.rules.practiceBalance).toEqual(DEFAULT_PRACTICE_BALANCE);
 });
 
+test("PANTHEA_PRACTICE_BALANCE overrides practice tunables over the authored ones (a scenario shortens a contest's window), and anything invalid is refused", () => {
+  const authored = loadEmbeddedGreekWorldPack({});
+  if (!authored.ok) throw new Error(authored.message);
+  const short = loadEmbeddedGreekWorldPack({
+    PANTHEA_PRACTICE_BALANCE: JSON.stringify({ contestWindowTicks: 25 }),
+  });
+  if (!short.ok) throw new Error(short.message);
+  expect(short.value.rules.practiceBalance).toEqual({
+    ...authored.value.rules.practiceBalance,
+    contestWindowTicks: 25,
+  });
+  // The petition tunables are untouched by it, and the two overrides combine.
+  const both = loadEmbeddedGreekWorldPack({
+    PANTHEA_PRACTICE_BALANCE: JSON.stringify({ contestWindowTicks: 25 }),
+    PANTHEA_PETITION_BALANCE: JSON.stringify({ directorQuietTicks: 100000 }),
+  });
+  if (!both.ok) throw new Error(both.message);
+  expect(both.value.rules.practiceBalance?.contestWindowTicks).toBe(25);
+  expect(both.value.rules.petitionBalance?.directorQuietTicks).toBe(100000);
+  // Without it, or empty, the authored tunables stand.
+  const unset = loadEmbeddedGreekWorldPack({ PANTHEA_PRACTICE_BALANCE: "" });
+  expect(unset.ok && unset.value.rules.practiceBalance).toEqual(
+    authored.value.rules.practiceBalance,
+  );
+  for (const bad of [
+    '{"contestWindow": 5}',
+    '{"contestWindowTicks": 0}',
+    "not json",
+    "[1]",
+  ]) {
+    const result = loadEmbeddedGreekWorldPack({
+      PANTHEA_PRACTICE_BALANCE: bad,
+    });
+    expect(result.ok).toBe(false);
+  }
+});
+
 test("PANTHEA_PETITION_BALANCE overrides petition tunables over the authored ones, and anything invalid is refused", () => {
   const authored = loadEmbeddedGreekWorldPack({});
   if (!authored.ok) throw new Error(authored.message);

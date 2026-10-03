@@ -1,4 +1,4 @@
-// S17: over everything the scripted story did, the real-run properties of the
+// S18: over everything the scripted story did, the real-run properties of the
 // practice threads hold. The run's data is read back from the store the way the
 // real run reads its own (requests with their prompts, the journaled god
 // proposals, every event), so these are the same checks the gate applies to a
@@ -21,13 +21,19 @@ import { check } from "./support";
 export function collectInput(story: Story): RealInput {
   const path = activeStorePath(story.dataDir);
   return {
-    // The story scripts Zeus and Hera. The other five gods take turns too, and wait: the
-    // properties judge the gods who had something to do, and the seven-god run judges all of them.
+    // The story scripts Zeus and Hera through the thread practices. The other five gods take turns too,
+    // and wait; Athena and Poseidon also play a contest (S17), which is no thread. The thread properties
+    // judge the gods who had threads to answer, and the seven-god run judges all of them; the contest
+    // property reads the events alone, so it sees the contest whoever played it.
     requests: readRealRequests(path).filter(
       (request) => request.role === "zeus" || request.role === "hera",
     ),
     proposals: readProposals(path)
-      .filter((entry) => entry.source === "model")
+      .filter(
+        (entry) =>
+          entry.source === "model" &&
+          (entry.actor === "zeus" || entry.actor === "hera"),
+      )
       .map((entry) => ({
         proposalId: entry.proposalId,
         actor: entry.actor,
@@ -47,7 +53,7 @@ export async function stepPracticeProperties(
   story: Story,
 ): Promise<PracticeAnalysis> {
   await recorder.run(
-    "S17",
+    "S18",
     "The practice properties hold over the scripted episode",
     "Over the requests, journaled proposals, and events of the whole scripted run, each god caused a thread ending that left a persistent consequence; the run held a supplication and a settlement, with a refusal and a breach among them; every thread ended with its parties remembering how, or is open inside its deadline; no thread reopened without a cause learned since it opened; every move judged no progress left a refusal record and advanced nothing; a recorded consequence changed a later choice, with the ending in the prompt behind it; and every turn an obligated god took has its recorded classification. With any of the practice controls applied to the data first, the property it targets fails.",
     async (step) => {

@@ -20,7 +20,8 @@ Controls: `kill-journal`, `kill-inference`, `chain`, `isolation`, `trace`,
 `stale`, `catch-up-inference`, `restore-memory`, `petition-privacy`, and, for the
 practice steps and the practice properties of the real run, `thread-reopened`,
 `no-progress-advances`, `thread-no-ending`, `obligated-turn-unrecorded`,
-`ending-no-consequence`, `practices-missing`, `consequence-no-effect`.
+`ending-no-consequence`, `practices-missing`, `consequence-no-effect`,
+`contest-no-standing`.
 
 Practice steps (settlement and supplication, scripted gods, the world's real
 rules; each reply is a function of the prompt its god was shown, so it names
@@ -37,7 +38,15 @@ only what that god could name):
   refusal is remembered.
 - **S16** Supplication: terms kept are fulfilled; terms broken cost the wolf
   stake, and the mortal keeps its memory, feelings, and identity.
-- **S17** The real run's practice properties (`src/practice-analysis.ts`) hold
+- **S17** A contest for favour: Poseidon tells a legend before the fishers at
+  the ferry dock; Athena, standing there, is offered a contest over it as a
+  choice (a copyable object the world's validator already took) and opens it.
+  She tells two legends to the dock's people and he tells none, so at the window's
+  end the world decides for her: her standing at the dock rises and his falls,
+  each recorded as a motif citing the closing, and Poseidon is offered no new
+  contest over what Athena did before the close. The step runs a 25-tick window
+  (`PANTHEA_PRACTICE_BALANCE`) in place of the authored five minutes.
+- **S18** The real run's practice properties (`src/practice-analysis.ts`) hold
   over the whole scripted run. A practice control breaks the data first and the
   property it targets must fail; `src/practice-analysis.test.ts` holds the same
   controls as unit tests.

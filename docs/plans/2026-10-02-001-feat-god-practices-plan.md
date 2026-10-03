@@ -26,7 +26,7 @@ Origin R1–R25 carry over unchanged. Grouped:
 - R20–R23. Five sourced gods with stakes, twenty routine inhabitants, director pressure on threads, seven gods on one model.
 - R24–R25. Transcripts and the next Zeus and Hera gate on qwen3 8B.
 
-Product requirements touched: W01, W04, W05, W06, W07, W09, W10, M05, O08 (`docs/product/requirements.md`).
+Product requirements touched: W04, W05, W06, W07, W09, M05, O08 (`docs/product/requirements.md`). W01 and W10 are Phase B (Units 7–8) and are listed on those units.
 
 ## Scope Boundaries
 

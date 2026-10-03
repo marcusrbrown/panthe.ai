@@ -167,7 +167,7 @@ test("every turn an obligated god takes while its obligation is open is classifi
   expect(obligated.turns[2]?.choice).toBe("report");
 });
 
-test("each class follows its rule: renegotiating names the thread or the other god; performing is the action the term calls for; a named obstacle or a missing audience is a justified wait; anything else risks breach", () => {
+test("each class follows its rule: performing is the action the term calls for; a named obstacle or a missing audience is a justified wait; anything else, including an attempt to bargain over an accepted thread, risks breach", () => {
   const { input, ids } = episode();
   const thread = buildThreads(parseAll(input.events)).find(
     (t) => t.id === ids.successor,
@@ -200,7 +200,7 @@ test("each class follows its rule: renegotiating names the thread or the other g
   const text = prompt("zeus", 30, { at: "altar", here: ["farmer"] });
   const cls = (p: ReturnType<typeof proposal> | undefined, r = row) =>
     classifyTurn(thread, r, text, p, false).class;
-  // Renegotiated: a practice move on the thread, committed or refused; a fresh demand of the other god.
+  // An acceptance binds (R12, 2026-10-03): a counter or a withdrawal of an accepted thread, or a fresh demand of the other god, is not performing it, and not a justified wait either.
   expect(
     cls(
       proposal(
@@ -210,11 +210,22 @@ test("each class follows its rule: renegotiating names the thread or the other g
         "malformed",
       ),
     ),
-  ).toBe("renegotiated");
+  ).toBe("knowingly risked breach");
+  expect(
+    cls(proposal("practice", { move: "withdraw", thread: ids.successor })),
+  ).toBe("knowingly risked breach");
   expect(
     cls(proposal("practice", { move: "demand", counterparty: "hera" })),
-  ).toBe("renegotiated");
-  // A practice move on another thread, or another god, is not.
+  ).toBe("knowingly risked breach");
+  // No turn is ever classified as renegotiated.
+  for (const p of [
+    proposal("practice", { move: "counter", thread: ids.successor }),
+    proposal("practice", { move: "demand", counterparty: "hera" }),
+    undefined,
+  ]) {
+    expect(cls(p) as string).not.toBe("renegotiated");
+  }
+  // A practice move on another thread is no different.
   expect(cls(proposal("practice", { move: "refuse", thread: "evt-9-9" }))).toBe(
     "knowingly risked breach",
   );

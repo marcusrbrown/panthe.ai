@@ -417,6 +417,7 @@ flowchart TB
 - Scripted steps cover refuse, accept and fulfil, sworn breach, no-progress repeat, counteroffer exhaustion, an off-thread report, a successor on a new sighting, and a supplication with terms kept and one breached.
 - Transcripts show each thread's cause, moves, ending, and changes, plus open threads with their age and wait reason, and every no-progress rejection.
 - For every turn an obligated god takes while its obligation is open, the transcript records whether it performed, renegotiated, waited for a named event, or knowingly risked breach.
+  - Amended 2026-10-03 (owner, R12): an acceptance binds, so the classes are performed, waited for a named event, and knowingly risked breach; renegotiation belongs to a thread that is still open. `practice-analysis.ts`, its tests, the transcript, and the README no longer have a renegotiated class; an attempt to bargain over an accepted thread is classified as risking breach. The line above is kept for its context.
 - Real-run properties: each god causes a thread ending with a persistent consequence in each episode, the run includes a supplication and a settlement with at least one refused or breached, no reopening without a new cause, no no-progress move advancing a thread, and a recorded consequence changing a later choice.
 - Run 3 × 5-minute episodes on qwen3 8B at 4K with reasoning off, for the owner to rate.
 

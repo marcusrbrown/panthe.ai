@@ -45,13 +45,14 @@ only what that god could name):
 The transcript (`src/transcript.ts`) shows each thread's cause, participants,
 moves, ending, and recorded changes, the threads open at the end with their age
 and what each waits on, every move judged no progress, and a classification of
-each turn an obligated god takes while its obligation is open (R12): a practice
-move on the thread, or a fresh demand of the other god, is *renegotiated*; the
-action the term calls for, committed, is *performed*; a turn that did something
-else is *waited for a named event* when its prompt names what stops it (the
-digest's UNPERFORMABLE obstacle, or no mortal at the place a legend is to be
-told); every other turn is *knowingly risked breach*, since the obligation led
-the prompt.
+each turn an obligated god takes while its obligation is open (R12; an
+acceptance binds, so there is no renegotiation class, and bargaining is for a
+thread still open): the action the term calls for, committed, is *performed*; a
+turn that did something else is *waited for a named event* when its prompt names
+what stops it (the digest's UNPERFORMABLE obstacle, or no mortal at the place a
+legend is to be told); every other turn, an attempt to bargain over the accepted
+thread included, is *knowingly risked breach*, since the obligation led the
+prompt.
 
 The scenario builds the sidecar with `apps/simulation/scripts/build-sidecar.sh`
 and runs the compiled binary directly, with no Tauri, extending the

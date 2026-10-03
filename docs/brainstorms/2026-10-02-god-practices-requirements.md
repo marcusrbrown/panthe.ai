@@ -84,6 +84,7 @@ External research agrees on the cause. LLM agents with memory, reflection, and p
 - R10. Three kinds of move make no progress: repeating an answered move with unchanged terms and no new evidence, a counteroffer that does not materially change the terms, and a report or legend between a thread's participants on its topic while it is open. The god's next prompt says so, and it chooses another tactic, an escalation, a withdrawal, or a wait for a named event or deadline.
 - R11. A negotiation has a deadline and a counteroffer budget. When either runs out without acceptance, the thread ends as refused or expired.
 - R12. An accepted obligation leads the obligated god's prompt until its deadline. Each turn the god performs it, renegotiates, waits for a named event, or knowingly risks breach, and the transcript records which.
+  - **Amended 2026-10-03 (owner):** an acceptance binds. Once a thread is accepted the obligated god performs it, waits for a named event, or knowingly risks breach; renegotiating is possible only while a thread is open, and the world refuses a counter or a withdrawal of an accepted one. The transcript records which of the three each turn was. The text above is kept for its context.
 - R13. Private goals remain motives. They never certify a shared commitment or close a thread.
 
 **The three practices**

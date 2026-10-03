@@ -483,7 +483,6 @@ export function noProgressMoves(
 
 export type TurnClass =
   | "performed"
-  | "renegotiated"
   | "waited for a named event"
   | "knowingly risked breach";
 
@@ -569,22 +568,21 @@ function sceneOf(prompt: string): {
 
 /**
  * How a turn an obligated god took is classified, from what its prompt showed
- * and what its proposal did. The rule, in order:
+ * and what its proposal did. An acceptance binds (R12, amended 2026-10-03): once
+ * a thread is accepted the god performs, waits for a named event, or knowingly
+ * risks breach; bargaining is for a thread that is still open, and the world
+ * refuses a counter or a withdrawal of an accepted one. The rule, in order:
  *
- * 1. A practice move that names the thread (a counter, a withdrawal), or a
- *    fresh demand or offer to the other party, is `renegotiated`: the only way
- *    to change an accepted obligation is to bargain again, and the world may
- *    refuse it (the transcript says so).
- * 2. An action the term calls for, committed, is `performed`: telling a
+ * 1. An action the term calls for, committed, is `performed`: telling a
  *    legend or moving toward the place for a legend or a place, a bless for a
  *    blessing, and for a term to stay away from a place any turn that does not
  *    go there.
- * 3. A turn that did something else, or nothing, is `waited for a named event`
+ * 2. A turn that did something else, or nothing, is `waited for a named event`
  *    when its prompt shows what stops it now, named: the digest's
  *    UNPERFORMABLE obstacle, or, for a legend to be told at the place the god
  *    stands in, no mortal there to hear it (the event is one arriving).
- * 4. Every other turn is `knowingly risked breach`. The obligation led the
- *    prompt, so the god saw it.
+ * 3. Every other turn is `knowingly risked breach`, an attempt to bargain over
+ *    the thread included. The obligation led the prompt, so the god saw it.
  */
 export function classifyTurn(
   thread: ThreadRecord | undefined,
@@ -602,15 +600,6 @@ export function classifyTurn(
       : kind === "practice"
         ? `practice ${String(fields.move)}${outcome === "rejected" ? ` (refused: ${proposal.reason})` : ""}`
         : `${kind}${outcome === "rejected" ? ` (refused: ${proposal.reason})` : ""}`;
-
-  if (
-    kind === "practice" &&
-    (fields.thread === row.thread ||
-      ((fields.move === "demand" || fields.move === "offer") &&
-        fields.counterparty === row.other))
-  ) {
-    return { class: "renegotiated", named: undefined, choice };
-  }
 
   const term = thread?.term;
   const committed = outcome === "committed";

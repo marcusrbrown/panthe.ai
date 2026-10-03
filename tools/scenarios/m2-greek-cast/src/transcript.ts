@@ -521,12 +521,12 @@ function renderNoProgress(record: EpisodeRecord): string {
 function renderObligatedTurns(record: EpisodeRecord): string {
   const { obligated } = analyzePractices(record.input);
   const rule =
-    "Each turn is classified from the god's prompt and its proposal: a practice move on the thread (or a fresh demand of the other god) is renegotiated; the action the term calls for, committed, is performed; a turn that did something else is waited for a named event when its prompt shows what stops it (the digest's UNPERFORMABLE obstacle, or no mortal at the place a legend is to be told); every other turn is knowingly risked breach, since the obligation led the prompt.";
+    "Each turn is classified from the god's prompt and its proposal. An acceptance binds, so the god performs, waits, or risks breach, and bargaining is for a thread still open: the action the term calls for, committed, is performed; a turn that did something else is waited for a named event when its prompt shows what stops it (the digest's UNPERFORMABLE obstacle, or no mortal at the place a legend is to be told); every other turn, an attempt to bargain over the accepted thread included, is knowingly risked breach, since the obligation led the prompt.";
   if (obligated.turns.length === 0 && obligated.unrecorded.length === 0) {
     return `No obligation led a prompt, so no obligated turn was taken.\n\n${rule}`;
   }
   return [
-    "A turn is performed, renegotiated, waited for a named event, or knowingly risked breach (R12).",
+    "A turn is performed, waited for a named event, or knowingly risked breach (R12, amended 2026-10-03: an acceptance binds).",
     "",
     rule,
     "",

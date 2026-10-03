@@ -126,8 +126,10 @@ test("each turn an obligated god took while its obligation was open shows what i
     "Turns while an obligation was open",
   );
   expect(turns).toContain(
-    "performed, renegotiated, waited for a named event, or knowingly risked breach",
+    "performed, waited for a named event, or knowingly risked breach",
   );
+  // An acceptance binds: renegotiating belongs to an open thread, so it is not a class of obligated turn.
+  expect(turns).not.toContain("renegotiated");
   expect(turns).toContain(
     `| zeus | 22 | ${ids.successor} | 50 | move | performed |  |`,
   );

@@ -87,8 +87,9 @@ export async function stepKillInference(
         "it committed",
         `${consumed.outcome} ${consumed.reason}`,
       );
-      // Time for a second proposal, were one coming.
-      await waitForTicks(story, 4, "the world ticks past the fresh turn");
+      // Time for a second proposal, were one coming: Hera's next turn comes after the six other
+      // gods' (about one turn a tick each), so a few rotations of the seven.
+      await waitForTicks(story, 24, "the world ticks past the fresh turn");
       const legends = modelProposals(story, "hera").filter(
         (e) => e.inputOrder > before && e.kind === "legend",
       );

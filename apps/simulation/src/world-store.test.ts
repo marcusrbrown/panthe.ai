@@ -130,13 +130,16 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     // service-offering buildings (the shop and the tavern) each earn one
     // income-earned event every tick, right after the proposal queue
     // drains (the woodcutter's woodshed sells nothing, so earns nothing);
-    // then the need scan records what the two mortals' routines cannot get
-    // (the woodcutter's food, the farmer's planks).
+    // then the need scan records what the mortals' routines cannot get. How
+    // many events the whole town makes is the pack's business, so what is
+    // pinned is that the sequence is contiguous from 1 and the move is first.
     const moveEvents1 = tick1.committed.flatMap((record) => record.events);
     expect(moveEvents1.map((event) => event.sequence)).toEqual([1]);
-    expect(tick1.events.map((event) => event.sequence)).toEqual([
-      1, 2, 3, 4, 5, 6,
-    ]);
+    const count1 = tick1.events.length;
+    expect(count1).toBeGreaterThan(1);
+    expect(tick1.events.map((event) => event.sequence)).toEqual(
+      Array.from({ length: count1 }, (_, index) => index + 1),
+    );
 
     const commit1 = commitTick(store, projectionReducers, {
       events: tick1.events,
@@ -146,7 +149,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick1.state.simTime,
       prngState: serializePrngState(tick1.prng),
     });
-    expect(commit1.sequence).toBe(6);
+    expect(commit1.sequence).toBe(count1);
 
     const tick2 = runTick(tick1.state, tick1.prng, [
       moveProposal("wanderer", "town-square", "obs-2"),
@@ -154,7 +157,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     expect(tick2.rejected).toEqual([]);
     const moveEvents2 = tick2.committed.flatMap((record) => record.events);
     // Contiguous with tick 1's sequence, not reset to 1 again.
-    expect(moveEvents2.map((event) => event.sequence)).toEqual([7]);
+    expect(moveEvents2.map((event) => event.sequence)).toEqual([count1 + 1]);
 
     const commit2 = commitTick(store, projectionReducers, {
       events: tick2.events,
@@ -164,10 +167,11 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick2.state.simTime,
       prngState: serializePrngState(tick2.prng),
     });
-    expect(commit2.sequence).toBe(9);
+    const count2 = count1 + tick2.events.length;
+    expect(commit2.sequence).toBe(count2);
     expect(tick2.state.tick).toBe(2);
     expect(tick2.state.simTime).toBe(2_000);
-    expect(tick2.state.lastSequence).toBe(9);
+    expect(tick2.state.lastSequence).toBe(count2);
 
     // --- 2. Close -> reopen -> live projections restored to the full state
     closeStore(store);
@@ -203,7 +207,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
     ]);
     expect(tick3.rejected).toEqual([]);
     const moveEvents3 = tick3.committed.flatMap((record) => record.events);
-    expect(moveEvents3.map((event) => event.sequence)).toEqual([10]);
+    expect(moveEvents3.map((event) => event.sequence)).toEqual([count2 + 1]);
 
     const commit3 = commitTick(store, projectionReducers, {
       events: tick3.events,
@@ -213,12 +217,13 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       simTimeMs: tick3.state.simTime,
       prngState: serializePrngState(tick3.prng),
     });
-    expect(commit3.sequence).toBe(12);
+    const count3 = count2 + tick3.events.length;
+    expect(commit3.sequence).toBe(count3);
 
     // --- 4. Export -> importArchive (world codec) -> reopen -> equal ------
     const exportPath = join(exportDir, "archive.sqlite");
     const manifest = exportArchive(store, exportPath);
-    expect(manifest.eventSequence).toBe(12);
+    expect(manifest.eventSequence).toBe(count3);
 
     const importResult = importArchive(
       exportPath,
@@ -265,7 +270,7 @@ test("real world reducers/rules through a real store: tick, restart, and export/
       prngState: serializePrngState(tick3.prng),
     });
     // Sequence is unchanged: no events were committed.
-    expect(commit4.sequence).toBe(12);
+    expect(commit4.sequence).toBe(count3);
     const restoredAfterRejection = restoreWorldTime(
       readLiveProjections(store, projectionReducers),
       readClock(store.db),
@@ -1027,9 +1032,9 @@ test("two tellings from one observation, one event-linked and one unlinked, surv
 test("startup fails with a clear diagnostic when an embedded god profile matches no deity inhabitant", () => {
   const orphan = {
     schemaVersion: 1,
-    id: "athena",
-    name: "Athena",
-    domains: ["wisdom"],
+    id: "nike",
+    name: "Nike",
+    domains: ["victory"],
     drives: { order: 0.5 },
     abilities: [
       {
@@ -1054,14 +1059,14 @@ test("startup fails with a clear diagnostic when an embedded god profile matches
         cites: [{ source: "iliad", locator: "book 1" }],
       },
     ],
-    sprite: "placeholder-athena",
+    sprite: "placeholder-nike",
   };
   expect(() =>
-    loadGreekWorldState([{ label: "athena.json", value: orphan }]),
+    loadGreekWorldState([{ label: "nike.json", value: orphan }]),
   ).toThrow("failed to parse the embedded Greek god profiles");
   expect(() =>
-    loadGreekWorldState([{ label: "athena.json", value: orphan }]),
-  ).toThrow("athena.json.id");
+    loadGreekWorldState([{ label: "nike.json", value: orphan }]),
+  ).toThrow("nike.json.id");
 });
 
 test("startup succeeds with the embedded god profiles by default", () => {
@@ -1909,7 +1914,8 @@ test("a tick's memories and relationship changes commit with the events they cit
     expect(getCurrentSequence(store.db)).toBe(0);
     const afterFailure = readLiveProjections(store, reducers);
     expect(afterFailure.memories.size).toBe(0);
-    expect(afterFailure.relationships.size).toBe(0);
+    // Only the starting devotions: the failed tick's feelings were rolled back.
+    expect(afterFailure.relationships.size).toBe(seed.relationships.size);
     expect(afterFailure.buildings.get(id("the-tavern"))?.status).toBe(
       "operational",
     );

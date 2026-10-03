@@ -18,8 +18,8 @@ test("the god identities come from the authored profiles: drives, powers, and do
 
 test("a god with no profile file is an error naming it, not an empty identity", () => {
   expect(() =>
-    loadGodIdentities(join(REPO_ROOT, "content/greek/gods"), ["hades"]),
-  ).toThrow(/hades/);
+    loadGodIdentities(join(REPO_ROOT, "content/greek/gods"), ["nike"]),
+  ).toThrow(/nike/);
 });
 
 test("the default output directory is a timestamped folder under the scenario, safe as a file name", () => {

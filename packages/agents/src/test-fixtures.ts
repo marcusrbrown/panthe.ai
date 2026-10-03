@@ -31,6 +31,20 @@ export function greekState(): WorldState {
   return createInitialWorldState(pack);
 }
 
+/** The gods the pack added after Zeus and Hera. */
+const LATER_GODS = ["athena", "hades", "hephaestus", "hermes", "poseidon"];
+
+/**
+ * `state` with only Zeus and Hera among the gods, for a test about a two-god
+ * quarrel: with a third god in the world, a move that names "the other god"
+ * has more than one choice.
+ */
+export function withOnlyZeusAndHera(state: WorldState): WorldState {
+  const actors = new Map(state.actors);
+  for (const god of LATER_GODS) actors.delete(toEntityId(god));
+  return { ...state, actors };
+}
+
 /**
  * `state` with fire unable to spread, for a test about what one strike made
  * its witnesses remember: the square now holds a woodshed beside the oak, and

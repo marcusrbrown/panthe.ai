@@ -355,3 +355,68 @@ test("a deity inhabitant starts with the divine capability; a mortal starts with
   expect(state.actors.get(toEntityId("farmer"))?.capabilities).toEqual([]);
   expect(state.actors.get(toEntityId("pretender"))?.capabilities).toEqual([]);
 });
+
+// --- Devotion: who a mortal prays to first -------------------------------------------------------
+
+function devotionPack(): ContentPack {
+  const deity = (id: string) => ({
+    id,
+    name: id,
+    locationId: "altar",
+    deity: true,
+  });
+  return {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "altar", realm: "mortal", name: "Altar", edges: [] }],
+    buildings: [],
+    inhabitants: [
+      deity("athena"),
+      deity("poseidon"),
+      {
+        id: "fisher",
+        name: "The Fisher",
+        locationId: "altar",
+        drives: { thrift: 0.2, appetite: 0.3, greed: 0.3, piety: 0.5 },
+        devotion: { god: "poseidon", affinity: 3 },
+      },
+      {
+        id: "idler",
+        name: "The Idler",
+        locationId: "altar",
+        drives: { thrift: 0.2, appetite: 0.3, greed: 0.3, piety: 0.5 },
+      },
+    ],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      maxProposalsPerTick: 10,
+      fireBalance: {},
+      economyBalance: {},
+    },
+    recipes: {},
+  } as ContentPack;
+}
+
+test("a devotion seeds the mortal's affinity toward its god and nothing else, so its prayers go there first", async () => {
+  const { getRelationship } = await import("./memory");
+  const { routePetition } = await import("./petitions");
+  const state = createInitialWorldState(devotionPack());
+  expect(
+    getRelationship(state, toEntityId("fisher"), toEntityId("poseidon")),
+  ).toMatchObject({
+    from: "fisher",
+    toward: "poseidon",
+    affinity: 3,
+    grudge: 0,
+    allied: false,
+  });
+  expect(state.relationships.size).toBe(1);
+  expect(routePetition(state, toEntityId("fisher"))).toBe(
+    toEntityId("poseidon"),
+  );
+  // Without a devotion the old tie-break holds: the god with the fewest petitions, then the first id.
+  expect(routePetition(state, toEntityId("idler"))).toBe(toEntityId("athena"));
+});

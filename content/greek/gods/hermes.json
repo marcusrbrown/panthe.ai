@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "id": "hermes",
+  "name": "Hermes",
+  "domains": [
+    "messages",
+    "travel",
+    "exchange",
+    "herds",
+    "cunning",
+    "guiding souls"
+  ],
+  "drives": {
+    "guardianship": 0.6,
+    "desire": 0.5,
+    "order": 0.5,
+    "sovereignty": 0.3
+  },
+  "abilities": [
+    {
+      "id": "tidings",
+      "name": "Tidings",
+      "action": "report",
+      "description": "Carries word to someone here: your own account, told as you choose."
+    },
+    {
+      "id": "tale-of-the-road",
+      "name": "Tale of the Road",
+      "action": "legend",
+      "description": "Tells a tale of the road or the market, told aloud to everyone present and recorded as a legend."
+    },
+    {
+      "id": "windfall",
+      "name": "Windfall",
+      "action": "bless",
+      "description": "Answers a mortal's prayer for help with what it needs."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "zeus",
+      "kind": "father and master",
+      "disposition": 0.5,
+      "note": "Zeus sends him as messenger and guide. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "hymn-4-hermes",
+      "title": "Homeric Hymn 4 to Hermes",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 4); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns2.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-5",
+      "title": "Odyssey, book 5",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Odyssey 5); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerOdyssey5.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-24",
+      "title": "Iliad, book 24",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 24); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad24.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-24",
+      "title": "Odyssey, book 24",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Odyssey 24); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerOdyssey24.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-2-demeter",
+      "title": "Homeric Hymn 2 to Demeter",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 2); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns1.html",
+      "accessed": "2026-10-02"
+    }
+  ],
+  "lore": [
+    {
+      "id": "cattle-thief",
+      "statement": "On the day of his birth Hermes steals fifty of Apollo's cattle, hides their tracks, and roasts two of them.",
+      "cites": [
+        {
+          "source": "hymn-4-hermes",
+          "locator": "lines 68-115"
+        }
+      ]
+    },
+    {
+      "id": "exchange-settles-quarrel",
+      "statement": "Apollo and Hermes settle the theft by exchange: Hermes gives him the lyre and Apollo gives him his whip and the keeping of herds.",
+      "cites": [
+        {
+          "source": "hymn-4-hermes",
+          "locator": "lines 436-496"
+        }
+      ]
+    },
+    {
+      "id": "zeus-messenger",
+      "statement": "Zeus sends Hermes as his messenger, to bid Calypso let Odysseus go.",
+      "cites": [
+        {
+          "source": "odyssey-5",
+          "locator": "lines 28-43"
+        }
+      ]
+    },
+    {
+      "id": "guides-priam",
+      "statement": "At Zeus's order Hermes guides Priam unseen to Achilles' hut.",
+      "cites": [
+        {
+          "source": "iliad-24",
+          "locator": "lines 331-345"
+        }
+      ]
+    },
+    {
+      "id": "guide-of-souls",
+      "statement": "Cyllenian Hermes calls the suitors' souls with his golden wand and leads them down to the asphodel meadow.",
+      "cites": [
+        {
+          "source": "odyssey-24",
+          "locator": "lines 1-14"
+        }
+      ]
+    },
+    {
+      "id": "to-hades-for-persephone",
+      "statement": "Zeus sends Hermes down to Erebos with his command that Hades let Persephone go.",
+      "cites": [
+        {
+          "source": "hymn-2-demeter",
+          "locator": "lines 334-347"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "thief-or-errand-runner",
+      "note": "In the Hymn to Hermes he acts on his own cunning, stealing first and being given his office by exchange. In the Iliad and Odyssey he acts at Zeus's order. The profile keeps both: a cunning drive and a messenger's duty.",
+      "cites": [
+        {
+          "source": "hymn-4-hermes",
+          "locator": "lines 68-115"
+        },
+        {
+          "source": "hymn-4-hermes",
+          "locator": "lines 436-496"
+        },
+        {
+          "source": "iliad-24",
+          "locator": "lines 331-345"
+        },
+        {
+          "source": "odyssey-5",
+          "locator": "lines 28-43"
+        }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "tidings-as-report",
+      "statement": "Hermes carries word as the world's report action.",
+      "reason": "Report is the world's only private telling between two actors; it is a game mapping."
+    },
+    {
+      "id": "road-as-legend",
+      "statement": "His tales of the road are told in play as legends.",
+      "reason": "Legend is the world's only public telling; it is a game mapping."
+    },
+    {
+      "id": "windfall-as-bless",
+      "statement": "His gifts to those who pray are the world's bless action.",
+      "reason": "The world's one way to help a mortal is to bless it."
+    },
+    {
+      "id": "market-and-ferry-folk",
+      "statement": "The traders and the ferryman who revere him, and standing in the market, are placed by the game.",
+      "reason": "The sources give him exchange, herds, and travel but no market town. The trading livelihoods are an invention."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting dispositions of Hermes are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-hermes"
+}

@@ -9,17 +9,19 @@
 // The scripted part is the gods' choices; the mortals decide for themselves.
 
 import { type Petition, type PracticeThread, toEntityId } from "@panthea/world";
+import { GODS, type God } from "../provider";
 import type { Recorder, Story } from "./context";
 import {
   eventsOfKind,
   godMoves,
+  storedEvents,
   threadAfter,
   threadEnded,
   threadNow,
   threadsOf,
   walkTo,
 } from "./practice";
-import { check, postFixture, stateOf, waitFor } from "./support";
+import { check, stateOf, waitFor } from "./support";
 
 const id = toEntityId;
 
@@ -28,9 +30,6 @@ export interface Supplications {
   readonly keptId: string;
   readonly brokenId: string;
 }
-
-const currencyOf = async (story: Story, mortal: string) =>
-  (await stateOf(story)).actors.get(id(mortal))?.inventory.get("currency") ?? 0;
 
 /** Open help petitions, newest last. */
 async function openHelp(story: Story): Promise<Petition[]> {
@@ -44,14 +43,13 @@ async function openHelp(story: Story): Promise<Petition[]> {
   );
 }
 
-const otherGod = (god: string) => (god === "hera" ? "zeus" : "hera");
-
 /** The offer a god makes on a prayer: one offering by the one who prayed, to the god. */
 const offerOn = (
   petition: Petition,
   amount: number,
   ticks: number,
   stake?: string,
+  resource = "currency",
 ) =>
   JSON.stringify({
     action: "practice",
@@ -61,35 +59,60 @@ const offerOn = (
       kind: "make-offering",
       party: petition.petitioner,
       to: petition.god,
-      resource: "currency",
+      resource,
       amount,
       deadlineTicks: ticks,
     },
     ...(stake === undefined ? {} : { stake }),
   });
 
-/** The god stands with the mortal and blesses it; returns the blessing's event id. */
+/**
+ * The god stands with the mortal and blesses it; returns the blessing's event id.
+ * A mortal of the town is on the road to the altar and back often, and a god takes
+ * a turn once in seven, so the god goes to where the mortal stands now and tries
+ * again when the mortal has moved on by the god's turn.
+ */
 async function giveBoon(
   story: Story,
   petition: Petition,
   why: string,
 ): Promise<string> {
-  const mortal = (await stateOf(story)).actors.get(petition.petitioner);
-  check(mortal !== undefined, `${petition.petitioner} is somewhere`, "gone");
-  await walkTo(story, petition.god as "zeus" | "hera", mortal.locationId);
-  const row = await godMoves(
-    story,
-    petition.god as "zeus" | "hera",
-    JSON.stringify({ action: "bless", petition: petition.id }),
-    why,
-  );
-  const blessing = eventsOfKind(
-    story,
-    "blessing-granted",
-    (e) => e.correlationId === String(row.proposal.observationId),
-  )[0];
-  check(blessing !== undefined, `${why}: a blessing is recorded`, "none");
-  return blessing.id;
+  const god = petition.god as God;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const state = await stateOf(story);
+    const mortal = state.actors.get(petition.petitioner);
+    check(mortal !== undefined, `${petition.petitioner} is somewhere`, "gone");
+    await walkTo(story, god, mortal.locationId);
+    try {
+      await waitFor(
+        `${petition.petitioner} is where ${god} stands`,
+        async () => {
+          const now = await stateOf(story);
+          return now.actors.get(petition.petitioner)?.locationId ===
+            now.actors.get(id(god))?.locationId
+            ? true
+            : undefined;
+        },
+        { timeoutMs: 60_000, intervalMs: 200 },
+      );
+      const row = await godMoves(
+        story,
+        god,
+        JSON.stringify({ action: "bless", petition: petition.id }),
+        why,
+      );
+      const blessing = eventsOfKind(
+        story,
+        "blessing-granted",
+        (e) => e.correlationId === String(row.proposal.observationId),
+      )[0];
+      check(blessing !== undefined, `${why}: a blessing is recorded`, "none");
+      return blessing.id;
+    } catch (error) {
+      if (attempt === 5) throw error;
+    }
+  }
+  throw new Error(`${why}: no blessing`);
 }
 
 /** The god offers terms and the mortal's own routine takes them. */
@@ -99,12 +122,13 @@ async function offerTerms(
   amount: number,
   ticks: number,
   stake?: string,
+  resource = "currency",
 ): Promise<PracticeThread> {
   const earlier = threadsOf(await stateOf(story)).map((t) => t.id as string);
   await godMoves(
     story,
-    petition.god as "zeus" | "hera",
-    offerOn(petition, amount, ticks, stake),
+    petition.god as God,
+    offerOn(petition, amount, ticks, stake, resource),
     `${petition.god} offers ${petition.petitioner} terms`,
   );
   const thread = await threadAfter(story, earlier, "the offer opens a thread");
@@ -154,45 +178,52 @@ export async function stepSupplication(
   return recorder.run(
     "S16",
     "Supplication: terms kept are fulfilled; terms broken cost the stake, and the mortal keeps its memory and identity",
-    "Two mortals have prayed. A god answers one prayer by offering terms (its boon for one offering of currency by the mortal, no counteroffers); the mortal's routine accepts, the god blesses it, and the mortal makes its offering: the thread is fulfilled, its ending cites the offering that completed it, and the blessing and the offering are each recorded as seen. A god answers the other with the same terms and a stake, the wolf; the mortal accepts and is blessed, then cannot make its offering by the deadline: the thread is breached, the stake changes the mortal's form and capabilities, citing the breach, and its memories, feelings, and identity are kept.",
+    "Two mortals have prayed. A god answers one prayer by offering terms (its boon for one offering of currency by the mortal, no counteroffers); the mortal's routine accepts, the god blesses it, and the mortal makes its offering: the thread is fulfilled, its ending cites the half that came last (the offering or the boon), and the blessing and the offering are each recorded as seen. A god answers the other with the same terms and a stake, the wolf; the mortal accepts and is blessed, then cannot make its offering by the deadline: the thread is breached, the stake changes the mortal's form and capabilities, citing the breach, and its memories, feelings, and identity are kept.",
     async (step) => {
-      const prayers = await openHelp(story);
-      const state = await stateOf(story);
-      const purse = (mortal: string) =>
-        state.actors.get(id(mortal))?.inventory.get("currency") ?? 0;
-      const mortals = [...state.actors.values()].filter(
-        (actor) => actor.isDeity !== true && actor.alive,
-      );
-      const circulating = mortals.reduce(
-        (sum, actor) => sum + (actor.inventory.get("currency") ?? 0),
-        0,
-      );
-      // The mortal who will break its terms holds more than half the currency the mortals have, so once it has spent it
-      // there is not enough left in the world to earn it back; the other keeps its terms.
-      const richest = [...prayers]
-        .map((p) => p.petitioner)
-        .sort((a, b) => purse(b) - purse(a))[0];
-      const second = prayers.find((p) => p.petitioner === richest);
-      const first = prayers.find(
-        (p) => p !== second && (p.petitioner !== richest || prayers.length > 1),
-      );
-      check(
-        first !== undefined &&
-          second !== undefined &&
-          purse(second.petitioner) * 2 > circulating,
-        "two prayers wait for an answer, one from a mortal holding more than half of the mortals' currency",
-        JSON.stringify({
-          circulating,
-          purses: mortals.map((m) => [m.id, m.inventory.get("currency") ?? 0]),
-          prayers: [...state.petitions.values()].map((p) => ({
-            id: p.id,
-            god: p.god,
-            who: p.petitioner,
-            status: p.status,
-            kind: p.request.kind,
-            tick: p.tick,
-          })),
-        }),
+      // The town is twenty mortals and seven gods, and the story scripts only Zeus and Hera, so
+      // the step answers the prayers made to them. The term to be broken is a promise of nearly
+      // all that its mortal could hold by the deadline of what it gathers, which no wealth in
+      // the town changes; the term to be kept is one coin.
+      const { first, second } = await waitFor(
+        "two prayers wait for an answer from two mortals, one of whom gathers something and the other holds a coin",
+        async () => {
+          const state = await stateOf(story);
+          // Only a prayer the god's latest prompt offers terms on: one answered or lapsed since is not worth a turn.
+          const offered = new Set(
+            ["zeus", "hera"].flatMap((god) =>
+              [
+                ...(
+                  story.provider.requests
+                    .filter((request) => request.god === god)
+                    .at(-1)?.prompt ?? ""
+                ).matchAll(/"move":"offer","prayer":"(evt-[^"]+)"/g),
+              ].map((match) => match[1]),
+            ),
+          );
+          // The newest first: a prayer near the end of its window lapses before the god's turn comes.
+          const prayers = (await openHelp(story))
+            .filter(
+              (p) =>
+                (p.god === "zeus" || p.god === "hera") && offered.has(p.id),
+            )
+            .filter((p) => state.tick - p.tick < 150)
+            .sort((a, b) => b.tick - a.tick);
+          const gathers = (mortal: string) =>
+            state.actors.get(id(mortal))?.gathers;
+          const purse = (mortal: string) =>
+            state.actors.get(id(mortal))?.inventory.get("currency") ?? 0;
+          const breaker = prayers.find(
+            (p) => gathers(p.petitioner) !== undefined,
+          );
+          const keeper = prayers.find(
+            (p) =>
+              p.petitioner !== breaker?.petitioner && purse(p.petitioner) >= 1,
+          );
+          return breaker === undefined || keeper === undefined
+            ? undefined
+            : { first: keeper, second: breaker };
+        },
+        { timeoutMs: 240_000, intervalMs: 500 },
       );
 
       // Terms kept.
@@ -213,27 +244,45 @@ export async function stepSupplication(
         "practice-ended",
         (e) => e.threadId === keptThread.id,
       )[0];
+      // A supplication is two halves, the god's boon and the mortal's offering, and the world
+      // fulfils it when the second lands: the ending cites whichever came last. A mortal of the
+      // town may have made its offering before the god got to it, so the ending may cite the boon.
       const offering = eventsOfKind(
         story,
         "worship-performed",
-        (e) => e.id === keptEnd?.performedBy,
+        (e) =>
+          e.entityId === first.petitioner &&
+          e.deity === first.god &&
+          Number(e.tick) >= keptThread.openedTick,
       )[0];
+      const completing = storedEvents(story).find(
+        (e) => e.id === keptEnd?.performedBy,
+      );
       check(
         kept.status === "fulfilled" &&
           keptEnd?.reason === "performed" &&
-          offering?.entityId === first.petitioner &&
-          offering.deity === first.god,
-        "the thread is fulfilled, and its ending cites the offering the mortal made to the god",
-        JSON.stringify({ status: kept.status, keptEnd, offering }),
+          offering !== undefined &&
+          (keptEnd.performedBy === offering.id ||
+            keptEnd.performedBy === keptBoon),
+        "the thread is fulfilled: the mortal made its offering to the god, and the ending cites the half that came last, the offering or the boon",
+        JSON.stringify({
+          status: kept.status,
+          keptEnd,
+          offering: offering ?? null,
+          completing: completing?.kind ?? null,
+          wanted: { who: first.petitioner, god: first.god },
+        }),
       );
       const steps = eventsOfKind(
         story,
         "practice-progressed",
         (e) => e.threadId === keptThread.id,
       );
+      // The half that came first is a recorded step; the half that came last is the ending's citation.
       check(
         steps.some((e) => e.step === "boon" && e.by === keptBoon) ||
-          kept.progress?.boon === keptBoon,
+          kept.progress?.boon === keptBoon ||
+          keptEnd?.performedBy === keptBoon,
         "the blessing was recorded as the boon seen given",
         JSON.stringify({ steps, progress: kept.progress }),
       );
@@ -241,50 +290,38 @@ export async function stepSupplication(
       // Terms broken.
       const before = await stateOf(story);
       const mortal = second.petitioner;
-      const holds =
-        before.actors.get(id(mortal))?.inventory.get("currency") ?? 0;
-      check(holds >= 1, `${mortal} holds currency to promise`, String(holds));
-      const brokenThread = await offerTerms(story, second, holds, 30, "wolf");
+      const gathered = before.actors.get(id(mortal))?.gathers;
+      check(
+        gathered !== undefined,
+        `${mortal} gathers something to promise`,
+        String(gathered),
+      );
+      // The most the world lets it promise is what it holds plus what it could gather in the
+      // ticks it has. The step promises nearly all of that (six ticks short, in case it sells a
+      // few before the offer lands): the world accepts the term, and the mortal, who spends its
+      // ticks eating, selling, and walking to the altar, cannot hold that much by the deadline.
+      const gatherAmount = before.rules.economyBalance.gatherAmount ?? 1;
+      const promised =
+        (before.actors.get(id(mortal))?.inventory.get(gathered ?? "") ?? 0) +
+        gatherAmount * (30 - 6);
+      const brokenThread = await offerTerms(
+        story,
+        second,
+        promised,
+        30,
+        "wolf",
+        gathered,
+      );
       check(
         brokenThread.stake?.form === "wolf",
         "the stake the god chose is on the thread, as the world authored it",
         JSON.stringify(brokenThread.stake),
       );
-      // The mortal's currency goes to the other god before the boon. The mortals
-      // trade only among themselves, so with all of its currency gone the most
-      // it can have again is what the other mortal holds, which is less than it
-      // promised.
-      let spentOn: string | undefined;
-      for (let tries = 0; tries < 20 && spentOn === undefined; tries += 1) {
-        const left = await currencyOf(story, mortal);
-        const row = await postFixture(
-          story,
-          mortal,
-          {
-            kind: "worship",
-            deity: otherGod(second.god),
-            offering: { resource: "currency", amount: left },
-          },
-          `${mortal} spends its currency on ${otherGod(second.god)}`,
-        );
-        if (row.outcome === "committed") spentOn = otherGod(second.god);
-      }
       check(
-        spentOn !== undefined,
-        `${mortal} spent its currency`,
-        "never committed",
-      );
-      const afterSpend = await stateOf(story);
-      const stillHere = [...afterSpend.actors.values()]
-        .filter((actor) => actor.isDeity !== true && actor.alive)
-        .reduce(
-          (sum, actor) => sum + (actor.inventory.get("currency") ?? 0),
-          0,
-        );
-      check(
-        stillHere < holds,
-        `all the currency the mortals can ever have again (${stillHere}) is less than the ${holds} ${mortal} promised`,
-        String(stillHere),
+        brokenThread.term.kind === "make-offering" &&
+          brokenThread.term.amount === promised,
+        `${mortal} promised ${promised} ${gathered}, nearly the most the world lets it promise and more than it can hold by the deadline`,
+        JSON.stringify(brokenThread.term),
       );
       const memoriesBefore =
         (await stateOf(story)).memories.get(id(mortal)) ?? [];
@@ -347,7 +384,7 @@ export async function stepSupplication(
           .filter(([key]) => key.startsWith(`${mortal}>`))
           .map(([key, value]) => [key, JSON.stringify(value)]),
       );
-      const gods = new Set(["zeus", "hera"]);
+      const gods = new Set<string>(GODS);
       check(
         feelingsBefore.every(
           ([key, value]) =>

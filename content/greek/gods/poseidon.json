@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "id": "poseidon",
+  "name": "Poseidon",
+  "domains": ["the sea", "earthquakes", "horses"],
+  "drives": {
+    "sovereignty": 0.8,
+    "vengeance": 0.7,
+    "guardianship": 0.5,
+    "desire": 0.3
+  },
+  "abilities": [
+    {
+      "id": "earthshaker",
+      "name": "Earthshaker",
+      "action": "strike",
+      "description": "Shakes a structure. Costs divinity equal to the power; a strike at or above the ignition threshold sets a combustible target alight.",
+      "cost": {
+        "resource": "divinity",
+        "amount": 3
+      },
+      "parameters": {
+        "power": 3
+      }
+    },
+    {
+      "id": "decree-of-the-deep",
+      "name": "Decree of the Deep",
+      "action": "legend",
+      "description": "Declares a judgment of the sea, told aloud to everyone present and recorded as a legend."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "athena",
+      "kind": "rival over Athens",
+      "disposition": -0.5,
+      "note": "He lost Attica to her and flooded the Thriasian plain. The starting value is authored tuning."
+    },
+    {
+      "target": "hera",
+      "kind": "rival over Argos",
+      "disposition": -0.4,
+      "note": "The river gods gave Argos to Hera and he dried their waters. The starting value is authored tuning."
+    },
+    {
+      "target": "zeus",
+      "kind": "brother",
+      "disposition": 0.1,
+      "note": "They are two of three brothers who drew lots for their realms. The starting value is authored tuning."
+    },
+    {
+      "target": "hades",
+      "kind": "brother",
+      "disposition": 0.1,
+      "note": "They are two of three brothers who drew lots for their realms. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "iliad-15",
+      "title": "Iliad, book 15",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 15); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad15.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HesiodTheogony.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-22-poseidon",
+      "title": "Homeric Hymn 22 to Poseidon",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 22); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns3.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "apollodorus-3",
+      "title": "Library (Bibliotheca), book 3",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Frazer translation (Loeb Classical Library, 1921), as hosted by Theoi.com; locators are book.chapter.section in Frazer's numbering",
+      "url": "https://www.theoi.com/Text/Apollodorus3.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "pausanias-2",
+      "title": "Description of Greece, book 2",
+      "author": "Pausanias",
+      "edition": "English translation as hosted by Theoi.com (book 2, Corinth, including Argos); locators are book.chapter.section",
+      "url": "https://www.theoi.com/Text/Pausanias2B.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-1",
+      "title": "Odyssey, book 1",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Odyssey 1); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerOdyssey1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-1",
+      "title": "Iliad, book 1",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 1); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "pausanias-1",
+      "title": "Description of Greece, book 1",
+      "author": "Pausanias",
+      "edition": "English translation as hosted by Theoi.com (book 1, Attica); locators are book.chapter.section",
+      "url": "https://www.theoi.com/Text/Pausanias1B.html",
+      "accessed": "2026-10-02"
+    }
+  ],
+  "lore": [
+    {
+      "id": "three-brothers",
+      "statement": "Zeus, Poseidon, and Hades are brothers, sons of Cronus and Rhea. They drew lots: Poseidon got the grey sea, Hades the murky underworld, Zeus the broad sky.",
+      "cites": [
+        {
+          "source": "iliad-15",
+          "locator": "lines 187-193"
+        },
+        {
+          "source": "theogony",
+          "locator": "lines 453-458"
+        }
+      ]
+    },
+    {
+      "id": "earthshaker",
+      "statement": "He is hailed as great god, mover of the earth and the sea, who holds Helicon and wide Aegae, and the gods gave him a twofold honour: tamer of horses and saviour of ships.",
+      "cites": [
+        {
+          "source": "hymn-22-poseidon",
+          "locator": "lines 1-6"
+        }
+      ]
+    },
+    {
+      "id": "loses-athens",
+      "statement": "Poseidon came first to Attica and struck the acropolis, bringing up a sea. When the twelve gods gave the land to Athena, he flooded the Thriasian plain in anger.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        }
+      ]
+    },
+    {
+      "id": "loses-argos",
+      "statement": "The rivers Inachus, Cephisus, and Asterion judged the land between Poseidon and Hera, and gave it to Hera. Poseidon made their waters disappear.",
+      "cites": [
+        {
+          "source": "pausanias-2",
+          "locator": "2.15.5"
+        }
+      ]
+    },
+    {
+      "id": "wrath-at-odysseus",
+      "statement": "Poseidon's wrath against Odysseus, who blinded the Cyclops Polyphemus, Poseidon's son, does not relent.",
+      "cites": [
+        {
+          "source": "odyssey-1",
+          "locator": "lines 68-75"
+        }
+      ]
+    },
+    {
+      "id": "wished-to-bind-zeus",
+      "statement": "Hera, Poseidon, and Pallas Athena once wished to put Zeus in bonds.",
+      "cites": [
+        {
+          "source": "iliad-1",
+          "locator": "lines 399-400"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "how-poseidon-answers-a-loss",
+      "note": "Apollodorus has Poseidon flood Attica when he loses it to Athena. Pausanias has him dry up the Argive rivers when he loses Argos to Hera. The profile keeps both as one temper: a lost contest is answered with water.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        },
+        {
+          "source": "pausanias-2",
+          "locator": "2.15.5"
+        }
+      ]
+    },
+    {
+      "id": "contest-gifts",
+      "note": "Apollodorus gives Poseidon a sea at the acropolis; Pausanias shows him with the wave. The profile leaves his gift to the sea.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        },
+        {
+          "source": "pausanias-1",
+          "locator": "1.24.3"
+        }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "earthshaker-as-strike",
+      "statement": "His earthquake is a damaging strike on structures.",
+      "reason": "The world has no earthquake or flood action but strike; it is a game stand-in."
+    },
+    {
+      "id": "deep-as-legend",
+      "statement": "His decrees of the sea are told in play as legends.",
+      "reason": "Legend is the world's only public telling; it is a game mapping."
+    },
+    {
+      "id": "harbour-and-fisher-folk",
+      "statement": "The harbour and the fishers who revere him are placed by the game.",
+      "reason": "The sources give him the sea and its ships but no town harbour. The fishing livelihood is an invention."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting dispositions of Poseidon are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-poseidon"
+}

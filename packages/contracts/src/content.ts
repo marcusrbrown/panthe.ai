@@ -88,6 +88,20 @@ export interface Inhabitant {
   readonly deity?: boolean;
   /** Inventory this inhabitant holds at genesis. Absent means it starts with nothing. */
   readonly startingInventory?: readonly ResourceAmount[];
+  /**
+   * The god a mortal prays to first: it starts with `affinity` toward `god`, and
+   * a mortal prays to the god it feels most toward. What the god then does for it
+   * moves the feeling, so a devotion is a starting point and never a fixture.
+   * Absent means no starting feeling. Only a mortal has one; a god prays to no one.
+   */
+  readonly devotion?: Devotion;
+}
+
+/** A mortal's starting reverence for one god. */
+export interface Devotion {
+  readonly god: string;
+  /** Whole number from 1 to 10: the affinity the mortal starts with toward the god. */
+  readonly affinity: number;
 }
 
 export interface Recipe {
@@ -238,6 +252,24 @@ function parseInhabitantDrives(
   });
 }
 
+/** The largest starting affinity a devotion may state: the default `affinityLimit`. */
+const MAX_DEVOTION_AFFINITY = 10;
+
+function parseDevotion(value: unknown, path: string): ParseResult<Devotion> {
+  if (!isRecord(value)) return fail(path, "expected a devotion object");
+  const god = parseString(value.god, `${path}.god`);
+  if (!god.ok) return god;
+  const affinity = parseNonNegativeInteger(value.affinity, `${path}.affinity`);
+  if (!affinity.ok) return affinity;
+  if (affinity.value < 1 || affinity.value > MAX_DEVOTION_AFFINITY) {
+    return fail(
+      `${path}.affinity`,
+      `expected a whole number from 1 to ${MAX_DEVOTION_AFFINITY}`,
+    );
+  }
+  return ok({ god: god.value, affinity: affinity.value });
+}
+
 function parseInhabitant(
   value: unknown,
   path: string,
@@ -266,6 +298,11 @@ function parseInhabitant(
           parseResourceAmount,
         );
   if (!startingInventory.ok) return startingInventory;
+  const devotion =
+    value.devotion === undefined
+      ? ok<Devotion | undefined>(undefined)
+      : parseDevotion(value.devotion, `${path}.devotion`);
+  if (!devotion.ok) return devotion;
   return ok({
     id: id.value,
     name: name.value,
@@ -277,6 +314,7 @@ function parseInhabitant(
     ...(startingInventory.value === undefined
       ? {}
       : { startingInventory: startingInventory.value }),
+    ...(devotion.value === undefined ? {} : { devotion: devotion.value }),
   });
 }
 
@@ -618,6 +656,25 @@ function checkReferentialIntegrity(
       );
     }
     inhabitantIds.add(inhabitant.id);
+  }
+
+  const deityIds = new Set(
+    pack.inhabitants.filter((i) => i.deity === true).map((i) => i.id),
+  );
+  for (const [index, inhabitant] of pack.inhabitants.entries()) {
+    if (inhabitant.devotion === undefined) continue;
+    if (inhabitant.deity === true) {
+      return fail(
+        `inhabitants[${index}].devotion`,
+        `"${inhabitant.id}" is a god, and a god prays to no one`,
+      );
+    }
+    if (!deityIds.has(inhabitant.devotion.god)) {
+      return fail(
+        `inhabitants[${index}].devotion.god`,
+        `"${inhabitant.id}" reveres "${inhabitant.devotion.god}", who is not a god in the pack`,
+      );
+    }
   }
 
   for (const [index, building] of pack.buildings.entries()) {

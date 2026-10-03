@@ -37,7 +37,7 @@ test("the embedded Greek pack parses to the same content pack as loading content
   expect(embedded.value).toEqual(fromDisk.value);
 });
 
-test("the embedded pack carries the Zeus and Hera profiles, identical to content/greek/gods on disk", () => {
+test("the embedded pack carries the seven gods' profiles, identical to content/greek/gods on disk", () => {
   const pack = loadEmbeddedGreekWorldPack();
   if (!pack.ok) throw new Error(pack.message);
 
@@ -46,7 +46,15 @@ test("the embedded pack carries the Zeus and Hera profiles, identical to content
   if (!embedded.ok) throw new Error(`${embedded.path}: ${embedded.message}`);
   if (!fromDisk.ok) throw new Error(`${fromDisk.path}: ${fromDisk.message}`);
 
-  expect(embedded.value.map((god) => god.id).sort()).toEqual(["hera", "zeus"]);
+  expect(embedded.value.map((god) => god.id).sort()).toEqual([
+    "athena",
+    "hades",
+    "hephaestus",
+    "hera",
+    "hermes",
+    "poseidon",
+    "zeus",
+  ]);
   expect(embedded.value).toEqual(fromDisk.value);
 });
 

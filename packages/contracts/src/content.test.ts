@@ -268,6 +268,62 @@ test("a building owner referencing an unknown inhabitant fails referential integ
   }
 });
 
+/** A pack with a goddess and a mortal who reveres her, for the devotion tests. */
+function packWithDevotion(devotion: unknown): Record<string, unknown> {
+  const pack = validPack();
+  const inhabitants = pack.inhabitants as Record<string, unknown>[];
+  inhabitants.push({
+    id: "athena",
+    name: "Athena",
+    locationId: "agora",
+    deity: true,
+  });
+  inhabitants[0] = { ...inhabitants[0], devotion };
+  return pack;
+}
+
+test("an inhabitant may revere one god: the god it prays to first, with the starting affinity that routes its prayers there", () => {
+  const result = parseContentPack(
+    packWithDevotion({ god: "athena", affinity: 3 }),
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.inhabitants[0]).toMatchObject({
+      devotion: { god: "athena", affinity: 3 },
+    });
+  }
+  expect(parseContentPack(validPack()).ok).toBe(true);
+});
+
+test("a devotion must name a deity in the pack, and an affinity that is a whole number from 1 to 10", () => {
+  for (const [devotion, path] of [
+    [{ god: "poseidon", affinity: 3 }, "inhabitants[0].devotion.god"],
+    // A mortal is not a god to revere.
+    [{ god: "npc-1", affinity: 3 }, "inhabitants[0].devotion.god"],
+    [{ god: "athena", affinity: 0 }, "inhabitants[0].devotion.affinity"],
+    [{ god: "athena", affinity: 11 }, "inhabitants[0].devotion.affinity"],
+    [{ god: "athena", affinity: 2.5 }, "inhabitants[0].devotion.affinity"],
+    [{ god: "athena", affinity: "high" }, "inhabitants[0].devotion.affinity"],
+    [{ god: "athena" }, "inhabitants[0].devotion.affinity"],
+    [{ affinity: 3 }, "inhabitants[0].devotion.god"],
+    ["athena", "inhabitants[0].devotion"],
+  ] as const) {
+    const result = parseContentPack(packWithDevotion(devotion));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.path).toBe(path);
+  }
+  // A god revering a god is not a thing: only a mortal prays.
+  const pack = packWithDevotion({ god: "athena", affinity: 3 });
+  const inhabitants = pack.inhabitants as Record<string, unknown>[];
+  inhabitants[1] = {
+    ...inhabitants[1],
+    devotion: { god: "athena", affinity: 3 },
+  };
+  const godly = parseContentPack(pack);
+  expect(godly.ok).toBe(false);
+  if (!godly.ok) expect(godly.path).toBe("inhabitants[1].devotion");
+});
+
 test("a valid recipe converting inputs to outputs parses", () => {
   const pack = validPack();
   pack.recipes = {

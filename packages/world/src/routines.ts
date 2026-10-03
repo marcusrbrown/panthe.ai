@@ -175,6 +175,9 @@ export function surplusWant(
     actorId,
     actor,
     (candidate) =>
+      // Someone who gathers the same thing has no use for more of it: two
+      // gatherers of one good would pass it back and forth and never gather.
+      candidate.gathers !== resource &&
       getResourceAmount(candidate.inventory, "currency") >= askPrice &&
       evaluateTradeAcceptance(
         state.rules,
@@ -279,6 +282,14 @@ export function decideRoutineProposal(
   // planks): symmetric to selling a gathered surplus, but keyed by what a
   // recipe actually put in this actor's hands rather than what it gathers.
   for (const recipe of Object.values(state.recipes)) {
+    // Only someone who works the recipe's inputs sells what it makes; a buyer
+    // who merely holds the output keeps it, or two traders would pass it back
+    // and forth forever.
+    const works = recipe.inputs.some(
+      (input) =>
+        input.resource === actor.gathers || input.resource === actor.wants,
+    );
+    if (!works) continue;
     for (const output of recipe.outputs) {
       const held = getResourceAmount(actor.inventory, output.resource);
       if (held < 1) continue;

@@ -28,6 +28,7 @@ import {
   actorAt,
   godProfile,
   greekState,
+  withOnlyZeusAndHera,
   withoutFireSpread,
 } from "./test-fixtures";
 
@@ -35,7 +36,7 @@ const id = toEntityId;
 
 /** The authored Greek world, with a way to stage causes and to commit real practice moves. */
 class Run {
-  state: WorldState = withoutFireSpread(greekState());
+  state: WorldState = withOnlyZeusAndHera(withoutFireSpread(greekState()));
   readonly events: WorldEvent[] = [];
   private n = 0;
   apply(overrides: Record<string, unknown>): WorldEvent {

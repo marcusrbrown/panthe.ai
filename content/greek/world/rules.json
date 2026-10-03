@@ -1,15 +1,92 @@
 {
   "resources": [
-    { "resource": "currency", "amount": 0 },
-    { "resource": "food", "amount": 0 },
-    { "resource": "wood", "amount": 0 },
-    { "resource": "wine", "amount": 0 },
-    { "resource": "planks", "amount": 0 }
+    {
+      "resource": "currency",
+      "amount": 0
+    },
+    {
+      "resource": "food",
+      "amount": 0
+    },
+    {
+      "resource": "wood",
+      "amount": 0
+    },
+    {
+      "resource": "wine",
+      "amount": 0
+    },
+    {
+      "resource": "planks",
+      "amount": 0
+    },
+    {
+      "resource": "fish",
+      "amount": 0
+    },
+    {
+      "resource": "olives",
+      "amount": 0
+    },
+    {
+      "resource": "wool",
+      "amount": 0
+    },
+    {
+      "resource": "cloth",
+      "amount": 0
+    },
+    {
+      "resource": "ore",
+      "amount": 0
+    },
+    {
+      "resource": "tools",
+      "amount": 0
+    }
   ],
   "recipes": {
     "planks": {
-      "inputs": [{ "resource": "wood", "amount": 2 }],
-      "outputs": [{ "resource": "planks", "amount": 1 }]
+      "inputs": [
+        {
+          "resource": "wood",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "planks",
+          "amount": 1
+        }
+      ]
+    },
+    "cloth": {
+      "inputs": [
+        {
+          "resource": "wool",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "cloth",
+          "amount": 1
+        }
+      ]
+    },
+    "tools": {
+      "inputs": [
+        {
+          "resource": "ore",
+          "amount": 2
+        }
+      ],
+      "outputs": [
+        {
+          "resource": "tools",
+          "amount": 1
+        }
+      ]
     }
   },
   "rules": {
@@ -38,7 +115,14 @@
       "worshipCapacityGain": 1,
       "favorDurationTicks": 10,
       "favorGatherBonus": 1,
-      "incomePerTick": 1
+      "incomePerTick": 1,
+      "value_fish": 2,
+      "value_olives": 2,
+      "value_wool": 1,
+      "value_cloth": 3,
+      "value_ore": 1,
+      "value_tools": 3,
+      "value_wine": 2
     },
     "memoryBalance": {
       "capacity": 24,

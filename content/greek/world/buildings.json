@@ -7,7 +7,12 @@
       "material": "stone",
       "combustible": false,
       "services": ["trade"],
-      "inventory": [{ "resource": "food", "amount": 5 }],
+      "inventory": [
+        {
+          "resource": "food",
+          "amount": 5
+        }
+      ],
       "owner": "farmer"
     },
     {
@@ -17,7 +22,12 @@
       "material": "wood",
       "combustible": true,
       "services": ["drink"],
-      "inventory": [{ "resource": "wine", "amount": 4 }],
+      "inventory": [
+        {
+          "resource": "wine",
+          "amount": 4
+        }
+      ],
       "owner": "farmer"
     },
     {
@@ -36,8 +46,73 @@
       "material": "wood",
       "combustible": true,
       "services": [],
-      "inventory": [{ "resource": "wood", "amount": 4 }],
+      "inventory": [
+        {
+          "resource": "wood",
+          "amount": 4
+        }
+      ],
       "owner": "woodcutter"
+    },
+    {
+      "id": "fish-landing",
+      "locationId": "ferry-dock",
+      "name": "The Fish Landing",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "fish",
+          "amount": 4
+        }
+      ],
+      "owner": "ferryman"
+    },
+    {
+      "id": "olive-press",
+      "locationId": "ancient-olive-tree",
+      "name": "The Olive Press",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "olives",
+          "amount": 4
+        }
+      ],
+      "owner": "olive-grower-aristo"
+    },
+    {
+      "id": "loom-house",
+      "locationId": "ancient-olive-tree",
+      "name": "The Loom House",
+      "material": "wood",
+      "combustible": true,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ],
+      "owner": "weaver-ismene"
+    },
+    {
+      "id": "the-forge",
+      "locationId": "forge",
+      "name": "The Forge",
+      "material": "stone",
+      "combustible": false,
+      "services": [],
+      "inventory": [
+        {
+          "resource": "tools",
+          "amount": 2
+        }
+      ],
+      "owner": "smith-ktesias"
     }
   ]
 }

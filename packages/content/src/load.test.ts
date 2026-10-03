@@ -172,6 +172,7 @@ test("the authored Greek world content loads with the expected geography and rul
       "ancient-olive-tree",
       "asphodel-meadow",
       "ferry-dock",
+      "forge",
       "great-hall",
       "inn",
       "judgment-hall",
@@ -221,10 +222,14 @@ test("the authored Greek world content loads with the expected geography and rul
     priceCeiling: 100,
   });
 
-  // The authored economy: a woodcutter, a farmer, and a deity, plus the
-  // buildings the farmer owns.
-  const inhabitantIds = pack.inhabitants.map((i) => i.id).sort();
-  expect(inhabitantIds).toEqual(["farmer", "hera", "woodcutter", "zeus"]);
+  // The authored town: the woodcutter and the farmer it began with, eighteen
+  // more mortals who live by the harbour, the grove, the forge, and the square,
+  // and seven gods (greek-cast.test.ts reads the cast closely).
+  const inhabitantIds = pack.inhabitants.map((i) => i.id);
+  expect(inhabitantIds).toHaveLength(27);
+  for (const id of ["farmer", "woodcutter", "zeus", "hera"]) {
+    expect(inhabitantIds).toContain(id);
+  }
 
   for (const id of ["zeus", "hera"]) {
     const god = pack.inhabitants.find((i) => i.id === id);
@@ -235,7 +240,11 @@ test("the authored Greek world content loads with the expected geography and rul
   const buildingIds = pack.buildings.map((b) => b.id).sort();
   expect(buildingIds).toEqual([
     "agora-shop",
+    "fish-landing",
+    "loom-house",
     "old-oak",
+    "olive-press",
+    "the-forge",
     "the-tavern",
     "woodshed",
   ]);
@@ -259,7 +268,7 @@ test("the authored Greek world content loads with the expected geography and rul
   });
 });
 
-test("the Greek pack parses with the Zeus and Hera profiles", () => {
+test("the Greek pack parses with the seven gods' profiles", () => {
   const packResult = loadContentPack(GREEK_WORLD_DIR);
   if (!packResult.ok) {
     throw new Error(`${packResult.path}: ${packResult.message}`);
@@ -269,7 +278,15 @@ test("the Greek pack parses with the Zeus and Hera profiles", () => {
     throw new Error(`${result.path}: ${result.message}`);
   }
   const gods = result.value;
-  expect(gods.map((god) => god.id).sort()).toEqual(["hera", "zeus"]);
+  expect(gods.map((god) => god.id).sort()).toEqual([
+    "athena",
+    "hades",
+    "hephaestus",
+    "hera",
+    "hermes",
+    "poseidon",
+    "zeus",
+  ]);
 
   for (const god of gods) {
     expect(god.lore.length).toBeGreaterThan(0);

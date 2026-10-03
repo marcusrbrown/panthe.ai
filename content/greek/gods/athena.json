@@ -1,0 +1,277 @@
+{
+  "schemaVersion": 1,
+  "id": "athena",
+  "name": "Athena",
+  "domains": [
+    "wisdom",
+    "counsel",
+    "war",
+    "the protection of cities",
+    "weaving"
+  ],
+  "drives": {
+    "guardianship": 0.8,
+    "order": 0.7,
+    "sovereignty": 0.5,
+    "vengeance": 0.3
+  },
+  "abilities": [
+    {
+      "id": "aegis-wrath",
+      "name": "Wrath of Pallas",
+      "action": "strike",
+      "description": "Lashes out at a structure. Costs divinity equal to the power; at power 2 it damages a target without setting it alight.",
+      "cost": {
+        "resource": "divinity",
+        "amount": 2
+      },
+      "parameters": {
+        "power": 2
+      }
+    },
+    {
+      "id": "counsel",
+      "name": "Counsel",
+      "action": "legend",
+      "description": "Gives counsel or a judgment, told aloud to everyone present and recorded as a legend."
+    },
+    {
+      "id": "olive-gift",
+      "name": "Gift of the Olive",
+      "action": "bless",
+      "description": "Answers a mortal's prayer for help with what it needs."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "poseidon",
+      "kind": "rival over Athens",
+      "disposition": -0.5,
+      "note": "They contested Attica and the twelve gods gave it to her. The starting value is authored tuning."
+    },
+    {
+      "target": "hera",
+      "kind": "ally",
+      "disposition": 0.4,
+      "note": "Hera sends her to check Achilles, and they once wished with Poseidon to bind Zeus. The starting value is authored tuning."
+    },
+    {
+      "target": "zeus",
+      "kind": "father",
+      "disposition": 0.3,
+      "note": "He brought her forth from his head and bars the gods from the war; she obeys and still advises. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HesiodTheogony.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-28-athena",
+      "title": "Homeric Hymn 28 to Athena",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 28); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns3.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-1",
+      "title": "Iliad, book 1",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 1); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "apollodorus-3",
+      "title": "Library (Bibliotheca), book 3",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Frazer translation (Loeb Classical Library, 1921), as hosted by Theoi.com; locators are book.chapter.section in Frazer's numbering",
+      "url": "https://www.theoi.com/Text/Apollodorus3.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "pausanias-1",
+      "title": "Description of Greece, book 1",
+      "author": "Pausanias",
+      "edition": "English translation as hosted by Theoi.com (book 1, Attica); locators are book.chapter.section",
+      "url": "https://www.theoi.com/Text/Pausanias1B.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-8",
+      "title": "Iliad, book 8",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 8); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad8.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-5",
+      "title": "Iliad, book 5",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 5); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad5.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-20-hephaestus",
+      "title": "Homeric Hymn 20 to Hephaestus",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 20); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns3.html",
+      "accessed": "2026-10-02"
+    }
+  ],
+  "lore": [
+    {
+      "id": "born-of-zeus",
+      "statement": "Zeus brings Athena forth himself, from his own head: bright-eyed Tritogeneia.",
+      "cites": [
+        {
+          "source": "theogony",
+          "locator": "lines 924-926"
+        }
+      ]
+    },
+    {
+      "id": "saviour-of-cities",
+      "statement": "She is hailed as Pallas Athena, bright-eyed, inventive, unbending of heart, a pure virgin and saviour of cities.",
+      "cites": [
+        {
+          "source": "hymn-28-athena",
+          "locator": "lines 1-3"
+        }
+      ]
+    },
+    {
+      "id": "restrains-achilles",
+      "statement": "Sent from heaven by Hera, Athena takes Achilles by his fair hair and checks him from drawing his sword on Agamemnon, bidding him use words instead.",
+      "cites": [
+        {
+          "source": "iliad-1",
+          "locator": "lines 194-222"
+        }
+      ]
+    },
+    {
+      "id": "athens-contest",
+      "statement": "Poseidon and Athena contested Attica: he struck the acropolis and brought up a sea, she planted an olive with Cecrops as witness, and the twelve gods awarded the land to her.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        }
+      ]
+    },
+    {
+      "id": "olive-and-wave",
+      "statement": "At Athens she is shown with the olive plant and Poseidon with the wave, and the contest fills the rear pediment of her temple.",
+      "cites": [
+        {
+          "source": "pausanias-1",
+          "locator": "1.24.3"
+        },
+        {
+          "source": "pausanias-1",
+          "locator": "1.24.5"
+        }
+      ]
+    },
+    {
+      "id": "wished-to-bind-zeus",
+      "statement": "Hera, Poseidon, and Pallas Athena once wished to put Zeus in bonds.",
+      "cites": [
+        {
+          "source": "iliad-1",
+          "locator": "lines 399-400"
+        }
+      ]
+    },
+    {
+      "id": "barred-from-war",
+      "statement": "Zeus forbids the gods to join the fighting at Troy. Athena says they will keep out of the fight, though they may advise the Argives.",
+      "cites": [
+        {
+          "source": "iliad-8",
+          "locator": "lines 1-37"
+        }
+      ]
+    },
+    {
+      "id": "weaver-of-her-robe",
+      "statement": "Athena wears a soft embroidered robe that she herself wrought, and she and Hephaestus teach crafts to men.",
+      "cites": [
+        {
+          "source": "iliad-5",
+          "locator": "lines 733-735"
+        },
+        {
+          "source": "hymn-20-hephaestus",
+          "locator": "lines 1-4"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "contest-gifts",
+      "note": "Apollodorus gives Poseidon a sea at the acropolis and Athena an olive; Pausanias shows the olive and the wave. Both give Athena the olive, and the profile keeps only that.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        },
+        {
+          "source": "pausanias-1",
+          "locator": "1.24.3"
+        }
+      ]
+    },
+    {
+      "id": "who-judged-the-contest",
+      "note": "Apollodorus has the twelve gods judge the contest and rejects the tellings that name Cecrops and Cranaus, or Erysichthon, as the judges. The profile keeps the twelve gods.",
+      "cites": [
+        {
+          "source": "apollodorus-3",
+          "locator": "3.14.1"
+        }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "counsel-as-legend",
+      "statement": "Athena's counsel is told in play as a legend.",
+      "reason": "Legend is the world's only action that records speech; it is a game mapping, not a mythic device."
+    },
+    {
+      "id": "aegis-as-strike",
+      "statement": "Her wrath is a damaging strike on structures, below the ignition threshold.",
+      "reason": "The world has no action that harms a person. This mapping is a game stand-in."
+    },
+    {
+      "id": "olive-gift-as-bless",
+      "statement": "Her gift to a mortal who prays is the world's bless action.",
+      "reason": "The world's one way to help a mortal is to bless it; the sources give her gift as the olive, which the game does not model."
+    },
+    {
+      "id": "olive-and-weaving-folk",
+      "statement": "The olive growers and weavers who revere her, and the grove they work by the ancient olive tree, are placed by the game.",
+      "reason": "The sources link her to the olive and to weaving but give no town of growers. The livelihoods are an invention."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting dispositions of Athena are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-athena"
+}

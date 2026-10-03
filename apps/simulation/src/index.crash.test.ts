@@ -136,7 +136,9 @@ test("kill during a startup catch-up chunk: restart resumes from the last commit
             reject(
               new Error("timed out waiting for startup catch-up to complete"),
             ),
-          10_000,
+          // A full hour of the whole town (twenty routine mortals, each traced) takes
+          // several times longer to apply than two did.
+          60_000,
         ),
       ),
     ]);
@@ -179,4 +181,4 @@ test("kill during a startup catch-up chunk: restart resumes from the last commit
   } finally {
     rmSync(appDataDir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 90_000);

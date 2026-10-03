@@ -21,7 +21,11 @@ import { check } from "./support";
 export function collectInput(story: Story): RealInput {
   const path = activeStorePath(story.dataDir);
   return {
-    requests: readRealRequests(path),
+    // The story scripts Zeus and Hera. The other five gods take turns too, and wait: the
+    // properties judge the gods who had something to do, and the seven-god run judges all of them.
+    requests: readRealRequests(path).filter(
+      (request) => request.role === "zeus" || request.role === "hera",
+    ),
     proposals: readProposals(path)
       .filter((entry) => entry.source === "model")
       .map((entry) => ({

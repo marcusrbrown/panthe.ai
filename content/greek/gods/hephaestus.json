@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "id": "hephaestus",
+  "name": "Hephaestus",
+  "domains": ["fire", "the forge", "craft"],
+  "drives": {
+    "order": 0.7,
+    "guardianship": 0.5,
+    "vengeance": 0.4,
+    "sovereignty": 0.3
+  },
+  "abilities": [
+    {
+      "id": "forge-fire",
+      "name": "Fire of the Forge",
+      "action": "strike",
+      "description": "Hurls fire at a structure. Costs divinity equal to the power; a strike at or above the ignition threshold sets a combustible target alight.",
+      "cost": {
+        "resource": "divinity",
+        "amount": 3
+      },
+      "parameters": {
+        "power": 3
+      }
+    },
+    {
+      "id": "craftsman-tale",
+      "name": "Craftsman's Tale",
+      "action": "legend",
+      "description": "Tells of a made thing or a debt of craft, told aloud to everyone present and recorded as a legend."
+    },
+    {
+      "id": "craft-gift",
+      "name": "Gift of Craft",
+      "action": "bless",
+      "description": "Answers a mortal's prayer for help with what it needs."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "hera",
+      "kind": "mother",
+      "disposition": 0.1,
+      "note": "In one telling she bore him alone and cast him out; in another Thetis took him in. The starting value is authored tuning."
+    },
+    {
+      "target": "zeus",
+      "kind": "father, who cast him down",
+      "disposition": -0.2,
+      "note": "In the Iliad Zeus hurled him from the threshold of heaven after he took Hera's part. The starting value is authored tuning."
+    },
+    {
+      "target": "athena",
+      "kind": "craft partner",
+      "disposition": 0.4,
+      "note": "They teach crafts to men together. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "iliad-18",
+      "title": "Iliad, book 18",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 18); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad18.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-20-hephaestus",
+      "title": "Homeric Hymn 20 to Hephaestus",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 20); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns3.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-1",
+      "title": "Iliad, book 1",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 1); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HesiodTheogony.html",
+      "accessed": "2026-10-02"
+    }
+  ],
+  "lore": [
+    {
+      "id": "armourer",
+      "statement": "At Thetis's asking Hephaestus forges Achilles' armour and shield in his house.",
+      "cites": [
+        {
+          "source": "iliad-18",
+          "locator": "lines 368-617"
+        }
+      ]
+    },
+    {
+      "id": "teaches-crafts",
+      "statement": "With bright-eyed Athena he taught glorious crafts to men on earth, who once lived in caves.",
+      "cites": [
+        {
+          "source": "hymn-20-hephaestus",
+          "locator": "lines 1-6"
+        }
+      ]
+    },
+    {
+      "id": "cast-down-by-zeus",
+      "statement": "Hephaestus says Zeus caught him by the foot and hurled him from the threshold of heaven after he took Hera's side; he fell all day and landed on Lemnos.",
+      "cites": [
+        {
+          "source": "iliad-1",
+          "locator": "lines 586-594"
+        }
+      ]
+    },
+    {
+      "id": "cast-out-by-his-mother",
+      "statement": "Hephaestus says his mother wished to hide him for his lameness and threw him out, and Thetis and Eurynome took him in.",
+      "cites": [
+        {
+          "source": "iliad-18",
+          "locator": "lines 394-409"
+        }
+      ]
+    },
+    {
+      "id": "hera-bore-him-alone",
+      "statement": "Hera bore Hephaestus without union with Zeus, in anger at Zeus's bearing Athena.",
+      "cites": [
+        {
+          "source": "theogony",
+          "locator": "lines 924-929"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "who-cast-him-out",
+      "note": "In Iliad 1 Zeus hurls Hephaestus from heaven for helping Hera. In Iliad 18 his mother throws him out for his lameness. The profile keeps both and leaves unsaid whether they are one fall.",
+      "cites": [
+        {
+          "source": "iliad-1",
+          "locator": "lines 586-594"
+        },
+        {
+          "source": "iliad-18",
+          "locator": "lines 394-409"
+        }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "fire-as-strike",
+      "statement": "His fire is a damaging strike on structures.",
+      "reason": "The world has no craft or fire action but strike; it is the one place his fire can show. A game stand-in."
+    },
+    {
+      "id": "craft-as-legend",
+      "statement": "His tales of made things are told in play as legends.",
+      "reason": "Legend is the world's only public telling; it is a game mapping."
+    },
+    {
+      "id": "craft-gift-as-bless",
+      "statement": "His gifts to those who pray are the world's bless action.",
+      "reason": "The world's one way to help a mortal is to bless it."
+    },
+    {
+      "id": "forge-and-smiths",
+      "statement": "The forge by the town square and the smiths who revere him are placed by the game.",
+      "reason": "The sources give him a forge on Olympus and at Lemnos but no town smithy. The forge and its smiths are an invention."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting dispositions of Hephaestus are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-hephaestus"
+}

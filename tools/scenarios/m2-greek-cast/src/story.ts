@@ -63,7 +63,19 @@ export async function runStory(
       endpoints: [
         { id: "scripted", baseUrl: provider.baseUrl, model: "scripted" },
       ],
-      roles: { zeus: { endpoint: "scripted" }, hera: { endpoint: "scripted" } },
+      // Every god in the pack needs a route of its own. The provider scripts Zeus
+      // and Hera and answers the other five with a wait.
+      roles: Object.fromEntries(
+        [
+          "athena",
+          "hades",
+          "hephaestus",
+          "hera",
+          "hermes",
+          "poseidon",
+          "zeus",
+        ].map((god) => [god, { endpoint: "scripted" }]),
+      ),
     },
     offline: false,
     keys: {},

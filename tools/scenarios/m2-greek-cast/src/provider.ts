@@ -5,7 +5,17 @@
 // the god was shown), holds a reply until told to release it, and records every
 // request with when it arrived, so the run can say what was asked and when.
 
-export type God = "zeus" | "hera";
+/** The gods the provider can tell apart by their prompt, and so script. The story scripts Zeus and Hera; the other five wait unless a step queues a reply for one. */
+export const GODS = [
+  "athena",
+  "hades",
+  "hephaestus",
+  "hera",
+  "hermes",
+  "poseidon",
+  "zeus",
+] as const;
+export type God = (typeof GODS)[number];
 
 export interface SeenRequest {
   /** Position in arrival order. */
@@ -45,9 +55,11 @@ export interface ScriptedProvider {
 export const WAIT = '{"action":"wait"}';
 
 function godOf(prompt: string): God | "unknown" {
-  if (prompt.includes("You are Zeus")) return "zeus";
-  if (prompt.includes("You are Hera")) return "hera";
-  return "unknown";
+  return (
+    GODS.find((god) =>
+      prompt.includes(`You are ${god.charAt(0).toUpperCase()}${god.slice(1)},`),
+    ) ?? "unknown"
+  );
 }
 
 interface ChatBody {

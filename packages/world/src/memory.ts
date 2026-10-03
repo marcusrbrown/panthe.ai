@@ -38,7 +38,11 @@ import type {
   WorldEvent,
   WorldRules,
 } from "@panthea/contracts";
-import { eventSubjects, UNPLACED_EVENT_KINDS } from "@panthea/contracts";
+import {
+  DEFAULT_AFFINITY_LIMIT,
+  eventSubjects,
+  UNPLACED_EVENT_KINDS,
+} from "@panthea/contracts";
 import { perceivesEvent } from "./perception";
 import {
   type MemoryEntry,
@@ -76,7 +80,7 @@ export const DEFAULT_MEMORY_BALANCE: Readonly<Record<string, number>> = {
   /** What a belief moves affinity by, as a share of what witnessing it would. */
   toldShare: 0.5,
   /** Affinity never goes beyond plus or minus this. */
-  affinityLimit: 10,
+  affinityLimit: DEFAULT_AFFINITY_LIMIT,
   /** A grudge never goes beyond this. */
   grudgeLimit: 10,
 };

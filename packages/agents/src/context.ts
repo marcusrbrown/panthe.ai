@@ -28,6 +28,7 @@ import {
   getActor,
   getMemories,
   hasCapability,
+  isThreadOpen,
   type MemoryEntry,
   nextHop,
   openPetitionsFor,
@@ -46,6 +47,7 @@ import {
   describePracticeInstructions,
   isEndingKind,
   NO_PRACTICE,
+  PRAYERS_BUDGET_CHARS,
   type PracticeIntent,
   type PracticeOffer,
   type PracticeOptions,
@@ -223,8 +225,14 @@ export interface Remembered {
   readonly goal: ActiveGoal | undefined;
   /** What the god itself remembers or did involving the goal's target since it set the goal, oldest first, at most `MAX_GOAL_HISTORY`. */
   readonly goalHistory: readonly GoalHistoryEntry[];
-  /** Every open petition addressed to this god, oldest first (R7: none is hidden). */
+  /**
+   * The open petitions addressed to this god that its prompt shows, in the order it shows them: those a
+   * live practice names first, then the newest, as many as `PRAYERS_BUDGET_CHARS` holds. The world keeps
+   * the rest (none is lost); the schema and the parser name only these.
+   */
   readonly petitions: readonly PetitionView[];
+  /** How many open petitions the budget left out of `petitions`. */
+  readonly morePrayers: number;
   /** Ticks a goal stays locked, when goals are gated; absent when they are not. */
   readonly goalLockTicks: number | undefined;
   /** Divinity a bless costs. */
@@ -473,25 +481,42 @@ export function rememberedBy(
     .sort((a, b) => strength(b) - strength(a) || (a.toward < b.toward ? -1 : 1))
     .slice(0, MAX_FEELINGS);
   const self = getActor(state, actorId);
-  const petitions = self?.isDeity
-    ? openPetitionsFor(state, actorId).map((petition) =>
-        petitionView(state, self, petition),
-      )
-    : [];
   // Only the god's own refusal is told to it: another's is never read into its prompt.
   const refused =
     practiceRefusal === undefined || practiceRefusal.entityId !== actorId
       ? undefined
       : refusalView(practiceRefusal);
-  const { threads, options } = practiceBy(
+  const open = self?.isDeity ? openPetitionsFor(state, actorId) : [];
+  const views = open.map((petition) =>
+    petitionView(state, self as ActorState, petition),
+  );
+  // Sizing needs each prayer's choices, which the world's terms decide: ask with every prayer first.
+  const everything = practiceBy(
     state,
     actorId,
     memories,
-    petitions.map((petition) => petition.petitioner),
+    views.map((petition) => petition.petitioner),
     refused,
   );
-  // The terms the world would take on each prayer ride with it, so the prayer can show the god its choices.
-  const prayers = petitions.map((petition) =>
+  const withOffers = views.map((petition) =>
+    everything.options.offerTerms[petition.id] === undefined
+      ? petition
+      : { ...petition, offer: everything.options.offerTerms[petition.id] },
+  );
+  const { shown, more } = choosePrayers(state, actorId, open, withOffers);
+  // When some prayers are left out, ask again with only the shown ones, so what may be offered, named as a party, or opened with is what the god can see.
+  const { threads, options } =
+    more === 0
+      ? everything
+      : practiceBy(
+          state,
+          actorId,
+          memories,
+          shown.map((petition) => petition.petitioner),
+          refused,
+          new Set(shown.map((petition) => petition.id)),
+        );
+  const prayers = shown.map((petition) =>
     options.offerTerms[petition.id] === undefined
       ? petition
       : { ...petition, offer: options.offerTerms[petition.id] },
@@ -509,6 +534,7 @@ export function rememberedBy(
     goal,
     goalHistory: goalHistory.slice(-MAX_GOAL_HISTORY),
     petitions: prayers,
+    morePrayers: more,
     goalLockTicks: lock,
     blessCost: petitionBalanceOf(state.rules, "blessDivinityCost"),
     refusal:
@@ -538,6 +564,7 @@ export const NOTHING_REMEMBERED: Remembered = {
   goal: undefined,
   goalHistory: [],
   petitions: [],
+  morePrayers: 0,
   goalLockTicks: undefined,
   blessCost: 0,
   refusal: undefined,
@@ -1380,33 +1407,94 @@ function answerGuidance(petition: PetitionView): string[] {
 /** The heading of the prayers section: the one place the divine sense delivers petitions, found by it (with the indented and dashed lines under it) wherever a prompt is checked for another god's prayers. */
 export const PRAYERS_HEADING = "Prayers to you:";
 
-/** The prayers addressed to the god: who asked, for what, about what, and where each place is from here. */
+/** The lines one prayer takes in the prompt: who asked, for what, about what, where each place is from here, and the ways to answer. */
+function describePrayer(petition: PetitionView): string[] {
+  const request = petition.request;
+  const ask =
+    request.kind === "punish"
+      ? `asks you to punish ${request.offender}, who owns ${request.buildings.join(", ")}`
+      : request.need.kind === "building"
+        ? `asks for help with ${request.need.building}`
+        : `asks for help with ${request.need.resource}`;
+  const lines = [
+    `- [${petition.id}] ${petition.petitioner} ${ask} (${petition.cause}).`,
+  ];
+  for (const { who, place } of petition.whereabouts) {
+    lines.push(
+      `  ${who.join(", ")} at ${place.name} [${place.id}]${
+        place.here
+          ? " (here)"
+          : place.hop === undefined
+            ? ": no way there"
+            : `: take ${place.hop.name} [${place.hop.id}] toward ${place.name} (action "${place.hop.action}", to "${place.hop.id}")`
+      }.`,
+    );
+  }
+  lines.push(...answerGuidance(petition));
+  return lines;
+}
+
+/** The one line that stands for the prayers the budget left out. */
+const morePrayersLine = (count: number) =>
+  `- and ${count} more prayers to you.`;
+
+/**
+ * Which prayers the prompt shows. Prayers a live practice names (an open offer, or an accepted term
+ * that names the prayer) come first and are never cut. After them the newest: a prayer just made is
+ * one whose petitioner is still in the need it prayed about, and the oldest open ones are those
+ * most likely to have been met by other means or to lapse unanswered; it is also the order the
+ * opening that offers terms picks in. Each is kept while the section (heading and the closing line
+ * included) stays within `PRAYERS_BUDGET_CHARS`; the first that does not fit ends the list, so
+ * nothing older than a hidden prayer is shown. At least one prayer is always shown.
+ */
+function choosePrayers(
+  state: WorldState,
+  actorId: EntityId,
+  open: readonly Petition[],
+  views: readonly PetitionView[],
+): { shown: PetitionView[]; more: number } {
+  const live = new Set<EventId>();
+  for (const thread of state.threads.values()) {
+    if (
+      thread.petition !== undefined &&
+      isThreadOpen(thread) &&
+      (thread.demander === actorId || thread.obligated === actorId)
+    ) {
+      live.add(thread.petition);
+    }
+  }
+  const sequence = new Map(open.map((p) => [p.id, p.sequence]));
+  const newest = (a: PetitionView, b: PetitionView) =>
+    (sequence.get(b.id) ?? 0) - (sequence.get(a.id) ?? 0) ||
+    (a.id < b.id ? -1 : 1);
+  const ordered = [
+    ...views.filter((view) => live.has(view.id)).sort(newest),
+    ...views.filter((view) => !live.has(view.id)).sort(newest),
+  ];
+  const size = (view: PetitionView) =>
+    describePrayer(view).reduce((sum, line) => sum + line.length + 1, 0);
+  let used = PRAYERS_HEADING.length + 1;
+  const reserve = morePrayersLine(ordered.length).length + 1;
+  const shown: PetitionView[] = [];
+  for (const view of ordered) {
+    const cost = size(view);
+    const must = live.has(view.id) || shown.length === 0;
+    if (!must && used + cost + reserve > PRAYERS_BUDGET_CHARS) break;
+    shown.push(view);
+    used += cost;
+  }
+  return { shown, more: ordered.length - shown.length };
+}
+
+/** The prayers addressed to the god that its prompt shows, and a line for those it does not. */
 function describePetitions(remembered: Remembered): string[] {
   if (remembered.petitions.length === 0) return [];
   const lines = [PRAYERS_HEADING];
   for (const petition of remembered.petitions) {
-    const request = petition.request;
-    const ask =
-      request.kind === "punish"
-        ? `asks you to punish ${request.offender}, who owns ${request.buildings.join(", ")}`
-        : request.need.kind === "building"
-          ? `asks for help with ${request.need.building}`
-          : `asks for help with ${request.need.resource}`;
-    lines.push(
-      `- [${petition.id}] ${petition.petitioner} ${ask} (${petition.cause}).`,
-    );
-    for (const { who, place } of petition.whereabouts) {
-      lines.push(
-        `  ${who.join(", ")} at ${place.name} [${place.id}]${
-          place.here
-            ? " (here)"
-            : place.hop === undefined
-              ? ": no way there"
-              : `: take ${place.hop.name} [${place.hop.id}] toward ${place.name} (action "${place.hop.action}", to "${place.hop.id}")`
-        }.`,
-      );
-    }
-    lines.push(...answerGuidance(petition));
+    lines.push(...describePrayer(petition));
+  }
+  if (remembered.morePrayers > 0) {
+    lines.push(morePrayersLine(remembered.morePrayers));
   }
   return lines;
 }

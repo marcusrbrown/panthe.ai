@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "id": "hades",
+  "name": "Hades",
+  "domains": ["the dead", "the underworld", "wealth beneath the earth"],
+  "drives": {
+    "sovereignty": 0.8,
+    "order": 0.8,
+    "guardianship": 0.5,
+    "vengeance": 0.3
+  },
+  "abilities": [
+    {
+      "id": "decree-of-the-dead",
+      "name": "Decree of the Dead",
+      "action": "legend",
+      "description": "Declares what is owed to the dead and their realm, told aloud to everyone present and recorded as a legend."
+    }
+  ],
+  "relationships": [
+    {
+      "target": "zeus",
+      "kind": "brother",
+      "disposition": 0.2,
+      "note": "They are two of three brothers who drew lots for their realms, and Zeus gave him Persephone. The starting value is authored tuning."
+    },
+    {
+      "target": "poseidon",
+      "kind": "brother",
+      "disposition": 0.1,
+      "note": "They are two of three brothers who drew lots for their realms. The starting value is authored tuning."
+    }
+  ],
+  "sources": [
+    {
+      "id": "iliad-15",
+      "title": "Iliad, book 15",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 15); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad15.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "theogony",
+      "title": "Theogony",
+      "author": "Hesiod",
+      "translator": "Hugh G. Evelyn-White",
+      "edition": "Greek text and Evelyn-White translation (Loeb Classical Library, 1914), as hosted by Theoi.com; locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HesiodTheogony.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "hymn-2-demeter",
+      "title": "Homeric Hymn 2 to Demeter",
+      "author": "Anonymous (Homeric Hymns)",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Hymn 2); locators are Greek line numbers, which the page marks at the start of each hymn",
+      "url": "https://www.theoi.com/Text/HomericHymns1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "apollodorus-1",
+      "title": "Library (Bibliotheca), book 1",
+      "author": "Apollodorus",
+      "translator": "J. G. Frazer",
+      "edition": "Frazer translation (Loeb Classical Library, 1921), as hosted by Theoi.com; locators are book.chapter.section in Frazer's numbering",
+      "url": "https://www.theoi.com/Text/Apollodorus1.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "iliad-9",
+      "title": "Iliad, book 9",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Iliad 9); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerIliad9.html",
+      "accessed": "2026-10-02"
+    },
+    {
+      "id": "odyssey-11",
+      "title": "Odyssey, book 11",
+      "author": "Homer",
+      "edition": "Greek text with an English translation as hosted by Theoi.com (Odyssey 11); locators are Greek line numbers, which the page marks at the start of each passage",
+      "url": "https://www.theoi.com/Text/HomerOdyssey11.html",
+      "accessed": "2026-10-02"
+    }
+  ],
+  "lore": [
+    {
+      "id": "three-brothers",
+      "statement": "Zeus, Poseidon, and Hades are brothers. They drew lots: Hades got the murky underworld, Poseidon the grey sea, Zeus the broad sky.",
+      "cites": [
+        {
+          "source": "iliad-15",
+          "locator": "lines 187-193"
+        },
+        {
+          "source": "theogony",
+          "locator": "lines 453-458"
+        }
+      ]
+    },
+    {
+      "id": "halls-and-hound",
+      "statement": "The halls of Hades and Persephone stand with a dog at the gate that fawns on those who enter and will not let them leave.",
+      "cites": [
+        {
+          "source": "theogony",
+          "locator": "lines 767-774"
+        }
+      ]
+    },
+    {
+      "id": "seizes-persephone",
+      "statement": "Hades carries Persephone off in his chariot, given to him by Zeus.",
+      "cites": [
+        {
+          "source": "hymn-2-demeter",
+          "locator": "lines 1-32"
+        }
+      ]
+    },
+    {
+      "id": "the-bargain",
+      "statement": "Zeus sends Hermes to bid Hades release Persephone. Hades gives her a pomegranate seed to eat, and she spends a third of each year below and the rest among the gods.",
+      "cites": [
+        {
+          "source": "hymn-2-demeter",
+          "locator": "lines 334-447"
+        },
+        {
+          "source": "apollodorus-1",
+          "locator": "1.5.3"
+        }
+      ]
+    },
+    {
+      "id": "unyielding",
+      "statement": "Hades is not to be soothed or overcome, and so is the most hated by mortals of all the gods.",
+      "cites": [
+        {
+          "source": "iliad-9",
+          "locator": "lines 158-159"
+        }
+      ]
+    },
+    {
+      "id": "minos-judges",
+      "statement": "The dead are judged by Minos, who sits with a golden sceptre in Hades' wide-gated house with the dead around him; the sources do not make Hades the judge.",
+      "cites": [
+        {
+          "source": "odyssey-11",
+          "locator": "lines 567-571"
+        }
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "id": "hades-relents-or-not",
+      "note": "In the Iliad Hades is the one who will not be soothed. In the Hymn to Demeter he yields to Zeus's command and gives Persephone a seed that binds her to return. The profile keeps both: he holds what is his, and keeps a bargain he has made.",
+      "cites": [
+        {
+          "source": "iliad-9",
+          "locator": "lines 158-159"
+        },
+        {
+          "source": "hymn-2-demeter",
+          "locator": "lines 334-447"
+        }
+      ]
+    }
+  ],
+  "inventions": [
+    {
+      "id": "decree-as-legend",
+      "statement": "His decrees on the dead's due are told in play as legends.",
+      "reason": "Legend is the world's only public telling; it is a game mapping."
+    },
+    {
+      "id": "no-judge-no-claim",
+      "statement": "Judging the dead and claiming them are not abilities here.",
+      "reason": "The sources give the judging to Minos, and the world has no death rule yet (M3). The game gives Hades only a decree."
+    },
+    {
+      "id": "no-new-mortals-below",
+      "statement": "No new mortals live in the underworld.",
+      "reason": "No mortal lives in the underworld, and the dead are an M3 matter. Hades's stake in the living town is one devotee above ground: the ferryman (see ferryman-rites)."
+    },
+    {
+      "id": "ferryman-rites",
+      "statement": "The ferryman at the town's Styx ferry dock reveres Hades, so prayers to him come from the one place the living town meets the road of the dead.",
+      "reason": "Hades's sources here give him the dead, the underworld, and the Persephone bargain, and name no ferryman; Hermes leading souls down (Odyssey 24.1-14) is in Hermes's profile, not this one. The ferry, its keeper, and the devotion are the game's, so that Hades has a prayer to answer and, with Hermes, something to contend over."
+    },
+    {
+      "id": "authored-tuning",
+      "statement": "The drive weights and the starting dispositions of Hades are authored tuning.",
+      "reason": "The sources describe temperament in prose; the numbers are a design choice to be revised against play."
+    }
+  ],
+  "sprite": "placeholder-hades"
+}

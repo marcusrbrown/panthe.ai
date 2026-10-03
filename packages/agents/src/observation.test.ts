@@ -814,8 +814,13 @@ test("a legend told after the god itself moved commits and is heard by whoever i
   // Zeus walks to the square before the legend is validated: the farmer stays at the tavern.
   const ran = runProposal(arrives(crowded, "zeus", "town-square"), proposal);
   expect(ran.rejected).toEqual([]);
-  expect(ran.events.find((e) => e.kind === "legend-recorded")).toMatchObject({
-    hearers: ["woodcutter"],
+  const legend = ran.events.find((e) => e.kind === "legend-recorded");
+  // The woodcutter is there, and so is anyone else who lives at the square; the farmer at the tavern is not.
+  expect(legend).toMatchObject({
+    hearers: expect.arrayContaining(["woodcutter"]),
+  });
+  expect(legend).not.toMatchObject({
+    hearers: expect.arrayContaining(["farmer"]),
   });
 });
 

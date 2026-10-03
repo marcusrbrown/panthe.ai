@@ -4,32 +4,638 @@
       "id": "woodcutter",
       "name": "The Woodcutter",
       "locationId": "town-square",
-      "drives": { "thrift": 0.6, "appetite": 0.3, "greed": 0.4, "piety": 0.1 },
+      "drives": {
+        "thrift": 0.6,
+        "appetite": 0.3,
+        "greed": 0.4,
+        "piety": 0.1
+      },
       "gathers": "wood",
-      "startingInventory": [{ "resource": "currency", "amount": 5 }]
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 5
+        }
+      ],
+      "devotion": {
+        "god": "zeus",
+        "affinity": 3
+      }
     },
     {
       "id": "farmer",
       "name": "The Farmer",
       "locationId": "town-square",
-      "drives": { "thrift": 0.2, "appetite": 0.5, "greed": 0.2, "piety": 0.1 },
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.5,
+        "greed": 0.2,
+        "piety": 0.1
+      },
       "gathers": "food",
       "wants": "planks",
-      "startingInventory": [{ "resource": "currency", "amount": 10 }]
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 10
+        }
+      ],
+      "devotion": {
+        "god": "hera",
+        "affinity": 3
+      }
+    },
+    {
+      "id": "market-trader-iris",
+      "name": "Iris the Market Trader",
+      "locationId": "town-square",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "devotion": {
+        "god": "hermes",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 30
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        }
+      ],
+      "gathers": "wine"
+    },
+    {
+      "id": "ferryman",
+      "name": "The Ferryman",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "wants": "fish",
+      "devotion": {
+        "god": "hades",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 30
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        },
+        {
+          "resource": "fish",
+          "amount": 2
+        }
+      ],
+      "gathers": "food"
+    },
+    {
+      "id": "fisher-kallias",
+      "name": "Kallias the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 4
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "fisher-melina",
+      "name": "Melina the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "fish",
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "fisher-stavros",
+      "name": "Stavros the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "fisher-eleni",
+      "name": "Eleni the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.4
+      },
+      "gathers": "fish",
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "fisher-dion",
+      "name": "Dion the Fisher",
+      "locationId": "ferry-dock",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.3
+      },
+      "gathers": "fish",
+      "devotion": {
+        "god": "hermes",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "olive-grower-aristo",
+      "name": "Aristo the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "olive-grower-phoebe",
+      "name": "Phoebe the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.5
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "olive-grower-leon",
+      "name": "Leon the Olive Grower",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.4,
+        "piety": 0.4
+      },
+      "gathers": "olives",
+      "wants": "cloth",
+      "devotion": {
+        "god": "poseidon",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "cloth",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "weaver-ismene",
+      "name": "Ismene the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.6
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "weaver-zoe",
+      "name": "Zoe the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "devotion": {
+        "god": "athena",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "weaver-xenia",
+      "name": "Xenia the Weaver",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "wool",
+      "wants": "olives",
+      "devotion": {
+        "god": "hera",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        },
+        {
+          "resource": "olives",
+          "amount": 2
+        }
+      ]
+    },
+    {
+      "id": "herdsman-damon",
+      "name": "Damon the Herdsman",
+      "locationId": "ancient-olive-tree",
+      "drives": {
+        "thrift": 0.3,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "food",
+      "devotion": {
+        "god": "hermes",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 10
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "smith-ktesias",
+      "name": "Ktesias the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.4
+      },
+      "gathers": "ore",
+      "devotion": {
+        "god": "hephaestus",
+        "affinity": 4
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "smith-brontes",
+      "name": "Brontes the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.4
+      },
+      "gathers": "ore",
+      "devotion": {
+        "god": "hephaestus",
+        "affinity": 3
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "smith-delia",
+      "name": "Delia the Smith",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.5,
+        "appetite": 0.12,
+        "greed": 0.3,
+        "piety": 0.5
+      },
+      "gathers": "ore",
+      "devotion": {
+        "god": "athena",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 8
+        },
+        {
+          "resource": "food",
+          "amount": 3
+        }
+      ]
+    },
+    {
+      "id": "provisioner-nikanor",
+      "name": "Nikanor the Provisioner",
+      "locationId": "forge",
+      "drives": {
+        "thrift": 0.2,
+        "appetite": 0.12,
+        "greed": 0.5,
+        "piety": 0.3
+      },
+      "gathers": "food",
+      "wants": "tools",
+      "devotion": {
+        "god": "hermes",
+        "affinity": 2
+      },
+      "startingInventory": [
+        {
+          "resource": "currency",
+          "amount": 20
+        },
+        {
+          "resource": "food",
+          "amount": 6
+        },
+        {
+          "resource": "tools",
+          "amount": 1
+        }
+      ]
     },
     {
       "id": "zeus",
       "name": "Zeus",
       "locationId": "great-hall",
       "deity": true,
-      "startingInventory": [{ "resource": "divinity", "amount": 10 }]
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
     },
     {
       "id": "hera",
       "name": "Hera",
       "locationId": "great-hall",
       "deity": true,
-      "startingInventory": [{ "resource": "divinity", "amount": 10 }]
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "athena",
+      "name": "Athena",
+      "locationId": "ancient-olive-tree",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "locationId": "ferry-dock",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hephaestus",
+      "name": "Hephaestus",
+      "locationId": "forge",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "poseidon",
+      "name": "Poseidon",
+      "locationId": "ferry-dock",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
+    },
+    {
+      "id": "hades",
+      "name": "Hades",
+      "locationId": "underworld-shore",
+      "deity": true,
+      "startingInventory": [
+        {
+          "resource": "divinity",
+          "amount": 10
+        }
+      ]
     }
   ]
 }

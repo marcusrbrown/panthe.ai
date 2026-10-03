@@ -270,6 +270,8 @@ test("an actor holding a recipe's output sells the surplus to a co-located buyer
     capabilities: [],
     inventory: new Map([["planks", 2]]),
     revision: 0,
+    // The carpenter works the recipe: it fells the wood it turns into planks.
+    gathers: "wood",
     drives: { thrift: 0.6, appetite: 0, greed: 0, piety: 0 },
   });
   state = withActor(state, {
@@ -286,6 +288,79 @@ test("an actor holding a recipe's output sells the surplus to a co-located buyer
     counterparty: "buyer",
     give: [{ resource: "planks", amount: 1 }],
     receive: [{ resource: "currency", amount: 2 }],
+  });
+});
+
+test("a buyer who merely holds a recipe's output keeps it: only someone who works the recipe sells what it makes, so two traders never pass a good back and forth", () => {
+  let state = createInitialWorldState(
+    pack({
+      rules: rules({ value_planks: 2 }),
+      recipes: {
+        planks: {
+          inputs: [{ resource: "wood", amount: 2 }],
+          outputs: [{ resource: "planks", amount: 1 }],
+        },
+      },
+    }),
+  );
+  const trader = (id: string, planks: number) => ({
+    id: toEntityId(id),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([
+      ["planks", planks],
+      ["currency", 10],
+    ]),
+    revision: 0,
+    drives: { thrift: 0.6, appetite: 0, greed: 0.6, piety: 0 },
+  });
+  state = withActor(state, trader("holder", 2));
+  state = withActor(state, trader("other", 0));
+  expect(decideRoutineProposal(state, toEntityId("holder"))).toBeUndefined();
+});
+
+test("a gatherer does not sell its surplus to someone who gathers the same good: two gatherers of one thing would pass it back and forth and never gather", () => {
+  let state = createInitialWorldState(
+    pack({ rules: rules({ value_fish: 2, gatherAmount: 2 }) }),
+  );
+  const fisher = (id: string, fish: number) => ({
+    id: toEntityId(id),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([
+      ["fish", fish],
+      ["currency", 10],
+    ]),
+    revision: 0,
+    gathers: "fish",
+    drives: { thrift: 0.1, appetite: 0, greed: 0.6, piety: 0 },
+  });
+  state = withActor(state, fisher("kallias", 2));
+  state = withActor(state, fisher("melina", 0));
+  // Melina has the money and would accept, but she gathers fish herself.
+  expect(
+    decideRoutineProposal(state, toEntityId("kallias"))?.proposal,
+  ).toMatchObject({
+    kind: "gather",
+  });
+  // A buyer who does not gather it is another matter.
+  state = withActor(state, {
+    id: toEntityId("ferryman"),
+    locationId: toEntityId("square"),
+    alive: true,
+    capabilities: [],
+    inventory: new Map([["currency", 10]]),
+    revision: 0,
+    drives: { thrift: 0.1, appetite: 0, greed: 0.6, piety: 0 },
+  });
+  expect(
+    decideRoutineProposal(state, toEntityId("kallias"))?.proposal,
+  ).toMatchObject({
+    kind: "trade",
+    counterparty: "ferryman",
+    give: [{ resource: "fish", amount: 2 }],
   });
 });
 

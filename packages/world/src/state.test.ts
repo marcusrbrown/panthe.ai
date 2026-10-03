@@ -355,3 +355,100 @@ test("a deity inhabitant starts with the divine capability; a mortal starts with
   expect(state.actors.get(toEntityId("farmer"))?.capabilities).toEqual([]);
   expect(state.actors.get(toEntityId("pretender"))?.capabilities).toEqual([]);
 });
+
+// --- Devotion: who a mortal prays to first -------------------------------------------------------
+
+function devotionPack(): ContentPack {
+  const deity = (id: string) => ({
+    id,
+    name: id,
+    locationId: "altar",
+    deity: true,
+  });
+  return {
+    schemaVersion: 1,
+    realms: ["mortal"],
+    resources: [],
+    locations: [{ id: "altar", realm: "mortal", name: "Altar", edges: [] }],
+    buildings: [],
+    inhabitants: [
+      deity("athena"),
+      deity("poseidon"),
+      {
+        id: "fisher",
+        name: "The Fisher",
+        locationId: "altar",
+        drives: { thrift: 0.2, appetite: 0.3, greed: 0.3, piety: 0.5 },
+        devotion: { god: "poseidon", affinity: 3 },
+      },
+      {
+        id: "idler",
+        name: "The Idler",
+        locationId: "altar",
+        drives: { thrift: 0.2, appetite: 0.3, greed: 0.3, piety: 0.5 },
+      },
+    ],
+    rules: {
+      catchUpCapMs: 0,
+      catchUpChunkMs: 0,
+      checkpointIntervalMs: 0,
+      maxProposalsPerTick: 10,
+      fireBalance: {},
+      economyBalance: {},
+    },
+    recipes: {},
+  } as ContentPack;
+}
+
+test("a devotion seeds the mortal's affinity toward its god and nothing else, so its prayers go there first", async () => {
+  const { getRelationship } = await import("./memory");
+  const { routePetition } = await import("./petitions");
+  const state = createInitialWorldState(devotionPack());
+  expect(
+    getRelationship(state, toEntityId("fisher"), toEntityId("poseidon")),
+  ).toMatchObject({
+    from: "fisher",
+    toward: "poseidon",
+    affinity: 3,
+    grudge: 0,
+    allied: false,
+  });
+  expect(state.relationships.size).toBe(1);
+  expect(routePetition(state, toEntityId("fisher"))).toBe(
+    toEntityId("poseidon"),
+  );
+  // Without a devotion the old tie-break holds: the god with the fewest petitions, then the first id.
+  expect(routePetition(state, toEntityId("idler"))).toBe(toEntityId("athena"));
+});
+
+test("a pack that parses always yields an initial world that decodes: a devotion at the pack's own affinity limit round-trips through JSON, and the world's limit is the contract's", async () => {
+  const { memoryBalanceOf } = await import("./memory");
+  const { decode, encode } = await import("./codec");
+  const { affinityLimitOf, parseContentPack } = await import(
+    "@panthea/contracts"
+  );
+  for (const [limit, affinity] of [
+    [3, 3],
+    [3, 1],
+    [undefined, 10],
+    [20, 15],
+  ] as const) {
+    const source = devotionPack();
+    const raw = JSON.parse(JSON.stringify(source));
+    raw.rules.memoryBalance =
+      limit === undefined ? undefined : { affinityLimit: limit };
+    raw.inhabitants.find((i: { id: string }) => i.id === "fisher").devotion = {
+      god: "poseidon",
+      affinity,
+    };
+    const parsed = parseContentPack(raw);
+    if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+    const state = createInitialWorldState(parsed.value);
+    // One rule: what the pack parser enforces is what the world's rules and codec enforce.
+    expect(memoryBalanceOf(state.rules, "affinityLimit")).toBe(
+      affinityLimitOf(parsed.value.rules),
+    );
+    const decoded = decode(JSON.parse(JSON.stringify(encode(state))));
+    expect(encode(decoded)).toEqual(encode(state));
+  }
+});

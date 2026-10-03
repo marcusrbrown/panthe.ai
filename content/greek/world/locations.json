@@ -12,7 +12,11 @@
           "transport": "path",
           "bidirectional": true
         },
-        { "to": "wilderness-path", "transport": "path", "bidirectional": true }
+        {
+          "to": "wilderness-path",
+          "transport": "path",
+          "bidirectional": true
+        }
       ]
     },
     {
@@ -26,7 +30,11 @@
       "realm": "mortal",
       "name": "Wilderness Path",
       "edges": [
-        { "to": "town-square", "transport": "path", "bidirectional": true }
+        {
+          "to": "town-square",
+          "transport": "path",
+          "bidirectional": true
+        }
       ]
     },
     {
@@ -34,12 +42,41 @@
       "realm": "mortal",
       "name": "Town Square",
       "edges": [
-        { "to": "tavern", "transport": "path", "bidirectional": true },
-        { "to": "inn", "transport": "path", "bidirectional": true },
-        { "to": "shop", "transport": "path", "bidirectional": true },
-        { "to": "altar", "transport": "path", "bidirectional": true },
-        { "to": "ferry-dock", "transport": "path", "bidirectional": true },
-        { "to": "mountain-path", "transport": "path", "bidirectional": true }
+        {
+          "to": "tavern",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "inn",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "shop",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "altar",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "ferry-dock",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "mountain-path",
+          "transport": "path",
+          "bidirectional": true
+        },
+        {
+          "to": "forge",
+          "transport": "path",
+          "bidirectional": true
+        }
       ]
     },
     {
@@ -95,7 +132,11 @@
       "realm": "underworld",
       "name": "Shore of the Styx",
       "edges": [
-        { "to": "asphodel-meadow", "transport": "path", "bidirectional": true }
+        {
+          "to": "asphodel-meadow",
+          "transport": "path",
+          "bidirectional": true
+        }
       ]
     },
     {
@@ -103,7 +144,11 @@
       "realm": "underworld",
       "name": "Asphodel Meadow",
       "edges": [
-        { "to": "judgment-hall", "transport": "path", "bidirectional": true }
+        {
+          "to": "judgment-hall",
+          "transport": "path",
+          "bidirectional": true
+        }
       ]
     },
     {
@@ -118,7 +163,11 @@
       "realm": "olympus",
       "name": "Gates of Olympus",
       "edges": [
-        { "to": "great-hall", "transport": "path", "bidirectional": true }
+        {
+          "to": "great-hall",
+          "transport": "path",
+          "bidirectional": true
+        }
       ],
       "requiredCapability": "divine"
     },
@@ -126,6 +175,12 @@
       "id": "great-hall",
       "realm": "olympus",
       "name": "Hall of the Gods",
+      "edges": []
+    },
+    {
+      "id": "forge",
+      "realm": "mortal",
+      "name": "The Forge",
       "edges": []
     }
   ]

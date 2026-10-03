@@ -12,6 +12,8 @@ The loader rejects a profile that breaks these rules.
 - **Abilities are game mappings.** An ability names an existing world action (`strike`, `legend`, and so on). The world's rules enforce it. The profile grants nothing by itself.
 - **Sources record what was checked.** A source's `accessed` date means someone checked the cited locators against that edition on that date.
   Locators are the line or section numbers of that edition; other editions may number differently.
+- **One source per book.** A profile may declare a source for each book it cites (`iliad-1`, `iliad-18`), each with the url of the page it was checked on, so a locator is checked against one page. Locators are the line or section numbers of that edition; a page that marks only the start of a passage (Theoi.com's Homer and Hesiod) still numbers lines by the Greek.
+- **Relationships are sourced.** A profile ties a god to another only where its lore or a variant names the tie, and the other god must be in the pack. A starting disposition is authored tuning and the profile says so.
 - **Attribution.** Profiles paraphrase. They reproduce no translation text. Cite the translation used when a translator is named.
 
 Requirements: W01 (sourced profiles and variant notes). The lore-sources decision is in [open-decisions.md](../../../docs/product/open-decisions.md).

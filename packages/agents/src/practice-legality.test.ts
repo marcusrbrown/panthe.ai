@@ -30,13 +30,14 @@ import {
   actorAt,
   godProfile,
   greekState,
+  withOnlyZeusAndHera,
   withoutFireSpread,
 } from "./test-fixtures";
 
 const id = toEntityId;
 
 class Run {
-  state: WorldState = withoutFireSpread(greekState());
+  state: WorldState = withOnlyZeusAndHera(withoutFireSpread(greekState()));
   readonly events: WorldEvent[] = [];
   private n = 0;
   apply(overrides: Record<string, unknown>): WorldEvent {

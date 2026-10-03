@@ -88,6 +88,20 @@ export interface Inhabitant {
   readonly deity?: boolean;
   /** Inventory this inhabitant holds at genesis. Absent means it starts with nothing. */
   readonly startingInventory?: readonly ResourceAmount[];
+  /**
+   * The god a mortal prays to first: it starts with `affinity` toward `god`, and
+   * a mortal prays to the god it feels most toward. What the god then does for it
+   * moves the feeling, so a devotion is a starting point and never a fixture.
+   * Absent means no starting feeling. Only a mortal has one; a god prays to no one.
+   */
+  readonly devotion?: Devotion;
+}
+
+/** A mortal's starting reverence for one god. */
+export interface Devotion {
+  readonly god: string;
+  /** Whole number from 1 to the pack's affinity limit: the affinity the mortal starts with toward the god. */
+  readonly affinity: number;
 }
 
 export interface Recipe {
@@ -238,6 +252,33 @@ function parseInhabitantDrives(
   });
 }
 
+/**
+ * Affinity never goes beyond plus or minus this unless the pack's own `memoryBalance.affinityLimit` says
+ * otherwise. The world's memory rules take their default from here, so the pack parser and the world's
+ * codec enforce one limit.
+ */
+export const DEFAULT_AFFINITY_LIMIT = 10;
+
+/** The affinity limit a pack's world will hold: its own `memoryBalance.affinityLimit`, else the default. */
+export function affinityLimitOf(
+  rules: Pick<WorldRules, "memoryBalance">,
+): number {
+  return rules.memoryBalance?.affinityLimit ?? DEFAULT_AFFINITY_LIMIT;
+}
+
+function parseDevotion(value: unknown, path: string): ParseResult<Devotion> {
+  if (!isRecord(value)) return fail(path, "expected a devotion object");
+  const god = parseString(value.god, `${path}.god`);
+  if (!god.ok) return god;
+  const affinity = parseNonNegativeInteger(value.affinity, `${path}.affinity`);
+  if (!affinity.ok) return affinity;
+  // The upper bound is the pack's own affinity limit, known only once its rules are parsed: see parseContentPack's checks.
+  if (affinity.value < 1) {
+    return fail(`${path}.affinity`, "expected a whole number of at least 1");
+  }
+  return ok({ god: god.value, affinity: affinity.value });
+}
+
 function parseInhabitant(
   value: unknown,
   path: string,
@@ -266,6 +307,11 @@ function parseInhabitant(
           parseResourceAmount,
         );
   if (!startingInventory.ok) return startingInventory;
+  const devotion =
+    value.devotion === undefined
+      ? ok<Devotion | undefined>(undefined)
+      : parseDevotion(value.devotion, `${path}.devotion`);
+  if (!devotion.ok) return devotion;
   return ok({
     id: id.value,
     name: name.value,
@@ -277,6 +323,7 @@ function parseInhabitant(
     ...(startingInventory.value === undefined
       ? {}
       : { startingInventory: startingInventory.value }),
+    ...(devotion.value === undefined ? {} : { devotion: devotion.value }),
   });
 }
 
@@ -618,6 +665,33 @@ function checkReferentialIntegrity(
       );
     }
     inhabitantIds.add(inhabitant.id);
+  }
+
+  const deityIds = new Set(
+    pack.inhabitants.filter((i) => i.deity === true).map((i) => i.id),
+  );
+  for (const [index, inhabitant] of pack.inhabitants.entries()) {
+    if (inhabitant.devotion === undefined) continue;
+    if (inhabitant.deity === true) {
+      return fail(
+        `inhabitants[${index}].devotion`,
+        `"${inhabitant.id}" is a god, and a god prays to no one`,
+      );
+    }
+    if (!deityIds.has(inhabitant.devotion.god)) {
+      return fail(
+        `inhabitants[${index}].devotion.god`,
+        `"${inhabitant.id}" reveres "${inhabitant.devotion.god}", who is not a god in the pack`,
+      );
+    }
+    // Held to what the world will hold: a devotion over the pack's own limit would parse, and then its initial world would not decode.
+    const limit = affinityLimitOf(pack.rules);
+    if (inhabitant.devotion.affinity > limit) {
+      return fail(
+        `inhabitants[${index}].devotion.affinity`,
+        `"${inhabitant.id}" starts with affinity ${inhabitant.devotion.affinity} toward "${inhabitant.devotion.god}", beyond the pack's affinity limit of ${limit}`,
+      );
+    }
   }
 
   for (const [index, building] of pack.buildings.entries()) {

@@ -590,6 +590,23 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     });
   }
 
+  // A devotion is the one feeling a world starts with: a mortal's affinity
+  // toward the god it prays to first, so its prayers are routed there until
+  // what the gods do for it moves the feeling.
+  const relationships = new Map<string, RelationshipState>();
+  for (const inhabitant of pack.inhabitants) {
+    if (inhabitant.devotion === undefined) continue;
+    const from = toEntityId(inhabitant.id);
+    const toward = toEntityId(inhabitant.devotion.god);
+    relationships.set(relationshipKey(from, toward), {
+      from,
+      toward,
+      affinity: inhabitant.devotion.affinity,
+      grudge: 0,
+      allied: false,
+    });
+  }
+
   return {
     tick: 0,
     simTime: 0,
@@ -599,7 +616,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     buildings,
     legends: new Map(),
     memories: new Map(),
-    relationships: new Map(),
+    relationships,
     goals: new Map(),
     needs: new Map(),
     causes: new Map(),

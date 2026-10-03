@@ -209,10 +209,13 @@ const configFor = (
   roles,
 });
 
-const bothGods = (endpoint: string, fallback?: string[]) => ({
-  zeus: { endpoint, ...(fallback ? { fallback } : {}) },
-  hera: { endpoint, ...(fallback ? { fallback } : {}) },
-});
+/** One endpoint for every god in the pack: a god with no role of its own has no route, and the first turn goes to whoever's id sorts first. */
+const allGods = (endpoint: string, fallback?: string[]) =>
+  Object.fromEntries(
+    ["athena", "hades", "hephaestus", "hera", "hermes", "poseidon", "zeus"].map(
+      (god) => [god, { endpoint, ...(fallback ? { fallback } : {}) }],
+    ),
+  );
 
 // --- The scan: finds a planted secret anywhere in a directory ------------------------------
 
@@ -241,7 +244,7 @@ describe("the leak scan can see a leak (positive controls)", () => {
     const service = await spawnService({
       models: configFor(
         [{ id: "local", baseUrl: provider.baseUrl }],
-        bothGods("local"),
+        allGods("local"),
       ),
     });
     expect(await service.stop()).toBe(0);
@@ -267,7 +270,7 @@ describe("endpoint status comes from real requests", () => {
     const service = await spawnService({
       models: configFor(
         [{ id: "local", baseUrl: provider.baseUrl }],
-        bothGods("local"),
+        allGods("local"),
       ),
     });
 
@@ -318,7 +321,7 @@ describe("endpoint status comes from real requests", () => {
     const service = await spawnService({
       models: configFor(
         [{ id: "local", baseUrl: provider.baseUrl, keyRef: "zeus-key" }],
-        bothGods("local"),
+        allGods("local"),
       ),
       keys: {},
     });
@@ -344,7 +347,7 @@ describe("endpoint status comes from real requests", () => {
     const service = await spawnService({
       models: configFor(
         [{ id: "local", baseUrl: provider.baseUrl, keyRef: "zeus-key" }],
-        bothGods("local"),
+        allGods("local"),
       ),
       keys: { "zeus-key": SENTINEL },
     });
@@ -368,7 +371,7 @@ describe("offline mode", () => {
         { id: "hosted", baseUrl: HOSTED, keyRef: "hosted-key" },
         { id: "local", baseUrl: localUrl },
       ],
-      bothGods("hosted", ["local"]),
+      allGods("hosted", ["local"]),
     );
 
   test("positive control: online, the hosted endpoint is tried first and fails, and the local fallback answers", async () => {
@@ -421,7 +424,7 @@ describe("a key reaches only the request (sentinel)", () => {
   const keyed = (provider: Provider) =>
     configFor(
       [{ id: "local", baseUrl: provider.baseUrl, keyRef: "sk" }],
-      bothGods("local"),
+      allGods("local"),
     );
 
   test("a planted key sent on the launch line never appears in a prompt, the frame, the world store (journal and trace), or the logs", async () => {

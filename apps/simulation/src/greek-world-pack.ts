@@ -24,7 +24,12 @@ import {
   type ParseResult,
   parseContentPack,
 } from "@panthea/contracts";
+import athenaFile from "../../../content/greek/gods/athena.json";
+import hadesFile from "../../../content/greek/gods/hades.json";
+import hephaestusFile from "../../../content/greek/gods/hephaestus.json";
 import heraFile from "../../../content/greek/gods/hera.json";
+import hermesFile from "../../../content/greek/gods/hermes.json";
+import poseidonFile from "../../../content/greek/gods/poseidon.json";
 import zeusFile from "../../../content/greek/gods/zeus.json";
 import buildingsFile from "../../../content/greek/world/buildings.json";
 import inhabitantsFile from "../../../content/greek/world/inhabitants.json";
@@ -92,7 +97,12 @@ export function loadEmbeddedGreekWorldPack(
 }
 
 export const EMBEDDED_GOD_PROFILE_FILES: readonly LabeledProfileInput[] = [
+  { label: "athena.json", value: athenaFile },
+  { label: "hades.json", value: hadesFile },
+  { label: "hephaestus.json", value: hephaestusFile },
   { label: "hera.json", value: heraFile },
+  { label: "hermes.json", value: hermesFile },
+  { label: "poseidon.json", value: poseidonFile },
   { label: "zeus.json", value: zeusFile },
 ];
 

@@ -4,6 +4,7 @@
 
 import type { StepRecorder } from "../../../m1-living-world/src/helpers";
 import type { Sidecar } from "../../../m1-living-world/src/sidecar";
+import { PRACTICE_CONTROLS, type PracticeControl } from "../practice-controls";
 import type { ScriptedProvider } from "../provider";
 
 export type ControlName =
@@ -15,7 +16,8 @@ export type ControlName =
   | "stale"
   | "catch-up-inference"
   | "restore-memory"
-  | "petition-privacy";
+  | "petition-privacy"
+  | PracticeControl;
 
 export const CONTROL_NAMES: readonly ControlName[] = [
   "kill-journal",
@@ -27,6 +29,7 @@ export const CONTROL_NAMES: readonly ControlName[] = [
   "catch-up-inference",
   "restore-memory",
   "petition-privacy",
+  ...PRACTICE_CONTROLS,
 ];
 
 export interface StoryOptions {

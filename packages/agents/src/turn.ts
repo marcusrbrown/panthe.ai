@@ -10,6 +10,7 @@ import type {
   EntityId,
   GoalChangeRefusedEvent,
   ObservationRecord,
+  PracticeRefusedEvent,
   Proposal,
   WorldEvent,
 } from "@panthea/contracts";
@@ -79,6 +80,8 @@ export async function runGodTurn(
     readonly ownEvents?: readonly WorldEvent[];
     /** The god's latest refused goal change, if any: what it is told when it asks to change its goal too soon. */
     readonly refusal?: GoalChangeRefusedEvent;
+    /** The god's latest refused practice move, if no move of its own has committed since: what its digest says about it. */
+    readonly practiceRefusal?: PracticeRefusedEvent;
     readonly signal?: AbortSignal;
   },
 ): Promise<GodTurnResult | undefined> {
@@ -91,6 +94,7 @@ export async function runGodTurn(
     turn.actorId,
     turn.ownEvents,
     turn.refusal,
+    turn.practiceRefusal,
   );
   const context = buildGodContext(profile, snapshot, remembered);
   const prompt = `${context.instructions}\n\n${context.prompt}`;

@@ -8,5 +8,6 @@ export * from "./canonical";
 export * from "./content";
 export * from "./event";
 export * from "./ids";
+export * from "./practice";
 export * from "./proposal";
 export * from "./snapshot";

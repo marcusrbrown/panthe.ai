@@ -721,7 +721,7 @@ test("prayers come before what the god remembers and what happened here: the fir
   expect(text.indexOf("Recent events here")).toBeGreaterThan(prayers);
 });
 
-test("a help prayer from afar says how to answer it: take the next hop toward the petitioner, and bless once there", () => {
+test("a help prayer from afar offers the way to help as a choice: take the next hop toward the petitioner if you choose to help, and bless once there", () => {
   const run = greek();
   const theft = run.apply({
     kind: "theft",
@@ -733,16 +733,19 @@ test("a help prayer from afar says how to answer it: take the next hop toward th
   });
   const opened = prayAbout(run, "farmer", theft.id);
   const prayers = prayersOf(run.prompt(String(opened.god)));
-  expect(prayers).toContain("To answer it");
+  expect(prayers).toContain("help freely");
   expect(prayers).toContain("take Gates of Olympus [olympus-gate]");
   expect(prayers).toContain("bless");
-  // It takes several moves: the guidance says to keep going, not turn back.
-  expect(prayers).toContain("keep going");
+  // It takes several moves, and the hint is for one who chooses to help: a condition, not a command.
+  expect(prayers).toContain("if you choose this");
+  expect(prayers).toContain("turn by turn until you are with them");
+  expect(prayers).not.toContain("To answer it");
+  expect(prayers).not.toContain("keep going each turn");
   // Not the guidance for a petitioner who is here.
-  expect(prayers).not.toContain("bless them now");
+  expect(prayers).not.toContain("is here (action");
 });
 
-test("a help prayer from a petitioner who is here says bless now answers it", () => {
+test("a help prayer from a petitioner who is here offers bless as one of the choices, not as an order", () => {
   const run = greek();
   const theft = run.apply({
     kind: "theft",
@@ -756,22 +759,29 @@ test("a help prayer from a petitioner who is here says bless now answers it", ()
   const god = String(opened.god);
   run.state = actorAt(run.state, god, "altar");
   const prayers = prayersOf(run.prompt(god));
-  expect(prayers).toContain("bless them now");
+  expect(prayers).toContain(
+    `help freely: farmer is here: {"action":"bless","petition":"${opened.id}"}`,
+  );
+  expect(prayers).toContain("let it be");
+  expect(prayers).not.toContain("bless them now");
   expect(prayers).not.toContain("To answer it");
 });
 
-test("a punish prayer says to strike the offender's building: go toward it from afar, and strike it where it stands once there", () => {
+test("a punish prayer offers striking the offender's building as a choice: go toward it from afar if you choose to, and strike it where it stands once there", () => {
   const run = greek();
   const opened = run.prayAboutTheft("farmer", "woodcutter");
   const god = String(opened.god);
   const afar = prayersOf(run.prompt(god));
-  expect(afar).toContain("To answer it");
-  expect(afar).toContain("strike woodshed");
-  expect(afar).toContain("keep going");
+  expect(afar).toContain("punish freely");
+  expect(afar).toContain("then strike woodshed");
+  expect(afar).toContain("if you choose this");
   expect(afar).toContain("take Gates of Olympus [olympus-gate]");
+  expect(afar).not.toContain("To answer it");
   run.state = actorAt(run.state, god, "town-square");
   const near = prayersOf(run.prompt(god));
-  expect(near).toContain("woodshed is here: strike it");
+  expect(near).toContain(
+    'punish freely: woodshed is here: {"action":"strike","target":"woodshed"}',
+  );
 });
 
 test("the instructions say a goal change can ride with a move or an answer in the same turn", () => {
@@ -800,10 +810,8 @@ function godAtTheGate() {
 test("from the Gates of Olympus a prayer's guidance names the action that reaches the hop: realm-transition to the Mountain Path, not a move", () => {
   const { run, god } = godAtTheGate();
   const prayers = prayersOf(run.prompt(god));
-  expect(prayers).toContain(
-    'action "realm-transition" with to "mountain-path"',
-  );
-  expect(prayers).not.toContain('action "move" with to "mountain-path"');
+  expect(prayers).toContain('(action "realm-transition", to "mountain-path"');
+  expect(prayers).not.toContain('(action "move", to "mountain-path"');
   // The same hop in the whereabouts line names its action too.
   expect(prayers).toContain('(action "realm-transition", to "mountain-path")');
 });
@@ -812,7 +820,7 @@ test("from the Hall of the Gods the first hop is an ordinary move to the Gates, 
   const run = greek();
   const opened = run.prayAboutTheft("farmer", "woodcutter");
   const prayers = prayersOf(run.prompt(String(opened.god)));
-  expect(prayers).toContain('action "move" with to "olympus-gate"');
+  expect(prayers).toContain('(action "move", to "olympus-gate"');
 });
 
 test("the guided hop is accepted whichever of move and realm-transition the model names: the gate run's rejected `move` to the Mountain Path now commits as the crossing it is", () => {

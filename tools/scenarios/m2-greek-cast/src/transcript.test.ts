@@ -1190,3 +1190,72 @@ test("the summary header names the requirement the gate is evidence for, on its 
     lines.findIndex((line) => line.startsWith("- Model:")),
   );
 });
+
+test("the world section lists a refused practice move or talk around an open thread, with the reason and what already answered it", () => {
+  const events = [
+    {
+      ...baseEvent("evt-12-3", 3, 12),
+      kind: "practice-refused",
+      entityId: "hera",
+      attempted: "demand",
+      reason: "no-progress",
+      thread: "evt-5-2",
+      why: "that was already answered: zeus refused it",
+    },
+    {
+      ...baseEvent("evt-13-4", 4, 13),
+      kind: "practice-refused",
+      entityId: "zeus",
+      attempted: "accept",
+      reason: "stale-target",
+      thread: "evt-5-2",
+    },
+  ];
+  const lines = worldSection(
+    renderTranscript(record([move("zeus", "a", 9)], events)),
+  )
+    .split("\n")
+    .filter((l) => l.startsWith("- tick"));
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toContain(
+    "hera's demand was refused as no-progress: that was already answered: zeus refused it [evt-5-2]",
+  );
+  expect(lines[1]).toContain(
+    "zeus's accept was refused (stale-target) [evt-5-2]",
+  );
+});
+
+test("the world section lists each half of a supplication's bargain as the world saw it done, naming the thread", () => {
+  const events = [
+    {
+      ...baseEvent("evt-12-3", 3, 12),
+      kind: "practice-progressed",
+      entityId: "hera",
+      counterparty: "farmer",
+      threadId: "evt-5-2",
+      step: "boon",
+      by: "evt-12-2",
+    },
+    {
+      ...baseEvent("evt-14-4", 4, 14),
+      kind: "practice-progressed",
+      entityId: "hera",
+      counterparty: "farmer",
+      threadId: "evt-5-2",
+      step: "offering",
+      by: "evt-14-3",
+    },
+  ];
+  const lines = worldSection(
+    renderTranscript(record([move("zeus", "a", 9)], events)),
+  )
+    .split("\n")
+    .filter((l) => l.startsWith("- tick"));
+  expect(lines).toHaveLength(2);
+  expect(lines[0]).toContain(
+    "hera's boon to farmer was seen given [evt-5-2] (evt-12-2)",
+  );
+  expect(lines[1]).toContain(
+    "farmer's offering to hera was seen made [evt-5-2] (evt-14-3)",
+  );
+});

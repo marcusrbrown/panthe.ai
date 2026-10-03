@@ -6,6 +6,7 @@ import {
 } from "./episode-test-data";
 import {
   analyzeReal,
+  GOD_ACTIONS,
   namedIds,
   type RealInput,
   type RealProposal,
@@ -401,6 +402,47 @@ test("latency and outcome numbers come from the requests: percentiles, native ve
   expect(analysis.degradedShare).toBe(0.25);
 });
 
+test("every refused reply an exhausted request kept is listed with whose turn it was, why, how many attempts, and what the model sent", () => {
+  const analysis = analyzeReal(
+    base({
+      requests: [
+        request("p1", "a"),
+        request(undefined, "zeus", {
+          outcome: "exhausted",
+          steps: [
+            {
+              reason: "invalid-output",
+              detail: "move: move is missing; legal here: ...",
+              attempts: 2,
+              output: '{"action":"practice","thread":"evt-1-5"}',
+              schema: '{"type":"object"}',
+            },
+          ],
+        }),
+        // An outage keeps no reply: it is counted, not listed.
+        request(undefined, "hera", {
+          outcome: "exhausted",
+          steps: [{ reason: "http-5xx", detail: "503", attempts: 2 }],
+        }),
+      ],
+    }),
+  );
+  expect(analysis.refusals).toEqual([
+    {
+      god: "zeus",
+      reason: "invalid-output",
+      detail: "move: move is missing; legal here: ...",
+      attempts: 2,
+      output: '{"action":"practice","thread":"evt-1-5"}',
+    },
+  ]);
+  expect(analysis.requests.exhausted).toBe(2);
+  // Control: no exhausted request, no refusals.
+  expect(
+    analyzeReal(base({ requests: [request("p1", "a")] })).refusals,
+  ).toEqual([]);
+});
+
 // --- Goals ---------------------------------------------------------------------------------
 
 const HERA_GOAL = "Make Zeus admit his deceit.";
@@ -692,4 +734,19 @@ test("petition privacy fails a god that was not at the altar when the prayer was
     expect([name, result?.ok]).toEqual([name, false]);
     expect(result?.detail).toContain("not at the altar");
   }
+});
+
+test("a practice move names the thread or cause it answers, ids the god must have been shown, and is a god action", () => {
+  expect(
+    namedIds({ kind: "practice", move: "accept", thread: "evt-9" }),
+  ).toEqual(["evt-9"]);
+  expect(
+    namedIds({
+      kind: "practice",
+      move: "demand",
+      cause: "evt-3",
+      term: { kind: "ally" },
+    }),
+  ).toEqual(["evt-3"]);
+  expect(GOD_ACTIONS.has("practice")).toBe(true);
 });

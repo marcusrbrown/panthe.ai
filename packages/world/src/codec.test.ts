@@ -477,3 +477,57 @@ test("decode holds a stored world's petition tunables to the same strict rule as
     expect(() => decode(withBalance(bad))).toThrow();
   }
 });
+
+test("decode holds a stored world's practice tunables to the same strict rule as content, and a world with no threads decodes to none", () => {
+  const state = createInitialWorldState(walkPack());
+  const encoded = JSON.parse(JSON.stringify(encode(state)));
+  expect(decode(encoded).threads.size).toBe(0);
+  const withBalance = (practiceBalance: unknown) => ({
+    ...encoded,
+    rules: { ...encoded.rules, practiceBalance },
+  });
+  expect(() => decode(withBalance({ counterBudget: 2 }))).not.toThrow();
+  for (const bad of [
+    { counterBudget: 0 },
+    { negotiationTicks: 1.5 },
+    { counterBudgt: 3 },
+  ]) {
+    expect(() => decode(withBalance(bad))).toThrow();
+  }
+});
+
+test("decode holds a stored actor's form and withheld capabilities to their shape, and an actor with neither decodes to neither", () => {
+  const state = seededState();
+  const plain = JSON.parse(JSON.stringify(encode(state)));
+  const decodedPlain = decode(plain);
+  for (const actor of decodedPlain.actors.values()) {
+    expect(actor.form).toBeUndefined();
+    expect(actor.withheld).toBeUndefined();
+  }
+
+  const stored = JSON.parse(JSON.stringify(encode(state)));
+  const actor = stored.actors[0][1];
+  actor.form = "stag";
+  actor.withheld = [{ capability: "divine", restoreAt: 150, eventId: "evt-3" }];
+  const decoded = decode(stored);
+  const first = [...decoded.actors.values()][0];
+  expect(first?.form).toBe("stag");
+  expect(first?.withheld).toMatchObject([
+    { capability: "divine", restoreAt: 150, eventId: "evt-3" },
+  ]);
+  expect(encode(decoded)).toEqual(stored);
+
+  for (const corrupt of [
+    { form: 7 },
+    { withheld: "divine" },
+    { withheld: [] },
+    { withheld: [{ capability: "divine", restoreAt: -1, eventId: "evt-3" }] },
+    { withheld: [{ capability: "divine", restoreAt: 1.5, eventId: "evt-3" }] },
+    { withheld: [{ capability: 7, restoreAt: 150, eventId: "evt-3" }] },
+    { withheld: [{ capability: "divine", restoreAt: 150 }] },
+  ]) {
+    const copy = JSON.parse(JSON.stringify(stored));
+    Object.assign(copy.actors[0][1], corrupt);
+    expect(() => decode(copy)).toThrow();
+  }
+});

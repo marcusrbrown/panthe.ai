@@ -24,6 +24,7 @@ import {
   parseString,
   type ResourceAmount,
 } from "./ids";
+import { parseTransformation, type Transformation } from "./practice";
 
 export const CONTENT_SCHEMA_VERSIONS = [1] as const;
 
@@ -106,6 +107,10 @@ export interface WorldRules {
   readonly memoryBalance?: Readonly<Record<string, number>>;
   /** Petition, bless, director, and goal-lock tunables. Absent means every default in packages/world's petition rules. */
   readonly petitionBalance?: Readonly<Record<string, number>>;
+  /** Practice thread tunables (negotiation window, counteroffer budget, term deadline bounds). Absent means every default in packages/world's practice rules. */
+  readonly practiceBalance?: Readonly<Record<string, number>>;
+  /** The stakes a god may set on the terms it offers a supplicant, by id: what the mortal becomes if it takes the boon and breaks the term. Absent means no stake can be set. */
+  readonly practiceStakes?: Readonly<Record<string, Transformation>>;
 }
 
 export interface ContentPack {
@@ -313,7 +318,10 @@ const MEMORY_COUNT_KEYS: ReadonlySet<string> = new Set([
   "kindnessAffinity",
   "affinityLimit",
   "grudgeLimit",
+  // Retired: affinity no longer makes an alliance, so this changes nothing. Kept so a stored world's rules and an older pack still parse.
   "allianceAffinity",
+  "refusalAffinity",
+  "salience_practice-ended",
   "salience_told",
   "salience_sign",
   "salience_noticed",
@@ -390,6 +398,73 @@ export function parsePetitionBalance(
   return ok(balance);
 }
 
+/** The keys of `rules.practiceBalance`: every one a positive whole number of ticks or units. */
+export const PRACTICE_BALANCE_KEYS = [
+  "negotiationTicks",
+  "counterBudget",
+  "minTermTicks",
+  "maxTermTicks",
+  "oathDivinityLoss",
+  "oathAccessTicks",
+  "standingDelta",
+  /** How pious a mortal's drive must be, as a percent, to accept the terms a god offers it. */
+  "acceptPietyPercent",
+  /** How many ticks before an accepted term's deadline performing it outranks the mortal's other choices. */
+  "urgentTicks",
+] as const;
+
+/**
+ * `rules.practiceBalance`, checked like `parsePetitionBalance`: each key a
+ * positive whole number, any other key refused so a typo cannot silently leave
+ * a default in force. Used for authored content and when a stored world's rules
+ * are decoded.
+ */
+export function parsePracticeBalance(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, number>>> {
+  if (!isRecord(value)) return fail(path, "expected a balance object");
+  const balance: Record<string, number> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const at = `${path}.${key}`;
+    if (!(PRACTICE_BALANCE_KEYS as readonly string[]).includes(key)) {
+      return fail(at, "not a practice tunable");
+    }
+    const parsed = parseNonNegativeInteger(entry, at);
+    if (!parsed.ok) return parsed;
+    if (parsed.value < 1) return fail(at, "expected a positive integer");
+    balance[key] = parsed.value;
+  }
+  return ok(balance);
+}
+
+/**
+ * `rules.practiceStakes`: an id for each stake and the change of form it is,
+ * checked field by field. An unknown field is refused, so a typo cannot leave a
+ * stake with no effect.
+ */
+export function parsePracticeStakes(
+  value: unknown,
+  path: string,
+): ParseResult<Readonly<Record<string, Transformation>>> {
+  if (!isRecord(value)) return fail(path, "expected an object of stakes by id");
+  const stakes: Record<string, Transformation> = {};
+  for (const [id, entry] of Object.entries(value)) {
+    const at = `${path}.${id}`;
+    if (id.length === 0) return fail(path, "a stake needs an id");
+    if (!isRecord(entry)) return fail(at, "expected a stake object");
+    for (const key of Object.keys(entry)) {
+      if (!["form", "capabilitiesGained", "capabilitiesLost"].includes(key)) {
+        return fail(`${at}.${key}`, "not a stake field");
+      }
+    }
+    const transformation = parseTransformation(entry, at);
+    if (!transformation.ok) return transformation;
+    stakes[id] = transformation.value;
+  }
+  return ok(stakes);
+}
+
 function parseBalanceRecord(
   value: unknown,
   path: string,
@@ -449,6 +524,16 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parsePetitionBalance(value.petitionBalance, `${path}.petitionBalance`);
   if (!petitionBalance.ok) return petitionBalance;
+  const practiceBalance =
+    value.practiceBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parsePracticeBalance(value.practiceBalance, `${path}.practiceBalance`);
+  if (!practiceBalance.ok) return practiceBalance;
+  const practiceStakes =
+    value.practiceStakes === undefined
+      ? ok<Readonly<Record<string, Transformation>> | undefined>(undefined)
+      : parsePracticeStakes(value.practiceStakes, `${path}.practiceStakes`);
+  if (!practiceStakes.ok) return practiceStakes;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -462,6 +547,12 @@ function parseWorldRules(
     ...(petitionBalance.value === undefined
       ? {}
       : { petitionBalance: petitionBalance.value }),
+    ...(practiceBalance.value === undefined
+      ? {}
+      : { practiceBalance: practiceBalance.value }),
+    ...(practiceStakes.value === undefined
+      ? {}
+      : { practiceStakes: practiceStakes.value }),
   });
 }
 

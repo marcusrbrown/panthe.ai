@@ -106,7 +106,7 @@ export interface GodProfile {
   readonly sprite: string;
 }
 
-function parseNonEmptyArray<T>(
+export function parseNonEmptyArray<T>(
   value: unknown,
   path: string,
   parseItem: (item: unknown, itemPath: string) => ParseResult<T>,
@@ -118,7 +118,7 @@ function parseNonEmptyArray<T>(
   return items;
 }
 
-function parseOptionalArray<T>(
+export function parseOptionalArray<T>(
   value: unknown,
   path: string,
   parseItem: (item: unknown, itemPath: string) => ParseResult<T>,
@@ -127,7 +127,7 @@ function parseOptionalArray<T>(
   return parseArray(value, path, parseItem);
 }
 
-function checkUniqueIds(
+export function checkUniqueIds(
   items: readonly { readonly id: string }[],
   path: string,
   what: string,
@@ -142,7 +142,10 @@ function checkUniqueIds(
   return ok(true);
 }
 
-function parseSource(value: unknown, path: string): ParseResult<GodSource> {
+export function parseSource(
+  value: unknown,
+  path: string,
+): ParseResult<GodSource> {
   if (!isRecord(value)) return fail(path, "expected a source entry");
   const id = parseString(value.id, `${path}.id`);
   if (!id.ok) return id;
@@ -172,7 +175,7 @@ function parseSource(value: unknown, path: string): ParseResult<GodSource> {
   });
 }
 
-function parseCitations(
+export function parseCitations(
   value: unknown,
   path: string,
   sourceIds: ReadonlySet<string>,
@@ -212,7 +215,7 @@ function parseLore(
   };
 }
 
-function parseVariant(
+export function parseVariant(
   sourceIds: ReadonlySet<string>,
 ): (value: unknown, path: string) => ParseResult<GodVariant> {
   return (value, path) => {
@@ -227,7 +230,7 @@ function parseVariant(
   };
 }
 
-function parseInvention(
+export function parseInvention(
   value: unknown,
   path: string,
 ): ParseResult<GodInvention> {

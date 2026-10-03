@@ -30,6 +30,8 @@ export const REJECTION_REASON_CODES = [
   "counterparty-declined",
   "over-limit",
   "observation-conflict",
+  /** A practice move or talk that moves nothing forward: it repeats an answered move, restates an offer already on the table, or talks around an open thread. */
+  "no-progress",
 ] as const;
 
 export type RejectionReasonCode = (typeof REJECTION_REASON_CODES)[number];

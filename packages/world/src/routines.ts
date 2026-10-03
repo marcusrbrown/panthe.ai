@@ -26,12 +26,15 @@ import {
   resourceValue,
 } from "./economy";
 import { prayerStep } from "./petitions";
+import { mortalPractice } from "./practices";
 import { actorHoldsEnoughToRepair, findRepairableBuilding } from "./repair";
 import { type ActorState, getActor, type WorldState } from "./state";
 
 export interface RoutineResult {
   readonly observation: ObservationRecord;
   readonly proposal: Proposal;
+  /** Set when this proposal keeps a promise whose deadline is near: the queue puts it ahead of every other routine proposal, so a tight per-tick cap overflows something else. */
+  readonly urgent?: boolean;
 }
 
 /** The first other living actor at `actorId`'s location satisfying `predicate`, in `state.actors`' deterministic iteration order. */
@@ -204,6 +207,7 @@ const HOME_UTILITY = 0.2;
 
 interface Candidate {
   readonly utility: number;
+  readonly urgent?: boolean;
   readonly factsRead: readonly string[];
   build(): ProposalDetails;
 }
@@ -340,6 +344,34 @@ export function decideRoutineProposal(
     });
   }
 
+  // The terms a god set on this mortal's prayer. Answering an offer is a
+  // one-tick decision that outranks ordinary choices (repair's rank, 1); the
+  // offering it promised is done promptly once the boon is in hand, and when its
+  // deadline is near it outranks everything and is flagged urgent for the queue.
+  const practice = mortalPractice(state, actorId);
+  if (practice?.kind === "answer") {
+    candidates.push({
+      utility: 1,
+      factsRead: [`actor:${actorId}.inventory`, `thread:${practice.thread}`],
+      build: () => ({
+        kind: "practice",
+        move: practice.move,
+        thread: practice.thread,
+      }),
+    });
+  } else if (practice?.kind === "offer") {
+    candidates.push({
+      utility: practice.urgent ? 3 : 0.5,
+      urgent: practice.urgent,
+      factsRead: [`actor:${actorId}.inventory`, `thread:${practice.thread}`],
+      build: () => ({
+        kind: "worship",
+        deity: practice.deity,
+        offering: { resource: practice.resource, amount: practice.amount },
+      }),
+    });
+  }
+
   // Prayer and the walks to and from the altar rank below repair, production,
   // and the usual trades, and above idle gathering: a mortal prays when it has
   // nothing better to do, and walks home once it has.
@@ -393,5 +425,9 @@ export function decideRoutineProposal(
     ...built,
   };
 
-  return { observation, proposal };
+  return {
+    observation,
+    proposal,
+    ...(chosen.urgent === true ? { urgent: true } : {}),
+  };
 }

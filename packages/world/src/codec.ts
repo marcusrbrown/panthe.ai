@@ -14,6 +14,7 @@
 // a known actor).
 
 import {
+  ENDING_EVENT_KINDS,
   type EntityId,
   type EventId,
   fail,
@@ -23,6 +24,8 @@ import {
   type LocationEdge,
   ok,
   type ParseResult,
+  PRACTICE_KINDS,
+  PRACTICE_STATUSES,
   parseArray,
   parseBoolean,
   parseConsequence,
@@ -32,19 +35,26 @@ import {
   parseGoalText,
   parseLegendId,
   parseMemoryBalance,
+  parseMemoryEnding,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
   parseOptionalBoolean,
   parseOptionalString,
   parsePetitionBalance,
   parsePetitionRequest,
+  parsePracticeBalance,
+  parsePracticeStakes,
+  parsePracticeTerm,
   parseRecipes,
   parseReportContent,
   parseSalience,
   parseString,
+  parseThreadSubject,
+  parseTransformation,
   REALMS,
   type RejectionReasonCode,
   TRANSPORT_KINDS,
+  type Transformation,
   UNMET_NEED_REASONS,
   WITNESSED_EVENT_KINDS,
 } from "@panthea/contracts";
@@ -67,8 +77,10 @@ import {
   type OpenNeed,
   type Petition,
   type PetitionCause,
+  type PracticeThread,
   type RelationshipState,
   relationshipKey,
+  type WithheldCapability,
   type WorldState,
 } from "./state";
 
@@ -91,6 +103,7 @@ export interface EncodedWorldState {
   readonly needs: readonly (readonly [string, OpenNeed])[];
   readonly causes: readonly (readonly [EntityId, readonly PetitionCause[]])[];
   readonly petitions: readonly (readonly [EventId, Petition])[];
+  readonly threads: readonly (readonly [EventId, PracticeThread])[];
   readonly repairGrants: readonly (readonly [EntityId, EntityId])[];
   readonly noticed: readonly (readonly [string, NoticedLoss])[];
   readonly director: { readonly lastConsequentialTick: number };
@@ -142,6 +155,7 @@ export function encode(state: WorldState): EncodedWorldState {
     needs: [...state.needs.entries()],
     causes: [...state.causes.entries()],
     petitions: [...state.petitions.entries()],
+    threads: [...state.threads.entries()],
     repairGrants: [...state.repairGrants.entries()],
     noticed: [...state.noticed.entries()],
     director: state.director,
@@ -295,6 +309,38 @@ function parseFavors(
   return parseArray(value, path, parseFavor);
 }
 
+function parseWithheld(
+  value: unknown,
+  path: string,
+): ParseResult<readonly WithheldCapability[] | undefined> {
+  if (value === undefined) return ok(undefined);
+  const items = parseArray(value, path, (item, at) => {
+    if (!isRecord(item)) return fail(at, "expected a withheld capability");
+    const capability = parseString(item.capability, `${at}.capability`);
+    if (!capability.ok) return capability;
+    const restoreAt = parseNonNegativeInteger(
+      item.restoreAt,
+      `${at}.restoreAt`,
+    );
+    if (!restoreAt.ok) return restoreAt;
+    const eventId = parseEventId(item.eventId, `${at}.eventId`);
+    if (!eventId.ok) return eventId;
+    return ok({
+      capability: capability.value,
+      restoreAt: restoreAt.value,
+      eventId: eventId.value,
+    });
+  });
+  if (!items.ok) return items;
+  if (items.value.length === 0) {
+    return fail(
+      path,
+      "an empty list of withheld capabilities is absent instead",
+    );
+  }
+  return items;
+}
+
 function parseDrives(
   value: unknown,
   path: string,
@@ -358,6 +404,10 @@ function parseActorState(
   if (!wants.ok) return wants;
   const favors = parseFavors(value.favors, `${path}.favors`);
   if (!favors.ok) return favors;
+  const form = parseOptionalString(value.form, `${path}.form`);
+  if (!form.ok) return form;
+  const withheld = parseWithheld(value.withheld, `${path}.withheld`);
+  if (!withheld.ok) return withheld;
   const revision = parseNonNegativeInteger(value.revision, `${path}.revision`);
   if (!revision.ok) return revision;
   return ok({
@@ -372,6 +422,8 @@ function parseActorState(
     ...(gathers.value === undefined ? {} : { gathers: gathers.value }),
     ...(wants.value === undefined ? {} : { wants: wants.value }),
     ...(favors.value === undefined ? {} : { favors: favors.value }),
+    ...(form.value === undefined ? {} : { form: form.value }),
+    ...(withheld.value === undefined ? {} : { withheld: withheld.value }),
     revision: revision.value,
   });
 }
@@ -617,6 +669,16 @@ function parseWorldRules(
       ? ok<Readonly<Record<string, number>> | undefined>(undefined)
       : parsePetitionBalance(value.petitionBalance, `${path}.petitionBalance`);
   if (!petitionBalance.ok) return petitionBalance;
+  const practiceBalance =
+    value.practiceBalance === undefined
+      ? ok<Readonly<Record<string, number>> | undefined>(undefined)
+      : parsePracticeBalance(value.practiceBalance, `${path}.practiceBalance`);
+  if (!practiceBalance.ok) return practiceBalance;
+  const practiceStakes =
+    value.practiceStakes === undefined
+      ? ok<Readonly<Record<string, Transformation>> | undefined>(undefined)
+      : parsePracticeStakes(value.practiceStakes, `${path}.practiceStakes`);
+  if (!practiceStakes.ok) return practiceStakes;
   return ok({
     catchUpCapMs: catchUpCapMs.value,
     catchUpChunkMs: catchUpChunkMs.value,
@@ -630,6 +692,12 @@ function parseWorldRules(
     ...(petitionBalance.value === undefined
       ? {}
       : { petitionBalance: petitionBalance.value }),
+    ...(practiceBalance.value === undefined
+      ? {}
+      : { practiceBalance: practiceBalance.value }),
+    ...(practiceStakes.value === undefined
+      ? {}
+      : { practiceStakes: practiceStakes.value }),
   });
 }
 
@@ -722,13 +790,28 @@ function parseMemoryEntry(
 
   switch (value.kind) {
     case "witnessed": {
-      const eventKind = parseEnum(
-        value.eventKind,
-        `${path}.eventKind`,
-        WITNESSED_EVENT_KINDS,
-      );
+      const eventKind = parseEnum(value.eventKind, `${path}.eventKind`, [
+        ...WITNESSED_EVENT_KINDS,
+        ...ENDING_EVENT_KINDS,
+      ] as const);
       if (!eventKind.ok) return eventKind;
-      return ok({ ...base, kind: "witnessed", eventKind: eventKind.value });
+      const ending = parseMemoryEnding(value.ending, `${path}.ending`);
+      if (!ending.ok) return ending;
+      const isEnding = (ENDING_EVENT_KINDS as readonly string[]).includes(
+        eventKind.value,
+      );
+      if (isEnding !== (ending.value !== undefined)) {
+        return fail(
+          `${path}.ending`,
+          "a memory of an ending event says how it ended, and no other does",
+        );
+      }
+      return ok({
+        ...base,
+        kind: "witnessed",
+        eventKind: eventKind.value,
+        ...(ending.value === undefined ? {} : { ending: ending.value }),
+      });
     }
     case "told": {
       const teller = parseEntityId(value.teller, `${path}.teller`);
@@ -965,6 +1048,234 @@ function parsePetitionEntry(
       tick: tick.value,
       sequence: sequence.value,
       status: status.value,
+    },
+  ] as const);
+}
+
+function parseThreadEntry(
+  value: unknown,
+  path: string,
+  knownActorIds: ReadonlySet<EntityId>,
+): ParseResult<readonly [EventId, PracticeThread]> {
+  if (!Array.isArray(value) || value.length !== 2) {
+    return fail(path, "expected an [id, thread] entry");
+  }
+  const key = parseEventId(value[0], `${path}[0]`);
+  if (!key.ok) return key;
+  const record = value[1];
+  if (!isRecord(record)) return fail(`${path}[1]`, "expected a thread");
+  const at = `${path}[1]`;
+  const id = parseEventId(record.id, `${at}.id`);
+  if (!id.ok) return id;
+  if (id.value !== key.value) {
+    return fail(
+      `${path}[0]`,
+      `entry key "${key.value}" does not match its own id`,
+    );
+  }
+  const practice = parseEnum(record.practice, `${at}.practice`, PRACTICE_KINDS);
+  if (!practice.ok) return practice;
+  const actors: EntityId[] = [];
+  for (const field of ["demander", "obligated", "offeredBy"] as const) {
+    const actor = parseEntityId(record[field], `${at}.${field}`);
+    if (!actor.ok) return actor;
+    if (!knownActorIds.has(actor.value)) {
+      return fail(
+        `${at}.${field}`,
+        `thread names unknown actor: ${actor.value}`,
+      );
+    }
+    actors.push(actor.value);
+  }
+  const [demander, obligated, offeredBy] = actors as [
+    EntityId,
+    EntityId,
+    EntityId,
+  ];
+  if (demander === obligated) {
+    return fail(at, "a thread is between two gods, not one");
+  }
+  if (offeredBy !== demander && offeredBy !== obligated) {
+    return fail(`${at}.offeredBy`, "an offer is made by a party to the thread");
+  }
+  const causes = parseArray(record.causes, `${at}.causes`, parseEventId);
+  if (!causes.ok) return causes;
+  if (causes.value.length === 0) {
+    return fail(`${at}.causes`, "a thread rests on at least one cause");
+  }
+  const term = parsePracticeTerm(record.term, `${at}.term`);
+  if (!term.ok) return term;
+  for (const party of [
+    term.value.party,
+    ...(term.value.kind === "give-resource" || term.value.kind === "ally"
+      ? [term.value.to]
+      : []),
+  ]) {
+    if (!knownActorIds.has(party)) {
+      return fail(`${at}.term`, `term names unknown actor: ${party}`);
+    }
+  }
+  const subject = parseThreadSubject(record.subject, `${at}.subject`);
+  if (!subject.ok) return subject;
+  if (subject.value !== undefined && !knownActorIds.has(subject.value.agent)) {
+    return fail(
+      `${at}.subject`,
+      `subject names unknown actor: ${subject.value.agent}`,
+    );
+  }
+  const offers = parseArray(record.offers, `${at}.offers`, parseString);
+  if (!offers.ok) return offers;
+  if (offers.value.length === 0) {
+    return fail(
+      `${at}.offers`,
+      "a thread has had at least its demand on the table",
+    );
+  }
+  const petition =
+    record.petition === undefined
+      ? ok<EventId | undefined>(undefined)
+      : parseEventId(record.petition, `${at}.petition`);
+  if (!petition.ok) return petition;
+  if ((practice.value === "supplication") !== (petition.value !== undefined)) {
+    return fail(
+      `${at}.petition`,
+      "a supplication names the prayer it answers, and a settlement names none",
+    );
+  }
+  let progress: PracticeThread["progress"];
+  if (record.progress !== undefined) {
+    if (!isRecord(record.progress) || petition.value === undefined) {
+      return fail(`${at}.progress`, "only a supplication has progress");
+    }
+    const boon =
+      record.progress.boon === undefined
+        ? ok<EventId | undefined>(undefined)
+        : parseEventId(record.progress.boon, `${at}.progress.boon`);
+    if (!boon.ok) return boon;
+    const offering =
+      record.progress.offering === undefined
+        ? ok<EventId | undefined>(undefined)
+        : parseEventId(record.progress.offering, `${at}.progress.offering`);
+    if (!offering.ok) return offering;
+    progress = {
+      ...(boon.value === undefined ? {} : { boon: boon.value }),
+      ...(offering.value === undefined ? {} : { offering: offering.value }),
+    };
+  }
+  const status = parseEnum(record.status, `${at}.status`, PRACTICE_STATUSES);
+  if (!status.ok) return status;
+  const openedTick = parseNonNegativeInteger(
+    record.openedTick,
+    `${at}.openedTick`,
+  );
+  if (!openedTick.ok) return openedTick;
+  const openedSequence = parseNonNegativeInteger(
+    record.openedSequence,
+    `${at}.openedSequence`,
+  );
+  if (!openedSequence.ok) return openedSequence;
+  const negotiationDeadline = parseNonNegativeInteger(
+    record.negotiationDeadline,
+    `${at}.negotiationDeadline`,
+  );
+  if (!negotiationDeadline.ok) return negotiationDeadline;
+  const counterBudgetLeft = parseNonNegativeInteger(
+    record.counterBudgetLeft,
+    `${at}.counterBudgetLeft`,
+  );
+  if (!counterBudgetLeft.ok) return counterBudgetLeft;
+  const revision = parseNonNegativeInteger(record.revision, `${at}.revision`);
+  if (!revision.ok) return revision;
+
+  let acceptance: PracticeThread["acceptance"];
+  if (record.acceptance !== undefined) {
+    if (!isRecord(record.acceptance)) {
+      return fail(`${at}.acceptance`, "expected an acceptance");
+    }
+    const tick = parseNonNegativeInteger(
+      record.acceptance.tick,
+      `${at}.acceptance.tick`,
+    );
+    if (!tick.ok) return tick;
+    const sequence = parseNonNegativeInteger(
+      record.acceptance.sequence,
+      `${at}.acceptance.sequence`,
+    );
+    if (!sequence.ok) return sequence;
+    const sworn = parseBoolean(
+      record.acceptance.sworn,
+      `${at}.acceptance.sworn`,
+    );
+    if (!sworn.ok) return sworn;
+    acceptance = {
+      tick: tick.value,
+      sequence: sequence.value,
+      sworn: sworn.value,
+    };
+  }
+  const stake =
+    record.stake === undefined
+      ? ok<Transformation | undefined>(undefined)
+      : parseTransformation(record.stake, `${at}.stake`);
+  if (!stake.ok) return stake;
+  const closedTick =
+    record.closedTick === undefined
+      ? ok<number | undefined>(undefined)
+      : parseNonNegativeInteger(record.closedTick, `${at}.closedTick`);
+  if (!closedTick.ok) return closedTick;
+  const successor =
+    record.successor === undefined
+      ? ok<EventId | undefined>(undefined)
+      : parseEventId(record.successor, `${at}.successor`);
+  if (!successor.ok) return successor;
+
+  // The status says what the thread must hold: an acceptance from the moment it
+  // is accepted (and kept to a fulfilment or a breach), a closing tick once it
+  // has ended, and neither before.
+  const ended = !["open", "countered", "accepted"].includes(status.value);
+  const needsAcceptance =
+    status.value === "accepted" ||
+    status.value === "fulfilled" ||
+    status.value === "breached";
+  const forbidsAcceptance =
+    status.value === "open" || status.value === "countered";
+  if (
+    (needsAcceptance && acceptance === undefined) ||
+    (forbidsAcceptance && acceptance !== undefined) ||
+    (ended && closedTick.value === undefined) ||
+    (!ended && closedTick.value !== undefined)
+  ) {
+    return fail(
+      at,
+      `a ${status.value} thread has the wrong acceptance or closing tick for its status`,
+    );
+  }
+  return ok([
+    key.value,
+    {
+      id: id.value,
+      practice: practice.value,
+      demander,
+      obligated,
+      causes: causes.value,
+      term: term.value,
+      ...(subject.value === undefined ? {} : { subject: subject.value }),
+      ...(petition.value === undefined ? {} : { petition: petition.value }),
+      ...(progress === undefined ? {} : { progress }),
+      offers: offers.value,
+      ...(stake.value === undefined ? {} : { stake: stake.value }),
+      offeredBy,
+      status: status.value,
+      openedTick: openedTick.value,
+      openedSequence: openedSequence.value,
+      negotiationDeadline: negotiationDeadline.value,
+      counterBudgetLeft: counterBudgetLeft.value,
+      ...(acceptance === undefined ? {} : { acceptance }),
+      ...(closedTick.value === undefined
+        ? {}
+        : { closedTick: closedTick.value }),
+      ...(successor.value === undefined ? {} : { successor: successor.value }),
+      revision: revision.value,
     },
   ] as const);
 }
@@ -1218,6 +1529,16 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
   }
   const petitions = new Map(petitionEntries.value);
 
+  const threadEntries = parseArray(value.threads, "threads", (item, path) =>
+    parseThreadEntry(item, path, knownActorIds),
+  );
+  if (!threadEntries.ok) return threadEntries;
+  const duplicateThread = findDuplicateKey(threadEntries.value);
+  if (duplicateThread !== undefined) {
+    return fail("threads", `duplicate thread: ${duplicateThread}`);
+  }
+  const threads = new Map(threadEntries.value);
+
   const grantEntries = parseArray(
     value.repairGrants,
     "repairGrants",
@@ -1344,6 +1665,7 @@ function parseEncodedWorldState(value: unknown): ParseResult<WorldState> {
     needs,
     causes,
     petitions,
+    threads,
     repairGrants,
     noticed,
     director,

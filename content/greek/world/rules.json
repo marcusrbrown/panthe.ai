@@ -51,12 +51,13 @@
       "salience_sign": 6,
       "salience_theft": 6,
       "salience_noticed": 5,
+      "salience_practice-ended": 7,
       "harmAffinity": 2,
       "kindnessAffinity": 1,
+      "refusalAffinity": 1,
       "toldShare": 0.5,
       "affinityLimit": 10,
-      "grudgeLimit": 10,
-      "allianceAffinity": 5
+      "grudgeLimit": 10
     },
     "petitionBalance": {
       "answerWindowTicks": 250,
@@ -68,6 +69,24 @@
       "blessResourceCap": 4,
       "directorQuietTicks": 120,
       "goalLockTicks": 40
+    },
+    "practiceBalance": {
+      "negotiationTicks": 200,
+      "counterBudget": 3,
+      "minTermTicks": 25,
+      "maxTermTicks": 500,
+      "oathDivinityLoss": 3,
+      "oathAccessTicks": 100,
+      "standingDelta": 1,
+      "acceptPietyPercent": 10,
+      "urgentTicks": 20
+    },
+    "practiceStakes": {
+      "wolf": {
+        "form": "wolf",
+        "capabilitiesGained": ["beast"],
+        "capabilitiesLost": []
+      }
     }
   }
 }

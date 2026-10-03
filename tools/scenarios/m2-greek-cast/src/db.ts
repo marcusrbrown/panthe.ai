@@ -176,3 +176,47 @@ export function readRealRequests(path: string): RealRequest[] {
     })),
   );
 }
+
+/** A model request as the trace holds it, with the prompt and the output it recorded (already redacted by the service at the write boundary). */
+export interface SampleRow {
+  readonly role: string;
+  readonly outcome: "intent" | "exhausted";
+  readonly promptPayload: string | undefined;
+  readonly outputPayload: string | undefined;
+  readonly steps: readonly {
+    mode?: string;
+    reason?: string;
+    detail?: string;
+    attempts?: number;
+    output?: string;
+    schema?: string;
+  }[];
+  readonly elapsedMs: number;
+}
+
+/** Every model request the trace holds, oldest first, with its prompt and output text. */
+export function readSampleRows(path: string): SampleRow[] {
+  return withWorldDb(path, (db) =>
+    (
+      db
+        .query(
+          "SELECT role, outcome, steps, elapsed_ms, prompt_payload, output_payload FROM trace_model_requests ORDER BY recorded_at ASC",
+        )
+        .all() as {
+        role: string;
+        outcome: "intent" | "exhausted";
+        steps: string;
+        elapsed_ms: number;
+        prompt_payload: string | null;
+        output_payload: string | null;
+      }[]
+    ).map((row) => ({
+      role: row.role,
+      outcome: row.outcome,
+      promptPayload: row.prompt_payload ?? undefined,
+      outputPayload: row.output_payload ?? undefined,
+      steps: JSON.parse(row.steps) as SampleRow["steps"],
+      elapsedMs: row.elapsed_ms,
+    })),
+  );
+}

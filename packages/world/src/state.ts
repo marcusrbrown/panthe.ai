@@ -16,16 +16,23 @@
 import type {
   Consequence,
   ContentPack,
+  EndingEventKind,
   EntityId,
   EventEnvelope,
   EventId,
   InhabitantDrives,
   LegendId,
   LocationEdge,
+  MemoryEnding,
   PetitionRequest,
+  PracticeKind,
+  PracticeStatus,
+  PracticeTerm,
   Realm,
   Recipe,
   ResourceAmount,
+  ThreadSubject,
+  Transformation,
   UnmetNeedReason,
   WitnessedEventKind,
   WorldEvent,
@@ -86,8 +93,21 @@ export interface ActorState {
   readonly wants?: string;
   /** Worship effects currently in force, each checked against the current tick at read time -- an expired entry is never pruned by a mutation or an event, only ignored by `isFavorActive`. */
   readonly favors?: readonly FavorState[];
-  /** Bumped whenever this actor's location, realm, or inventory changes. */
+  /** What this actor has become, once a transformation changed it. Absent means its own form. Identity, memory, and relationships are never part of it. */
+  readonly form?: string;
+  /** Capabilities a penalty withheld, each with the world tick it returns at and the penalty event that took it. Absent means none. */
+  readonly withheld?: readonly WithheldCapability[];
+  /** Bumped whenever this actor's location, realm, inventory, capabilities, or form changes. */
   readonly revision: number;
+}
+
+/** A capability taken for a period: it returns at `restoreAt`, by an `access-restored` event. */
+export interface WithheldCapability {
+  readonly capability: string;
+  /** The first world tick the capability is back. */
+  readonly restoreAt: number;
+  /** The `motif-applied` event that took it. */
+  readonly eventId: EventId;
 }
 
 export const BUILDING_STATUSES = [
@@ -212,7 +232,13 @@ export type MemoryEntry = {
   readonly subjects: readonly EntityId[];
   readonly consequence?: Consequence;
 } & (
-  | { readonly kind: "witnessed"; readonly eventKind: WitnessedEventKind }
+  | {
+      readonly kind: "witnessed";
+      /** The event seen, or the ending of a thread its owner took part in. */
+      readonly eventKind: WitnessedEventKind | EndingEventKind;
+      /** How the thread ended, present exactly when `eventKind` is an ending: the outcome and, when someone's act decided it, who. */
+      readonly ending?: MemoryEnding;
+    }
   | {
       readonly kind: "told";
       readonly teller: EntityId;
@@ -319,6 +345,74 @@ export interface Petition {
   readonly status: "open" | "answered" | "lapsed";
 }
 
+/**
+ * A practice thread: one settlement between two gods, held by the world and
+ * changed only by `practice-opened`, `practice-moved`, and `practice-ended`
+ * events, so a replay rebuilds it. Outside `ActorState`, so a move on a thread
+ * never bumps an actor's revision and never stales anyone's delayed proposal;
+ * `revision` is the thread's own, bumped by every event that touches it, and is
+ * all a practice move pins.
+ *
+ * `term` is the term on the table: the demand, or the latest counter. Once the
+ * thread is accepted it is the obligation, and `term.deadline` is the
+ * obligation's deadline (a world tick, inclusive).
+ */
+export interface PracticeThread {
+  /** The `practice-opened` event's id. */
+  readonly id: EventId;
+  readonly practice: PracticeKind;
+  /** Who demanded. */
+  readonly demander: EntityId;
+  /** Who the demand was made of. */
+  readonly obligated: EntityId;
+  /** The cause events the thread consumed: what the opener knew when it opened. A closed thread keeps them, so a successor can be told apart by a newer cause. */
+  readonly causes: readonly EventId[];
+  readonly term: PracticeTerm;
+  /** The prayer a supplication answers; absent on a settlement. */
+  readonly petition?: EventId;
+  /** The halves of a supplication's bargain the world has seen done: the boon, and the offering, each by the event that showed it. Absent until one is. */
+  readonly progress?: {
+    readonly boon?: EventId;
+    readonly offering?: EventId;
+  };
+  /** What the demand is about, from the demander's own memory of its cause when that names an agent. A repeat demand and talk around the thread are matched against it, never against words. */
+  readonly subject?: ThreadSubject;
+  /** The tuple of every offer that has been on the table, the demand and each counter, as `termTuple` keys: what a counter that changes nothing is compared with. */
+  readonly offers: readonly string[];
+  /** What the one who breaches the term becomes: a transformation the demand carried, applied by the world when it rules a breach. Absent when the demand named none. */
+  readonly stake?: Transformation;
+  /** Whose offer `term` is: the other god may answer it. */
+  readonly offeredBy: EntityId;
+  readonly status: PracticeStatus;
+  readonly openedTick: number;
+  /** The `practice-opened` event's sequence: performances count only after acceptance, measured in events. */
+  readonly openedSequence: number;
+  /** The last world tick an answer still counts; the thread expires on the first tick past it. */
+  readonly negotiationDeadline: number;
+  readonly counterBudgetLeft: number;
+  /** Present from acceptance on, and kept after the thread ends so a breach knows whether it was sworn. */
+  readonly acceptance?: {
+    readonly tick: number;
+    /** The accepting event's sequence: only performances after it count. */
+    readonly sequence: number;
+    readonly sworn: boolean;
+  };
+  /** The tick the thread ended in; absent while it is open. */
+  readonly closedTick?: number;
+  /** The thread opened after this one ended, citing a newer cause. */
+  readonly successor?: EventId;
+  readonly revision: number;
+}
+
+/** Whether a thread is still open to answers or performance: not yet ended. */
+export function isThreadOpen(thread: PracticeThread): boolean {
+  return (
+    thread.status === "open" ||
+    thread.status === "countered" ||
+    thread.status === "accepted"
+  );
+}
+
 /** Whether `capabilities` satisfy a location's `requiredCapability`; the one rule move, realm-transition validation, and route search apply, exported so a caller can offer only what the rules would allow. */
 export function hasCapability(
   capabilities: readonly string[],
@@ -371,6 +465,11 @@ export interface WorldState {
   readonly causes: ReadonlyMap<EntityId, readonly PetitionCause[]>;
   /** Every petition ever opened, by its event id. */
   readonly petitions: ReadonlyMap<EventId, Petition>;
+  /**
+   * Every practice thread ever opened, by its event id. Outside `ActorState`,
+   * like petitions, so a move on a thread never stales an actor's proposal.
+   */
+  readonly threads: ReadonlyMap<EventId, PracticeThread>;
   /** The losses each owner has already noticed, keyed `owner|causeEventId`: what makes noticing once per loss. */
   readonly noticed: ReadonlyMap<string, NoticedLoss>;
   /** The quiet-world director's timer: the tick of the last consequential event. */
@@ -505,6 +604,7 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     needs: new Map(),
     causes: new Map(),
     petitions: new Map(),
+    threads: new Map(),
     repairGrants: new Map(),
     noticed: new Map(),
     director: { lastConsequentialTick: 0 },
@@ -594,7 +694,9 @@ export function getEntityRevision(
   return (
     state.actors.get(id)?.revision ??
     state.locations.get(id)?.revision ??
-    state.buildings.get(id)?.revision
+    state.buildings.get(id)?.revision ??
+    // A thread's id is the id of the event that opened it, never an entity's.
+    state.threads.get(id as unknown as EventId)?.revision
   );
 }
 

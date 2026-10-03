@@ -73,6 +73,7 @@ export function snapshotFacts(
   for (const petition of remembered.petitions) {
     facts.add(`petition:${petition.id}`);
   }
+  for (const thread of remembered.threads) facts.add(`thread:${thread.id}`);
   return facts;
 }
 
@@ -285,6 +286,88 @@ export function buildModelProposal(
         kind: "bless",
         petition: petition.id,
       };
+      break;
+    }
+    case "practice": {
+      if (intent.move === "offer") {
+        const prayer = remembered.practice.offerable.find(
+          (candidate) => candidate.id === intent.petition,
+        );
+        const petition = remembered.petitions.find(
+          (candidate) => candidate.id === intent.petition,
+        );
+        if (prayer === undefined || petition === undefined) {
+          return refuse(`${intent.petition} is not a prayer the god was shown`);
+        }
+        factsRead.push(`petition:${petition.id}`);
+        // An offer opens a thread, so there is nothing to pin: whether the
+        // prayer is still open, the offering affordable, the stake authored,
+        // and no terms already standing are judged when it commits.
+        proposal = {
+          ...base,
+          targets: [],
+          kind: "practice",
+          move: "offer",
+          petition: intent.petition,
+          term: intent.term,
+          ...(intent.stake === undefined ? {} : { stake: intent.stake }),
+        };
+        break;
+      }
+      if (intent.move === "demand") {
+        const cause = remembered.practice.causes.find(
+          (candidate) => candidate.id === intent.cause,
+        );
+        if (cause === undefined) {
+          return refuse(`${intent.cause} is not a cause the god was shown`);
+        }
+        // A demand opens a thread, so there is nothing to pin: whether the god
+        // knows the cause, the other god lives, and the term can be performed
+        // are all judged when it commits.
+        factsRead.push(`memory:${cause.memoryId}`);
+        proposal = {
+          ...base,
+          targets: [],
+          kind: "practice",
+          move: "demand",
+          counterparty: intent.term.party,
+          cause: cause.id,
+          term: intent.term,
+        };
+        break;
+      }
+      const thread = remembered.threads.find(
+        (candidate) => candidate.id === intent.thread,
+      );
+      if (thread === undefined) {
+        return refuse(`${intent.thread} is not a thread the god was shown`);
+      }
+      factsRead.push(`thread:${thread.id}`);
+      // A move pins its thread's revision and nothing else. What the move
+      // depends on (the god alive and a party, the thread open and inside its
+      // window, the offer the other god's, the budget, the term performable) is
+      // judged again at commit; a pin on the god, its place, or the other party
+      // would only refuse it for changes it does not depend on.
+      expectedRevisions.push({
+        entityId: thread.id as unknown as EntityId,
+        revision: thread.revision,
+      });
+      const move = {
+        ...base,
+        targets: [],
+        kind: "practice" as const,
+        thread: thread.id,
+      };
+      proposal =
+        intent.move === "counter"
+          ? { ...move, move: "counter", term: intent.term }
+          : intent.move === "accept"
+            ? {
+                ...move,
+                move: "accept",
+                ...(intent.swear === undefined ? {} : { swear: intent.swear }),
+              }
+            : { ...move, move: intent.move };
       break;
     }
     case "legend": {

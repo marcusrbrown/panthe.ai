@@ -20,6 +20,7 @@ import {
   type RealAnalysis,
   type RealInput,
 } from "./real-analysis";
+import { readSampleSource, type SampleSource } from "./sample-prompt";
 
 export interface RealOptions {
   readonly binary: string;
@@ -203,6 +204,8 @@ export async function prepareOllama(options: RealOptions): Promise<void> {
 export interface CollectedRun {
   readonly record: RealRecord;
   readonly input: RealInput;
+  /** One turn's prompt, output, and schema, read from the store before it is deleted. */
+  readonly sample: SampleSource;
 }
 
 export async function runReal(options: RealOptions): Promise<RealRecord> {
@@ -268,6 +271,7 @@ export async function collectRun(
         hardware: captureEnvironment().hardware.brand,
       },
       input,
+      sample: readSampleSource(path),
     };
     beforeCleanup?.(run);
     return run;

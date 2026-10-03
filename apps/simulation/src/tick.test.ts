@@ -27,6 +27,7 @@ import {
   recordReceipt,
 } from "@panthea/telemetry";
 import {
+  applyEvent,
   createPrng,
   isEventLinked,
   submitProposal,
@@ -1242,4 +1243,101 @@ test("tracing a tick whose admitted observation conflicts with the recorded one 
       first.observation,
     );
   });
+});
+
+// --- Keeping a promise comes first when its deadline is near ------------------------------------
+
+/** The Greek world in which Hera has offered the farmer terms on a prayer and the farmer accepted: it owes her one currency within `deadline` ticks. */
+function farmerOwes(deadline: number, boonSeen = false) {
+  const base = loadGreekWorldState();
+  const at = (state: typeof base, overrides: Record<string, unknown>) =>
+    applyEvent(state, {
+      schemaVersion: 1,
+      tick: 0,
+      simTime: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      sequence: state.lastSequence + 1,
+      ...overrides,
+    } as never);
+  let state = at(base, {
+    id: "evt-0-1",
+    kind: "practice-opened",
+    entityId: "hera",
+    practice: "supplication",
+    counterparty: "farmer",
+    causes: ["evt-0-0"],
+    petition: "evt-0-0",
+    term: {
+      kind: "make-offering",
+      party: "farmer",
+      to: "hera",
+      resource: "currency",
+      amount: 1,
+      deadline,
+    },
+    negotiationDeadline: 50,
+    counterBudget: 0,
+  });
+  state = at(state, {
+    id: "evt-0-2",
+    kind: "practice-moved",
+    entityId: "farmer",
+    threadId: "evt-0-1",
+    move: "accept",
+    sworn: false,
+  });
+  if (boonSeen) {
+    state = at(state, {
+      id: "evt-0-3",
+      kind: "practice-progressed",
+      entityId: "hera",
+      counterparty: "farmer",
+      threadId: "evt-0-1",
+      step: "boon",
+      by: "evt-0-0",
+    });
+  }
+  return state;
+}
+
+test("a mortal whose accepted term is due soon is queued ahead of every other routine proposal, so a tight cap overflows something else; with time to spare the order is the actors' own", () => {
+  const owing = farmerOwes(10, true);
+  const queue = buildRoutineQueue(owing);
+  const owingFarmer = queue.findIndex(
+    (queued) => queued.proposal.actor === toEntityId("farmer"),
+  );
+  expect(queue[0]?.proposal).toMatchObject({
+    actor: "farmer",
+    kind: "worship",
+    deity: "hera",
+  });
+  expect(owingFarmer).toBe(0);
+  // Under a cap of one, the farmer's offering is the proposal admitted.
+  const outcome = stepWorldTick(
+    { ...owing, rules: { ...owing.rules, maxProposalsPerTick: 1 } },
+    createPrng(1),
+    queue,
+  );
+  expect(outcome.admitted.map((q) => q.proposal.actor)).toEqual([
+    toEntityId("farmer"),
+  ]);
+  expect(outcome.overflow.length).toBe(queue.length - 1);
+
+  // Control: the same promise with a long time to run does not jump the queue.
+  const relaxed = buildRoutineQueue(farmerOwes(400, true));
+  expect(relaxed.map((q) => q.proposal.actor)).toEqual(
+    buildRoutineQueue(loadGreekWorldState()).map((q) => q.proposal.actor),
+  );
+  // The order is a pure function of the state: building it twice agrees.
+  expect(buildRoutineQueue(owing).map((q) => q.proposal.actor)).toEqual(
+    queue.map((q) => q.proposal.actor),
+  );
+});
+
+test("the urgent order holds in catch-up too: it is the same queue builder, so replaying a stretch of ticks keeps the promise the live run kept", () => {
+  const owing = farmerOwes(10);
+  const first = buildRoutineQueue(owing)[0];
+  expect(first?.proposal).toMatchObject({ actor: "farmer", kind: "worship" });
 });

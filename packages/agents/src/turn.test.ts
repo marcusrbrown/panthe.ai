@@ -4,7 +4,9 @@
 // ticks, and a built proposal is committed by the real validator.
 
 import { afterEach, expect, test } from "bun:test";
+import type { EventId, WorldEvent } from "@panthea/contracts";
 import {
+  applyEvent,
   createPrng,
   runTick,
   submitProposal,
@@ -335,4 +337,96 @@ test("the prompt shows the god its active goal and its own recent action, from t
   await runGodTurn(deps(bare), { state: ticked.state, actorId: id("zeus") });
   expect(JSON.stringify(bare.seen[0])).toContain("Punish the farmer.");
   expect(JSON.stringify(bare.seen[0])).not.toContain("What you did recently");
+});
+
+/** Hera was told of something Zeus did, and demanded a legend at the altar of him: a real thread awaiting Zeus. */
+function demandedOfZeus(): { state: WorldState; thread: EventId } {
+  const base = greekState();
+  const apply = (state: WorldState, overrides: Record<string, unknown>) =>
+    applyEvent(state, {
+      schemaVersion: 1,
+      tick: 0,
+      simTime: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      sequence: state.lastSequence + 1,
+      ...overrides,
+    } as unknown as WorldEvent);
+  let state = apply(base, {
+    id: "evt-0-1",
+    kind: "report-told",
+    entityId: "farmer",
+    listenerId: "hera",
+    content: "Zeus visited a nymph",
+  });
+  state = apply(state, {
+    id: "evt-0-2",
+    kind: "memory-recorded",
+    memoryKind: "told",
+    entityId: "hera",
+    sourceEventId: "evt-0-1",
+    teller: "farmer",
+    content: "Zeus visited a nymph",
+    subjects: ["farmer", "hera"],
+    salience: 4,
+  });
+  const submitted = submitProposal({
+    schemaVersion: 1,
+    actor: "hera",
+    targets: [],
+    expectedRevisions: [],
+    source: "fixture",
+    observationId: "obs-demand",
+    kind: "practice",
+    move: "demand",
+    counterparty: "zeus",
+    cause: "evt-0-1",
+    term: {
+      kind: "tell-legend",
+      party: "zeus",
+      place: "altar",
+      deadlineTicks: 100,
+    },
+  });
+  if (!submitted.ok) throw new Error(submitted.rejection.message);
+  const ran = runTick(state, createPrng(1), [submitted.proposal]);
+  expect(ran.rejected).toEqual([]);
+  const [thread] = [...ran.state.threads.keys()];
+  if (!thread) throw new Error("no thread");
+  return { state: ran.state, thread };
+}
+
+test("a scripted practice answer becomes a service-built proposal pinned only to its thread, which the world commits; the model saw the thread in its prompt", async () => {
+  const { state, thread } = demandedOfZeus();
+  const stub = startStub(
+    JSON.stringify({ action: "practice", move: "accept", thread, swear: true }),
+  );
+  const turn = await runGodTurn(deps(stub), { state, actorId: id("zeus") });
+  expect(turn?.kind).toBe("proposal");
+  if (turn?.kind !== "proposal") return;
+  expect(turn.request.prompt).toContain(`AWAITING YOUR ANSWER`);
+  expect(JSON.stringify(stub.seen[0])).toContain(thread);
+  expect(turn.proposal).toMatchObject({
+    kind: "practice",
+    move: "accept",
+    thread,
+    swear: true,
+    source: "model",
+    expectedRevisions: [
+      { entityId: thread, revision: state.threads.get(thread)?.revision },
+    ],
+  });
+  const ran = runTick(state, createPrng(1), [turn.proposal]);
+  expect(ran.rejected).toEqual([]);
+  expect(ran.state.threads.get(thread)?.status).toBe("accepted");
+});
+
+test("a scripted answer on a thread that is not the god's is not a valid intent: the router repairs or exhausts, and no proposal is built", async () => {
+  const { state } = demandedOfZeus();
+  const stub = startStub(
+    '{"action":"practice","move":"accept","thread":"evt-404"}',
+  );
+  const turn = await runGodTurn(deps(stub), { state, actorId: id("zeus") });
+  expect(turn?.kind).toBe("exhausted");
 });

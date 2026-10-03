@@ -16,6 +16,7 @@ import type {
   Consequence,
   ConsumeProposal,
   EntityId,
+  EventId,
   GatherProposal,
   LegendProposal,
   MoveProposal,
@@ -41,12 +42,12 @@ import { igniteThresholdOf } from "./fire";
 import { ALTAR, crossesRealm, findEdge, isAdjacent } from "./geography";
 import { getMemories } from "./memory";
 import {
-  blessingFor,
+  blessability,
   canPray,
-  inAnswerWindow,
   petitionBalanceOf,
   petitionFor,
 } from "./petitions";
+import { talkAroundThread, validatePractice } from "./practices";
 import { REPAIR_RESOURCE, repairAmountPerTickOf, repairCostOf } from "./repair";
 import {
   getActor,
@@ -69,6 +70,8 @@ export interface RuleRejection {
   readonly ok: false;
   readonly reason: RejectionReasonCode;
   readonly message: string;
+  /** The practice thread the refusal is about, when one is. */
+  readonly thread?: EventId;
 }
 
 export interface RuleCommit {
@@ -81,8 +84,14 @@ export type RuleOutcome = RuleCommit | RuleRejection;
 export function reject(
   reason: RejectionReasonCode,
   message: string,
+  thread?: EventId,
 ): RuleRejection {
-  return { ok: false, reason, message };
+  return {
+    ok: false,
+    reason,
+    message,
+    ...(thread === undefined ? {} : { thread }),
+  };
 }
 
 export function commit(events: readonly WorldEventDraft[]): RuleCommit {
@@ -541,6 +550,16 @@ function handleLegend(
     )
     .map((actor) => actor.id)
     .sort();
+  const circling = talkAroundThread(
+    state,
+    proposal.actor,
+    hearers,
+    claim,
+    proposal.linkedEventId,
+  );
+  if (circling !== undefined) {
+    return reject(circling.reason, circling.message, circling.thread);
+  }
   return commit([
     {
       kind: "legend-recorded",
@@ -620,22 +639,9 @@ function handleBless(state: WorldState, proposal: BlessProposal): RuleOutcome {
   if (!god?.isDeity) {
     return reject("unauthorized-claim", "only a deity may bless");
   }
-  const petition = state.petitions.get(proposal.petition);
-  if (
-    petition === undefined ||
-    petition.god !== proposal.actor ||
-    petition.status !== "open" ||
-    !inAnswerWindow(state, petition, state.tick)
-  ) {
-    return reject(
-      "malformed",
-      `${proposal.petition} is not an open petition addressed to this god`,
-    );
-  }
-  const blessing = blessingFor(state, petition.request);
-  if (blessing === undefined) {
-    return reject("malformed", "a punish petition is answered by a strike");
-  }
+  const blessable = blessability(state, proposal.petition, proposal.actor);
+  if (!blessable.ok) return reject("malformed", blessable.message);
+  const { petition, blessing } = blessable;
   const petitioner = getActor(state, petition.petitioner);
   if (!petitioner?.alive) {
     return reject("dead-actor", "the petitioner is no longer living");
@@ -712,6 +718,16 @@ function handleReport(
   if (claim !== undefined && !claimIdsExist(state, claim)) {
     return reject("malformed", CLAIM_IDS_MESSAGE);
   }
+  const circling = talkAroundThread(
+    state,
+    proposal.actor,
+    [proposal.listener],
+    claim,
+    proposal.linkedEventId,
+  );
+  if (circling !== undefined) {
+    return reject(circling.reason, circling.message, circling.thread);
+  }
   return commit([
     {
       kind: "report-told",
@@ -784,6 +800,8 @@ export function validateProposal(
       return handlePray(state, proposal);
     case "bless":
       return handleBless(state, proposal);
+    case "practice":
+      return validatePractice(state, proposal);
     default: {
       const exhaustiveCheck: never = proposal;
       return reject(

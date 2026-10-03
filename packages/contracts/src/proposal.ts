@@ -38,11 +38,17 @@ import {
   parseEventId,
   parseNonNegativeInteger,
   parseNonNegativeNumber,
+  parseOptionalBoolean,
   parseResourceAmount,
   parseSchemaVersion,
   parseString,
   type ResourceAmount,
 } from "./ids";
+import {
+  PRACTICE_MOVES,
+  type PracticeTermOffer,
+  parsePracticeTermOffer,
+} from "./practice";
 
 // --- Observation records -----------------------------------------------------
 
@@ -247,6 +253,40 @@ export interface BlessProposal extends ProposalBase {
   readonly petition: EventId;
 }
 
+/**
+ * One move in a practice thread between gods. A demand opens a settlement: it
+ * names the god it is made of, a cause event the demander knows, and one term.
+ * Every other move names its thread, and the move pins that thread's revision
+ * and nothing else. Only a move binds; words explain it and never perform it.
+ */
+export type PracticeProposal = ProposalBase & { readonly kind: "practice" } & (
+    | {
+        /** A god answers a prayer with terms: its boon for one offering by the mortal. `stake` names, by its id in the world's rules, what the mortal becomes if it takes the boon and breaks the term. */
+        readonly move: "offer";
+        readonly petition: EventId;
+        readonly term: PracticeTermOffer;
+        readonly stake?: string;
+      }
+    | {
+        readonly move: "demand";
+        readonly counterparty: EntityId;
+        readonly cause: EventId;
+        readonly term: PracticeTermOffer;
+      }
+    | {
+        readonly move: "counter";
+        readonly thread: EventId;
+        readonly term: PracticeTermOffer;
+      }
+    | {
+        readonly move: "accept";
+        readonly thread: EventId;
+        /** Swear the acceptance by the Styx. */
+        readonly swear?: boolean;
+      }
+    | { readonly move: "refuse" | "withdraw"; readonly thread: EventId }
+  );
+
 /** A turn that does nothing but change the god's goal: what a wait with a goal change becomes. */
 export interface GoalProposal extends ProposalBase {
   readonly kind: "goal";
@@ -285,7 +325,8 @@ export type Proposal =
   | ReportProposal
   | GoalProposal
   | PrayProposal
-  | BlessProposal;
+  | BlessProposal
+  | PracticeProposal;
 
 export type ProposalKind = Proposal["kind"];
 
@@ -308,6 +349,7 @@ const PROPOSAL_KIND_SET = {
   goal: true,
   pray: true,
   bless: true,
+  practice: true,
 } as const satisfies Record<ProposalKind, true>;
 
 export const PROPOSAL_KINDS = Object.keys(
@@ -572,6 +614,91 @@ export function parseProposal(input: unknown): ParseResult<Proposal> {
       const petition = parseEventId(input.petition, "petition");
       if (!petition.ok) return petition;
       return ok({ ...base, kind: "bless", petition: petition.value });
+    }
+    case "practice": {
+      // A stake belongs to an offer to a supplicant, and to no other move.
+      if (input.stake !== undefined && input.move !== "offer") {
+        return fail("stake", "only an offer to a supplicant may carry a stake");
+      }
+      switch (input.move) {
+        case "offer": {
+          const petition = parseEventId(input.petition, "petition");
+          if (!petition.ok) return petition;
+          const term = parsePracticeTermOffer(input.term, "term");
+          if (!term.ok) return term;
+          const stake =
+            input.stake === undefined
+              ? ok<string | undefined>(undefined)
+              : parseString(input.stake, "stake");
+          if (!stake.ok) return stake;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: "offer",
+            petition: petition.value,
+            term: term.value,
+            ...(stake.value === undefined ? {} : { stake: stake.value }),
+          });
+        }
+        case "demand": {
+          const counterparty = parseEntityId(
+            input.counterparty,
+            "counterparty",
+          );
+          if (!counterparty.ok) return counterparty;
+          const cause = parseEventId(input.cause, "cause");
+          if (!cause.ok) return cause;
+          const term = parsePracticeTermOffer(input.term, "term");
+          if (!term.ok) return term;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: "demand",
+            counterparty: counterparty.value,
+            cause: cause.value,
+            term: term.value,
+          });
+        }
+        case "counter": {
+          const thread = parseEventId(input.thread, "thread");
+          if (!thread.ok) return thread;
+          const term = parsePracticeTermOffer(input.term, "term");
+          if (!term.ok) return term;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: "counter",
+            thread: thread.value,
+            term: term.value,
+          });
+        }
+        case "accept": {
+          const thread = parseEventId(input.thread, "thread");
+          if (!thread.ok) return thread;
+          const swear = parseOptionalBoolean(input.swear, "swear");
+          if (!swear.ok) return swear;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: "accept",
+            thread: thread.value,
+            ...(swear.value === undefined ? {} : { swear: swear.value }),
+          });
+        }
+        case "refuse":
+        case "withdraw": {
+          const thread = parseEventId(input.thread, "thread");
+          if (!thread.ok) return thread;
+          return ok({
+            ...base,
+            kind: "practice",
+            move: input.move,
+            thread: thread.value,
+          });
+        }
+        default:
+          return fail("move", `expected one of: ${PRACTICE_MOVES.join(", ")}`);
+      }
     }
     case "goal": {
       if (base.goal === undefined) {

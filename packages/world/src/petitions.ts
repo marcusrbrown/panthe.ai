@@ -624,6 +624,54 @@ export function blessingFor(
   };
 }
 
+/** What a bless by `god` could do for a petition: the grant it would make, or why it could not. */
+export type Blessability =
+  | {
+      readonly ok: true;
+      readonly petition: Petition;
+      readonly blessing: {
+        resource: string;
+        amount: number;
+        building?: EntityId;
+      };
+    }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Whether a bless by `god` could answer petition `petitionId`: the petition is
+ * addressed to that god, still open inside its answer window, and a request for
+ * help (a punish petition is answered by a strike). The one rule `bless` is
+ * validated by and a term to bless a mortal is held to, so a term cannot promise
+ * a blessing the world would refuse to give. It does not look at where anyone
+ * stands, who is alive, or what the god holds: those belong to the act itself.
+ */
+export function blessability(
+  state: WorldState,
+  petitionId: EventId,
+  god: EntityId,
+): Blessability {
+  const petition = state.petitions.get(petitionId);
+  if (
+    petition === undefined ||
+    petition.god !== god ||
+    petition.status !== "open" ||
+    !inAnswerWindow(state, petition, state.tick)
+  ) {
+    return {
+      ok: false,
+      message: `${petitionId} is not an open petition addressed to this god`,
+    };
+  }
+  const blessing = blessingFor(state, petition.request);
+  if (blessing === undefined) {
+    return {
+      ok: false,
+      message: "a punish petition is answered by a strike",
+    };
+  }
+  return { ok: true, petition, blessing };
+}
+
 /** A judged answer: the petition it answers and the event that answered it. */
 export interface Answer {
   readonly petition: Petition;

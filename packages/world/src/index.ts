@@ -19,6 +19,7 @@ export * from "./memory";
 export * from "./needs";
 export * from "./perception";
 export * from "./petitions";
+export * from "./practices";
 export * from "./repair";
 export * from "./routines";
 export * from "./state";

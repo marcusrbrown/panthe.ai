@@ -92,6 +92,7 @@ The M2 plan's risk table already names own-action memory as the mitigation for r
 - **Goals declared by the god, not authored:** keeps judgment with the model and needs no per-god goal content. Goal quality depends on the model, and the gate measures it.
 - **A goal names one target and the god ends it:** the target lets the prompt show progress and lets the transcript tie actions to the goal, without a rule engine judging success.
 - **Conversations end through goals, not rules:** goals plus self-knowledge should end exchanges on their own. The repetition cap stays as the check, and a scene mechanism comes only if the rerun still loops.
+  - **Superseded 2026-10-02:** the rerun still looped (`tools/scenarios/m2-greek-cast/episodes/2026-10-02T14-29-04/`), so conversations now end through practices: threads the world holds and judges (`docs/brainstorms/2026-10-02-god-practices-requirements.md`, plan `docs/plans/2026-10-02-001-feat-god-practices-plan.md`). Goals stay as private motives that never open, certify, or close a thread. The text above is kept for its context.
 - **No stated reason per action:** if the design holds, the reason for an action should be clear from what the god does. The owner's causality score judges it.
 - **Legends become public tellings:** answers the owner's inspectability question with one rule that reuses the report claim, without a spreading mechanic.
 

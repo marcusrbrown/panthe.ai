@@ -23,6 +23,8 @@ import {
   type EntityId,
   type EventId,
   LATEST_EVENT_SCHEMA_VERSION,
+  MAX_REFUSAL_WHY,
+  type PracticeEndedEvent,
   type Proposal,
   parseProposal,
   type RejectionReasonCode,
@@ -47,6 +49,7 @@ import {
   applyMemoryRecorded,
   applyRelationshipChanged,
   type DerivedDraft,
+  endingMemories,
   legendTellings,
   noticedMemory,
   planRelationships,
@@ -73,6 +76,17 @@ import {
   planNoticeStep,
   recordCauses,
 } from "./petitions";
+import {
+  applyAccessRestored,
+  applyMotifApplied,
+  applyPracticeEnded,
+  applyPracticeMoved,
+  applyPracticeOpened,
+  applyPracticeProgressed,
+  judgePractices,
+  planAccessRestorations,
+  planConsequences,
+} from "./practices";
 import { applyBuildingRepaired, applyRepairProgressed } from "./repair";
 import {
   type PrngState,
@@ -273,8 +287,27 @@ export function applyEvent(state: WorldState, event: WorldEvent): WorldState {
     case "petition-lapsed":
       next = applyPetitionLapsed(state, event);
       break;
+    case "practice-opened":
+      next = applyPracticeOpened(state, event);
+      break;
+    case "practice-moved":
+      next = applyPracticeMoved(state, event);
+      break;
+    case "practice-ended":
+      next = applyPracticeEnded(state, event);
+      break;
+    case "practice-progressed":
+      next = applyPracticeProgressed(state, event);
+      break;
+    case "motif-applied":
+      next = applyMotifApplied(state, event);
+      break;
+    case "access-restored":
+      next = applyAccessRestored(state, event);
+      break;
     case "goal-change-refused":
-      // Their world state arrives with the units that produce them.
+    case "practice-refused":
+      // Private records of a refusal: what the god's next prompt says, and no world state.
       next = state;
       break;
     default: {
@@ -339,7 +372,7 @@ export interface RejectedRecord {
   readonly proposal: Proposal;
   readonly reason: RejectionReasonCode;
   readonly message: string;
-  /** The goal events the rejected proposal's goal change still committed: the action was refused, the declaration was not. */
+  /** The events the rejected proposal still committed: its goal change (the action was refused, the declaration was not), and the private record that a practice move, or talk around an open thread, was refused. */
   readonly goalEvents: readonly WorldEvent[];
 }
 
@@ -434,6 +467,8 @@ function planMemories(
   let running = before;
   for (const event of primary) {
     drafts.push(...witnessMemories(running, event));
+    // The parties to a thread remember how it ended, though no one stood at it.
+    drafts.push(...endingMemories(running, event));
     // A report gives its listener a belief; a legend gives each hearer one.
     const tellings =
       event.kind === "report-told"
@@ -554,6 +589,51 @@ export function runTick(
     return events;
   };
 
+  /**
+   * The events a rejected proposal still commits: its goal change, and, for a
+   * practice move (or talk the world judged to circle an open thread), a
+   * private record that it was refused and why, which the god's next prompt
+   * reads. The record belongs to no action slot, like a goal event.
+   */
+  const commitRefusalEvents = (
+    proposal: Proposal,
+    reason: RejectionReasonCode,
+    message: string,
+    thread: EventId | undefined,
+  ): WorldEvent[] => {
+    const events = commitGoalEvents(proposal);
+    const attempted =
+      proposal.kind === "practice"
+        ? proposal.move
+        : reason === "no-progress" &&
+            (proposal.kind === "report" || proposal.kind === "legend")
+          ? proposal.kind
+          : undefined;
+    if (attempted === undefined) return events;
+    const concerned =
+      thread ??
+      (proposal.kind === "practice" &&
+      proposal.move !== "demand" &&
+      proposal.move !== "offer"
+        ? proposal.thread
+        : undefined);
+    const completed = completePrimary(
+      {
+        kind: "practice-refused",
+        entityId: proposal.actor,
+        attempted,
+        reason,
+        ...(concerned === undefined ? {} : { thread: concerned }),
+        ...(reason === "no-progress"
+          ? { why: message.slice(0, MAX_REFUSAL_WHY) }
+          : {}),
+      },
+      String(proposal.observationId),
+    );
+    working = applyEvent(working, completed);
+    return [...events, completed];
+  };
+
   for (const proposal of queue) {
     // A claim never commits and a goal-only proposal has no action: neither
     // holds the actor's one action slot.
@@ -563,7 +643,12 @@ export function runTick(
         proposal,
         reason: "busy-actor",
         message: `${proposal.actor} already committed an action this tick`,
-        goalEvents: commitGoalEvents(proposal),
+        goalEvents: commitRefusalEvents(
+          proposal,
+          "busy-actor",
+          "already committed an action this tick",
+          undefined,
+        ),
       });
       continue;
     }
@@ -574,7 +659,12 @@ export function runTick(
         proposal,
         reason: outcome.reason,
         message: outcome.message,
-        goalEvents: commitGoalEvents(proposal),
+        goalEvents: commitRefusalEvents(
+          proposal,
+          outcome.reason,
+          outcome.message,
+          outcome.thread,
+        ),
       });
       continue;
     }
@@ -633,12 +723,48 @@ export function runTick(
     ...committed.flatMap((record) => record.events),
     ...rejected.flatMap((record) => record.goalEvents),
   ].sort((a, b) => a.sequence - b.sequence);
+
+  // The thread judge closes the environment step: with everything this tick
+  // did in, the world rules on each practice thread (performances seen,
+  // deadlines passed, budgets spent, a party dead). Its rulings are primary
+  // events, so the memories and feelings derived below see them this tick.
+  const practiceEvents = judgePractices(
+    state,
+    [
+      ...proposalEvents,
+      ...incomeEvents,
+      ...fireEvents,
+      ...needEvents,
+      ...directorEvents,
+      ...noticeEvents,
+    ],
+    working,
+    applyEvent,
+  ).map((draft) => completePrimary(draft, environmentCause));
+  working = applyEvents(working, practiceEvents);
+
+  // What the rulings do to the gods: penalties, forms, and standing from the
+  // endings just recorded, and the access an earlier penalty withheld coming
+  // back. Primary events too, so the same tick's memories see them.
+  const consequenceEvents = [
+    ...planAccessRestorations(working),
+    ...planConsequences(
+      working,
+      practiceEvents.filter(
+        (event): event is PracticeEndedEvent => event.kind === "practice-ended",
+      ),
+    ),
+  ].map((draft) => completePrimary(draft, environmentCause));
+  working = applyEvents(working, consequenceEvents);
+
   const environmentEvents = [
     ...incomeEvents,
     ...fireEvents,
     ...needEvents,
     ...directorEvents,
     ...noticeEvents,
+    ...practiceEvents,
+    ...consequenceEvents,
   ];
 
   // Derivation phase: with the primary events numbered and applied, memories

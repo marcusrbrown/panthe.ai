@@ -498,6 +498,10 @@ Gate 3 result (owner, 2026-10-02): continue. The rerun at b0d978d (#90–#94) on
 
 Unit 9 direction (owner, 2026-10-02): the episodes still repeat because the world gives a character too little to do. Unit 9 is planned as world-building: each new god's abilities are backed by new world rules, and the twenty inhabitants get needs, routines, and trades that give the gods something to answer and act on.
 
+Phase A gate (2026-10-03): the practices plan's Unit 6 gate ran three times on qwen3 8B at 4K with fixes between runs (cbd8c76, 81f2be1, 46ca1ea): the last had 28 threads (27 ended, 26 of them fulfilled), nothing refused or breached, and 5 of 103 requests exhausted; the owner did not rate it and chose to proceed to Phase B (`tools/scenarios/m2-greek-cast/episodes/2026-10-02T21-45-43/`, `2026-10-02T22-50-35/`, `2026-10-03T00-38-55/`; `docs/plans/2026-10-02-001-feat-god-practices-plan.md` Unit 6).
+
+Superseded 2026-10-02: Units 9, 10, and 11 are absorbed by `docs/plans/2026-10-02-001-feat-god-practices-plan.md` (origin `docs/brainstorms/2026-10-02-god-practices-requirements.md`): its Unit 7 carries the five gods and twenty inhabitants (this plan's Unit 9), its Unit 9 the gods-first scheduler (Unit 10), and its Units 1, 4, 5, and 8 the endings, transformation, and alliances by settlement (Unit 11). The unit texts below are kept for their context and are not to be worked from; Unit 13 runs after that plan.
+
 ### Phase C — Full cast, director, scheduler, unattended evidence
 
 - [ ] **Unit 9: Remaining five gods and twenty inhabitants**

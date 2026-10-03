@@ -342,6 +342,9 @@ test("memory tunables are checked key by key: whole non-negative numbers where a
         toldShare: 0.5,
         affinityLimit: 10,
         grudgeLimit: 10,
+        refusalAffinity: 1,
+        "salience_practice-ended": 7,
+        // Retired, and still accepted: affinity no longer makes an alliance.
         allianceAffinity: 5,
       }),
     ).ok,
@@ -430,4 +433,106 @@ test("petition tunables are strict: each a positive whole number, unknown keys r
     expect(parseContentPack(packWithPetitionBalance(bad)).ok).toBe(false);
   }
   expect(parseContentPack(packWithPetitionBalance([250])).ok).toBe(false);
+});
+
+function packWithPracticeBalance(
+  practiceBalance: unknown,
+): Record<string, unknown> {
+  const pack = validPack();
+  (pack.rules as Record<string, unknown>).practiceBalance = practiceBalance;
+  return pack;
+}
+
+test("practice tunables are strict: each a positive whole number, unknown keys refused, a missing record means every default", () => {
+  const good = {
+    negotiationTicks: 200,
+    counterBudget: 3,
+    minTermTicks: 25,
+    maxTermTicks: 500,
+    oathDivinityLoss: 3,
+    oathAccessTicks: 100,
+    standingDelta: 1,
+  };
+  const parsed = parseContentPack(packWithPracticeBalance(good));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok) expect(parsed.value.rules.practiceBalance).toEqual(good);
+  expect(
+    parseContentPack(packWithPracticeBalance({ counterBudget: 2 })).ok,
+  ).toBe(true);
+  const plain = parseContentPack(validPack());
+  expect(plain.ok && plain.value.rules.practiceBalance === undefined).toBe(
+    true,
+  );
+
+  for (const bad of [
+    { negotiationTicks: 0 },
+    { counterBudget: -1 },
+    { counterBudget: 2.5 },
+    { minTermTicks: "soon" },
+    { maxTermTicks: Number.POSITIVE_INFINITY },
+    { oathDivinityLoss: 0 },
+    { oathAccessTicks: 1.5 },
+    { standingDelta: -1 },
+    { oathPenalty: 3 },
+    { counterBudgt: 3 },
+    { answerWindowTicks: 250 },
+    ["counterBudget"],
+  ]) {
+    expect(parseContentPack(packWithPracticeBalance(bad)).ok).toBe(false);
+  }
+});
+
+test("practice tunables include how pious a mortal must be to take terms and how near a deadline is urgent; both positive whole numbers", () => {
+  const good = { acceptPietyPercent: 10, urgentTicks: 50 };
+  const parsed = parseContentPack(packWithPracticeBalance(good));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok) expect(parsed.value.rules.practiceBalance).toEqual(good);
+  for (const bad of [
+    { acceptPietyPercent: 0 },
+    { urgentTicks: 2.5 },
+    { urgentTicks: "soon" },
+  ]) {
+    expect(parseContentPack(packWithPracticeBalance(bad)).ok).toBe(false);
+  }
+});
+
+function packWithStakes(practiceStakes: unknown): Record<string, unknown> {
+  const pack = validPack();
+  (pack.rules as Record<string, unknown>).practiceStakes = practiceStakes;
+  return pack;
+}
+
+test("the stakes a god may set on terms are authored in the rules and parsed strictly: an id for each, a form, and the capabilities it gains and loses", () => {
+  const wolf = {
+    form: "wolf",
+    capabilitiesGained: ["beast-form"],
+    capabilitiesLost: [],
+  };
+  const parsed = parseContentPack(packWithStakes({ wolf }));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok)
+    expect(parsed.value.rules.practiceStakes).toEqual({ wolf } as never);
+  // Without any, no stake can be set, and nothing else changes.
+  const plain = parseContentPack(validPack());
+  expect(plain.ok && plain.value.rules.practiceStakes === undefined).toBe(true);
+  for (const bad of [
+    ["wolf"],
+    { wolf: "a wolf" },
+    { wolf: { ...wolf, form: "" } },
+    {
+      wolf: {
+        form: "wolf",
+        capabilitiesGained: "beast-form",
+        capabilitiesLost: [],
+      },
+    },
+    { wolf: { form: "wolf", capabilitiesGained: [] } },
+    { wolf: { ...wolf, name: "extra" } },
+    { "": wolf },
+  ]) {
+    expect([
+      JSON.stringify(bad),
+      parseContentPack(packWithStakes(bad)).ok,
+    ]).toEqual([JSON.stringify(bad), false]);
+  }
 });

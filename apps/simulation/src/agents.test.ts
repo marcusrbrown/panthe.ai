@@ -46,6 +46,7 @@ import {
   createGodTurnRunner,
   type GodTurnRunner,
   type Lifecycle,
+  readLatestPracticeRefusal,
   readOwnEvents,
 } from "./agents";
 import { runCatchUp } from "./catchup";
@@ -1766,4 +1767,128 @@ describe("the service with model routing configured", () => {
       provider.requests.some((request) => request.at > end) ? true : undefined,
     );
   }, 60_000);
+});
+
+describe("a god's refused practice moves", () => {
+  /** `speaker` tells the other god that `agent` wronged `target`. */
+  const accuse = (speaker: string, agent: string, target: string) =>
+    JSON.stringify({
+      action: "report",
+      listener: speaker === "zeus" ? "hera" : "zeus",
+      content: `${agent} did wrong by ${target}`,
+      claim: { effect: "harm", agent, target },
+    });
+  const termFor = (party: string, ticks = 100) => ({
+    kind: "tell-legend",
+    party,
+    place: "town-square",
+    deadlineTicks: ticks,
+  });
+  const demandOver = (cause: string, party: string, ticks = 100) =>
+    JSON.stringify({
+      action: "practice",
+      move: "demand",
+      cause,
+      term: termFor(party, ticks),
+    });
+  const reportBy = (world: World, god: string) => {
+    const found = listEvents(world.store.db).find(
+      (e) => e.kind === "report-told" && e.entityId === id(god),
+    );
+    if (!found) throw new Error(`no report by ${god}`);
+    return found.id;
+  };
+
+  /** Zeus and Hera in the hall each accuse the other; Zeus demands of Hera over her accusation, and she refuses. */
+  async function loop() {
+    const world = newWorld("great-hall");
+    await actOut(world, startProvider(), [accuse("zeus", "hera", "zeus")]);
+    await actOut(
+      world,
+      startProvider(),
+      [accuse("hera", "zeus", "hera")],
+      "hera",
+    );
+    const heraWords = reportBy(world, "zeus");
+    const zeusWords = reportBy(world, "hera");
+    const demand = demandOver(String(zeusWords), "hera");
+    await actOut(world, startProvider(), [demand]);
+    const [thread] = [...world.state.threads.values()];
+    if (!thread) throw new Error("no thread opened");
+    await actOut(
+      world,
+      startProvider(),
+      [
+        JSON.stringify({
+          action: "practice",
+          move: "refuse",
+          thread: thread.id,
+        }),
+      ],
+      "hera",
+    );
+    expect(world.state.threads.get(thread.id)?.status).toBe("refused");
+    return { world, demand, thread, heraWords, zeusWords };
+  }
+
+  test("the world's refusal of a repeated demand is read back for the god that made it, and shown in its next prompt; the god that was not refused reads none", async () => {
+    const { world, demand } = await loop();
+    const last = () => world.state.lastSequence;
+    expect(
+      readLatestPracticeRefusal(world.store.db, id("zeus"), last()),
+    ).toBeUndefined();
+    await actOut(world, startProvider(), [demand]);
+    const refusal = readLatestPracticeRefusal(
+      world.store.db,
+      id("zeus"),
+      last(),
+    );
+    expect(refusal).toMatchObject({
+      entityId: "zeus",
+      attempted: "demand",
+      reason: "no-progress",
+    });
+    expect(refusal?.why).toContain("already answered");
+    expect(
+      readLatestPracticeRefusal(world.store.db, id("hera"), last()),
+    ).toBeUndefined();
+    // Bounded in sequence: before it happened, there was none.
+    expect(
+      readLatestPracticeRefusal(world.store.db, id("zeus"), 0),
+    ).toBeUndefined();
+
+    // Zeus's next turn is told, in its prompt, that it was refused and why.
+    const next = startProvider(() => '{"action":"wait"}');
+    const runner = runnerFor(world, next, ["zeus"]);
+    expect(runner.dispatch()).toBe(true);
+    await runner.idle();
+    expect(next.requests).toHaveLength(1);
+    expect(next.requests[0]?.body).toContain("Your last demand was refused");
+    expect(next.requests[0]?.body).toContain("already answered");
+  });
+
+  test("a refusal stops being shown once the god makes a practice move that commits: only what is newest and unanswered is told", async () => {
+    const { world, demand, heraWords } = await loop();
+    await actOut(world, startProvider(), [demand]);
+    const last = () => world.state.lastSequence;
+    expect(
+      readLatestPracticeRefusal(world.store.db, id("zeus"), last()),
+    ).toBeDefined();
+    // Hera demands of Zeus over what he said, and he answers it: a move of his own that commits.
+    await actOut(
+      world,
+      startProvider(),
+      [demandOver(String(heraWords), "zeus")],
+      "hera",
+    );
+    const [, second] = [...world.state.threads.values()];
+    if (!second) throw new Error("no second thread");
+    await actOut(world, startProvider(), [
+      JSON.stringify({ action: "practice", move: "refuse", thread: second.id }),
+    ]);
+    expect(world.state.threads.get(second.id)?.status).toBe("refused");
+    expect(
+      readLatestPracticeRefusal(world.store.db, id("zeus"), last()),
+    ).toBeUndefined();
+  });
 });

@@ -25,6 +25,7 @@ import { killAllSidecars } from "../../m1-living-world/src/sidecar";
 import { type Args, parseArgs } from "./args";
 import { resolveSidecarBinary } from "./binary";
 import { defaultOutDir, runEpisodes } from "./episodes";
+import { SABOTAGE } from "./practice-controls";
 import {
   endpointOptions,
   KeyMissing,
@@ -54,6 +55,7 @@ const CONTROL_SABOTAGE: Readonly<Record<ControlName, string>> = {
     "The harness injects a petition addressed to Hera into the last prompt Zeus was shown, as if the divine sense leaked to the other god.",
   "restore-memory":
     "The harness drops Hera's memory and feeling from the export it is about to restore and recomputes its hash. Import rebuilds the world from the archive's event log and requires it to equal the archived projection, so the archive is refused at the import step, before any comparison of the restored branch.",
+  ...SABOTAGE,
 };
 
 /** Runs the story again in a child process with a control enabled, and reports how it ended. */

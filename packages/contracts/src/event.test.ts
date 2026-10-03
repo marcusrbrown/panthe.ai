@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(30);
+  expect(WORLD_EVENT_KINDS).toHaveLength(37);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -987,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 11);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 18);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -1630,4 +1630,660 @@ test("a noticed memory records which loss the mortal noticed and names no offend
   ]) {
     expect(parseEvent(envelope({ ...noticed, ...bad })).ok).toBe(false);
   }
+});
+
+// --- Practice threads -------------------------------------------------------------------------
+
+const TERM = {
+  kind: "tell-legend",
+  party: "zeus",
+  place: "altar",
+  deadline: 150,
+};
+
+const PRACTICE_OPENED = {
+  kind: "practice-opened",
+  entityId: "hera",
+  practice: "settlement",
+  counterparty: "zeus",
+  causes: ["evt-3"],
+  term: TERM,
+  negotiationDeadline: 120,
+  counterBudget: 3,
+};
+
+test("a practice-opened event names the demander, the other party, the causes it consumes, one term with an absolute deadline, the negotiation deadline, and the counteroffer budget", () => {
+  const result = parseEvent(envelope(PRACTICE_OPENED));
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "practice-opened") {
+    expect(result.value.practice).toBe("settlement");
+    expect(result.value.causes.map(String)).toEqual(["evt-3"]);
+    expect(result.value.term).toEqual(TERM as never);
+    expect(result.value.negotiationDeadline).toBe(120);
+    expect(result.value.counterBudget).toBe(3);
+  }
+  const linked = parseEvent(
+    envelope({ ...PRACTICE_OPENED, succeeds: "evt-2" }),
+  );
+  expect(linked.ok).toBe(true);
+  if (linked.ok && linked.value.kind === "practice-opened") {
+    expect(String(linked.value.succeeds)).toBe("evt-2");
+  }
+  for (const overrides of [
+    { counterparty: undefined },
+    { causes: [] },
+    { causes: undefined },
+    { causes: [""] },
+    { practice: "contest" },
+    { term: undefined },
+    { term: { ...TERM, kind: "swear-fealty" } },
+    { term: { ...TERM, deadline: undefined } },
+    { term: { ...TERM, deadline: -1 } },
+    { negotiationDeadline: undefined },
+    { negotiationDeadline: 1.5 },
+    { counterBudget: -1 },
+    { succeeds: 7 },
+  ]) {
+    expect(parseEvent(envelope({ ...PRACTICE_OPENED, ...overrides })).ok).toBe(
+      false,
+    );
+  }
+});
+
+test("practice-moved events carry what their move needs: a counter its term, an accept its swear flag, a refusal or withdrawal only the thread", () => {
+  const moved = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-moved",
+        entityId: "zeus",
+        threadId: "evt-9",
+        ...overrides,
+      }),
+    );
+  const counter = moved({ move: "counter", term: TERM });
+  expect(counter.ok).toBe(true);
+  if (
+    counter.ok &&
+    counter.value.kind === "practice-moved" &&
+    counter.value.move === "counter"
+  ) {
+    expect(counter.value.term).toEqual(TERM as never);
+  }
+  const accept = moved({ move: "accept", sworn: true });
+  expect(accept.ok).toBe(true);
+  if (
+    accept.ok &&
+    accept.value.kind === "practice-moved" &&
+    accept.value.move === "accept"
+  ) {
+    expect(accept.value.sworn).toBe(true);
+  }
+  expect(moved({ move: "refuse" }).ok).toBe(true);
+  expect(moved({ move: "withdraw" }).ok).toBe(true);
+  for (const bad of [
+    { move: "counter" },
+    { move: "accept" },
+    { move: "accept", sworn: "yes" },
+    { move: "demand" },
+    { move: "refuse", threadId: undefined },
+  ]) {
+    expect(moved(bad).ok).toBe(false);
+  }
+});
+
+test("practice-ended events record the world's ruling: an outcome with the reason and, when a performance was seen, the event that showed it", () => {
+  const ended = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-ended",
+        entityId: "hera",
+        counterparty: "zeus",
+        threadId: "evt-9",
+        outcome: "fulfilled",
+        reason: "performed",
+        performedBy: "evt-12",
+        ...overrides,
+      }),
+    );
+  const fulfilled = ended({});
+  expect(fulfilled.ok).toBe(true);
+  if (fulfilled.ok && fulfilled.value.kind === "practice-ended") {
+    expect(String(fulfilled.value.performedBy)).toBe("evt-12");
+  }
+  expect(
+    ended({
+      outcome: "breached",
+      reason: "obligation-deadline",
+      performedBy: undefined,
+    }).ok,
+  ).toBe(true);
+  for (const bad of [
+    { outcome: "accepted" },
+    { outcome: "open" },
+    { reason: "bored" },
+    { outcome: undefined },
+    { reason: undefined },
+    { threadId: undefined },
+    { counterparty: undefined },
+    { performedBy: 4 },
+  ]) {
+    expect(ended(bad).ok).toBe(false);
+  }
+});
+
+test("practice events are private (unplaced, never witnessed), list their parties as subjects, and trace their cause: an opening to the event it rests on, a move to its thread, an ending to the performance or its thread", () => {
+  const opened = parsedEvent(PRACTICE_OPENED);
+  const moved = parsedEvent({
+    kind: "practice-moved",
+    entityId: "zeus",
+    threadId: "evt-9",
+    move: "refuse",
+  });
+  const fulfilled = parsedEvent({
+    kind: "practice-ended",
+    entityId: "hera",
+    counterparty: "zeus",
+    threadId: "evt-9",
+    outcome: "fulfilled",
+    reason: "performed",
+    performedBy: "evt-12",
+  });
+  const expired = parsedEvent({
+    kind: "practice-ended",
+    entityId: "hera",
+    counterparty: "zeus",
+    threadId: "evt-9",
+    outcome: "expired",
+    reason: "negotiation-deadline",
+  });
+  for (const kind of ["practice-opened", "practice-moved", "practice-ended"]) {
+    expect(WORLD_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+  }
+  expect(subjectsOf(opened)).toEqual(["hera", "zeus"]);
+  expect(subjectsOf(moved)).toEqual(["zeus"]);
+  expect(subjectsOf(fulfilled)).toEqual(["hera", "zeus"]);
+  expect(String(eventCause(opened))).toBe("evt-3");
+  expect(String(eventCause(moved))).toBe("evt-9");
+  expect(String(eventCause(fulfilled))).toBe("evt-12");
+  expect(String(eventCause(expired))).toBe("evt-9");
+});
+
+// --- Motifs, restored access, and memories of endings ---------------------------------------
+
+const MOTIF_BASE = {
+  kind: "motif-applied",
+  entityId: "zeus",
+  threadId: "evt-9",
+  cause: "evt-12",
+};
+const OATH = {
+  ...MOTIF_BASE,
+  motif: "oath-penalty",
+  effect: "oath-penalty",
+  divinityLost: 3,
+  capability: "divine",
+  accessRestoredAt: 250,
+};
+const TRANSFORMATION = {
+  ...MOTIF_BASE,
+  motif: "transformation-punishment",
+  effect: "transformation",
+  intent: "punishment",
+  form: "stag",
+  capabilitiesGained: ["beast"],
+  capabilitiesLost: ["divine"],
+};
+const STANDING = {
+  ...MOTIF_BASE,
+  motif: "standing-lost",
+  effect: "standing",
+  place: "altar",
+  delta: -1,
+};
+
+test("a motif-applied event records the motif and what it changed, by effect: an oath penalty, a transformation, or a standing record", () => {
+  const oath = parseEvent(envelope(OATH));
+  expect(oath.ok).toBe(true);
+  if (oath.ok && oath.value.kind === "motif-applied") {
+    expect(oath.value).toMatchObject({
+      motif: "oath-penalty",
+      effect: "oath-penalty",
+      divinityLost: 3,
+      capability: "divine",
+      accessRestoredAt: 250,
+    });
+    expect(String(oath.value.cause)).toBe("evt-12");
+  }
+  const form = parseEvent(envelope(TRANSFORMATION));
+  expect(form.ok).toBe(true);
+  if (form.ok && form.value.kind === "motif-applied") {
+    expect(form.value).toMatchObject({
+      effect: "transformation",
+      intent: "punishment",
+      form: "stag",
+      capabilitiesGained: ["beast"],
+      capabilitiesLost: ["divine"],
+    });
+  }
+  expect(parseEvent(envelope(STANDING)).ok).toBe(true);
+  expect(
+    parseEvent(
+      envelope({
+        ...TRANSFORMATION,
+        motif: "transformation-mercy",
+        intent: "mercy",
+      }),
+    ).ok,
+  ).toBe(true);
+  expect(
+    parseEvent(
+      envelope({
+        ...STANDING,
+        motif: "standing-won",
+        delta: 1,
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a motif-applied event cannot say a motif did something other than its catalogued change, or move standing the wrong way", () => {
+  for (const bad of [
+    { ...OATH, motif: "boon" },
+    { ...OATH, motif: "standing-lost" },
+    { ...OATH, motif: "curse" },
+    { ...OATH, divinityLost: -1 },
+    { ...OATH, capability: undefined },
+    { ...OATH, accessRestoredAt: 1.5 },
+    { ...TRANSFORMATION, motif: "oath-penalty" },
+    { ...TRANSFORMATION, intent: "mercy" },
+    { ...TRANSFORMATION, intent: "curse" },
+    { ...TRANSFORMATION, form: undefined },
+    { ...TRANSFORMATION, capabilitiesGained: undefined },
+    { ...TRANSFORMATION, capabilitiesLost: [7] },
+    { ...STANDING, motif: "standing-won" },
+    { ...STANDING, delta: 0 },
+    { ...STANDING, delta: 1 },
+    { ...STANDING, place: undefined },
+    { ...STANDING, motif: "transformation-mercy" },
+    { ...OATH, effect: "banishment" },
+    { ...OATH, effect: undefined },
+    { ...OATH, threadId: undefined },
+    { ...OATH, cause: undefined },
+    { ...OATH, entityId: undefined },
+  ]) {
+    expect(parseEvent(envelope(bad)).ok).toBe(false);
+  }
+});
+
+test("an access-restored event names the actor, the capability, and the penalty it ends", () => {
+  const restored = {
+    kind: "access-restored",
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: "evt-13",
+  };
+  expect(parseEvent(envelope(restored)).ok).toBe(true);
+  for (const bad of [
+    { capability: undefined },
+    { motifEventId: undefined },
+    { entityId: undefined },
+    { capability: 7 },
+  ]) {
+    expect(parseEvent(envelope({ ...restored, ...bad })).ok).toBe(false);
+  }
+});
+
+test("motifs and restored access are private events with traceable causes: a motif follows the ending that called for it, a restoration the penalty it ends", () => {
+  const oath = parsedEvent(OATH);
+  const restored = parsedEvent({
+    kind: "access-restored",
+    entityId: "zeus",
+    capability: "divine",
+    motifEventId: "evt-13",
+  });
+  for (const kind of ["motif-applied", "access-restored"]) {
+    expect(WORLD_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+  }
+  expect(subjectsOf(oath)).toEqual(["zeus"]);
+  expect(subjectsOf(restored)).toEqual(["zeus"]);
+  expect(String(eventCause(oath))).toBe("evt-12");
+  expect(String(eventCause(restored))).toBe("evt-13");
+});
+
+test("a practice-opened event may carry the transformation its breacher faces, and a malformed stake is refused", () => {
+  const stake = {
+    form: "stag",
+    capabilitiesGained: ["beast"],
+    capabilitiesLost: [],
+  };
+  const result = parseEvent(envelope({ ...PRACTICE_OPENED, stake }));
+  expect(result.ok).toBe(true);
+  if (result.ok && result.value.kind === "practice-opened") {
+    expect(result.value.stake).toEqual(stake);
+  }
+  const plain = parseEvent(envelope(PRACTICE_OPENED));
+  if (plain.ok && plain.value.kind === "practice-opened") {
+    expect(plain.value.stake).toBeUndefined();
+  }
+  for (const bad of [
+    { stake: "stag" },
+    { stake: { ...stake, form: "" } },
+    { stake: { ...stake, capabilitiesGained: "beast" } },
+    { stake: { form: "stag" } },
+  ]) {
+    expect(parseEvent(envelope({ ...PRACTICE_OPENED, ...bad })).ok).toBe(false);
+  }
+});
+
+test("an ally term parses with its other god, and a sealed ending is a reason the world may give", () => {
+  const ally = { kind: "ally", party: "zeus", to: "hera", deadline: 150 };
+  const opened = parseEvent(envelope({ ...PRACTICE_OPENED, term: ally }));
+  expect(opened.ok).toBe(true);
+  if (opened.ok && opened.value.kind === "practice-opened") {
+    expect(opened.value.term).toEqual(ally as never);
+  }
+  expect(
+    parseEvent(
+      envelope({ ...PRACTICE_OPENED, term: { ...ally, to: undefined } }),
+    ).ok,
+  ).toBe(false);
+  expect(
+    parseEvent(
+      envelope({
+        kind: "practice-ended",
+        entityId: "hera",
+        counterparty: "zeus",
+        threadId: "evt-9",
+        outcome: "fulfilled",
+        reason: "sealed",
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+test("a witnessed memory of a thread ending says how it ended, and no other witnessed memory does", () => {
+  const ending = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        ...WITNESSED,
+        eventKind: "practice-ended",
+        ending: { outcome: "breached", agent: "zeus" },
+        ...overrides,
+      }),
+    );
+  const breached = ending({});
+  expect(breached.ok).toBe(true);
+  if (
+    breached.ok &&
+    breached.value.kind === "memory-recorded" &&
+    breached.value.memoryKind === "witnessed"
+  ) {
+    expect(breached.value.ending).toMatchObject({
+      outcome: "breached",
+      agent: "zeus",
+    });
+  }
+  expect(ending({ eventKind: "practice-moved" }).ok).toBe(true);
+  expect(ending({ ending: { outcome: "fulfilled", sealed: true } }).ok).toBe(
+    true,
+  );
+  expect(ending({ ending: { outcome: "expired" } }).ok).toBe(true);
+  for (const bad of [
+    { ending: undefined },
+    { ending: { outcome: "accepted" } },
+    { ending: { outcome: "breached", agent: 7 } },
+    { ending: { outcome: "breached", sealed: false } },
+    { ending: "breached" },
+    { eventKind: "entity-moved" },
+    { eventKind: "practice-opened" },
+  ]) {
+    expect(ending(bad).ok).toBe(false);
+  }
+});
+
+// --- Anti-loop: a thread's subject, refused moves, and how a thread ended ---------------------
+
+test("a practice-opened event may name the thread's subject: the agent and, when the cause names one, the target; a malformed subject is refused", () => {
+  const withSubject = (subject: unknown) =>
+    parseEvent(envelope({ ...PRACTICE_OPENED, subject }));
+  const both = withSubject({ agent: "zeus", target: "farmer" });
+  expect(both.ok).toBe(true);
+  if (both.ok && both.value.kind === "practice-opened") {
+    expect(both.value.subject).toEqual({
+      agent: "zeus",
+      target: "farmer",
+    } as never);
+  }
+  expect(withSubject({ agent: "zeus" }).ok).toBe(true);
+  expect(parseEvent(envelope(PRACTICE_OPENED)).ok).toBe(true);
+  for (const bad of [
+    {},
+    { target: "farmer" },
+    { agent: 7 },
+    { agent: "zeus", target: 4 },
+    "zeus",
+  ]) {
+    expect(withSubject(bad).ok).toBe(false);
+  }
+});
+
+test("a practice-refused event records a refused practice move and why: a reason the world gives, the move, the thread it concerned, and for no-progress what already answered it", () => {
+  const refused = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-refused",
+        entityId: "hera",
+        attempted: "demand",
+        reason: "no-progress",
+        thread: "evt-9",
+        why: "that was already answered",
+        ...overrides,
+      }),
+    );
+  const good = refused({});
+  expect(good.ok).toBe(true);
+  if (good.ok && good.value.kind === "practice-refused") {
+    expect(good.value.reason).toBe("no-progress");
+    expect(String(good.value.thread)).toBe("evt-9");
+    expect(good.value.why).toBe("that was already answered");
+  }
+  for (const attempted of [
+    "demand",
+    "counter",
+    "accept",
+    "refuse",
+    "withdraw",
+    "report",
+    "legend",
+  ]) {
+    expect(refused({ attempted }).ok).toBe(true);
+  }
+  expect(
+    refused({ thread: undefined, why: undefined, reason: "stale-target" }).ok,
+  ).toBe(true);
+  for (const bad of [
+    { attempted: "swear" },
+    { attempted: undefined },
+    { reason: "bored" },
+    { reason: undefined },
+    { thread: 4 },
+    { why: "" },
+    { why: 4 },
+    { entityId: undefined },
+  ]) {
+    expect(refused(bad).ok).toBe(false);
+  }
+  // Private, like every practice event; it names the god that was refused and traces to its thread.
+  expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(
+    "practice-refused",
+  );
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(
+    "practice-refused",
+  );
+  const event = parsedEvent({
+    kind: "practice-refused",
+    entityId: "hera",
+    attempted: "report",
+    reason: "no-progress",
+    thread: "evt-9",
+  });
+  expect(subjectsOf(event)).toEqual(["hera"]);
+  expect(String(eventCause(event))).toBe("evt-9");
+  expect(
+    eventCause(
+      parsedEvent({
+        kind: "practice-refused",
+        entityId: "hera",
+        attempted: "demand",
+        reason: "malformed",
+      }),
+    ),
+  ).toBeUndefined();
+});
+
+test("a memory of an ending may say the term was sworn; sworn is true or nothing", () => {
+  const ending = (e: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        ...WITNESSED,
+        eventKind: "practice-ended",
+        ending: { outcome: "breached", agent: "zeus", ...e },
+      }),
+    );
+  const sworn = ending({ sworn: true });
+  expect(sworn.ok).toBe(true);
+  if (
+    sworn.ok &&
+    sworn.value.kind === "memory-recorded" &&
+    sworn.value.memoryKind === "witnessed"
+  ) {
+    expect(sworn.value.ending?.sworn).toBe(true);
+  }
+  expect(ending({}).ok).toBe(true);
+  expect(ending({ sworn: false }).ok).toBe(false);
+  expect(ending({ sworn: "yes" }).ok).toBe(false);
+});
+
+// --- Supplication: terms offered to a mortal who prayed ---------------------------------------
+
+const SUPPLICATION_OPENED = {
+  kind: "practice-opened",
+  entityId: "hera",
+  practice: "supplication",
+  counterparty: "farmer",
+  causes: ["evt-3"],
+  petition: "evt-4",
+  term: {
+    kind: "make-offering",
+    party: "farmer",
+    to: "hera",
+    resource: "wood",
+    amount: 1,
+    deadline: 150,
+  },
+  negotiationDeadline: 120,
+  counterBudget: 0,
+  stake: {
+    form: "wolf",
+    capabilitiesGained: ["beast-form"],
+    capabilitiesLost: [],
+  },
+};
+
+test("a supplication thread opens with the petition it answers, no counteroffers, and may carry a stake; a settlement may not name a petition", () => {
+  const parsed = parseEvent(envelope(SUPPLICATION_OPENED));
+  expect(parsed.ok).toBe(true);
+  if (parsed.ok && parsed.value.kind === "practice-opened") {
+    expect(parsed.value.practice).toBe("supplication");
+    expect(String(parsed.value.petition)).toBe("evt-4");
+    expect(parsed.value.counterBudget).toBe(0);
+  }
+  expect(
+    parseEvent(envelope({ ...SUPPLICATION_OPENED, petition: undefined })).ok,
+  ).toBe(false);
+  expect(parseEvent(envelope({ ...SUPPLICATION_OPENED, petition: 4 })).ok).toBe(
+    false,
+  );
+  expect(
+    parseEvent(envelope({ ...SUPPLICATION_OPENED, practice: "settlement" })).ok,
+  ).toBe(false);
+  // Control: a settlement is as it was.
+  expect(parseEvent(envelope(PRACTICE_OPENED)).ok).toBe(true);
+});
+
+test("practice-progressed records one half of a supplication done, the boon or the offering, with the event that showed it; it is private and traces to that event", () => {
+  const progressed = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-progressed",
+        entityId: "hera",
+        counterparty: "farmer",
+        threadId: "evt-9",
+        step: "boon",
+        by: "evt-12",
+        ...overrides,
+      }),
+    );
+  for (const step of ["boon", "offering"]) {
+    expect(progressed({ step }).ok).toBe(true);
+  }
+  for (const bad of [
+    { step: "prayer" },
+    { step: undefined },
+    { by: undefined },
+    { threadId: undefined },
+    { counterparty: undefined },
+    { entityId: undefined },
+  ]) {
+    expect(progressed(bad).ok).toBe(false);
+  }
+  expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(
+    "practice-progressed",
+  );
+  expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(
+    "practice-progressed",
+  );
+  const event = parsedEvent({
+    kind: "practice-progressed",
+    entityId: "hera",
+    counterparty: "farmer",
+    threadId: "evt-9",
+    step: "offering",
+    by: "evt-12",
+  });
+  expect(subjectsOf(event)).toEqual(["hera", "farmer"]);
+  expect(String(eventCause(event))).toBe("evt-12");
+});
+
+test("a supplication can end because the boon never came, and a refused offer, a practice-ended reason, and a refused move name it", () => {
+  const ended = (overrides: Record<string, unknown>) =>
+    parseEvent(
+      envelope({
+        kind: "practice-ended",
+        entityId: "hera",
+        counterparty: "farmer",
+        threadId: "evt-9",
+        outcome: "expired",
+        reason: "boon-unanswered",
+        ...overrides,
+      }),
+    );
+  expect(ended({}).ok).toBe(true);
+  expect(ended({ reason: "boon-withheld" }).ok).toBe(false);
+  expect(
+    parseEvent(
+      envelope({
+        kind: "practice-refused",
+        entityId: "hera",
+        attempted: "offer",
+        reason: "no-progress",
+        thread: "evt-9",
+        why: "the farmer already answered that",
+      }),
+    ).ok,
+  ).toBe(true);
 });

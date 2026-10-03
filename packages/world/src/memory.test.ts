@@ -1094,7 +1094,9 @@ test("affinity is bounded by the world's limit", () => {
   expect(burnDown(new World({ affinityLimit: 3 }))?.affinity).toBe(-3);
 });
 
-test("kindness raises a god's affinity toward the worshipper, and repeated worship tips it into an alliance that the change reports", () => {
+test("kindness raises a god's affinity toward the worshipper, and no amount of it makes an alliance: only a sealed settlement does (R19)", () => {
+  // `allianceAffinity` once made affinity at or above it an alliance. It is
+  // retired: a content pack that still states it changes nothing.
   const world = new World({ allianceAffinity: 2 });
   const first = world.tick(worship("farmer", "zeus"));
   expect(ofKind(first.events, "relationship-changed")).toMatchObject([
@@ -1115,16 +1117,30 @@ test("kindness raises a god's affinity toward the worshipper, and repeated worsh
   const second = world.tick(worship("farmer", "zeus"));
   expect(ofKind(second.events, "relationship-changed")[0]).toMatchObject({
     affinityDelta: 1,
-    allied: true,
   });
+  expect(ofKind(second.events, "relationship-changed")[0]).not.toHaveProperty(
+    "allied",
+  );
   expect(getRelationship(world.state, id("zeus"), id("farmer"))).toMatchObject({
     affinity: 2,
-    allied: true,
+    allied: false,
   });
   // The bard watched the worship but was not served by it: no relationship.
   expect(
     getRelationship(world.state, id("bard"), id("farmer")),
   ).toBeUndefined();
+});
+
+test("affinity of 6, past the old threshold of 5, still creates no alliance (AE11)", () => {
+  const world = new World({ kindnessAffinity: 6 });
+  const result = world.tick(worship("farmer", "zeus"));
+  expect(ofKind(result.events, "relationship-changed")[0]).toMatchObject({
+    affinityDelta: 6,
+  });
+  expect(getRelationship(world.state, id("zeus"), id("farmer"))).toMatchObject({
+    affinity: 6,
+    allied: false,
+  });
 });
 
 test("no tuning makes a report, a memory, or a feeling something a bystander remembers", () => {

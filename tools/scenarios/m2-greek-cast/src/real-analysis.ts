@@ -7,11 +7,18 @@ import { PRAYERS_HEADING } from "@panthea/agents";
 import { p50, p95 } from "@panthea/tools-probes-shared";
 import { ALTAR } from "@panthea/world";
 import { explainChain, type StoredEvent } from "./checks";
+import { analyzePractices } from "./practice-analysis";
 
 export interface RealStep {
   readonly mode?: string;
   readonly reason?: string;
   readonly detail?: string;
+  /** Attempts the step made before it gave up or answered. */
+  readonly attempts?: number;
+  /** For an invalid reply: the last reply refused, as the trace kept it (redacted, bounded). */
+  readonly output?: string;
+  /** For an invalid reply: the schema the request was made under. */
+  readonly schema?: string;
 }
 
 export interface RealRequest {
@@ -71,17 +78,29 @@ export interface RealAnalysis {
     readonly detail: string;
     readonly count: number;
   }[];
+  /** Each refused reply an exhausted request kept, up to `MAX_REFUSALS`: whose turn, why, how many attempts, and what the model sent. */
+  readonly refusals: readonly {
+    readonly god: string;
+    readonly reason: string;
+    readonly detail: string;
+    readonly attempts: number;
+    readonly output: string;
+  }[];
   readonly degradedShare: number;
   readonly properties: readonly Property[];
 }
 
-const GOD_ACTIONS: ReadonlySet<string> = new Set([
+/** How many refused replies an analysis lists. */
+export const MAX_REFUSALS = 12;
+
+export const GOD_ACTIONS: ReadonlySet<string> = new Set([
   "move",
   "realm-transition",
   "strike",
   "legend",
   "report",
   "bless",
+  "practice",
   "goal",
 ]);
 
@@ -97,6 +116,9 @@ export function namedIds(proposal: Record<string, unknown>): string[] {
   add(proposal.linkedEventId);
   // The petition a bless answers is an id the god was shown.
   add(proposal.petition);
+  // A practice move answers a thread or opens a demand on a cause: both ids are ones the digest and the instructions list.
+  add(proposal.thread);
+  add(proposal.cause);
   const claim = proposal.claim;
   if (typeof claim === "object" && claim !== null) {
     add((claim as Record<string, unknown>).agent);
@@ -499,6 +521,23 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       ),
     ),
     exhaustion: [...exhaustion.values()].sort((a, b) => b.count - a.count),
+    refusals: exhausted
+      .flatMap((request) =>
+        request.steps.flatMap((step) =>
+          step.output === undefined
+            ? []
+            : [
+                {
+                  god: request.role,
+                  reason: step.reason ?? "unknown",
+                  detail: (step.detail ?? "").slice(0, 160),
+                  attempts: step.attempts ?? 1,
+                  output: step.output,
+                },
+              ],
+        ),
+      )
+      .slice(0, MAX_REFUSALS),
     degradedShare:
       input.polls.total === 0 ? 0 : input.polls.degraded / input.polls.total,
     properties: [
@@ -508,6 +547,7 @@ export function analyzeReal(input: RealInput): RealAnalysis {
       changedNextAction(proposals, events),
       goalPrivacy(requests, events),
       petitionPrivacy(requests, events),
+      ...analyzePractices(input).properties,
     ],
   };
 }

@@ -30,6 +30,7 @@ import {
   type RealAnalysis,
   type RealInput,
 } from "./real-analysis";
+import { renderRequestTimings, requestTimings } from "./request-timing";
 
 export interface EpisodeSettings {
   readonly model: string;
@@ -618,6 +619,7 @@ function renderModelRun(record: EpisodeRecord): string {
     ...a.properties.map(
       (p) => `- ${p.name}: ${p.ok ? "held" : "FAILED"} (${p.detail})`,
     ),
+    ...renderRequestTimings(requestTimings(record.input)),
   ].join("\n");
 }
 

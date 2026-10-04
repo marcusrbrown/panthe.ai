@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { join } from "node:path";
+import { parseRoutingConfig, planRoute } from "@panthea/agents";
+import { loadContentPack } from "@panthea/content";
+import { REPO_ROOT } from "../../m1-living-world/src/sidecar";
 import {
   KeyMissing,
   launchConfigFor,
@@ -38,6 +42,36 @@ test("the endpoint config names the model, and carries reasoningEffort only when
     model: "gemma4-e4b-4k",
     reasoningEffort: "none",
   });
+});
+
+test("every god in the authored pack has a route to the endpoint, Athena and Hades named, so no god's turn exhausts for want of a role", () => {
+  const pack = loadContentPack(join(REPO_ROOT, "content", "greek", "world"));
+  if (!pack.ok) throw new Error(pack.message);
+  const gods = pack.value.inhabitants
+    .filter((inhabitant) => inhabitant.deity === true)
+    .map((inhabitant) => inhabitant.id);
+  expect(gods).toContain("athena");
+  expect(gods).toContain("hades");
+  expect(gods).toHaveLength(7);
+  for (const config of [
+    routingConfigFor(options),
+    routingConfigFor({
+      ...options,
+      baseUrl: "https://hosted.example.com/v1",
+      keyRef: "k",
+    }),
+  ]) {
+    const parsed = parseRoutingConfig(config);
+    if (!parsed.ok) throw new Error(`${parsed.path}: ${parsed.message}`);
+    const only = (config as { endpoints: { id: string }[] }).endpoints[0]?.id;
+    for (const god of ["athena", "hades", ...gods]) {
+      const plan = planRoute(parsed.value, god, { offline: false });
+      expect([god, plan.steps.map((step) => step.endpoint.id)]).toEqual([
+        god,
+        [only],
+      ]);
+    }
+  }
 });
 
 const SENTINEL = "sk-sentinel-DO-NOT-LEAK-0123456789";

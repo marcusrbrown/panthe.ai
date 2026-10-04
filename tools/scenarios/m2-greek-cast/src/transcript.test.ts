@@ -326,6 +326,48 @@ test("the model run's numbers and properties are in the transcript", () => {
   expect(text).toContain("valid actions");
 });
 
+test("the model-run section says when each god was asked and how long it waited: a row per request, a row per god, a god never asked at 0 turns, an inferred in-flight request marked", () => {
+  const base = story();
+  const asked = (god: string, tick: number, at: number, ms: number) => ({
+    proposalId: `timing-${god}-${tick}`,
+    role: god,
+    outcome: "intent" as const,
+    elapsedMs: ms,
+    promptPayload: `You are ${god}.\nYou are at The Square [square] in the mortal realm, tick ${tick}.\n`,
+    steps: [{ mode: "native" }],
+    recordedAt: at,
+  });
+  const requests = [
+    ...base.input.requests,
+    asked("athena", 3, 12_000, 9_000),
+    asked("hades", 12, 22_000, 10_000),
+  ];
+  const input = {
+    ...base.input,
+    requests,
+    timing: {
+      gods: ["athena", "hades", "hera", "poseidon", "zeus"],
+      endedAtMs: 31_000,
+      endTick: 33,
+    },
+  };
+  const text = renderTranscript({ ...base, input });
+  const section = text.slice(text.indexOf("## Model run"));
+  expect(section).toContain(
+    "| # | God | Asked at tick | Applied at tick | Latency | Outcome | Prompt chars |",
+  );
+  expect(section).toContain("| athena | 3 |");
+  expect(section).toContain("| hades | 12 |");
+  expect(section).toContain("in flight at the end (inferred)");
+  expect(section).toContain(
+    "| God | Turns | Median gap (ticks) | Worst gap (ticks) | Median latency |",
+  );
+  // Poseidon is a god of the run and was never asked.
+  expect(section).toContain("| poseidon | 0 | — | — | — |");
+  // The gate's own lines are as they were.
+  expect(section).toContain("valid actions");
+});
+
 test("the summary covers every episode with each god's numbers and checks, and links the transcripts", () => {
   const good = record(
     ["a", "b", "c", "d", "e"].map((to, i) => move("zeus", to, i + 1)),

@@ -47,7 +47,12 @@ export interface RealRecord {
   readonly hardware: string;
 }
 
-/** The model config the sidecar reads: both gods on one endpoint, local Ollama unless a base URL is given. Names a key by reference, never carries one. */
+/**
+ * The model config the sidecar reads: every god on one endpoint, local Ollama unless a base URL is
+ * given. Zeus and Hera keep roles of their own; the endpoint is also the global fallback, so each other
+ * god in the pack (the desktop's global fallback does the same) routes there without a role to keep in
+ * step with the cast. Names a key by reference, never carries one.
+ */
 export function routingConfigFor(options: RealOptions): object {
   const id = options.baseUrl === undefined ? "ollama" : "hosted";
   return {
@@ -63,6 +68,7 @@ export function routingConfigFor(options: RealOptions): object {
       },
     ],
     roles: { zeus: { endpoint: id }, hera: { endpoint: id } },
+    fallback: [id],
   };
 }
 
@@ -231,13 +237,19 @@ export async function collectRun(
     const polls = { total: 0, degraded: 0 };
     const deadline = Date.now() + options.durationMs;
     let ticks = 0;
+    let gods: string[] = [];
     while (Date.now() < deadline) {
       await Bun.sleep(2000);
       const { frame, state } = await readFrame(sidecar);
       polls.total += 1;
       if (frame.degradedReason === "model-degraded") polls.degraded += 1;
       ticks = state.tick;
+      gods = [...state.actors.values()]
+        .filter((actor) => actor.isDeity === true)
+        .map((actor) => String(actor.id));
     }
+    // What the run knew of its own end, taken before the service stops (a turn in flight leaves no trace row).
+    const endedAtMs = Date.now();
     const code = await sidecar.stop("SIGTERM");
     if (code !== 0) throw new Error(`the sidecar exited ${code}`);
     const path = activeStorePath(dataDir);
@@ -251,12 +263,16 @@ export async function collectRun(
         proposal: entry.proposal,
         outcome: entry.outcome as "committed" | "rejected" | undefined,
         ...(entry.reason === undefined ? {} : { reason: entry.reason }),
+        ...(entry.consumedTick === undefined
+          ? {}
+          : { consumedTick: entry.consumedTick }),
       }));
     const input: RealInput = {
       requests: readRealRequests(path),
       proposals,
       events: readStoredEvents(path),
       polls,
+      timing: { gods, endedAtMs, endTick: ticks },
     };
     const run: CollectedRun = {
       record: {

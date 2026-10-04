@@ -524,6 +524,10 @@ interface ObligationRow {
   readonly unperformable: string | undefined;
   /** Whether this is a boon the god owes on a supplication its terms set up (the row says "your boon on its prayer"), not a term it must perform. */
   readonly boon: boolean;
+  /** The prayer an owed boon answers, as the row names it. */
+  readonly petition: string | undefined;
+  /** The next step the row showed as an object to copy (a bless, a strike, or a hop), as the god would send it. */
+  readonly next: Readonly<Record<string, unknown>> | undefined;
 }
 
 /** The obligations a prompt's digest leads with. */
@@ -534,11 +538,20 @@ export function obligationRows(prompt: string): ObligationRow[] {
     const match = OBLIGATION_ROW.exec(line);
     if (match === null) continue;
     let unperformable: string | undefined;
+    let next: Record<string, unknown> | undefined;
     if (line.includes("UNPERFORMABLE now"))
       unperformable = "the term cannot be performed now";
-    for (let next = at + 1; next < lines.length; next += 1) {
-      const following = lines[next] ?? "";
+    for (let following_ = at + 1; following_ < lines.length; following_ += 1) {
+      const following = lines[following_] ?? "";
       if (following.startsWith("- ") || !following.startsWith("  ")) break;
+      const object = /(\{"action":"[^}]*\})/.exec(following);
+      if (next === undefined && object !== null) {
+        try {
+          next = JSON.parse(object[1] as string) as Record<string, unknown>;
+        } catch {
+          // A line the row's author wrote is parsed or ignored, never guessed at.
+        }
+      }
       const found =
         /UNPERFORMABLE now: (.+?)\.?$/.exec(following.trim()) ??
         /You cannot give it now: (.+?)\.?$/.exec(following.trim());
@@ -550,6 +563,10 @@ export function obligationRows(prompt: string): ObligationRow[] {
       deadline: Number(match[4]),
       unperformable,
       boon: (match[3] as string).startsWith("your boon on its prayer"),
+      petition: /^your boon on its prayer \[(evt-[^\]]+)\]/.exec(
+        match[3] as string,
+      )?.[1],
+      next,
     });
   }
   return rows;
@@ -595,6 +612,8 @@ export function classifyTurn(
   prompt: string,
   proposal: RealProposal | undefined,
   moved: boolean,
+  /** The buildings an owed punish prayer names: a strike on one of them is the boon. */
+  punishTargets: readonly string[] = [],
 ): Pick<ObligatedTurn, "class" | "named" | "choice"> {
   const kind = proposal?.kind;
   const fields = proposal?.proposal ?? {};
@@ -609,13 +628,24 @@ export function classifyTurn(
   const term = thread?.term;
   const committed = outcome === "committed";
   const goes = kind === "move" || kind === "realm-transition";
-  // A boon the god owes is given by answering the prayer, or moved toward by going to the mortal.
-  if (
-    row.boon &&
-    committed &&
-    (kind === "bless" || kind === "strike" || goes)
-  ) {
-    return { class: "performed", named: undefined, choice };
+  // A boon the god owes is performed by the step the row showed, and by nothing else that merely looks busy: a
+  // bless that names the owed prayer, a strike on a building the owed punish prayer names, or the hop the row
+  // gave. A bless on another prayer, a strike elsewhere, or a move to another exit performs nothing.
+  if (row.boon && committed) {
+    const shown = row.next;
+    if (kind === "bless" && fields.petition === row.petition) {
+      return { class: "performed", named: undefined, choice };
+    }
+    if (
+      kind === "strike" &&
+      typeof fields.target === "string" &&
+      (fields.target === shown?.target || punishTargets.includes(fields.target))
+    ) {
+      return { class: "performed", named: undefined, choice };
+    }
+    if (goes && shown?.to !== undefined && fields.to === shown.to) {
+      return { class: "performed", named: undefined, choice };
+    }
   }
   if (term !== undefined && !row.boon) {
     switch (term.kind) {
@@ -679,6 +709,20 @@ export function obligatedTurns(
       boonSeenAt.set(String(event.threadId), Number(event.tick));
     }
   }
+  // The buildings each punish prayer names, from the log: a strike on one answers it.
+  const petitionBuildings = new Map<string, readonly string[]>();
+  for (const event of input.events) {
+    const request = event.request as
+      | { kind?: string; buildings?: readonly unknown[] }
+      | undefined;
+    if (
+      event.kind === "petition-opened" &&
+      request?.kind === "punish" &&
+      Array.isArray(request.buildings)
+    ) {
+      petitionBuildings.set(String(event.id), request.buildings.map(String));
+    }
+  }
   const turns: ObligatedTurn[] = [];
   const unrecorded: UnrecordedTurn[] = [];
   for (const request of input.requests) {
@@ -737,7 +781,17 @@ export function obligatedTurns(
         scene.at !== undefined &&
         thread?.term.kind === "tell-legend" &&
         scene.at !== thread.term.place;
-      const classified = classifyTurn(thread, row, prompt, proposal, moved);
+      const punish = petitionBuildings.get(
+        thread?.petition ?? row.petition ?? "",
+      );
+      const classified = classifyTurn(
+        thread,
+        row,
+        prompt,
+        proposal,
+        moved,
+        punish ?? [],
+      );
       turns.push({
         god: request.role,
         thread: row.thread,

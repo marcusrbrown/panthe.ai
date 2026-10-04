@@ -3,7 +3,9 @@
 // is the god's own view (its role, the cause as it knows it, the legal
 // responses, the deadline), never the other party's private goal or evidence.
 //
-// The digest leads the prompt. Obligations the god owes and threads awaiting
+// The digest is the last section of the prompt, just before the question: it
+// changes every tick, and a request is ordered from what never changes to what
+// does. Obligations the god owes and threads awaiting
 // its answer always appear, compressed when the budget runs short; only the
 // other open threads are cut. The intent is one flat object: a move, a thread
 // or a cause, and one term picked from the closed checkable set. The parser is
@@ -38,7 +40,7 @@ import {
 } from "@panthea/world";
 import type { ParseResult } from "./config";
 
-/** The heading of the practice digest, the first section of a god's prompt: found by it (with the dashed and indented lines under it) wherever a prompt is checked for a thread. */
+/** The heading of the practice digest, the last section of a god's prompt before the question: found by it (with the dashed and indented lines under it) wherever a prompt is checked for a thread. */
 export const PRACTICES_HEADING = "Your open practices:";
 
 /** Characters of digest shown in full. Rows beyond it are compressed, and only threads that need nothing from this god are cut. */

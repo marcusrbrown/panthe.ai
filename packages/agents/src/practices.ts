@@ -22,6 +22,7 @@ import {
   type ServiceKind,
 } from "@panthea/contracts";
 import {
+  type ActorState,
   blessability,
   canStillPerform,
   contestableActs,
@@ -33,9 +34,11 @@ import {
   type MemoryEntry,
   nextHop,
   openPetitionsFor,
+  type Petition,
   type PracticeThread,
   petitionBalanceOf,
   practiceBalanceOf,
+  routeLength,
   termObstacle,
   termTuple,
   validatePractice,
@@ -101,11 +104,27 @@ export interface OwedBoon {
         readonly intent: Readonly<Record<string, unknown>>;
       }
     | {
+        readonly kind: "strike";
+        readonly intent: Readonly<Record<string, unknown>>;
+      }
+    | {
         readonly kind: "hop";
         readonly intent: Readonly<Record<string, unknown>>;
         readonly via: string;
       };
   readonly blocked?: string;
+  /**
+   * For a punish prayer, whose boon is a strike: the building the next step is about and where it stands. The
+   * step is a strike when the god is there, else the hop toward it.
+   */
+  readonly building?: {
+    readonly id: EntityId;
+    readonly name: string;
+    readonly place: EntityId;
+    readonly placeName: string;
+  };
+  /** Whether the boon is a strike (a punish prayer), so a god that cannot strike cannot give it. */
+  readonly strikes?: true;
 }
 
 /** One open thread the god is a party to, resolved for the prompt and the builder. */
@@ -452,10 +471,13 @@ function owedBoonOf(
     offeringMade: thread.progress?.offering !== undefined,
   };
   const petition = state.petitions.get(thread.petition);
+  if (petition?.request.kind === "punish") {
+    return { ...owedStrikeOf(state, god, petition, base), strikes: true };
+  }
   if (petition?.request.kind !== "help") {
     return {
       ...base,
-      blocked: "its prayer is answered as it asks, not by a bless",
+      blocked: "its prayer is not one a bless or a strike answers",
     };
   }
   if (!blessability(state, thread.petition, actorId).ok) {
@@ -490,6 +512,134 @@ function owedBoonOf(
   }
   return {
     ...base,
+    next: {
+      kind: "hop",
+      via: exit.name,
+      intent: {
+        action: exit.realm === from.realm ? "move" : "realm-transition",
+        to: hop,
+      },
+    },
+  };
+}
+
+/**
+ * `views` as a god that holds `strikeCap` power to strike with may be shown them: a punish boon is a strike, so for
+ * a god that cannot strike (no ability, or no divinity to spend) the row names why and shows no object, rather than
+ * a strike or a hop toward one the parser would refuse. `strikeCap` is what the prompt's own schema allows.
+ */
+export function withStrikeLegality(
+  views: readonly ThreadView[],
+  strikeCap: number,
+): readonly ThreadView[] {
+  if (strikeCap >= 1) return views;
+  return views.map((view) => {
+    const owed = view.owedBoon;
+    if (owed?.strikes !== true || owed.next === undefined) return view;
+    const { next: _next, building: _building, ...rest } = owed;
+    return {
+      ...view,
+      owedBoon: {
+        ...rest,
+        blocked: "you have no power to strike with",
+      },
+    };
+  });
+}
+
+/**
+ * The boon owed on a punish prayer, which the world counts as a strike by this god on a building the prayer names
+ * (`judgeAnswers`): the strike when the god stands where such a building does, else the hop toward the nearest one
+ * it can reach. A strike is shown at power 1, the least the world takes; whether the god's own ability allows it is
+ * settled where the prompt is built, which holds the profile. Otherwise the reason, and no object.
+ */
+function owedStrikeOf(
+  state: WorldState,
+  god: ActorState,
+  petition: Petition,
+  base: Omit<OwedBoon, "next" | "blocked" | "building">,
+): OwedBoon {
+  if (
+    petition.status !== "open" ||
+    !inAnswerWindow(state, petition, state.tick) ||
+    petition.request.kind !== "punish"
+  ) {
+    return { ...base, blocked: "its prayer is no longer open to an answer" };
+  }
+  const named = petition.request.buildings.flatMap((buildingId) => {
+    const building = state.buildings.get(buildingId);
+    return building === undefined ? [] : [building];
+  });
+  const strikable = named.filter(
+    (building) => building.status === "operational",
+  );
+  if (strikable.length === 0) {
+    return {
+      ...base,
+      blocked: `none of the buildings it names (${named.map((b) => b.id).join(", ")}) can be struck now`,
+    };
+  }
+  if ((god.inventory.get("divinity") ?? 0) < 1) {
+    return { ...base, blocked: "a strike costs divinity and you hold none" };
+  }
+  const where = (building: (typeof named)[number]) => ({
+    id: building.id,
+    name: building.name,
+    place: building.locationId,
+    placeName:
+      state.locations.get(building.locationId)?.name ?? building.locationId,
+  });
+  const here = strikable.find(
+    (building) => building.locationId === god.locationId,
+  );
+  if (here !== undefined) {
+    return {
+      ...base,
+      building: where(here),
+      next: {
+        kind: "strike",
+        intent: { action: "strike", target: here.id, power: 1 },
+      },
+    };
+  }
+  const nearest = strikable
+    .flatMap((building) => {
+      const length = routeLength(
+        state,
+        god.locationId,
+        building.locationId,
+        god.capabilities,
+      );
+      return length === undefined ? [] : [{ building, length }];
+    })
+    .sort(
+      (a, b) => a.length - b.length || (a.building.id < b.building.id ? -1 : 1),
+    )[0];
+  const hop =
+    nearest === undefined
+      ? undefined
+      : nextHop(
+          state,
+          god.locationId,
+          nearest.building.locationId,
+          god.capabilities,
+        );
+  const exit = hop === undefined ? undefined : state.locations.get(hop);
+  const from = state.locations.get(god.locationId);
+  if (
+    nearest === undefined ||
+    hop === undefined ||
+    exit === undefined ||
+    from === undefined
+  ) {
+    return {
+      ...base,
+      blocked: "there is no way from where you stand to a building it names",
+    };
+  }
+  return {
+    ...base,
+    building: where(nearest.building),
     next: {
       kind: "hop",
       via: exit.name,
@@ -1126,9 +1276,18 @@ function owedBoonRows(view: ThreadView, owed: OwedBoon, by: string): string[] {
   const lines = [
     `- [${view.id}] YOU OWE ${view.other}: your boon on its prayer [${owed.petition}], ${by}. ${view.lastMove}; its offering is ${owed.offeringMade ? "made" : "still to come"}. Cause: ${view.cause}.`,
   ];
+  const building = owed.building;
   if (owed.next?.kind === "bless") {
     lines.push(
       `  ${owed.petitioner} is here: give it now with ${json(owed.next.intent)}`,
+    );
+  } else if (owed.next?.kind === "strike" && building !== undefined) {
+    lines.push(
+      `  ${building.name} [${building.id}] is here: strike it now with ${json(owed.next.intent)} (a power from 1 to your limit; 1 is shown).`,
+    );
+  } else if (owed.next?.kind === "hop" && building !== undefined) {
+    lines.push(
+      `  ${building.name} [${building.id}] stands at ${building.placeName} [${building.place}]: your next step is ${json(owed.next.intent)} (${owed.next.via}), turn by turn until you are there, then strike it.`,
     );
   } else if (owed.next?.kind === "hop") {
     lines.push(

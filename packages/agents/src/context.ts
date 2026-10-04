@@ -60,6 +60,7 @@ import {
   practiceProperties,
   refusalView,
   type ThreadView,
+  withStrikeLegality,
 } from "./practices";
 import type { IntentSchema, RouteContext } from "./router";
 
@@ -1670,7 +1671,10 @@ export function buildGodContext(
     ...describePetitions(remembered),
     ...describeContests(remembered.practice),
     ...describeDigest(
-      remembered.threads,
+      withStrikeLegality(
+        remembered.threads,
+        strikePowerCap(abilityFor(profile, "strike"), snapshot),
+      ),
       remembered.practiceRefusal,
       remembered.practice.openings,
     ),

@@ -97,6 +97,28 @@ class Run {
       },
     }).id as EventId;
   }
+  /** `mortal` prays to `god` to punish the owner of `buildings`: a real theft, a real punish petition. */
+  prayPunish(
+    mortal = "farmer",
+    god = "zeus",
+    buildings = ["woodshed"],
+  ): EventId {
+    const theft = this.apply({
+      kind: "theft",
+      entityId: "woodcutter",
+      victim: mortal,
+      resource: "currency",
+      amount: 1,
+      cause: "director",
+    });
+    return this.apply({
+      kind: "petition-opened",
+      entityId: mortal,
+      god,
+      cause: theft.id,
+      request: { kind: "punish", offender: "woodcutter", buildings },
+    }).id as EventId;
+  }
   place(who: string, where: string) {
     const actor = getActor(this.state, id(who));
     if (!actor) throw new Error(who);
@@ -404,4 +426,150 @@ test("prompt size for a god that owes one boon, against the same god with the te
     `BOON_OWED_SIZE unagreed ${size(unagreed)} owed ${size(owed)} delta ${size(owed) - size(unagreed)}`,
   );
   expect(size(owed)).toBeLessThan(size(unagreed) + 700);
+});
+
+// --- A punish prayer's boon is a strike ---------------------------------------------------------------
+
+test("an accepted punish supplication with the god away from the building shows the hop toward it, as an object that parses and commits; no bless is shown for a prayer a bless does not answer", () => {
+  const run = new Run();
+  const petition = run.prayPunish();
+  const thread = run.agreed(petition);
+  const zeus = getActor(run.state, id("zeus"));
+  const shed = run.state.buildings.get(id("woodshed"));
+  if (!zeus || !shed) throw new Error("fixture");
+  expect(zeus.locationId).not.toBe(shed.locationId);
+  const hop = nextHop(
+    run.state,
+    zeus.locationId,
+    shed.locationId,
+    zeus.capabilities,
+  );
+  if (hop === undefined) throw new Error("no route");
+
+  const { context, schema, snapshot, remembered } = run.view("zeus");
+  const digest = digestOf(context.prompt);
+  expect(digest[1]).toContain(`[${thread.id}] YOU OWE farmer`);
+  expect(digest[1]).toContain(`your boon on its prayer [${petition}]`);
+  const row = digest.join("\n");
+  expect(row).toContain("woodshed");
+  expect(row).toContain(`{"action":"move","to":"${hop}"}`);
+  expect(row).not.toContain('"action":"bless"');
+  expect(row).not.toContain("answered as it asks");
+  expect(row).not.toContain("You cannot give it now");
+
+  const parsed = schema.parse({ action: "move", to: hop });
+  expect(parsed.ok).toBe(true);
+  if (!parsed.ok) return;
+  const built = buildModelProposal(
+    id("zeus"),
+    snapshot,
+    parsed.value,
+    remembered,
+  );
+  if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+  expect(run.tick(built.proposal as never).rejected).toEqual([]);
+  expect(String(getActor(run.state, id("zeus"))?.locationId)).toBe(String(hop));
+});
+
+test("with the god at the building the row shows the strike, whole: it parses, builds, and commits, and the world sees the boon", () => {
+  const run = new Run();
+  const petition = run.prayPunish();
+  const thread = run.agreed(petition);
+  run.place(
+    "zeus",
+    String(run.state.buildings.get(id("woodshed"))?.locationId),
+  );
+  const { context, schema, snapshot, remembered } = run.view("zeus");
+  const row = digestOf(context.prompt).join("\n");
+  expect(row).toContain(`[${thread.id}] YOU OWE farmer`);
+  expect(row).toContain("[woodshed] is here");
+  const strike = { action: "strike", target: "woodshed", power: 1 };
+  expect(row).toContain(JSON.stringify(strike));
+  expect(row).not.toContain('"action":"bless"');
+
+  const parsed = schema.parse(strike);
+  expect(parsed.ok).toBe(true);
+  if (!parsed.ok) return;
+  const built = buildModelProposal(
+    id("zeus"),
+    snapshot,
+    parsed.value,
+    remembered,
+  );
+  if (!built.ok || built.kind !== "proposal") throw new Error("no proposal");
+  const ran = run.tick(built.proposal as never);
+  expect(ran.rejected).toEqual([]);
+  expect(
+    ran.events.some(
+      (e) => e.kind === "building-damaged" || e.kind === "building-ignited",
+    ),
+  ).toBe(true);
+  expect(run.state.threads.get(thread.id)?.progress?.boon).toBeDefined();
+});
+
+test("control: a punish boon the world would not take shows its reason and no object: too little divinity, a building that cannot be struck, a prayer no longer open", () => {
+  const owedRow = (change: (run: Run) => void) => {
+    const run = new Run();
+    const petition = run.prayPunish();
+    run.agreed(petition);
+    change(run);
+    const view = run.view("zeus");
+    return {
+      row: digestOf(view.context.prompt).join("\n"),
+      schema: view.schema,
+    };
+  };
+  const here = (run: Run) =>
+    run.place(
+      "zeus",
+      String(run.state.buildings.get(id("woodshed"))?.locationId),
+    );
+  const noObject = (row: string) => {
+    expect(row).toContain("YOU OWE farmer");
+    expect(row).not.toContain('"action":"strike"');
+    expect(row).not.toContain('"action":"move"');
+    expect(row).toContain("You cannot give it now");
+  };
+
+  const poor = owedRow((run) => {
+    here(run);
+    const zeus = getActor(run.state, id("zeus"));
+    if (!zeus) throw new Error("zeus");
+    run.state = withActor(run.state, {
+      ...zeus,
+      inventory: new Map(zeus.inventory).set("divinity", 0),
+    });
+  });
+  noObject(poor.row);
+  expect(poor.row).toContain("divinity");
+
+  const burned = owedRow((run) => {
+    here(run);
+    const shed = run.state.buildings.get(id("woodshed"));
+    if (!shed) throw new Error("shed");
+    run.state = {
+      ...run.state,
+      buildings: new Map(run.state.buildings).set(shed.id, {
+        ...shed,
+        status: "destroyed",
+      } as never),
+    };
+  });
+  noObject(burned.row);
+  expect(burned.row).toContain("woodshed");
+
+  const closed = owedRow((run) => {
+    here(run);
+    const prayer = [...run.state.petitions.values()].at(-1);
+    if (!prayer) throw new Error("prayer");
+    run.state = {
+      ...run.state,
+      petitions: new Map(run.state.petitions).set(prayer.id, {
+        ...prayer,
+        status: "answered",
+      }),
+    };
+  });
+  noObject(closed.row);
+  expect(closed.row).toContain("no longer open");
 });

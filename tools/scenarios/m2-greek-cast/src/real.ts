@@ -47,7 +47,12 @@ export interface RealRecord {
   readonly hardware: string;
 }
 
-/** The model config the sidecar reads: both gods on one endpoint, local Ollama unless a base URL is given. Names a key by reference, never carries one. */
+/**
+ * The model config the sidecar reads: every god on one endpoint, local Ollama unless a base URL is
+ * given. Zeus and Hera keep roles of their own; the endpoint is also the global fallback, so each other
+ * god in the pack (the desktop's global fallback does the same) routes there without a role to keep in
+ * step with the cast. Names a key by reference, never carries one.
+ */
 export function routingConfigFor(options: RealOptions): object {
   const id = options.baseUrl === undefined ? "ollama" : "hosted";
   return {
@@ -63,6 +68,7 @@ export function routingConfigFor(options: RealOptions): object {
       },
     ],
     roles: { zeus: { endpoint: id }, hera: { endpoint: id } },
+    fallback: [id],
   };
 }
 

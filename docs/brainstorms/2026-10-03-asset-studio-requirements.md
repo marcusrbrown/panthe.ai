@@ -7,7 +7,7 @@ topic: asset-studio
 
 ## Summary
 
-A studio toolchain, built in this repository beside the core game, turns a request such as "Zeus idle and strike sprites" into candidate frames that conform to the project art guide, lets the owner make them canon by hand in Aseprite, derives what derivation can honestly produce (mirrors, palette swaps, overlays, idle bob), and registers every result with provenance so the game client hot-swaps it over its placeholder. It ships as one `@panthea/assets` library hosted by a `tools/studio` CLI and a separate `apps/studio` Tauri app with an in-engine preview. Generation is local-only on the M1 Pro 16 GB baseline; hosted providers exist only as an interface. Work is tiered: Zeus on screen first, the full reference scene second, world tiles and sound third.
+A studio toolchain, built in this repository beside the core game, turns a request such as "Zeus idle and strike sprites" into candidate frames that conform to the project art guide, lets the owner make them canon by hand in Aseprite, derives what derivation can honestly produce (mirrors, palette swaps, overlays, idle bob), and registers every result with provenance so the game client hot-swaps it over its placeholder. It ships as one `@panthea/assets` library hosted by a `tools/studio` CLI and a separate `apps/studio` Tauri app with an in-engine preview. Generation is local-only on the M1 Pro 16 GB baseline; hosted providers exist only as an interface. Work is tiered: Zeus on screen first, the visual reference scene second, world tiles and sound third.
 
 ---
 
@@ -95,7 +95,7 @@ Every asset moves through these states; each flow names the transition it causes
 
 ## Requirements
 
-Tiers: **T1** Zeus on screen (success criterion 1); **T2** full reference scene; **T3** world tiles and sound. Tiers ship independently and in order.
+Tiers: **T1** Zeus on screen (success criterion 1); **T2** visual reference scene (art only, no sound); **T3** world tiles and sound. Tiers ship independently and in order; T2 is complete without any T3 item.
 
 **Asset contract and registry**
 - R1. [T1] Every asset carries the metadata content-direction.md requires: dimensions, pixel scale, origin/pivot, collision footprint, facing, animation states and timing, palette family, and style tag; portraits carry character identity and expression set; tiles carry orientation, layer, and occlusion rules; effects carry tier. The states list is versioned data so M3 can change it.
@@ -127,7 +127,7 @@ Tiers: **T1** Zeus on screen (success criterion 1); **T2** full reference scene;
 
 **World tiles and effects**
 - R19. [T3] Autotile sets are produced by procedural stamping from seamless base textures with isometric diamond masks (dual-grid first), exported as Tiled tilesets with Wang metadata, and render edge-consistent and depth-sorted in the studio preview.
-- R20. [T1→T2] The Zeus reference scene asset set is the first target. T1: Zeus `idle` south, `seated` (on a cloud, body partly obscured), one `act` (strike) sequence, and the six-expression portrait. T2: one tree, one building in `intact`, `damaged`, and `burning` states, lightning effect frames at three tiers, remaining idle directions, and the `thunder-strike` sound. Walk cycles and facing-driven states wait for actor position and facing in the contracts, owned by the core lane.
+- R20. [T1→T3] The Zeus reference scene asset set is the first target. T1: Zeus `idle` south, `seated` (on a cloud, body partly obscured), one `act` (strike) sequence, and the six-expression portrait. T2: one tree, one building in `intact`, `damaged`, and `burning` states, lightning effect frames at three tiers, and the remaining idle directions. T3: the `thunder-strike` sound (R22), alongside world tiles (R19). Walk cycles and facing-driven states wait for actor position and facing in the contracts, owned by the core lane.
 - R21. [T2] Effects ship in three intensity tiers, tier one lowest; reduced-effects mode presents the same event with tier one (X03).
 
 **Sound**
@@ -195,7 +195,7 @@ Tiers: **T1** Zeus on screen (success criterion 1); **T2** full reference scene;
 - Procedural stamping for tiles over diffusion-native Wang tiles: no open model produces edge-consistent isometric sets; stamping is deterministic and small.
 - Parameters are source for sound; presets and mutation are the baseline and an LLM is optional.
 - The art guide is drafted now (`docs/product/art-guide.md`) with defaults the owner can veto; the master palette is an owner gate before the first canon approval.
-- Narrows D18 and D24 for assets only: an owner-facing authoring app for art and sound is in scope; player-facing in-game editors remain deferred. Record as a D26 entry in decisions.md in the first studio PR.
+- Narrows D18 and D24 for assets only: an owner-facing authoring app for art and sound is in scope; player-facing in-game editors remain deferred. Recorded as D26 in `docs/product/decisions.md`.
 - ADR-0007 gets a supersession note when the new probe lands; its measurements and placeholder contract stand.
 
 ---
@@ -223,7 +223,7 @@ Tiers: **T1** Zeus on screen (success criterion 1); **T2** full reference scene;
 - [Affects R19][Needs research] Whether three-flatland renders isometric tilemaps or only declares the type; the depth-sort approach (`x + y − z` to render order).
 - [Affects R3][Technical] Registry URI scheme name and resolution to webview-safe URLs; runtime location of registry files for the packaged client.
 - [Affects R22][Technical] zzfx versus jsfxr as primary synth; both may ship.
-- [Affects R24][Process] Which traceability rows the studio PRs update (U06, U07, X02, X03, U08) and the new requirement ID for authoring tooling, alongside the D26 entry.
+- [Affects R24][Process] The new requirement ID for authoring tooling, to be proposed in the implementation plan. Traceability rows U06, U07, U08, X02, X03, and X05 already link this work and are updated by each studio PR.
 - [Affects R16][Process] Whether T1 must land before M2 exit or the studio lane is unconstrained by roadmap gates.
 
 ---

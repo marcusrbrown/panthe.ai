@@ -91,5 +91,6 @@ They can ship in successive internal milestones, but an intermediate milestone i
 Conditional platform support does not excuse omitting the packaged M1 Pro baseline.
 Exact models and numerical performance thresholds are probe-dependent.
 
-Video export, direct publishing, batch runners, additional pantheons, hosted multiplayer, voices, in-app authoring, and spending enforcement are deferred.
+Video export, direct publishing, batch runners, additional pantheons, hosted multiplayer, voices, player-facing in-game editors, and spending enforcement are deferred.
+The owner-facing asset studio (D26) is authoring tooling, not an in-game editor, and is in scope; it has no requirement ID of its own yet.
 See [the roadmap](mvp-roadmap.md) and [acceptance plan](acceptance.md) for delivery order and evidence.

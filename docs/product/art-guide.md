@@ -64,7 +64,7 @@ One place that says what a Panthea asset looks like so that a generated, hand-dr
 ## Effects
 
 - Every effect ships in three intensity tiers. Tier 1 is the reduced-effects presentation (X03): no full-screen flash, no screen shake, under 300 ms, still communicates the event. Tier 3 is the spectacle version.
-- Effects use the master palette plus at most 4 emissive accents per effect. Additive blending is allowed for tier 2 and 3 only.
+- Effects use the master palette. An effect may declare up to 4 emissive accent colours outside it, listed in its metadata and reviewed with the effect. Any other colour outside the master palette fails conformance. Additive blending is allowed for tier 2 and 3 only.
 - Effect pivot and footprint are declared like actors; a strike effect anchors to the target tile.
 - Frame timing is per-frame; loops declare their loop start.
 
@@ -76,18 +76,18 @@ One place that says what a Panthea asset looks like so that a generated, hand-dr
 
 ## Metadata every asset carries
 
-From content-direction.md, made concrete: `id`, `kind`, `pixelScale`, `cell` (w×h), `pivot` (x, y), `footprint` (tiles), `directions`, `states` with frame lists and per-frame durations, `paletteFamily`, `paletteId`, `styleTag`, `realmVariants`, and for portraits `characterId` and `expressions`; for tiles `orientation`, `layer`, `occlusion`, `wangId`; for effects `tier`. Provenance fields live beside this in the manifest (creation method, inputs, model, seed, hashes, hand-edit steps, licences).
+From content-direction.md, made concrete: `id`, `kind`, `pixelScale`, `cell` (w×h), `pivot` (x, y), `footprint` (tiles), `directions`, `states` with frame lists and per-frame durations, `paletteFamily`, `paletteId`, `styleTag`, `realmVariants`, and for portraits `characterId` and `expressions`; for tiles `orientation`, `layer`, `occlusion`, `wangId`; for effects `tier` and `emissiveAccents` (up to 4 colours outside the master palette, empty by default). Provenance fields live beside this in the manifest (creation method, inputs, model, seed, hashes, hand-edit steps, licences).
 
 ## Conformance checks (what the studio measures)
 
 - Native grid recovered to 1×; no sub-pixel colour blending remains.
-- Colour count within the class limit; every colour is a master palette entry.
+- Colour count within the class limit; every colour is a master palette entry, except an effect's declared emissive accents (at most 4, listed in its metadata).
 - Canvas equals the declared cell; pivot and footprint inside it; binary alpha.
 - Silhouette threshold test produces a connected shape with no stray pixels.
 - Directions present and east/west mirror consistent unless asymmetry declared.
 - Frame counts and durations within the state's declared range.
 - Tiles: edges seamless with declared neighbours.
-- Effects: three tiers present; tier 1 under 300 ms and no full-screen fill.
+- Effects: three tiers present; tier 1 under 300 ms and no full-screen fill; no colour outside the master palette and the declared emissive accents.
 
 ## Do and don't
 

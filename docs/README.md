@@ -45,9 +45,9 @@ Use a Bun-managed workspace, Tauri, Three.js, and Three Flatland, rendering thro
 The MVP targets local single-person desktop use with optional hosted model adapters.
 The owner implements through OpenCode and Systematic.
 
-## Brainstorms and handoffs
+## Brainstorms
 
-- [Asset studio requirements (2026-10-03)](brainstorms/2026-10-03-asset-studio-requirements.md) and its [handoff prompt](brainstorms/2026-10-03-asset-studio-handoff.md): authoring tooling for sprites, tiles, effects, and sound, built in a separate worktree alongside M2.
+- [Asset studio requirements (2026-10-03)](brainstorms/2026-10-03-asset-studio-requirements.md): authoring tooling for sprites, tiles, effects, and sound, built in a separate worktree alongside M2.
 
 ## Implementation reviews
 

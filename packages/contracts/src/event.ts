@@ -31,6 +31,8 @@ import {
   type ResourceAmount,
 } from "./ids";
 import {
+  CONTEST_END_REASONS,
+  CONTEST_RESULTS,
   PRACTICE_END_REASONS,
   PRACTICE_KINDS,
   PRACTICE_MOTIF_CHANGES,
@@ -484,7 +486,7 @@ export type MotifEffect =
       readonly effect: "transformation";
       readonly intent: "punishment" | "mercy";
     } & Transformation)
-  /** Standing at `place` moved by `delta`. Only recorded in M2; standing itself is a later unit's state. */
+  /** Standing at `place` moved by `delta`: a state the world holds, changed for good (a settlement's performance or breach there, or a contest closing). */
   | {
       readonly effect: "standing";
       readonly place: EntityId;
@@ -531,6 +533,56 @@ export interface PracticeProgressedEvent extends EventEnvelope {
   readonly by: EventId;
 }
 
+/**
+ * A god opened a contest for the people of `place` over `cause`, a rival's
+ * bless, strike, or legend it perceived there. `entityId` is the god that
+ * opened it, `rival` the god whose act it was. Acts after this event and no
+ * later than the tick `closesAt` count; the world closes it on its own.
+ * `succeeds` is the closed contest between these gods at this place that a new
+ * cause lets this one follow.
+ */
+export interface ContestOpenedEvent extends EventEnvelope {
+  readonly kind: "contest-opened";
+  readonly entityId: EntityId;
+  readonly rival: EntityId;
+  readonly place: EntityId;
+  readonly cause: EventId;
+  readonly closesAt: number;
+  readonly succeeds?: EventId;
+}
+
+/** A mortal's favour at the close of a contest: the god that served it more over the window. */
+export interface ContestFavour {
+  readonly mortal: EntityId;
+  readonly god: EntityId;
+}
+
+/**
+ * The world closed a contest. A decided one names the `winner` (the god more
+ * mortals favour) and each mortal's favour; the standing changes follow as
+ * `motif-applied` events citing this one. An expired one, the place emptied or
+ * no god favoured over the other, changes no one's standing.
+ */
+export type ContestClosedEvent = EventEnvelope & {
+  readonly kind: "contest-closed";
+  /** The god that opened the contest. */
+  readonly entityId: EntityId;
+  readonly rival: EntityId;
+  readonly place: EntityId;
+  readonly contestId: EventId;
+} & (
+    | {
+        readonly result: "decided";
+        readonly reason: "window";
+        readonly winner: EntityId;
+        readonly favoured: readonly ContestFavour[];
+      }
+    | {
+        readonly result: "expired";
+        readonly reason: "place-empty" | "no-favour";
+      }
+  );
+
 /** The moves and talk a refusal can be about: a practice move, or a report or legend that talked around an open thread. */
 export const PRACTICE_ATTEMPTS = [
   "demand",
@@ -539,6 +591,7 @@ export const PRACTICE_ATTEMPTS = [
   "accept",
   "refuse",
   "withdraw",
+  "contest",
   "report",
   "legend",
 ] as const;
@@ -584,6 +637,8 @@ export const UNPLACED_EVENT_KINDS = [
   "practice-refused",
   "motif-applied",
   "access-restored",
+  "contest-opened",
+  "contest-closed",
 ] as const;
 
 /** The kinds an actor can witness. */
@@ -718,7 +773,9 @@ export type WorldEvent =
   | PracticeProgressedEvent
   | PracticeRefusedEvent
   | MotifAppliedEvent
-  | AccessRestoredEvent;
+  | AccessRestoredEvent
+  | ContestOpenedEvent
+  | ContestClosedEvent;
 
 const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "entity-moved": true,
@@ -758,6 +815,8 @@ const EVENT_KIND_SET: Record<WorldEvent["kind"], true> = {
   "practice-refused": true,
   "motif-applied": true,
   "access-restored": true,
+  "contest-opened": true,
+  "contest-closed": true,
 };
 
 /** Every event kind, kept exhaustive by the record above: adding a kind to `WorldEvent` fails typecheck until it is listed here. */
@@ -828,6 +887,9 @@ export function eventSubjects(event: WorldEvent): readonly EntityId[] {
       case "practice-ended":
       case "practice-progressed":
         return [event.entityId, event.counterparty];
+      case "contest-opened":
+      case "contest-closed":
+        return [event.entityId, event.rival, event.place];
       case "practice-moved":
       case "practice-refused":
       case "motif-applied":
@@ -896,6 +958,10 @@ export function eventCause(event: WorldEvent): EventId | undefined {
       return event.by;
     case "practice-refused":
       return event.thread;
+    case "contest-opened":
+      return event.cause;
+    case "contest-closed":
+      return event.contestId;
     case "motif-applied":
       return event.cause;
     case "access-restored":
@@ -1964,6 +2030,108 @@ export function parseEvent(input: unknown): ParseResult<WorldEvent> {
         reason: reason.value,
         ...(thread.value === undefined ? {} : { thread: thread.value }),
         ...(why.value === undefined ? {} : { why: why.value }),
+      });
+    }
+    case "contest-opened": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const rival = parseEntityId(input.rival, "rival");
+      if (!rival.ok) return rival;
+      if (rival.value === entityId.value) {
+        return fail("rival", "a god cannot contest itself");
+      }
+      const place = parseEntityId(input.place, "place");
+      if (!place.ok) return place;
+      const cause = parseEventId(input.cause, "cause");
+      if (!cause.ok) return cause;
+      const closesAt = parseNonNegativeInteger(input.closesAt, "closesAt");
+      if (!closesAt.ok) return closesAt;
+      const succeeds = parseOptionalEventId(input.succeeds, "succeeds");
+      if (!succeeds.ok) return succeeds;
+      return ok({
+        ...envelope,
+        kind: "contest-opened",
+        entityId: entityId.value,
+        rival: rival.value,
+        place: place.value,
+        cause: cause.value,
+        closesAt: closesAt.value,
+        ...(succeeds.value === undefined ? {} : { succeeds: succeeds.value }),
+      });
+    }
+    case "contest-closed": {
+      const entityId = parseEntityId(input.entityId, "entityId");
+      if (!entityId.ok) return entityId;
+      const rival = parseEntityId(input.rival, "rival");
+      if (!rival.ok) return rival;
+      if (rival.value === entityId.value) {
+        return fail("rival", "a god cannot contest itself");
+      }
+      const place = parseEntityId(input.place, "place");
+      if (!place.ok) return place;
+      const contestId = parseEventId(input.contestId, "contestId");
+      if (!contestId.ok) return contestId;
+      const result = parseEnum(input.result, "result", CONTEST_RESULTS);
+      if (!result.ok) return result;
+      const reason = parseEnum(input.reason, "reason", CONTEST_END_REASONS);
+      if (!reason.ok) return reason;
+      const base = {
+        ...envelope,
+        kind: "contest-closed" as const,
+        entityId: entityId.value,
+        rival: rival.value,
+        place: place.value,
+        contestId: contestId.value,
+      };
+      const gods = [entityId.value, rival.value];
+      if (result.value === "expired") {
+        if (reason.value === "window") {
+          return fail(
+            "reason",
+            "an expired contest's window did not decide it",
+          );
+        }
+        if (input.winner !== undefined) {
+          return fail("winner", "an expired contest has no winner");
+        }
+        if (
+          input.favoured !== undefined &&
+          !(Array.isArray(input.favoured) && input.favoured.length === 0)
+        ) {
+          return fail("favoured", "an expired contest records no favour");
+        }
+        return ok({
+          ...base,
+          result: "expired",
+          reason: reason.value,
+        });
+      }
+      if (reason.value !== "window") {
+        return fail("reason", "a decided contest was decided by its window");
+      }
+      const winner = parseEntityId(input.winner, "winner");
+      if (!winner.ok) return winner;
+      if (!gods.includes(winner.value)) {
+        return fail("winner", "the winner is one of the two gods");
+      }
+      const favoured = parseArray(input.favoured, "favoured", (value, at) => {
+        if (!isRecord(value)) return fail(at, "expected a favour object");
+        const mortal = parseEntityId(value.mortal, `${at}.mortal`);
+        if (!mortal.ok) return mortal;
+        const god = parseEntityId(value.god, `${at}.god`);
+        if (!god.ok) return god;
+        if (!gods.includes(god.value)) {
+          return fail(`${at}.god`, "a mortal favours one of the two gods");
+        }
+        return ok({ mortal: mortal.value, god: god.value });
+      });
+      if (!favoured.ok) return favoured;
+      return ok({
+        ...base,
+        result: "decided",
+        reason: "window",
+        winner: winner.value,
+        favoured: favoured.value,
       });
     }
     case "practice-moved": {

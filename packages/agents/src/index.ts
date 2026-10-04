@@ -53,7 +53,10 @@ export type {
   ThreadView,
 } from "./practices";
 export {
+  CONTESTS_BUDGET_CHARS,
+  CONTESTS_HEADING,
   DIGEST_BUDGET_CHARS,
+  describeContests,
   describeDigest,
   describeTerm,
   PRACTICES_HEADING,

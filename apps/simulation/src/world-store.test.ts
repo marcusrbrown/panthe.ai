@@ -1843,6 +1843,124 @@ test("a sworn breach's penalty, the endings' memories, and a sealed alliance sur
   }
 });
 
+/** Athena beside Poseidon at the ferry dock, where fishers live, and a window of 6 ticks so a contest closes within a test. */
+function contestSeed(): WorldState {
+  const greek = loadGreekWorldState();
+  const athena = greek.actors.get(id("athena"));
+  if (!athena) throw new Error("expected Athena in the pack");
+  const placed = withActor(greek, { ...athena, locationId: id("ferry-dock") });
+  return {
+    ...placed,
+    rules: {
+      ...placed.rules,
+      practiceBalance: {
+        ...placed.rules.practiceBalance,
+        contestWindowTicks: 6,
+      },
+    },
+  };
+}
+
+/** Poseidon tells a legend before the fishers at the dock; Athena, who heard it, contests it and out-tells him. Runs on to the contest's close when `toClose`. */
+function playContest(storePath: string, toClose: boolean) {
+  const world = liveWorld(storePath, contestSeed());
+  world.run(
+    queuedProposal("poseidon", {
+      kind: "legend",
+      assertion: "The sea feeds the dock.",
+    }),
+  );
+  const told = eventOfKind(listEvents(world.store.db), "legend-recorded");
+  world.run(
+    queuedProposal("athena", {
+      kind: "practice",
+      move: "contest",
+      cause: told.id,
+    }),
+  );
+  const contest = [...world.state.contests.values()][0];
+  if (!contest) throw new Error("expected a contest");
+  world.run(
+    queuedProposal("athena", {
+      kind: "legend",
+      assertion: "The olive feeds the dock better.",
+    }),
+  );
+  if (toClose) {
+    for (
+      let n = 0;
+      n < 12 && world.state.contests.get(contest.id)?.status === "open";
+      n += 1
+    ) {
+      world.run();
+    }
+  }
+  return { world, contest, told };
+}
+
+test("a contest, the acts the world kept for it, and the standing it decided survive reopen, rebuild, and archive import, open or closed", () => {
+  const storeDir = tempDir("panthea-sim-contest-");
+  const exportDir = tempDir("panthea-sim-contest-export-");
+  const slotsDir = tempDir("panthea-sim-contest-slots-");
+  try {
+    for (const toClose of [false, true]) {
+      const storePath = join(storeDir, `world-${toClose}.sqlite`);
+      const { world, contest, told } = playContest(storePath, toClose);
+      const state = world.state;
+      const held = state.contests.get(contest.id);
+      expect(held?.opener).toBe(id("athena"));
+      expect(state.services.map((act) => act.id)).toContain(told.id);
+      expect(held?.tallies.length).toBeGreaterThan(0);
+      if (toClose) {
+        expect(held?.status).toBe("decided");
+        expect(held?.winner).toBe(id("athena"));
+        expect(state.standing.size).toBe(2);
+      } else {
+        expect(held?.status).toBe("open");
+      }
+
+      closeStore(world.store);
+      const freshReducers = createWorldProjectionReducers(contestSeed());
+      const reopened = openStore(storePath, freshReducers);
+      const clock = readClock(reopened.db);
+      expect(
+        restoreWorldTime(readLiveProjections(reopened, freshReducers), clock),
+      ).toEqual(state);
+      expect(
+        restoreWorldTime(rebuildProjections(reopened, freshReducers), clock),
+      ).toEqual(state);
+
+      const exportPath = join(exportDir, `archive-${toClose}.sqlite`);
+      exportArchive(reopened, exportPath);
+      const imported = importArchive(exportPath, slotsDir, worldImportReducers);
+      const branch = openStore(
+        join(imported.slotPath, "world.sqlite"),
+        freshReducers,
+      );
+      const branchClock = readClock(branch.db);
+      const restored = restoreWorldTime(
+        readLiveProjections(branch, freshReducers),
+        branchClock,
+      );
+      expect(restored.contests).toEqual(state.contests);
+      expect(restored.services).toEqual(state.services);
+      expect(restored.standing).toEqual(state.standing);
+      expect(
+        restoreWorldTime(
+          rebuildProjections(branch, freshReducers),
+          branchClock,
+        ),
+      ).toEqual(state);
+      closeStore(branch);
+      closeStore(reopened);
+    }
+  } finally {
+    rmSync(storeDir, { recursive: true, force: true });
+    rmSync(exportDir, { recursive: true, force: true });
+    rmSync(slotsDir, { recursive: true, force: true });
+  }
+});
+
 test("live equals rebuild through the store when the world forgets: the same memory is evicted either way", () => {
   const storeDir = tempDir("panthea-sim-evict-");
   try {

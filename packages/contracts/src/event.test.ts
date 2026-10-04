@@ -555,7 +555,7 @@ test("WORLD_EVENT_KINDS lists every kind parseEvent accepts", () => {
   expect(WORLD_EVENT_KINDS).toContain("memory-recorded");
   expect(WORLD_EVENT_KINDS).toContain("report-told");
   expect(WORLD_EVENT_KINDS).toContain("relationship-changed");
-  expect(WORLD_EVENT_KINDS).toHaveLength(37);
+  expect(WORLD_EVENT_KINDS).toHaveLength(39);
 });
 
 test("an unknown event kind is rejected with reason unknown-kind", () => {
@@ -987,7 +987,7 @@ test("only kinds someone can perceive are witnessable: a memory of a report, a m
   for (const eventKind of WITNESSED_EVENT_KINDS) {
     expect(parseEvent(envelope({ ...WITNESSED, eventKind })).ok).toBe(true);
   }
-  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 18);
+  expect(WITNESSED_EVENT_KINDS).toHaveLength(WORLD_EVENT_KINDS.length - 20);
 });
 
 // --- Legend tellings: a claim and the recorded hearers ------------------------------------
@@ -2283,6 +2283,139 @@ test("a supplication can end because the boon never came, and a refused offer, a
         reason: "no-progress",
         thread: "evt-9",
         why: "the farmer already answered that",
+      }),
+    ).ok,
+  ).toBe(true);
+});
+
+// --- Contests: opened by a god over a rival's act, closed by the world --------------------------
+
+const CONTEST_OPENED = {
+  kind: "contest-opened",
+  entityId: "athena",
+  rival: "poseidon",
+  place: "town-square",
+  cause: "evt-12",
+  closesAt: 130,
+};
+const CONTEST_CLOSED = {
+  kind: "contest-closed",
+  entityId: "athena",
+  rival: "poseidon",
+  place: "town-square",
+  contestId: "evt-20",
+  result: "decided",
+  reason: "window",
+  winner: "athena",
+  favoured: [
+    { mortal: "farmer", god: "athena" },
+    { mortal: "woodcutter", god: "poseidon" },
+  ],
+};
+
+test("a contest-opened event names the god, its rival, the place, the rival act it rests on, and the last tick that counts", () => {
+  const opened = parseEvent(envelope(CONTEST_OPENED));
+  expect(opened.ok).toBe(true);
+  if (opened.ok && opened.value.kind === "contest-opened") {
+    expect(opened.value).toMatchObject({
+      entityId: "athena",
+      rival: "poseidon",
+      place: "town-square",
+      closesAt: 130,
+    });
+    expect(String(opened.value.cause)).toBe("evt-12");
+    expect(opened.value.succeeds).toBeUndefined();
+  }
+  // A successor links the closed contest it follows.
+  const successor = parseEvent(
+    envelope({ ...CONTEST_OPENED, succeeds: "evt-7" }),
+  );
+  expect(successor.ok).toBe(true);
+  if (successor.ok && successor.value.kind === "contest-opened") {
+    expect(String(successor.value.succeeds)).toBe("evt-7");
+  }
+  for (const bad of [
+    { entityId: undefined },
+    { rival: undefined },
+    { place: undefined },
+    { cause: undefined },
+    { closesAt: undefined },
+    { closesAt: -1 },
+    { closesAt: 1.5 },
+    // A god cannot contest itself.
+    { rival: "athena" },
+  ]) {
+    expect(parseEvent(envelope({ ...CONTEST_OPENED, ...bad })).ok).toBe(false);
+  }
+});
+
+test("a contest-closed event is decided with a winner and the mortals' favour, or expired with none: a decision changes standing and an expiry never does", () => {
+  const decided = parseEvent(envelope(CONTEST_CLOSED));
+  expect(decided.ok).toBe(true);
+  if (
+    decided.ok &&
+    decided.value.kind === "contest-closed" &&
+    decided.value.result === "decided"
+  ) {
+    expect(String(decided.value.winner)).toBe("athena");
+    expect(decided.value.favoured).toHaveLength(2);
+  } else {
+    throw new Error("expected a decided contest");
+  }
+  for (const expired of [
+    {
+      result: "expired",
+      reason: "place-empty",
+      winner: undefined,
+      favoured: [],
+    },
+    { result: "expired", reason: "no-favour", winner: undefined, favoured: [] },
+  ]) {
+    expect(parseEvent(envelope({ ...CONTEST_CLOSED, ...expired })).ok).toBe(
+      true,
+    );
+  }
+  for (const bad of [
+    // A decision needs a winner of the two gods, and its reason is the window.
+    { winner: undefined },
+    { winner: "hera" },
+    { reason: "place-empty" },
+    // An expiry has no winner and no favour to record.
+    { result: "expired", reason: "place-empty" },
+    { result: "expired", reason: "window", winner: undefined, favoured: [] },
+    { result: "settled" },
+    { reason: "tired" },
+    { contestId: undefined },
+    { favoured: "farmer" },
+    { favoured: [{ mortal: "farmer" }] },
+    { favoured: [{ mortal: "farmer", god: "hera" }] },
+  ]) {
+    expect(parseEvent(envelope({ ...CONTEST_CLOSED, ...bad })).ok).toBe(false);
+  }
+});
+
+test("contest events are private to the gods in them, name both gods and the place, and follow what they rest on", () => {
+  const opened = parsedEvent(CONTEST_OPENED);
+  const closed = parsedEvent(CONTEST_CLOSED);
+  for (const kind of ["contest-opened", "contest-closed"]) {
+    expect(WORLD_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(UNPLACED_EVENT_KINDS as readonly string[]).toContain(kind);
+    expect(WITNESSED_EVENT_KINDS as readonly string[]).not.toContain(kind);
+  }
+  expect(subjectsOf(opened)).toEqual(["athena", "poseidon", "town-square"]);
+  expect(subjectsOf(closed)).toEqual(["athena", "poseidon", "town-square"]);
+  expect(String(eventCause(opened))).toBe("evt-12");
+  expect(String(eventCause(closed))).toBe("evt-20");
+});
+
+test("a refused contest can be the thing a practice-refused event is about", () => {
+  expect(
+    parseEvent(
+      envelope({
+        kind: "practice-refused",
+        entityId: "athena",
+        attempted: "contest",
+        reason: "no-progress",
       }),
     ).ok,
   ).toBe(true);

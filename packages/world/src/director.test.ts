@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ContentPack, WorldEvent } from "@panthea/contracts";
+import type { ContentPack, EventId, WorldEvent } from "@panthea/contracts";
 import { applyEvent, applyEvents, runTick, submitProposal } from "./actions";
 import { decode, encode } from "./codec";
 import { isConsequential, planDirectorStep } from "./director";
@@ -467,3 +467,234 @@ test("a victim of the director's trouble prays about it, and the prayer cites th
 });
 
 void applyEvent;
+
+// --- Pressure lands where something is open (R22) ---------------------------------------------------
+//
+// The director prefers, for its attributed trouble, the people of a place that holds an open thread
+// or a quiet contest. It never opens a thread, never picks a god's response, and does the same
+// whatever drives the gods' turns.
+
+/** The calm pack with two more gods, and the drifter living at the altar. */
+function townWithGods() {
+  const base = pack(10, ["farmer", "woodcutter", "drifter"]);
+  const gods = ["athena", "poseidon"].map((name) => ({
+    id: name,
+    name,
+    locationId: "hall",
+    deity: true,
+    startingInventory: [{ resource: "divinity", amount: 10 }],
+  }));
+  const state = createInitialWorldState({
+    ...base,
+    inhabitants: [...base.inhabitants, ...gods],
+  });
+  const drifter = getActor(state, id("drifter"));
+  if (!drifter) throw new Error("drifter");
+  return withActor(state, {
+    ...drifter,
+    locationId: id("altar"),
+    home: id("altar"),
+  });
+}
+
+/** Whom a trouble event hurt: the victim of a theft, the owner of stock that spoiled or of a building that burned. */
+function victimOf(state: WorldState, event: WorldEvent): string | undefined {
+  if (event.kind === "theft") return String(event.victim);
+  if (event.kind === "stock-spoiled") return String(event.entityId);
+  if (event.kind === "building-ignited") {
+    return String(state.buildings.get(event.entityId)?.owner);
+  }
+  return undefined;
+}
+
+const victimsOver = (
+  state: WorldState,
+  seeds: readonly number[],
+  tick = 10,
+): string[] =>
+  seeds.flatMap((seed) =>
+    planDirectorStep(state, createPrng(seed), tick).events.map(
+      (draft) => victimOf(state, draft as unknown as WorldEvent) as string,
+    ),
+  );
+
+const SEEDS = Array.from({ length: 40 }, (_, index) => index + 1);
+
+function withQuietContest(state: WorldState, served = false): WorldState {
+  const contest = {
+    id: "evt-0-900" as EventId,
+    opener: id("athena"),
+    rival: id("poseidon"),
+    place: id("altar"),
+    cause: "evt-0-899" as EventId,
+    openedTick: 0,
+    openedSequence: 900,
+    closesAt: 500,
+    status: "open" as const,
+    tallies: served
+      ? [{ god: id("athena"), mortal: id("drifter"), weight: 1 }]
+      : [],
+  };
+  return { ...state, contests: new Map([[contest.id, contest]]) };
+}
+
+test("a quiet contest draws the director's trouble to the place it is held in: its people, and no one else's", () => {
+  const without = townWithGods();
+  const spread = new Set(victimsOver(without, SEEDS));
+  // Control: with nothing open the director draws from everyone.
+  expect(spread.size).toBeGreaterThan(1);
+
+  const quiet = withQuietContest(without);
+  const victims = victimsOver(quiet, SEEDS);
+  expect(victims.length).toBe(SEEDS.length);
+  expect(new Set(victims)).toEqual(new Set(["drifter"]));
+});
+
+test("a contest that has been served is not quiet: it draws the trouble no more than any other place", () => {
+  const busy = withQuietContest(townWithGods(), true);
+  expect(new Set(victimsOver(busy, SEEDS)).size).toBeGreaterThan(1);
+});
+
+test("an open thread draws the director's trouble to the people of the place its term names, and to a mortal who is party to it", () => {
+  const settlement = (state: WorldState) => {
+    const event = {
+      schemaVersion: 1,
+      id: "evt-0-901",
+      sequence: 901,
+      simTime: 0,
+      tick: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      kind: "practice-opened",
+      entityId: "athena",
+      practice: "settlement",
+      counterparty: "poseidon",
+      causes: ["evt-0-899"],
+      term: {
+        kind: "tell-legend",
+        party: "poseidon",
+        place: "altar",
+        deadline: 400,
+      },
+      negotiationDeadline: 400,
+      counterBudget: 2,
+    } as unknown as WorldEvent;
+    return applyEvent(state, event);
+  };
+  const state = settlement(townWithGods());
+  expect(new Set(victimsOver(state, SEEDS))).toEqual(new Set(["drifter"]));
+
+  // A mortal party to an open supplication draws it to the place it lives.
+  const base = townWithGods();
+  const supplication = applyEvent(base, {
+    schemaVersion: 1,
+    id: "evt-0-902",
+    sequence: 902,
+    simTime: 0,
+    tick: 0,
+    correlationId: "fixture",
+    causationId: "fixture",
+    approximate: false,
+    kind: "practice-opened",
+    entityId: "athena",
+    practice: "supplication",
+    counterparty: "farmer",
+    causes: ["evt-0-899"],
+    term: {
+      kind: "make-offering",
+      party: "farmer",
+      to: "athena",
+      resource: "currency",
+      amount: 1,
+      deadline: 400,
+    },
+    negotiationDeadline: 400,
+    counterBudget: 0,
+  } as unknown as WorldEvent);
+  // ...the people of the square: the farmer and the woodcutter who live there, and not the drifter at the altar.
+  expect(new Set(victimsOver(supplication, SEEDS))).toEqual(
+    new Set(["farmer", "woodcutter"]),
+  );
+
+  // A thread that has ended draws no one.
+  const threads = new Map(state.threads);
+  for (const [key, thread] of threads) {
+    threads.set(key, { ...thread, status: "refused" });
+  }
+  expect(
+    new Set(victimsOver({ ...state, threads }, SEEDS)).size,
+  ).toBeGreaterThan(1);
+});
+
+test("the director's pressure never opens a thread or a contest and never answers for a god: with both open for 80 ticks, what it adds is trouble and nothing a god does", () => {
+  const world = new World(withQuietContest(townWithGods()));
+  const events = world.run(80);
+  expect(trouble(events).length).toBeGreaterThan(3);
+  const forbidden = new Set([
+    "practice-opened",
+    "practice-moved",
+    "practice-ended",
+    "contest-opened",
+    "blessing-granted",
+    "legend-recorded",
+    "petition-answered",
+  ]);
+  expect(events.filter((e) => forbidden.has(e.kind))).toEqual([]);
+  // Every trouble names the director, not a god.
+  for (const event of trouble(events)) {
+    if (event.kind === "theft" || event.kind === "stock-spoiled") {
+      expect(event.cause).toBe("director");
+    }
+    if (event.kind === "building-ignited") {
+      expect(event.cause).toEqual({ kind: "director" });
+    }
+  }
+});
+
+test("the director does the same whatever the gods' turns are driven by: a world whose gods hold goals and memories, as a provider's turns leave them, gets the same trouble", () => {
+  const bare = withQuietContest(townWithGods());
+  const driven = applyEvent(
+    applyEvent(bare, {
+      schemaVersion: 1,
+      id: "evt-0-910",
+      sequence: 910,
+      simTime: 0,
+      tick: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      kind: "goal-set",
+      entityId: "athena",
+      text: "Win the altar.",
+      target: "drifter",
+    } as unknown as WorldEvent),
+    {
+      schemaVersion: 1,
+      id: "evt-0-911",
+      sequence: 911,
+      simTime: 0,
+      tick: 0,
+      correlationId: "fixture",
+      causationId: "fixture",
+      approximate: false,
+      kind: "memory-recorded",
+      memoryKind: "told",
+      entityId: "athena",
+      sourceEventId: "evt-0-899",
+      teller: "poseidon",
+      content: "The altar is mine.",
+      subjects: ["poseidon", "athena"],
+      salience: 4,
+    } as unknown as WorldEvent,
+  );
+  for (const seed of SEEDS) {
+    const a = planDirectorStep(bare, createPrng(seed), 10);
+    const b = planDirectorStep(driven, createPrng(seed), 10);
+    expect(b).toEqual(a);
+  }
+  // And the same state and generator always give the same step.
+  expect(planDirectorStep(bare, createPrng(5), 10)).toEqual(
+    planDirectorStep(bare, createPrng(5), 10),
+  );
+});

@@ -314,6 +314,26 @@ export function buildModelProposal(
         };
         break;
       }
+      if (intent.move === "contest") {
+        const act = remembered.practice.contests.find(
+          (candidate) => candidate.id === intent.cause,
+        );
+        if (act === undefined) {
+          return refuse(`${intent.cause} is not an act the god was shown`);
+        }
+        factsRead.push(`event:${act.id}`);
+        // A contest opens a record of its own, so there is nothing to pin: whether
+        // the act is still the rival's to be contested, the god saw it, and the
+        // place holds no contest already are judged when it commits.
+        proposal = {
+          ...base,
+          targets: [],
+          kind: "practice",
+          move: "contest",
+          cause: act.id,
+        };
+        break;
+      }
       if (intent.move === "demand") {
         const cause = remembered.practice.causes.find(
           (candidate) => candidate.id === intent.cause,

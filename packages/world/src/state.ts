@@ -16,6 +16,8 @@
 import type {
   Consequence,
   ContentPack,
+  ContestEndReason,
+  ContestResult,
   EndingEventKind,
   EntityId,
   EventEnvelope,
@@ -31,6 +33,7 @@ import type {
   Realm,
   Recipe,
   ResourceAmount,
+  ServiceKind,
   ThreadSubject,
   Transformation,
   UnmetNeedReason,
@@ -93,12 +96,64 @@ export interface ActorState {
   readonly wants?: string;
   /** Worship effects currently in force, each checked against the current tick at read time -- an expired entry is never pruned by a mutation or an event, only ignored by `isFavorActive`. */
   readonly favors?: readonly FavorState[];
+  /** The gods this god contests with for a place's people, from the pack. A rivalry holds both ways (see `areRivals`). Absent means none. */
+  readonly rivals?: readonly EntityId[];
   /** What this actor has become, once a transformation changed it. Absent means its own form. Identity, memory, and relationships are never part of it. */
   readonly form?: string;
   /** Capabilities a penalty withheld, each with the world tick it returns at and the penalty event that took it. Absent means none. */
   readonly withheld?: readonly WithheldCapability[];
   /** Bumped whenever this actor's location, realm, inventory, capabilities, or form changes. */
   readonly revision: number;
+}
+
+/**
+ * A bless, strike, or legend a god did at a place with mortals in it, kept for a while so a rival that perceived
+ * it can contest it. `reached` is who experienced it (the one blessed, those who heard the legend, those at the
+ * struck building's place); `perceivedBy` the other gods that were there. Kept by the world as events apply, so
+ * replay rebuilds it; it holds the newest `contestLedgerMax` acts no older than `contestActTicks`.
+ */
+export interface ServiceAct {
+  /** The event that was the act. */
+  readonly id: EventId;
+  readonly kind: ServiceKind;
+  readonly god: EntityId;
+  readonly place: EntityId;
+  readonly tick: number;
+  readonly sequence: number;
+  readonly reached: readonly EntityId[];
+  readonly perceivedBy: readonly EntityId[];
+}
+
+/** What one mortal weighed of one god over a contest's window: services it received, less harm. */
+export interface ContestTally {
+  readonly god: EntityId;
+  readonly mortal: EntityId;
+  readonly weight: number;
+}
+
+/** A contest between two gods for a place's people: held by the world, opened by one god over the other's act, closed by the clock. */
+export interface Contest {
+  /** The `contest-opened` event. */
+  readonly id: EventId;
+  /** The god that opened it. */
+  readonly opener: EntityId;
+  readonly rival: EntityId;
+  readonly place: EntityId;
+  /** The rival's act it rests on. */
+  readonly cause: EventId;
+  readonly openedTick: number;
+  readonly openedSequence: number;
+  /** The last tick whose acts count. */
+  readonly closesAt: number;
+  /** The closed contest between these gods at this place this one follows. */
+  readonly succeeds?: EventId;
+  readonly status: "open" | ContestResult;
+  /** Per god and mortal, in (god, mortal) order: what each mortal weighed of each god since the contest opened. */
+  readonly tallies: readonly ContestTally[];
+  readonly closedTick?: number;
+  readonly closedSequence?: number;
+  readonly reason?: ContestEndReason;
+  readonly winner?: EntityId;
 }
 
 /** A capability taken for a period: it returns at `restoreAt`, by an `access-restored` event. */
@@ -404,6 +459,20 @@ export interface PracticeThread {
   readonly revision: number;
 }
 
+/** A god's lasting standing at a place: 0 until something there has changed it. */
+export function standingOf(
+  state: WorldState,
+  god: EntityId,
+  place: EntityId,
+): number {
+  return state.standing.get(god)?.get(place) ?? 0;
+}
+
+/** Whether a contest is still open: the window has not closed it. */
+export function isContestOpen(contest: Contest): boolean {
+  return contest.status === "open";
+}
+
 /** Whether a thread is still open to answers or performance: not yet ended. */
 export function isThreadOpen(thread: PracticeThread): boolean {
   return (
@@ -470,6 +539,12 @@ export interface WorldState {
    * like petitions, so a move on a thread never stales an actor's proposal.
    */
   readonly threads: ReadonlyMap<EventId, PracticeThread>;
+  /** Every contest ever opened, by its event id. Outside `ActorState`, like threads. */
+  readonly contests: ReadonlyMap<EventId, Contest>;
+  /** The acts a rival can still contest, oldest first. */
+  readonly services: readonly ServiceAct[];
+  /** Each god's lasting standing at each place, god then place (never a joined string, so no id can collide with another's): moved by what a contest, a settlement's performance, or a breach there decided. Absent means 0. */
+  readonly standing: ReadonlyMap<EntityId, ReadonlyMap<EntityId, number>>;
   /** The losses each owner has already noticed, keyed `owner|causeEventId`: what makes noticing once per loss. */
   readonly noticed: ReadonlyMap<string, NoticedLoss>;
   /** The quiet-world director's timer: the tick of the last consequential event. */
@@ -567,6 +642,9 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
         ? {}
         : { gathers: inhabitant.gathers }),
       ...(inhabitant.wants === undefined ? {} : { wants: inhabitant.wants }),
+      ...(inhabitant.rivals === undefined
+        ? {}
+        : { rivals: inhabitant.rivals.map(toEntityId) }),
       revision: 0,
     });
   }
@@ -622,6 +700,9 @@ export function createInitialWorldState(pack: ContentPack): WorldState {
     causes: new Map(),
     petitions: new Map(),
     threads: new Map(),
+    contests: new Map(),
+    services: [],
+    standing: new Map(),
     repairGrants: new Map(),
     noticed: new Map(),
     director: { lastConsequentialTick: 0 },

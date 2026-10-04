@@ -8,8 +8,16 @@
 // recorded with the director as its cause (never a god, never a mortal's
 // choice). It only takes, spoils, or burns; it never undoes damage. Talk,
 // goals, and prayers are not consequential and do not reset its timer.
+//
+// It prefers the people of places where something is open (an open thread, a
+// contest no god has served yet) for its trouble, so the world's pressure lands
+// on the matters gods are already working. It only chooses whom trouble befalls
+// and what kind: it never opens a thread or a contest, never answers for a god,
+// and reads nothing but the world and the persisted PRNG, so it does the same
+// whatever drives the gods' turns.
 
 import type { WorldEvent } from "@panthea/contracts";
+import { placeOf, placesWithSomethingOpen } from "./contests";
 import { petitionBalanceOf } from "./petitions";
 import {
   type ActorState,
@@ -61,6 +69,17 @@ function eligibleMortals(state: WorldState): ActorState[] {
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/**
+ * Whom trouble may befall: the mortals who belong to a place where something is open, when any do (and
+ * at least two, so a thief remains), else everyone eligible.
+ */
+function pressured(state: WorldState, mortals: ActorState[]): ActorState[] {
+  const open = placesWithSomethingOpen(state);
+  if (open.size === 0) return mortals;
+  const chosen = mortals.filter((mortal) => open.has(placeOf(mortal)));
+  return chosen.length === 0 ? mortals : chosen;
+}
+
 /** What `victim` holds most of, by name on a tie; absent when it holds nothing. */
 function mostPlentiful(
   victim: ActorState,
@@ -106,7 +125,9 @@ export function planDirectorStep(
     return Math.min(count - 1, Math.floor(next.value * count));
   };
 
-  const victim = mortals[draw(mortals.length)] as ActorState;
+  // A victim is drawn from the people of places with something open, when there are any; a thief from everyone else.
+  const victims = pressured(state, mortals);
+  const victim = victims[draw(victims.length)] as ActorState;
   const held = mostPlentiful(victim);
   const burnable = [...state.buildings.values()]
     .filter(

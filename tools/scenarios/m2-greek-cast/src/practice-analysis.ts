@@ -1118,6 +1118,106 @@ export interface PracticeAnalysis {
   readonly properties: readonly Property[];
 }
 
+/**
+ * Every contest ends with a standing change or expires (R16). A decided contest changed both gods' standing
+ * at its place for good, the winner's up and the other's down, each citing the closing; an expired one
+ * changed no one's; one with no ending is only allowed to be inside its window. A run with no contest holds
+ * this vacuously: the scripted story is what requires one to have happened.
+ */
+export function contestEndingsRecorded(
+  events: readonly WorldEvent[],
+  now: number,
+): Property {
+  const name = "contest endings";
+  const opened = events.filter(
+    (e): e is Extract<WorldEvent, { kind: "contest-opened" }> =>
+      e.kind === "contest-opened",
+  );
+  if (opened.length === 0) {
+    return { name, ok: true, detail: "no contest was opened" };
+  }
+  const closings = new Map(
+    events
+      .filter(
+        (e): e is Extract<WorldEvent, { kind: "contest-closed" }> =>
+          e.kind === "contest-closed",
+      )
+      .map((e) => [e.contestId as string, e]),
+  );
+  const standingAfter = (closing: string) =>
+    events.filter(
+      (
+        e,
+      ): e is Extract<
+        WorldEvent,
+        { kind: "motif-applied"; effect: "standing" }
+      > =>
+        e.kind === "motif-applied" &&
+        e.effect === "standing" &&
+        e.cause === closing,
+    );
+  const problems: string[] = [];
+  let decided = 0;
+  let expired = 0;
+  let open = 0;
+  for (const contest of opened) {
+    const closing = closings.get(contest.id as string);
+    if (closing === undefined) {
+      if (now > contest.closesAt) {
+        problems.push(
+          `${contest.id} is still open at tick ${now}, past its window closing at tick ${contest.closesAt}, with no ending recorded`,
+        );
+      } else {
+        open += 1;
+      }
+      continue;
+    }
+    const changes = standingAfter(closing.id as string);
+    if (closing.result === "expired") {
+      expired += 1;
+      if (changes.length > 0) {
+        problems.push(
+          `${contest.id} expired (${closing.reason}) yet ${closing.id} changed standing`,
+        );
+      }
+      continue;
+    }
+    decided += 1;
+    const loser =
+      closing.winner === closing.entityId ? closing.rival : closing.entityId;
+    const won = changes.find(
+      (c) =>
+        c.entityId === closing.winner &&
+        c.delta > 0 &&
+        c.place === closing.place,
+    );
+    const lost = changes.find(
+      (c) => c.entityId === loser && c.delta < 0 && c.place === closing.place,
+    );
+    if (changes.length === 0) {
+      problems.push(
+        `${contest.id} was decided for ${closing.winner} and left no standing change`,
+      );
+    } else if (
+      won === undefined ||
+      lost === undefined ||
+      changes.length !== 2
+    ) {
+      problems.push(
+        `${contest.id} was decided for ${closing.winner} but its standing changes are not the winner's rise and the other's fall at ${closing.place}`,
+      );
+    }
+  }
+  return {
+    name,
+    ok: problems.length === 0,
+    detail:
+      problems.length > 0
+        ? problems.join("; ")
+        : `${opened.length} contest${opened.length === 1 ? "" : "s"}: ${decided} decided, ${expired} expired, ${open} open inside its window`,
+  };
+}
+
 export function analyzePractices(input: RealInput): PracticeAnalysis {
   const events = parseAll(input.events);
   const gods = godsOf(input);
@@ -1139,6 +1239,7 @@ export function analyzePractices(input: RealInput): PracticeAnalysis {
       noProgressAdvancesNothing(noProgress, threads, events),
       consequenceChangesChoice(threads, input, events, gods),
       obligatedTurnsRecorded(obligated),
+      contestEndingsRecorded(events, now),
     ],
   };
 }

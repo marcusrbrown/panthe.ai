@@ -31,6 +31,8 @@ export const PRACTICE_MOVES = [
   "accept",
   "refuse",
   "withdraw",
+  /** A god opens a contest for a place's people over a rival's act it perceived; the world, not a thread, holds it. */
+  "contest",
 ] as const;
 export type PracticeMove = (typeof PRACTICE_MOVES)[number];
 
@@ -322,3 +324,21 @@ function parseStringList(
   }
   return ok(items);
 }
+
+// --- Contests: gods claim a place's people ---------------------------------------------------------
+
+/** The services a god performs that mortals experience and a contest counts: a bless, a strike, a legend. */
+export const SERVICE_KINDS = ["bless", "strike", "legend"] as const;
+export type ServiceKind = (typeof SERVICE_KINDS)[number];
+
+/** How a contest ends: decided (the god most mortals favour wins standing there and the other loses it) or expired (no one's standing changes). */
+export const CONTEST_RESULTS = ["decided", "expired"] as const;
+export type ContestResult = (typeof CONTEST_RESULTS)[number];
+
+/** Why a contest ended: its window closed on a favoured god; the place emptied of people; or the window closed with no god favoured over the other. */
+export const CONTEST_END_REASONS = [
+  "window",
+  "place-empty",
+  "no-favour",
+] as const;
+export type ContestEndReason = (typeof CONTEST_END_REASONS)[number];

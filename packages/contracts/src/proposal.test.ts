@@ -894,3 +894,36 @@ test("a stake belongs to an offer to a supplicant and to nothing else: a demand,
     expect([bad.move, parseProposal(base(bad)).ok]).toEqual([bad.move, false]);
   }
 });
+
+test("a contest move names the rival act it rests on and nothing else: the world finds the rival, the place, and the window", () => {
+  const ok = parseProposal(
+    base({ kind: "practice", move: "contest", cause: "evt-12" }),
+  );
+  expect(ok.ok).toBe(true);
+  if (ok.ok && ok.value.kind === "practice" && ok.value.move === "contest") {
+    expect(String(ok.value.cause)).toBe("evt-12");
+  }
+  expect(PRACTICE_MOVES as readonly string[]).toContain("contest");
+  for (const bad of [
+    { kind: "practice", move: "contest" },
+    { kind: "practice", move: "contest", cause: "" },
+    { kind: "practice", move: "contest", cause: 7 },
+    // Everything the world decides is not the god's to name.
+    {
+      kind: "practice",
+      move: "contest",
+      cause: "evt-12",
+      place: "town-square",
+    },
+    {
+      kind: "practice",
+      move: "contest",
+      cause: "evt-12",
+      counterparty: "poseidon",
+    },
+    { kind: "practice", move: "contest", cause: "evt-12", term: OFFERING },
+    { kind: "practice", move: "contest", cause: "evt-12", thread: "evt-9" },
+  ]) {
+    expect(parseProposal(base(bad)).ok).toBe(false);
+  }
+});

@@ -464,7 +464,7 @@ Status (2026-10-03): the scenario and harness are done (34159f4). The gate ran t
 
 **Verification:** content tests pass; `scenario:m1` and `scenario:m2` still pass.
 
-- [ ] **Unit 8: Contest for favour and director pressure**
+- [x] **Unit 8: Contest for favour and director pressure**
 
 **Goal:** rival gods compete for a place's people, and the world's pressure lands on open threads.
 

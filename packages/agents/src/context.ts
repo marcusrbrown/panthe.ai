@@ -42,6 +42,7 @@ import {
 } from "@panthea/world";
 import type { ParseResult } from "./config";
 import {
+  describeContests,
   describeDigest,
   describeEnding,
   describePracticeInstructions,
@@ -1621,6 +1622,7 @@ export function buildGodContext(
       remembered.practiceRefusal,
       remembered.practice.openings,
     ),
+    ...describeContests(remembered.practice),
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
     ...describePetitions(remembered),

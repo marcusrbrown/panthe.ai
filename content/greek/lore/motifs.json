@@ -233,7 +233,7 @@
       "labels": ["game-invention"],
       "change": {
         "kind": "standing-record",
-        "description": "Records a gain of a god's standing at the place where it performed a term. Recorded only in this milestone; standing as state arrives with contests for favour.",
+        "description": "Records a gain of a god's standing at the place where it performed a term. Standing is the world's own state: it also moves when a contest for a place's people closes, and it changes which god a mortal there prays to.",
         "tunables": ["standingDelta"]
       }
     },
@@ -281,7 +281,7 @@
       "labels": ["game-invention"],
       "change": {
         "kind": "standing-record",
-        "description": "Records a loss of a god's standing at the place where it broke a term. Recorded only in this milestone; standing as state arrives with contests for favour.",
+        "description": "Records a loss of a god's standing at the place where it broke a term. Standing is the world's own state: it also moves when a contest for a place's people closes, and it changes which god a mortal there prays to.",
         "tunables": ["standingDelta"]
       }
     },

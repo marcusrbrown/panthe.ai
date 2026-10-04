@@ -604,9 +604,130 @@ test("the properties join the real run's analysis, and the existing ones are sti
     "no-progress moves advance nothing",
     "consequence changes a later choice",
     "obligated turns recorded",
+    "contest endings",
   ]) {
     expect(names).toContain(name);
   }
+});
+
+// --- Contests: each ends with a standing change, or expires ----------------------------------------
+
+test("contest endings hold on the coherent episode: its contest was decided for Athena and both gods' standing moved, citing the closing", () => {
+  const { input } = episode();
+  const found = property(input, "contest endings");
+  expect(found.ok).toBe(true);
+  expect(found.detail).toContain("1 contest");
+  expect(found.detail).toContain("1 decided");
+});
+
+test("a run with no contest holds the property vacuously: nothing was asked of it", () => {
+  const { input } = episode();
+  const none = without(
+    input,
+    (e) =>
+      ["contest-opened", "contest-closed"].includes(e.kind) ||
+      (e.kind === "motif-applied" && e.effect === "standing"),
+  );
+  const found = property(none, "contest endings");
+  expect(found.ok).toBe(true);
+  expect(found.detail).toContain("no contest");
+});
+
+test("a decided contest that left no standing change fails, and so does one that changed only one god's", () => {
+  const { input } = episode();
+  const bare = without(
+    input,
+    (e) => e.kind === "motif-applied" && e.effect === "standing",
+  );
+  const none = property(bare, "contest endings");
+  expect(none.ok).toBe(false);
+  expect(none.detail).toContain("no standing change");
+  const half = without(
+    input,
+    (e) => e.kind === "motif-applied" && e.effect === "standing" && e.delta < 0,
+  );
+  expect(property(half, "contest endings").ok).toBe(false);
+  // Standing that moves the wrong way is no decision either.
+  const wrong: RealInput = {
+    ...input,
+    events: input.events.map((e: Loose) =>
+      e.kind === "motif-applied" && e.effect === "standing"
+        ? { ...e, delta: -e.delta }
+        : e,
+    ) as never,
+  };
+  expect(property(wrong, "contest endings").ok).toBe(false);
+});
+
+test("an expired contest that nonetheless changed standing fails: an expiry changes no one's standing", () => {
+  const { input } = episode();
+  const expired: RealInput = {
+    ...input,
+    events: input.events.map((e: Loose) =>
+      e.kind === "contest-closed"
+        ? {
+            ...e,
+            result: "expired",
+            reason: "no-favour",
+            winner: undefined,
+            favoured: [],
+          }
+        : e,
+    ) as never,
+  };
+  const found = property(expired, "contest endings");
+  expect(found.ok).toBe(false);
+  expect(found.detail).toContain("expired");
+  // Without the standing change it holds.
+  const clean = without(
+    expired,
+    (e) => e.kind === "motif-applied" && e.effect === "standing",
+  );
+  const ok = property(clean, "contest endings");
+  expect(ok.ok).toBe(true);
+  expect(ok.detail).toContain("1 expired");
+});
+
+test("a contest still open past its window with no ending fails; one still inside its window does not", () => {
+  const { input } = episode();
+  const unfinished = without(
+    input,
+    (e) =>
+      e.kind === "contest-closed" ||
+      (e.kind === "motif-applied" && e.effect === "standing"),
+  );
+  // The world went on to tick 150, ten past the window, and the contest never closed.
+  const later: RealInput = {
+    ...unfinished,
+    events: [
+      ...unfinished.events,
+      {
+        schemaVersion: 1,
+        id: "evt-150-9999",
+        sequence: 9999,
+        simTime: 0,
+        tick: 150,
+        correlationId: "fixture",
+        causationId: "fixture",
+        approximate: false,
+        kind: "legend-recorded",
+        entityId: "poseidon",
+        assertion: "Still the sea.",
+        hearers: [],
+      } as never,
+    ],
+  };
+  const found = property(later, "contest endings");
+  expect(found.ok).toBe(false);
+  expect(found.detail).toContain("no ending");
+  // The same log cut inside the window (the world's last tick is 130, the window closes at 140) is fine.
+  const early: RealInput = {
+    ...input,
+    events: unfinished.events.filter((e: Loose) => (e.tick as number) <= 130),
+  };
+  const inside = property(early, "contest endings");
+  expect(inside.ok).toBe(true);
+  expect(inside.detail).toContain("1 open");
 });
 
 // --- The controls the scripted story runs ------------------------------------------------------

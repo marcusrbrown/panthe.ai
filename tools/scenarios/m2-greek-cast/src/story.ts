@@ -35,6 +35,7 @@ import { stepPetitionPrivacy } from "./steps/s12-petition-privacy";
 import { stepOath, stepRefusal, stepSuccessor } from "./steps/s13-settlement";
 import { stepSupplication } from "./steps/s14-supplication";
 import { stepPracticeProperties } from "./steps/s15-practice-properties";
+import { CONTEST_WINDOW_TICKS, stepContest } from "./steps/s16-contest";
 
 export {
   CONTROL_NAMES,
@@ -87,6 +88,10 @@ export async function runStory(
     PANTHEA_PETITION_BALANCE: JSON.stringify({
       directorQuietTicks: 10_000_000,
     }),
+    // The authored contest window is five minutes; the story's contest runs a short one.
+    PANTHEA_PRACTICE_BALANCE: JSON.stringify({
+      contestWindowTicks: CONTEST_WINDOW_TICKS,
+    }),
   };
   let story: Story | undefined;
   try {
@@ -122,6 +127,7 @@ export async function runStory(
     await stepSuccessor(recorder, running, refusal);
     await stepOath(recorder, running);
     await stepSupplication(recorder, running);
+    await stepContest(recorder, running);
     await stepPracticeProperties(recorder, running);
     return { steps: recorder.results, binaryBytes };
   } finally {

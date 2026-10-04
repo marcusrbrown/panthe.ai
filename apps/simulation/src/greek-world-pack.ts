@@ -41,36 +41,48 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * The authored rules, with the petition tunables overridden by
- * `env.PANTHEA_PETITION_BALANCE` (a JSON object of tunable names to numbers)
- * when set. The result goes through the same strict parser as authored content,
- * so an unknown name or an invalid value refuses the pack.
+ * `rules` with one balance object overridden by the JSON object in `raw`,
+ * merged over what the content authored: a non-JSON or non-object value is
+ * passed on as it is, so the strict parser refuses the pack.
  */
-function rulesWithOverrides(
+function withBalanceOverride(
   rules: Record<string, unknown>,
-  env: NodeJS.ProcessEnv,
+  key: "petitionBalance" | "practiceBalance",
+  raw: string | undefined,
 ): Record<string, unknown> {
-  const raw = env.PANTHEA_PETITION_BALANCE;
   if (!raw) return rules;
   let overrides: unknown;
   try {
     overrides = JSON.parse(raw);
   } catch {
-    return {
-      ...rules,
-      rules: { ...asRecord(rules.rules), petitionBalance: raw },
-    };
+    return { ...rules, rules: { ...asRecord(rules.rules), [key]: raw } };
   }
-  const authored = asRecord(asRecord(rules.rules).petitionBalance);
+  const authored = asRecord(asRecord(rules.rules)[key]);
   return {
     ...rules,
     rules: {
       ...asRecord(rules.rules),
-      petitionBalance: isRecord(overrides)
-        ? { ...authored, ...overrides }
-        : overrides,
+      [key]: isRecord(overrides) ? { ...authored, ...overrides } : overrides,
     },
   };
+}
+
+/**
+ * The authored rules, with the petition tunables overridden by
+ * `env.PANTHEA_PETITION_BALANCE` and the practice tunables by
+ * `env.PANTHEA_PRACTICE_BALANCE` (each a JSON object of tunable names to
+ * numbers) when set. The result goes through the same strict parser as
+ * authored content, so an unknown name or an invalid value refuses the pack.
+ */
+function rulesWithOverrides(
+  rules: Record<string, unknown>,
+  env: NodeJS.ProcessEnv,
+): Record<string, unknown> {
+  return withBalanceOverride(
+    withBalanceOverride(rules, "petitionBalance", env.PANTHEA_PETITION_BALANCE),
+    "practiceBalance",
+    env.PANTHEA_PRACTICE_BALANCE,
+  );
 }
 
 /** Parses the embedded Greek pack. Never touches the filesystem. */

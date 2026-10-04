@@ -21,6 +21,7 @@ For what is decided and built now, read in this order: owner choices in [Decisio
 | [UX](product/ux-direction.md) | User journeys, controls, observation, accessibility, and recovery |
 | [Operations](product/operations-and-research.md) | Universe, saves, replay, telemetry, and experiments |
 | [Technical constraints](product/technical-constraints.md) | Selected stack and required probes |
+| [Art guide](product/art-guide.md) | Draft visual standards: scale, palette, line, tiles, effects, conformance checks |
 | [Architecture](product/architecture-options.md) | Original architecture recommendation (proposal; accepted decisions are in the ADRs) |
 | [MVP roadmap](product/mvp-roadmap.md) | Milestones, dependencies, and future scope |
 | [Acceptance](product/acceptance.md) | End-to-end tests, performance hypotheses, and unattended trials |
@@ -28,6 +29,7 @@ For what is decided and built now, read in this order: owner choices in [Decisio
 | [Decisions index](decisions/README.md) | ADR index: architecture decisions with status, context, and evidence |
 | [Stack research](research/stack-2026-09-26.md) | Rendering, desktop, backend, and sandbox documentation review |
 | [Inference research](research/inference-2026-09-26.md) | Local/hosted model, image generation, and telemetry research |
+| [Asset generation research](research/asset-generation-2026-10-03.md) | Local sprite, tile, sound, and editor tooling survey with licences |
 | [References](research/references.md) | Source observations and limits |
 | [Solutions](solutions/README.md) | Reusable engineering lessons from probes and implementation work |
 
@@ -42,6 +44,10 @@ Later accepted decisions supersede earlier open questions.
 Use a Bun-managed workspace, Tauri, Three.js, and Three Flatland, rendering through WebGPU where the webview supports it and WebGL2 otherwise (D25).
 The MVP targets local single-person desktop use with optional hosted model adapters.
 The owner implements through OpenCode and Systematic.
+
+## Brainstorms
+
+- [Asset studio requirements (2026-10-03)](brainstorms/2026-10-03-asset-studio-requirements.md): authoring tooling for sprites, tiles, effects, and sound, built in a separate worktree alongside M2.
 
 ## Implementation reviews
 

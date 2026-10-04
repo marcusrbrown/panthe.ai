@@ -3,7 +3,7 @@
 ## Read first
 
 Follow the reading order in [docs/README.md](docs/README.md).
-Authority: [decisions.md](docs/product/decisions.md) (D01–D25) for owner choices, [defaults.md](docs/product/defaults.md) (D23 tunables) for delegated parameters, [requirements.md](docs/product/requirements.md) (49 stable IDs) for release obligations, and the ADRs in [docs/decisions](docs/decisions) for architecture choices made during implementation.
+Authority: [decisions.md](docs/product/decisions.md) (D01–D26) for owner choices, [defaults.md](docs/product/defaults.md) (D23 tunables) for delegated parameters, [requirements.md](docs/product/requirements.md) (49 stable IDs) for release obligations, and the ADRs in [docs/decisions](docs/decisions) for architecture choices made during implementation.
 
 ## Invariants
 

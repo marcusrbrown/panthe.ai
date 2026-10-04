@@ -23,14 +23,15 @@ Owner decisions govern scope. Defaults are delegated choices that remain tunable
 | D15 | Procedural and image-model visual generation; activity has priority | R8, R9 | Queues and coherent temporary art are acceptable |
 | D16 | Full local inspection and configurable hosted telemetry export | R6, R8 | Export failure cannot stop simulation |
 | D17 | Autosave, snapshots, backup/restore, event playback | R6, R9 | Store outcomes and required asset/behavior versions |
-| D18 | File/code authoring for MVP | R6, R9 | Document content contracts rather than build authoring UI |
+| D18 | File/code authoring for MVP | R6, R9 | Document content contracts rather than build authoring UI. Narrowed by D26 for assets |
 | D19 | Tauri, WebGPU, Three.js, Three Flatland; Bun workspace | Opening, R8 | Probe packaged-app rendering before full construction |
 | D20 | macOS baseline, Linux/Windows when supported; first-run downloads allowed | R1, R8 | Publish tested platform/model profiles |
 | D21 | MIT; OpenCode and Systematic implementation | R8 | Preserve decisions and engineering lessons in repository docs |
 | D22 | Fallback required; spending enforcement deferred | R8, R9 | Configured providers only, then routine-only operation |
 | D23 | Tunable product defaults and technical probes authorized | R9 | Implementation can resolve documented parameters without reopening discovery |
-| D24 | Video files, YouTube, voice, extra pantheons, editors, and batch experiments deferred | R9 | Do not make these release dependencies |
+| D24 | Video files, YouTube, voice, extra pantheons, editors, and batch experiments deferred | R9 | Do not make these release dependencies. Narrowed by D26 for assets |
 | D25 | Renderer uses WebGPU where the webview supports it and WebGL2 otherwise; macOS 15 baseline retained | M0 probe 2026-09-26 | P02 amended; Linux conditional |
+| D26 | Owner-facing asset authoring is in scope: a separate `apps/studio` app and a `tools/studio` CLI for sprites, tiles, effects, and sound, with Aseprite as the hand-edit tool. Content stays plain files and code behind the existing pack contracts. Player-facing in-game editors stay deferred | Owner, 2026-10-03 | Narrows D18 and D24 for assets only. Local generation only; hosted providers stay interface-only. Does not change the ADR-0005 coexistence gate for in-game generation |
 
 ## Superseded or narrowed ideas
 
@@ -40,6 +41,7 @@ Divine death became banishment or recovery for the initial rules.
 Possible event undo became snapshot restore.
 Video export and YouTube delivery became post-MVP work.
 Literal WebGPU-only rendering on the macOS baseline became dual-backend (WebGPU/WebGL2) after the WKWebView probe found no `navigator.gpu` on macOS 15.
+File/code-only authoring (D18) and the editors deferral (D24) were narrowed on 2026-10-03: an owner-facing asset studio is in scope; player-facing in-game editors stay deferred (D26).
 
 ## Boundaries on delegated choices
 

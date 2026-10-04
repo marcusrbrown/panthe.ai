@@ -29,6 +29,8 @@ export interface RealRequest {
   /** What the model was shown (bounded to 16 K characters by the trace). */
   readonly promptPayload: string | undefined;
   readonly steps: readonly RealStep[];
+  /** The wall-clock time (ms) the trace row was written, which is when the request finished. */
+  readonly recordedAt?: number;
 }
 
 export interface RealProposal {
@@ -39,6 +41,8 @@ export interface RealProposal {
   readonly proposal: Record<string, unknown>;
   readonly outcome: "committed" | "rejected" | undefined;
   readonly reason?: string;
+  /** The tick the journal consumed the proposal in; absent while it waits. */
+  readonly consumedTick?: number;
 }
 
 export interface RealInput {
@@ -47,6 +51,12 @@ export interface RealInput {
   readonly events: readonly StoredEvent[];
   /** Once-every-few-seconds observations of whether the frame showed model-degraded. */
   readonly polls: { readonly total: number; readonly degraded: number };
+  /** What the run knew of its own end, for the request timings only (no check reads it): every god of the world, the wall-clock time it stopped, and the tick it had reached. */
+  readonly timing?: {
+    readonly gods: readonly string[];
+    readonly endedAtMs: number;
+    readonly endTick: number;
+  };
 }
 
 export interface Property {

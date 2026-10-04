@@ -141,6 +141,9 @@ test("the digest's obligation rows are read from a prompt, with the obstacle whe
       other: "hera",
       deadline: 50,
       unperformable: "zeus has no route to do this",
+      boon: false,
+      petition: undefined,
+      next: undefined,
     },
   ]);
   expect(obligationRows(prompt("zeus", 30))).toEqual([]);
@@ -177,11 +180,17 @@ test("each class follows its rule: performing is the action the term calls for; 
     other: string;
     deadline: number;
     unperformable: string | undefined;
+    boon: boolean;
+    petition: string | undefined;
+    next: Readonly<Record<string, unknown>> | undefined;
   } = {
     thread: ids.successor,
     other: "hera",
     deadline: 50,
     unperformable: undefined,
+    boon: false,
+    petition: undefined,
+    next: undefined,
   };
   const proposal = (
     kind: string,
@@ -584,6 +593,368 @@ test("obligated turns recorded: each turn has its classification; a turn whose p
     "obligated turns recorded",
   );
   expect(none.ok).toBe(true);
+});
+
+// --- A god that owes a boon (R12) ----------------------------------------------------------------
+
+/** The digest a god sees while it owes a boon: who, which prayer, by when, and the next step. */
+const owedBoonPrompt = (
+  god: string,
+  tick: number,
+  thread: string,
+  mortal: string,
+  petition: string,
+  deadline: number,
+  extra: string[] = [],
+  here: string[] = [],
+) =>
+  `You are ${god}.\n${[
+    "Your open practices:",
+    `- [${thread}] YOU OWE ${mortal}: your boon on its prayer [${petition}], by tick ${deadline} (${deadline - tick} ticks left). ${mortal} agreed at tick 73; its offering is still to come. Cause: unmet-need (${mortal}).`,
+    `  ${mortal} is not here (they are at The Altar [altar]): your next step is {"action":"move","to":"altar"} (The Altar), turn by turn until you are with them, then bless them naming the prayer.`,
+    ...extra,
+    "  If the deadline passes without it, the world records the bargain as expired with your boon unanswered.",
+    `You are at great-hall [great-hall] in the mortal realm, tick ${tick}.`,
+    "Here with you:",
+    ...(here.length === 0 ? ["- no one else"] : here.map((who) => `- ${who}`)),
+    "Buildings here:",
+    "- none",
+    "What do you do?",
+  ].join("\n")}`;
+
+function withOwedTurns(
+  turns: {
+    tick: number;
+    prompt?: string;
+    proposal?: {
+      kind: string;
+      fields: Record<string, unknown>;
+      outcome?: "committed" | "rejected";
+      reason?: string;
+    };
+  }[],
+) {
+  const { input, ids } = episode();
+  const thread = buildThreads(parseAll(input.events)).find(
+    (t) => t.id === ids.broken,
+  );
+  if (thread?.petition === undefined) throw new Error("no supplication");
+  const requests = [...input.requests];
+  const proposals = [...input.proposals];
+  turns.forEach((turn, n) => {
+    const proposalId = turn.proposal === undefined ? undefined : `owed-p${n}`;
+    requests.push({
+      proposalId,
+      role: "zeus",
+      outcome: "intent",
+      elapsedMs: 1000,
+      promptPayload:
+        turn.prompt ??
+        owedBoonPrompt(
+          "zeus",
+          turn.tick,
+          ids.broken,
+          "woodcutter",
+          thread.petition as string,
+          100,
+        ),
+      steps: [{ mode: "native" }],
+    });
+    if (turn.proposal !== undefined && proposalId !== undefined) {
+      proposals.push({
+        proposalId,
+        actor: "zeus",
+        kind: turn.proposal.kind,
+        observationId: `owed-o${n}`,
+        proposal: {
+          actor: "zeus",
+          kind: turn.proposal.kind,
+          // "$PETITION" stands for the prayer the thread's boon answers.
+          ...Object.fromEntries(
+            Object.entries(turn.proposal.fields).map(([key, value]) => [
+              key,
+              value === "$PETITION" ? thread.petition : value,
+            ]),
+          ),
+        },
+        outcome: turn.proposal.outcome ?? "committed",
+        ...(turn.proposal.reason === undefined
+          ? {}
+          : { reason: turn.proposal.reason }),
+      });
+    }
+  });
+  return {
+    input: { ...input, requests, proposals } as RealInput,
+    ids,
+    petition: thread.petition,
+  };
+}
+
+test("the digest's owed-boon row is read as an obligation row: who is owed, and by when", () => {
+  const rows = obligationRows(
+    owedBoonPrompt("zeus", 74, "evt-72-1", "woodcutter", "evt-71-1", 100),
+  );
+  expect(rows).toEqual([
+    {
+      thread: "evt-72-1",
+      other: "woodcutter",
+      deadline: 100,
+      unperformable: undefined,
+      boon: true,
+      petition: "evt-71-1",
+      next: { action: "move", to: "altar" },
+    },
+  ]);
+  const blocked = obligationRows(
+    owedBoonPrompt("zeus", 74, "evt-72-1", "woodcutter", "evt-71-1", 100, [
+      "  You cannot give it now: a bless costs 1 divinity and you hold less.",
+    ]),
+  );
+  expect(blocked[0]?.unperformable).toBe(
+    "a bless costs 1 divinity and you hold less",
+  );
+  // A settlement's row is not a boon.
+  expect(
+    obligationRows(
+      prompt("zeus", 22, {
+        owes: {
+          thread: "evt-20-5",
+          other: "hera",
+          words: "you must be at altar",
+          deadline: 50,
+        },
+      }),
+    )[0]?.boon,
+  ).toBe(false);
+});
+
+test("a turn a god takes while it owes a boon is classified: performed when it blessed or moved toward the mortal, waited when its digest names what stops it, and knowingly risked breach otherwise", () => {
+  const { input } = withOwedTurns([
+    { tick: 74, proposal: { kind: "move", fields: { to: "altar" } } },
+    {
+      tick: 75,
+      proposal: { kind: "bless", fields: { petition: "$PETITION" } },
+    },
+    {
+      tick: 75,
+      proposal: { kind: "legend", fields: { assertion: "I am Zeus." } },
+    },
+    {
+      tick: 75,
+      proposal: {
+        kind: "move",
+        fields: { to: "altar" },
+        outcome: "rejected",
+        reason: "unreachable",
+      },
+    },
+    { tick: 75 },
+    {
+      tick: 75,
+      prompt: owedBoonPrompt(
+        "zeus",
+        75,
+        "evt-72-1",
+        "woodcutter",
+        "evt-71-1",
+        100,
+        [
+          "  You cannot give it now: a bless costs 1 divinity and you hold less.",
+        ],
+      ),
+    },
+  ]);
+  const owed = analyze(input).obligated.turns.filter(
+    (t) => t.tick !== undefined && t.tick >= 74,
+  );
+  expect(owed.map((t) => t.class)).toEqual([
+    "performed",
+    "performed",
+    "knowingly risked breach",
+    "knowingly risked breach",
+    "knowingly risked breach",
+    "waited for a named event",
+  ]);
+  expect(owed[5]?.named).toContain("a bless costs 1 divinity");
+});
+
+test("a turn counts as performing the owed boon only when it is the step the row showed: a bless on a different prayer, a move to a different exit, and an unrelated strike are not performed", () => {
+  const classes = (
+    turns: Parameters<typeof withOwedTurns>[0],
+  ): (string | undefined)[] => {
+    const { input } = withOwedTurns(turns);
+    return analyze(input)
+      .obligated.turns.filter((t) => t.tick !== undefined && t.tick >= 74)
+      .map((t) => t.class);
+  };
+  expect(
+    classes([
+      // The way the row showed: the exit to altar.
+      { tick: 74, proposal: { kind: "move", fields: { to: "altar" } } },
+      // A different exit.
+      { tick: 75, proposal: { kind: "move", fields: { to: "tavern" } } },
+      {
+        tick: 76,
+        proposal: { kind: "realm-transition", fields: { to: "olympus-gate" } },
+      },
+      // The owed prayer, and a different one (Athena blessing weaver-ismene instead of weaver-zoe).
+      {
+        tick: 77,
+        proposal: { kind: "bless", fields: { petition: "$PETITION" } },
+      },
+      {
+        tick: 78,
+        proposal: { kind: "bless", fields: { petition: "evt-9-203" } },
+      },
+      // A strike, which the row never asked for.
+      {
+        tick: 79,
+        proposal: { kind: "strike", fields: { target: "woodshed", power: 1 } },
+      },
+    ]),
+  ).toEqual([
+    "performed",
+    "knowingly risked breach",
+    "knowingly risked breach",
+    "performed",
+    "knowingly risked breach",
+    "knowingly risked breach",
+  ]);
+  // A refused step performs nothing, even the right one.
+  expect(
+    classes([
+      {
+        tick: 74,
+        proposal: {
+          kind: "move",
+          fields: { to: "altar" },
+          outcome: "rejected",
+          reason: "not-adjacent",
+        },
+      },
+    ]),
+  ).toEqual(["knowingly risked breach"]);
+  // A digest that names what stops the god still reads as a wait, whatever it chose.
+  const blocked = withOwedTurns([
+    {
+      tick: 74,
+      prompt: owedBoonPrompt(
+        "zeus",
+        74,
+        "evt-72-1",
+        "woodcutter",
+        "evt-71-1",
+        100,
+        [
+          "  You cannot give it now: a bless costs 1 divinity and you hold less.",
+        ],
+      ),
+      proposal: { kind: "bless", fields: { petition: "evt-9-203" } },
+    },
+  ]);
+  expect(
+    analyze(blocked.input).obligated.turns.find((t) => t.tick === 74)?.class,
+  ).toBe("waited for a named event");
+});
+
+test("a strike performs an owed punish boon only on a building the prayer names, or the one the row showed", () => {
+  const row = {
+    thread: "evt-72-1",
+    other: "farmer",
+    deadline: 100,
+    unperformable: undefined,
+    boon: true,
+    petition: "evt-71-1",
+    next: { action: "strike", target: "woodshed" },
+  };
+  const struck = (
+    target: string,
+    outcome: "committed" | "rejected" = "committed",
+  ) => ({
+    proposalId: "p",
+    actor: "zeus",
+    kind: "strike",
+    observationId: "o",
+    proposal: { actor: "zeus", kind: "strike", target, power: 1 },
+    outcome,
+  });
+  const cls = (
+    target: string,
+    named: readonly string[],
+    outcome?: "committed" | "rejected",
+  ) =>
+    classifyTurn(undefined, row, "", struck(target, outcome), false, named)
+      .class;
+  expect(cls("woodshed", ["woodshed"])).toBe("performed");
+  // Another building the prayer names counts; one it does not name does not.
+  expect(cls("old-oak", ["woodshed", "old-oak"])).toBe("performed");
+  expect(cls("the-tavern", ["woodshed"])).toBe("knowingly risked breach");
+  expect(cls("woodshed", ["woodshed"], "rejected")).toBe(
+    "knowingly risked breach",
+  );
+});
+
+test("a prompt that did not lead with the boon the world held open fails the recorded-turns property; after the boon is seen, no row is owed", () => {
+  const { input, petition } = withOwedTurns([
+    // The accepted supplication's boon is seen at tick 76: at 75 the god owed it and its prompt was silent.
+    {
+      tick: 75,
+      prompt:
+        "You are zeus.\nYou are at great-hall [great-hall] in the mortal realm, tick 75.\nWhat do you do?",
+    },
+  ]);
+  expect(petition).toBeDefined();
+  const silent = property(input, "obligated turns recorded");
+  expect(silent.ok).toBe(false);
+  expect(silent.detail).toContain(
+    "did not lead with the obligation the world held open",
+  );
+  // Control: the same silent prompt after the boon was seen at 76 holds nothing open.
+  const { input: after } = withOwedTurns([
+    {
+      tick: 80,
+      prompt:
+        "You are zeus.\nYou are at great-hall [great-hall] in the mortal realm, tick 80.\nWhat do you do?",
+    },
+  ]);
+  expect(property(after, "obligated turns recorded").ok).toBe(true);
+  // Control: the one who prays owes no boon; a supplication Zeus did not offer is not his.
+  const { input: hers } = withOwedTurns([]);
+  expect(property(hers, "obligated turns recorded").ok).toBe(true);
+});
+
+test("the gate applies the prompt's own deadline rule: the owed row is expected through the deadline tick and not after, so a correct prompt at deadline+1 is not flagged", () => {
+  const { input, ids } = episode();
+  // The boon was never seen and the thread never ended: only the deadline decides whether a row is owed.
+  const unseen: RealInput = {
+    ...input,
+    events: input.events.filter(
+      (e) =>
+        !(
+          (e.kind === "practice-progressed" && e.threadId === ids.broken) ||
+          (e.kind === "practice-ended" && e.threadId === ids.broken)
+        ),
+    ),
+  };
+  const silent = (tick: number) =>
+    `You are zeus.\nYou are at great-hall [great-hall] in the mortal realm, tick ${tick}.\nWhat do you do?`;
+  const at = (tick: number) => withOwedTurns([{ tick, prompt: silent(tick) }]);
+  const onlyAt = (tick: number): RealInput => {
+    const run = at(tick).input;
+    return {
+      ...run,
+      events: unseen.events,
+    };
+  };
+  // On the deadline tick the prompt still owes the row, so a silent prompt fails.
+  const onDeadline = property(onlyAt(100), "obligated turns recorded");
+  expect(onDeadline.ok).toBe(false);
+  expect(onDeadline.detail).toContain(ids.broken);
+  // One tick later the prompt shows none, and the gate expects none.
+  const after = property(onlyAt(101), "obligated turns recorded");
+  expect(after.detail).not.toContain(ids.broken);
+  expect(after.ok).toBe(true);
 });
 
 test("the properties join the real run's analysis, and the existing ones are still there", async () => {

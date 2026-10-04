@@ -168,6 +168,9 @@ cython_debug/
 # Discovery documentation
 docs/discovery/round-*-owner-response.md
 
+# Handoff docs
+docs/brainstorms/*-handoff.md
+
 # Deepwork session state (git-local)
 .slim/deepwork/
 

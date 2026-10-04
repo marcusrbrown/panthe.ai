@@ -924,6 +924,39 @@ test("a prompt that did not lead with the boon the world held open fails the rec
   expect(property(hers, "obligated turns recorded").ok).toBe(true);
 });
 
+test("the gate applies the prompt's own deadline rule: the owed row is expected through the deadline tick and not after, so a correct prompt at deadline+1 is not flagged", () => {
+  const { input, ids } = episode();
+  // The boon was never seen and the thread never ended: only the deadline decides whether a row is owed.
+  const unseen: RealInput = {
+    ...input,
+    events: input.events.filter(
+      (e) =>
+        !(
+          (e.kind === "practice-progressed" && e.threadId === ids.broken) ||
+          (e.kind === "practice-ended" && e.threadId === ids.broken)
+        ),
+    ),
+  };
+  const silent = (tick: number) =>
+    `You are zeus.\nYou are at great-hall [great-hall] in the mortal realm, tick ${tick}.\nWhat do you do?`;
+  const at = (tick: number) => withOwedTurns([{ tick, prompt: silent(tick) }]);
+  const onlyAt = (tick: number): RealInput => {
+    const run = at(tick).input;
+    return {
+      ...run,
+      events: unseen.events,
+    };
+  };
+  // On the deadline tick the prompt still owes the row, so a silent prompt fails.
+  const onDeadline = property(onlyAt(100), "obligated turns recorded");
+  expect(onDeadline.ok).toBe(false);
+  expect(onDeadline.detail).toContain(ids.broken);
+  // One tick later the prompt shows none, and the gate expects none.
+  const after = property(onlyAt(101), "obligated turns recorded");
+  expect(after.detail).not.toContain(ids.broken);
+  expect(after.ok).toBe(true);
+});
+
 test("the properties join the real run's analysis, and the existing ones are still there", async () => {
   const { analyzeReal } = await import("./real-analysis");
   const { input } = episode();

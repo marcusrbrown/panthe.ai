@@ -743,8 +743,10 @@ export function obligatedTurns(
         // The god owes what its term says it performs, and, on a supplication it set terms on, its boon until the world sees it.
         !(
           thread.term.party === request.role ||
+          // The prompt owes the row through the deadline tick and not after (`owedBoonOf`), so the gate expects it on the same terms.
           (thread.practice === "supplication" &&
             thread.demander === request.role &&
+            tick <= thread.term.deadline &&
             tick <= (boonSeenAt.get(thread.id) ?? Number.POSITIVE_INFINITY) - 1)
         ) ||
         Number.isNaN(tick) ||

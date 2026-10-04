@@ -1573,9 +1573,22 @@ export function buildGodContext(
       `- ${relationship.target} (${relationship.kind}), disposition ${relationship.disposition.toFixed(2)} on a scale from -1 to 1${relationship.note === undefined ? "" : `: ${relationship.note}`}`,
   );
 
+  // The order of a request is the order of how long its text stays the same. A
+  // model server reuses the longest start a new request shares with the last one
+  // it read, so what is first is read least often: what every god is told alike,
+  // then what this god is, then what changes with the tick. The lines are the
+  // same lines a god has always been shown; only where each one sits changed.
   const instructions = [
-    `You are ${profile.name}, a Greek god of ${profile.domains.join(", ")}.`,
+    // Every god, every tick: how to decide, how to act, how to speak, how to reply.
     "Decide what you do next, in character, using only what you are shown as perceived. You know nothing else about the world, and you may only name ids listed in the scene.",
+    'You may also move to a neighboring place (action "move"), or cross to another realm where a passage leads (action "realm-transition").',
+    "Speak your report and legend words in the first person, to those who hear them, without using your own name.",
+    `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
+    goalInstruction(remembered),
+    'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
+    "Reply with one JSON object naming your action.",
+    // This god, fixed: who it is, what is told of it, whom it holds close, what it can do.
+    `You are ${profile.name}, a Greek god of ${profile.domains.join(", ")}.`,
     `Your drives, from 0 to 1: ${drives}.`,
     "What is told of you:",
     ...profile.lore.map((line) => `- ${line.statement}`),
@@ -1584,7 +1597,7 @@ export function buildGodContext(
       : []),
     "Your powers:",
     ...abilities,
-    'You may also move to a neighboring place (action "move"), or cross to another realm where a passage leads (action "realm-transition").',
+    // What this turn's scene and prayers add to the guidance: last, since it can change with every tick.
     ...(snapshot.actors.length > 0
       ? [
           'You may also tell someone here something (action "report", naming the listener, your words, and optionally a claim of who harmed or did a kindness to whom, and an event you saw). It is your own account, told as you choose.',
@@ -1599,15 +1612,10 @@ export function buildGodContext(
             : `A legend is heard by everyone here now: ${snapshot.actors.map((actor) => actor.id).join(", ")}.`,
           citationGuidance("legend", offer.eventIds),
         ]),
-    "Speak your report and legend words in the first person, to those who hear them, without using your own name.",
-    `Keep a legend assertion (at most ${MAX_ASSERTION_LENGTH} characters) and report content (at most ${MAX_REPORT_LENGTH} characters) to one or two short sentences.`,
-    goalInstruction(remembered),
     ...prayerInstructions(remembered),
     ...(offer.practice === undefined
       ? []
       : describePracticeInstructions(remembered.threads, remembered.practice)),
-    'You may also choose to wait (action "wait") and do nothing this turn; waiting is always allowed.',
-    "Reply with one JSON object naming your action.",
   ].join("\n");
 
   const held =
@@ -1616,16 +1624,12 @@ export function buildGodContext(
       : snapshot.self.inventory
           .map((item) => `${item.resource} ${item.amount}`)
           .join(", ");
+  // The user text goes the same way: what the god remembers and has resolved first, since it changes when something happens to it; the scene next, in the order a tick changes it; the open prayers, practices, and contests last, just before the question.
   const prompt = [
-    ...describeDigest(
-      remembered.threads,
-      remembered.practiceRefusal,
-      remembered.practice.openings,
-    ),
-    ...describeContests(remembered.practice),
+    ...describeRemembered(remembered),
+    ...describeSelf(snapshot, remembered),
     `You are at ${snapshot.location.name} [${snapshot.location.id}] in the ${snapshot.location.realm} realm, tick ${snapshot.tick}.`,
     `You hold: ${held}.`,
-    ...describePetitions(remembered),
     "Here with you:",
     ...(snapshot.actors.length === 0
       ? ["- no one else"]
@@ -1643,8 +1647,6 @@ export function buildGodContext(
     ...(snapshot.events.length === 0
       ? ["- none"]
       : snapshot.events.map(describeEvent)),
-    ...describeRemembered(remembered),
-    ...describeSelf(snapshot, remembered),
     "Ways out:",
     ...(usableExits(snapshot).length === 0
       ? ["- none"]
@@ -1652,6 +1654,13 @@ export function buildGodContext(
           (exit) =>
             `- ${exit.name} [${exit.to}], ${exit.realm} realm, by ${exit.transport}`,
         )),
+    ...describePetitions(remembered),
+    ...describeContests(remembered.practice),
+    ...describeDigest(
+      remembered.threads,
+      remembered.practiceRefusal,
+      remembered.practice.openings,
+    ),
     "What do you do?",
   ].join("\n");
 

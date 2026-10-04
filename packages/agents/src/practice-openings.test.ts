@@ -351,7 +351,12 @@ test("with Hera's accusation in Zeus's memory, the digest shows a full demand op
   const { context } = run.view("zeus");
   const digest = digestOf(context.prompt);
   expect(digest[0]).toBe(PRACTICES_HEADING);
-  expect(context.prompt.split("\n")[0]).toBe(PRACTICES_HEADING);
+  // The digest is the last section of the user text, just before the question: per-tick state last.
+  const promptLines = context.prompt.split("\n");
+  expect(promptLines.at(-1)).toBe("What do you do?");
+  expect(promptLines.indexOf(PRACTICES_HEADING)).toBeGreaterThan(
+    promptLines.findIndex((l) => l.startsWith("You are at ")),
+  );
   const text = digest.join("\n");
   expect(text).toContain("You may begin a bargain");
   expect(text).toContain("demand of hera");
